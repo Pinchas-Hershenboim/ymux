@@ -7306,6 +7306,16 @@ name = "winmux-policy"
 version = "0.0.0"
 
 [[package]]
+name = "winmux-protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "winmux-types",
+]
+
+[[package]]
 name = "winmux-ssh"
 version = "0.0.0"
 dependencies = [
