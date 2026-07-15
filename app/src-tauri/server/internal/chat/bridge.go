@@ -15,7 +15,6 @@ package chat
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"sync"
 
@@ -168,6 +167,6 @@ func (b *WorkspaceBridge) translate(wsSessionID string, raw []byte) {
 func (b *WorkspaceBridge) pub(wsSessionID, typ string, payload map[string]any) {
 	data, _ := json.Marshal(payload)
 	if _, err := b.wsMgr.Publish(wsSessionID, typ, data); err != nil {
-		log.Printf("bridge: publish %s → %s: %v", typ, wsSessionID, err)
+		logger.Warn("bridge publish failed", "type", typ, "ws_session", wsSessionID, "err", err)
 	}
 }

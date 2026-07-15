@@ -2,7 +2,6 @@ package insights
 
 import (
 	"database/sql"
-	"log"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -62,7 +61,7 @@ func (s *Store) Close() { _ = s.db.Close() }
 func (s *Store) insert(snap *Snapshot) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		log.Printf("store: begin: %v", err)
+		logger.Error("store begin tx failed", "err", err)
 		return
 	}
 	defer func() { _ = tx.Commit() }()
@@ -139,7 +138,7 @@ func (s *Store) Sweep() {
 	cut := time.Now().Add(-retentionDays * 24 * time.Hour).Unix()
 	for _, t := range []string{"samples", "disk_samples", "docker_samples"} {
 		if _, err := s.db.Exec(`DELETE FROM `+t+` WHERE ts < ?`, cut); err != nil {
-			log.Printf("store: sweep %s: %v", t, err)
+			logger.Warn("store sweep failed", "table", t, "err", err)
 		}
 	}
 	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)

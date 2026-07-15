@@ -8,11 +8,14 @@
 package hooks
 
 import (
-	"log"
 	"net"
 
 	"winmux-server/internal/core"
+	"winmux-server/internal/logging"
 )
+
+// logger is the hook-RPC listener's component logger (Phase 79.D).
+var logger = logging.New("SRV:HOOKRPC")
 
 // Start binds an ephemeral localhost port and serves hook RPC connections for
 // the life of the process. Best-effort: if the listen fails, hooks simply won't
@@ -20,13 +23,13 @@ import (
 func Start(h core.HookConnHandler) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Printf("hooks: RPC listen failed, hooks won't reach mobile: %v", err)
+		logger.Warn("RPC listen failed, hooks won't reach mobile", "err", err)
 		return
 	}
 	if sink, ok := h.(core.AddrSink); ok {
 		sink.SetHookAddr(ln.Addr().String())
 	}
-	log.Printf("hooks: RPC listening on %s", ln.Addr().String())
+	logger.Info("RPC listening", "addr", ln.Addr().String())
 	go func() {
 		for {
 			conn, err := ln.Accept()

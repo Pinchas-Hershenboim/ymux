@@ -8,7 +8,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,11 +23,16 @@ import (
 	"winmux-server/internal/files"
 	"winmux-server/internal/hooks"
 	"winmux-server/internal/insights"
+	"winmux-server/internal/logging"
 	"winmux-server/internal/logs"
 	"winmux-server/internal/workspace"
 )
 
 func main() {
+	// Phase 79.D: unified slog logging. Created before Setup — the shared
+	// writer indirection re-points it at the log file once Setup runs.
+	logger := logging.New("SRV:MAIN")
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "-v", "version":
@@ -50,14 +54,15 @@ func main() {
 			})
 			b, err := srv.OpenAPISpec()
 			if err != nil {
-				log.Fatalf("openapi: %v", err)
+				logger.Error("openapi spec generation failed", "err", err)
+				os.Exit(1)
 			}
 			_, _ = os.Stdout.Write(b)
 			return
 		}
 	}
 
-	home, _ := os.UserHomeDir()
+	home, homeErr := os.UserHomeDir()
 	// Phase 77 S5: the data dir is ~/.winmux/server. A 1.x install kept it at
 	// ~/.winmux/insights; the daemon migrates it in place on first boot (below),
 	// preserving token + chat.db (paired devices) + workspace/metrics DBs + logs.
@@ -78,14 +83,15 @@ func main() {
 	// Migrate only when using the default dir (an explicit --dir opts out).
 	if *base == defBase {
 		if migrated, err := config.MigrateDataDir(legacyBase, defBase); err != nil {
-			log.Printf("data-dir migration %s → %s failed: %v (continuing)", legacyBase, defBase, err)
+			logger.Warn("data-dir migration failed (continuing)", "from", legacyBase, "to", defBase, "err", err)
 		} else if migrated {
-			log.Printf("migrated data dir %s → %s", legacyBase, defBase)
+			logger.Info("migrated data dir", "from", legacyBase, "to", defBase)
 		}
 	}
 
 	if err := os.MkdirAll(*base, 0o755); err != nil {
-		log.Fatalf("mkdir %s: %v", *base, err)
+		logger.Error("mkdir data dir failed", "dir", *base, "err", err)
+		os.Exit(1)
 	}
 
 	logPath := filepath.Join(*base, "insights.log")
@@ -93,9 +99,11 @@ func main() {
 	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err == nil {
 		defer lf.Close()
-		log.SetOutput(lf)
+		logging.Setup(lf)
+	} else {
+		logging.Setup(os.Stderr)
 	}
-	log.Printf("winmux-server %s starting (port=%d dir=%s interval=%ds)", core.Version, *port, *base, *interval)
+	logger.Info("winmux-server starting", "version", core.Version, "port", *port, "dir", *base, "interval_s", *interval)
 
 	// systemd gives the daemon a minimal PATH; merge the user's login-shell PATH
 	// so subprocesses (the claude_chat engine) resolve `claude` like the terminal.
@@ -104,16 +112,17 @@ func main() {
 	// the PATH we ended up with — so a "claude not found" mobile error is
 	// debuggable from Monitor → Logs instead of invisible.
 	if p, lerr := exec.LookPath("claude"); lerr == nil {
-		log.Printf("claude resolved at %s", p)
+		logger.Info("claude resolved", "path", p)
 	} else {
-		log.Printf("claude NOT resolved after PATH augment: %v; PATH=%s", lerr, os.Getenv("PATH"))
+		logger.Warn("claude NOT resolved after PATH augment", "err", lerr, "path_env", os.Getenv("PATH"))
 	}
 
 	token := config.LoadOrCreateToken(filepath.Join(*base, "token"))
 
 	store, err := insights.OpenStore(filepath.Join(*base, "metrics.db"))
 	if err != nil {
-		log.Fatalf("open store: %v", err)
+		logger.Error("open metrics store failed", "err", err)
+		os.Exit(1)
 	}
 	defer store.Close()
 	store.Sweep() // drop anything older than the retention window on boot
@@ -123,6 +132,11 @@ func main() {
 	go insights.RunSampler(store, sm, time.Duration(*interval)*time.Second, stop)
 	go config.LogJanitor(logPath, home, stop)
 	go insights.PortWatchReaper(stop)
+	// Runtime log level: ~/.winmux/log-level (debug/info/warn/error), polled
+	// every 30s. Missing/unknown → Info. Skipped when home is unresolvable.
+	if homeErr == nil {
+		go logging.WatchLevelFile(filepath.Join(home, ".winmux", "log-level"), stop)
+	}
 
 	svc := insights.NewService(store, sm, logPath)
 
@@ -132,34 +146,34 @@ func main() {
 	var chatMgr *chat.SessionManager // hoisted so the workspace bridge can reach it
 	chatStore, cerr := chat.OpenChatStore(filepath.Join(*base, "chat.db"))
 	if cerr != nil {
-		log.Printf("chat: open store failed, chat disabled: %v", cerr)
+		logger.Warn("chat store open failed, chat disabled", "err", cerr)
 	} else {
 		defer chatStore.Close()
 		chatMgr = chat.NewSessionManager(chatStore)
 		chatAPI = chat.NewChatAPI(chatMgr, chatStore, token)
 		hooks.Start(chatMgr) // thin listener → SessionManager.HandleHookConn (cycle-safe)
 		go chat.RunSessionSweeper(chatMgr, stop)
-		log.Printf("chat: Claude chat subsystem enabled")
+		logger.Info("Claude chat subsystem enabled")
 	}
 
 	// Files API (S2) — sandboxed to --files-root ($HOME by default).
 	var filesSvc *files.Service
 	if fp, ferr := files.NewLocalFiles(*filesRoot, 0); ferr != nil {
-		log.Printf("files: init failed, Files API disabled: %v", ferr)
+		logger.Warn("files init failed, Files API disabled", "err", ferr)
 	} else {
 		filesSvc = files.NewService(fp)
-		log.Printf("files: API enabled (root=%s)", fp.Root())
+		logger.Info("files API enabled", "root", fp.Root())
 	}
 
 	// Logs API (S2) — per-client log tree under <dir>/logs, plus the "server"
 	// pseudo-client that surfaces this daemon's own log.
 	var logsSvc *logs.Service
 	if lstore, lerr := logs.NewStore(*base, logPath); lerr != nil {
-		log.Printf("logs: init failed, Logs API disabled: %v", lerr)
+		logger.Warn("logs init failed, Logs API disabled", "err", lerr)
 	} else {
 		logsSvc = logs.NewService(lstore)
 		go lstore.RunJanitor(stop)
-		log.Printf("logs: API enabled")
+		logger.Info("logs API enabled")
 	}
 
 	// Workspace API (S3) — shared-state model (sessions + subscribers + pending)
@@ -167,7 +181,7 @@ func main() {
 	var wsSvc *workspace.Service
 	var pushSrv *push.Server
 	if wstore, werr := workspace.OpenStore(filepath.Join(*base, "workspace.db")); werr != nil {
-		log.Printf("workspace: open store failed, Workspace API disabled: %v", werr)
+		logger.Warn("workspace store open failed, Workspace API disabled", "err", werr)
 	} else {
 		defer wstore.Close()
 		// Native push (§4): self-hosted delivery over each device's long-lived
@@ -205,7 +219,7 @@ func main() {
 					}
 				}
 			}()
-			log.Printf("push: native push enabled")
+			logger.Info("native push enabled")
 		}
 		wmgr := workspace.NewManager(wstore, notifier)
 		// Out-of-band push fan-out targets come from the chat device store.
@@ -216,7 +230,7 @@ func main() {
 		// (still served at /api/claude/*) have a home in the workspace model as
 		// the deeper chat↔workspace merge lands in a later sprint.
 		if _, e := wmgr.EnsureWorkspace(workspace.DefaultID, "default"); e != nil {
-			log.Printf("workspace: ensure default failed: %v", e)
+			logger.Warn("ensure default workspace failed", "err", e)
 		}
 		wsSvc = workspace.NewService(wmgr, token)
 		// Accept paired-device tokens on the subscribe WS (matches the REST
@@ -230,13 +244,13 @@ func main() {
 		// back as workspace frames.
 		if chatMgr != nil {
 			wmgr.SetDriver(chat.NewWorkspaceBridge(chatMgr, wmgr))
-			log.Printf("workspace: claude_chat engine bridge enabled")
+			logger.Info("claude_chat engine bridge enabled")
 			// beta.3 Fix 3: chat sessions surface a workspace-name label on
 			// emitted hook_request events. Wired here (both managers exist)
 			// so tests can build a chat.SessionManager without a workspace.
 			chatMgr.SetWorkspaceResolver(wmgr.WorkspaceNameByID)
 		}
-		log.Printf("workspace: API enabled")
+		logger.Info("workspace API enabled")
 	}
 
 	srv := api.NewServer(token, *port, api.Deps{
@@ -245,15 +259,16 @@ func main() {
 
 	go func() {
 		if err := srv.Run(); err != nil {
-			log.Fatalf("http server: %v", err)
+			logger.Error("http server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
-	log.Printf("API listening on 127.0.0.1:%d", *port)
+	logger.Info("API listening", "addr", fmt.Sprintf("127.0.0.1:%d", *port))
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Printf("winmux-server stopping (draining connections)")
+	logger.Info("winmux-server stopping (draining connections)")
 	close(stop) // stop samplers/janitors/sweepers
 
 	// Graceful HTTP drain so an in-flight metrics/file request isn't cut off on
@@ -261,7 +276,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("winmux-server: shutdown drain: %v", err)
+		logger.Warn("shutdown drain failed", "err", err)
 	}
-	log.Printf("winmux-server stopped")
+	logger.Info("winmux-server stopped")
 }
