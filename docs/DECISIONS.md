@@ -42,12 +42,21 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 - **Dropped (Yossi 2026-07-15):** **66.E** (swap `notify-rust` → `tauri-plugin-notification`) — toasts work in practice; revisit only if toast delivery actually breaks on a real machine.
 - **State:** Open — none scheduled.
 
-### 2026-07-15 — Log follow-ups — PARKED until the logging overhaul is verified, then close
-- **Yossi (2026-07-15):** the logging process is being rebuilt right now; these stay parked until it’s finished and proven working, and are then slated for deletion/closure rather than being built as-is.
-- **`dlog_tag` sweep** — 152 untagged `dlog(` sites vs 20 tagged; tag `[SSH]` `[BOOTSTRAP]` `[TUNNEL]` `[RPC]` (deferred from Phase 73). Re-evaluate against the new logging process — may become moot.
-- **Server-side log-retention flag** — the daemon janitor is a fixed 7-day; the desktop retention setting doesn’t propagate (noted in Phase 75). Same: re-evaluate after the overhaul.
-- **Recording Suite (#3.4)** — unrelated to logs but parked in the same sweep; unbuilt since May, nobody asked. Kill candidate at the same checkpoint.
-- **State:** Open — parked; revisit at the logging-overhaul checkpoint and close what’s moot.
+### 2026-07-15 — Log follow-ups — updated post-overhaul (Phase 79)
+- **Yossi (2026-07-15):** parked until the logging overhaul lands; the overhaul (Phase 79, branch `claude/unified-logging`) is now implemented — statuses updated:
+- **`dlog_tag` sweep** — ✅ **MOOT/DONE**: Phase 79.E converted all 245 sites to leveled `log_*` with component tags. Close once the branch merges.
+- **Server-side log-retention flag** — still open, but now has a cheap path: Phase 79 introduced `~/.winmux/log-level` (desktop-pushed file, Go server watches it). Retention can ride the same mechanism (e.g. a `~/.winmux/log-retention` file or one combined config file read by the janitor). Effort: S.
+- **Recording Suite (#3.4)** — unrelated to logs; kill candidate, awaiting Yossi's checkpoint call.
+- **State:** Open — close item 1 at merge; item 2 is a small follow-up; item 3 needs a call.
+
+### 2026-07-15 — Phase 79 follow-ups: smoke, rebake, build-warning cleanup
+Deferred items out of the unified-logging overhaul (Phase 79) — each is a self-contained session:
+- **Manual smoke with a live host (required before release):** Settings → Logs → switch to Debug → `[DEBUG]` lines appear immediately and `~/.winmux/log-level` updates on a connected host (server converges ≤30s, no restart); frontend error → `[UI:*]` line in tail + `winmux dev console-tail`; wait ~60s with a connected workspace → `[SYNC]` markers + `[SRV:*]`/`[HOOK]` lines merged into local debug.log; truncate a remote log → next cycle resumes near EOF without duplication; Clear button works.
+- **Rebake embedded remote binaries (release blocker for the Go/CLI logging):** `resources/winmux-server-linux-{x64,arm64}` and `winmux-linux-x64` must be rebuilt via the cross-compile pipeline (`app/scripts/build-linux-cli.ps1` / release flow) — until then remotes keep writing the old formats and the level file is ignored server-side. Mixed-format merged lines during the transition are cosmetic (viewers are raw text).
+- **ts-rs serde-attr warning noise (~73 per build):** ts-rs can't parse multi-key attrs like `#[serde(default, skip_serializing_if = "Option::is_none")]` and ignores them. Mostly noise, but there's a real gap underneath: ignored `skip_serializing_if` means generated TS types declare fields required that JSON may omit (masked today by the hand-mirrored types in `app/src/settings.ts`). Fix = ts-rs upgrade or splitting attrs across lines on ~dozens of structs. Effort: M, mechanical.
+- **`renumber_group_list` dead_code warning** — `app/src-tauri/src/lib.rs` (~:569), beta.3 ws-dragdrop scaffolding with zero callers. Wire it into the group drag-drop path or delete it (check whether group reordering shipped). Effort: S. (Also spawned as a session chip 2026-07-15.)
+- **Vite chunk-size warning** — 1.3 MB minified bundle > 500 kB limit. Real fix = code-splitting/dynamic imports; low priority for a local desktop webview (no network fetch). Effort: M-L. Snooze candidate: raise `chunkSizeWarningLimit` to silence.
+- **State:** Open — smoke + rebake belong to the next release cut; the three warning items are independent cleanup sessions.
 
 <!-- Backlog seeded from a scan of herdr (https://github.com/ogulcancelik/herdr) —
      a CLI agent multiplexer, v0.5.9 / 906★ as of May 2026. Ideas, not commitments. -->
