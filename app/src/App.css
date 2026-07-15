@@ -354,6 +354,8 @@ body {
 }
 .ws-badge.local { background: #1f2530; color: var(--w-text-dim); }
 .ws-badge.ssh { background: rgba(122, 162, 247, 0.15); color: var(--w-accent); }
+/* Phase 80: WSL-tmux workspaces. */
+.ws-badge.wsl { background: rgba(158, 206, 106, 0.15); color: var(--w-success); }
 .ws-badge.browser { background: rgba(187, 154, 247, 0.15); color: var(--w-purple); }
 .ws-badge.split { background: rgba(78, 201, 176, 0.15); color: var(--w-success); }
 

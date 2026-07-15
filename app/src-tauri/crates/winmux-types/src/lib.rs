@@ -39,6 +39,18 @@ pub enum Connection {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key_path: Option<String>,
     },
+    /// Phase 80: a local workspace whose panes run inside a WSL distro,
+    /// wrapped in tmux for persistence across app restarts (same attach
+    /// mechanism as SSH panes, transported over wsl.exe instead of SSH).
+    /// Old workspaces.json files never contain `"type":"wsl"`, so their
+    /// round-trip is untouched; an OLDER app build cannot read a file
+    /// containing a wsl workspace (serde unknown-variant) — release-note
+    /// caveat, same posture as every prior variant addition.
+    Wsl {
+        /// None = the machine's default distro.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        distro: Option<String>,
+    },
 }
 
 // ─── SplitDirection ─────────────────────────────────────────────────
@@ -437,6 +449,31 @@ mod tests {
                 assert_eq!(key_path.as_deref(), Some("/keys/id_ed25519"));
             }
             _ => panic!("expected Ssh, got something else"),
+        }
+    }
+
+    #[test]
+    fn connection_wsl_round_trip_elides_none_distro() {
+        // Phase 80: default-distro WSL workspace serializes to just the
+        // tag, mirroring Local's elided shell.
+        let c = Connection::Wsl { distro: None };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v, json!({ "type": "wsl" }));
+        let back: Connection = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, Connection::Wsl { distro: None }));
+    }
+
+    #[test]
+    fn connection_wsl_round_trip_preserves_distro() {
+        let c = Connection::Wsl {
+            distro: Some("Ubuntu".into()),
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v, json!({ "type": "wsl", "distro": "Ubuntu" }));
+        let back: Connection = serde_json::from_value(v).unwrap();
+        match back {
+            Connection::Wsl { distro } => assert_eq!(distro.as_deref(), Some("Ubuntu")),
+            _ => panic!("expected Wsl"),
         }
     }
 

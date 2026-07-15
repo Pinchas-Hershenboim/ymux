@@ -193,5 +193,7 @@ export function effectiveIdentity(
 
 export function describeConnection(c: Connection): string {
   if (c.type === "local") return c.shell ? `local · ${c.shell}` : "local";
+  // Phase 80: WSL-tmux workspaces.
+  if (c.type === "wsl") return c.distro ? `wsl · ${c.distro}` : "wsl";
   return `ssh ${c.user}@${c.host}:${c.port}`;
 }
