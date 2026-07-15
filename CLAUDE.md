@@ -55,7 +55,7 @@ When starting a new session, scan the **Open** section. Don't let threads die si
 6. **All Tauri commands return `Result<_, String>`.** The frontend handles the error; don't `panic!`.
 7. **Workspace persistence is atomic.** Write to `<file>.tmp` then `rename` to the target. Never partial writes to `workspaces.json` / `settings.json`.
 8. **Never expose the tunnel HMAC token to logs.** Treat it like a password.
-9. **`dlog()` is user-visible** (lands in `%APPDATA%\winmux\debug.log`). `tracing::*` is engineer-only (only emitted in dev builds). Pick the right one based on audience.
+9. **The unified logger (`winmux_core::log_debug/info/warn/error(tag, msg)`) is user-visible** (lands in `%APPDATA%\winmux\debug.log`, format `[ts] [LEVEL] [TAG] msg`; threshold from Settings → Logs). Rust uses `log_*` with a component tag; frontend uses `createLogger(tag)` from `app/src/logger.ts` (never raw `console.*`); Go server uses `internal/logging.New("SRV:X")`; CLI hooks use `hook_log(level, msg)`. `dlog()`/`dlog_tag()` are legacy info-level shims — don't add new callers. `tracing::*` stays engineer-only (dev builds). Pick by audience.
 10. **Don't push a half-done release.** If any step in RELEASING.md fails for a real reason (not the `os error 32` NSIS cleanup false-alarm), stop and report.
 11. **Don't touch `backup-phase23-*/` or repo-root `.bat` / `.ps1` helper scripts.** Don't commit `release_notes.md`.
 12. **`remote-manifest.json` timestamp churn is cosmetic.** Discard unless the embedded SHA actually changed.
