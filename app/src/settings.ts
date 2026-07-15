@@ -290,10 +290,21 @@ export interface Settings {
   persist_browser_sessions?: boolean;
 }
 
-// Phase 75: debug.log hygiene.
+// Phase 75: debug.log hygiene. Unified logging: level threshold + remote
+// log sync into the single local debug.log.
+export type LogLevelSetting = "debug" | "info";
 export interface LogsSettings {
   retention_days: number;
+  level: LogLevelSetting;
+  remote_sync: boolean;
 }
+
+// Mirrors LogsSettings::default() in settings.rs.
+export const DEFAULT_LOGS_SETTINGS: LogsSettings = {
+  retention_days: 7,
+  level: "info",
+  remote_sync: true,
+};
 
 // Phase 65.P: dropped "hidden" — only full / icons. Old persisted
 // "hidden" values are migrated to "icons" at read time (App.tsx).

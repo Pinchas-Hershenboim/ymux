@@ -18,6 +18,7 @@ import {
   DEFAULT_CLAUDE_SETTINGS,
   DEFAULT_CLAUDE_USAGE_SETTINGS,
   DEFAULT_HOOK_NOTIFICATIONS,
+  DEFAULT_LOGS_SETTINGS,
   HookType,
   HookNotificationSettings,
   INTERACTIVE_HOOKS,
@@ -1069,6 +1070,40 @@ export function SettingsModal(p: Props) {
                       {logCopied() ? t("settings.updates.logs.copied") : t("settings.updates.logs.copyPath")}
                     </button>
                   </div>
+                  {/* Unified logging: level threshold + remote sync. */}
+                  <hr class="modal-sep" />
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.level")}</span>
+                    <select
+                      value={p.settings.logs?.level ?? "info"}
+                      onChange={(e) =>
+                        update("logs", {
+                          ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                          level: e.currentTarget.value === "debug" ? "debug" : "info",
+                        })
+                      }
+                    >
+                      <option value="info">{t("settings.logs.levelInfo")}</option>
+                      <option value="debug">{t("settings.logs.levelDebug")}</option>
+                    </select>
+                  </div>
+                  <div class="settings-hint">{t("settings.logs.level_hint")}</div>
+                  <div class="settings-logs-row">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={p.settings.logs?.remote_sync ?? true}
+                        onChange={(e) =>
+                          update("logs", {
+                            ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                            remote_sync: e.currentTarget.checked,
+                          })
+                        }
+                      />{" "}
+                      {t("settings.logs.remoteSync")}
+                    </label>
+                  </div>
+                  <div class="settings-hint">{t("settings.logs.remoteSync_hint")}</div>
                   {/* Phase 75: retention + clear. */}
                   <hr class="modal-sep" />
                   <div class="settings-logs-row">
@@ -1081,6 +1116,7 @@ export function SettingsModal(p: Props) {
                       value={p.settings.logs?.retention_days ?? 7}
                       onChange={(e) =>
                         update("logs", {
+                          ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
                           retention_days: Math.max(0, Math.min(365, parseInt(e.currentTarget.value || "0", 10) || 0)),
                         })
                       }
