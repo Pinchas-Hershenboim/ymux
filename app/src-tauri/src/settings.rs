@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_debug, log_info, log_warn, AppState};
 
 // ─── beta.3: hook-type enum + per-hook enable/sound settings ───────────────
 
@@ -1092,7 +1092,7 @@ fn save_to_disk(file: &Settings) -> Result<(), String> {
     // so this is the one choke point where the logger threshold tracks the
     // persisted value.
     winmux_core::set_log_level(winmux_core::LogLevel::from_str(&file.logs.level));
-    dlog(&format!("settings save: {} bytes -> {:?}", text.len(), path));
+    log_debug("SETTINGS", &format!("settings save: {} bytes -> {:?}", text.len(), path));
     Ok(())
 }
 
@@ -1131,7 +1131,7 @@ fn migrate_settings(s: &mut Settings) -> bool {
     if is_placeholder {
         s.updates.manifest_url = Some(DEFAULT_MANIFEST_URL.to_string());
         changed = true;
-        dlog("settings: migrated placeholder manifest_url → default");
+        log_info("SETTINGS", "settings: migrated placeholder manifest_url → default");
     }
     changed
 }
@@ -1144,7 +1144,7 @@ pub(crate) fn load_from_disk() -> Result<Settings, String> {
         // discovering it in the UI. Best-effort — don't fail load if the
         // initial write hits a permissions issue.
         if let Err(e) = save_to_disk(&s) {
-            dlog(&format!("settings: initial save failed: {e}"));
+            log_warn("SETTINGS", &format!("settings: initial save failed: {e}"));
         }
         return Ok(s);
     }
@@ -1163,7 +1163,7 @@ pub(crate) fn load_from_disk() -> Result<Settings, String> {
             // Forward-compat: if the schema grew, fall back to defaults rather
             // than refusing to start. The user can re-save from the UI to
             // upgrade their on-disk file.
-            dlog(&format!(
+            log_warn("SETTINGS", &format!(
                 "settings: parse {:?} failed ({e}) — using defaults",
                 path
             ));

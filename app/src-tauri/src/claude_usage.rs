@@ -259,7 +259,7 @@ pub(crate) async fn claude_usage_fetch(
     }
     // beta.3 safety net #1 — refuse to spam remote after a recent failure.
     if in_backoff(&workspace_id) {
-        crate::dlog_tag("USAGE", &format!("workspace={workspace_id} backoff"));
+        crate::log_debug("USAGE", &format!("workspace={workspace_id} backoff"));
         return cache_stale(&workspace_id)
             .ok_or_else(|| "usage temporarily unavailable (backoff)".to_string());
     }
@@ -267,7 +267,7 @@ pub(crate) async fn claude_usage_fetch(
     let _guard = match InFlight::try_acquire(&workspace_id) {
         Some(g) => g,
         None => {
-            crate::dlog_tag("USAGE", &format!("workspace={workspace_id} inflight"));
+            crate::log_debug("USAGE", &format!("workspace={workspace_id} inflight"));
             return cache_stale(&workspace_id)
                 .ok_or_else(|| "usage fetch already in progress".to_string());
         }
@@ -288,14 +288,14 @@ pub(crate) async fn claude_usage_fetch(
         Ok(s) => s,
         Err(e) => {
             mark_failed(&workspace_id);
-            crate::dlog_tag("USAGE", &format!("workspace={workspace_id} exec_failed"));
+            crate::log_warn("USAGE", &format!("workspace={workspace_id} exec_failed"));
             return cache_stale(&workspace_id).ok_or(e);
         }
     };
     let now = now_unix();
     match parse_usage(&out, now) {
         Ok(usage) => {
-            crate::dlog_tag(
+            crate::log_debug(
                 "USAGE",
                 &format!(
                     "workspace={workspace_id} session={}% week={}%",
@@ -309,7 +309,7 @@ pub(crate) async fn claude_usage_fetch(
         // Serve stale on a transient parse/fetch miss before surfacing the error.
         Err(e) => {
             mark_failed(&workspace_id);
-            crate::dlog_tag("USAGE", &format!("workspace={workspace_id} unavailable"));
+            crate::log_warn("USAGE", &format!("workspace={workspace_id} unavailable"));
             cache_stale(&workspace_id).ok_or(e)
         }
     }

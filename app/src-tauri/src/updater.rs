@@ -32,7 +32,7 @@ fn is_placeholder_host(url: &str) -> bool {
         || lower.contains("changeme")
 }
 
-use crate::{dlog, AppState};
+use crate::{log_debug, log_info, log_warn, AppState};
 use winmux_core::http::get_with_retry;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -222,7 +222,7 @@ pub(crate) async fn check(state: &AppState, app: &AppHandle) -> UpdateInfo {
             }
         }
         Err(e) => {
-            dlog(&format!("updater: fetch {url} failed: {e}"));
+            log_warn("UPDATER", &format!("updater: fetch {url} failed: {e}"));
             UpdateInfo {
                 current_version: APP_VERSION.into(),
                 latest_version: None,
@@ -261,14 +261,14 @@ pub(crate) async fn check(state: &AppState, app: &AppHandle) -> UpdateInfo {
         .map(|v| skipped.iter().any(|s| s == v))
         .unwrap_or(false);
     if info.available && info.latest_version != last_seen && !snoozed && !skipped_this {
-        dlog(&format!(
+        log_info("UPDATER", &format!(
             "updater: new version {} available (current {})",
             info.latest_version.clone().unwrap_or_default(),
             APP_VERSION
         ));
         let _ = app.emit("update:available", &info);
     } else if info.available && (snoozed || skipped_this) {
-        dlog(&format!(
+        log_debug("UPDATER", &format!(
             "updater: {} available but suppressed (snoozed={snoozed} skipped={skipped_this})",
             info.latest_version.clone().unwrap_or_default()
         ));
@@ -355,7 +355,7 @@ pub(crate) async fn check_remote_hooks(
     let manifest = match fetch_manifest(&manifest_url).await {
         Ok(m) => m,
         Err(e) => {
-            dlog(&format!("hooks-check: fetch manifest failed: {e}"));
+            log_warn("UPDATER", &format!("hooks-check: fetch manifest failed: {e}"));
             return;
         }
     };
@@ -378,7 +378,7 @@ pub(crate) async fn check_remote_hooks(
     let current = match ssh_exec_simple(handle, cmd).await {
         Ok(s) => s.trim().to_string(),
         Err(e) => {
-            dlog(&format!("hooks-check: remote read failed: {e}"));
+            log_warn("UPDATER", &format!("hooks-check: remote read failed: {e}"));
             return;
         }
     };
@@ -395,7 +395,7 @@ pub(crate) async fn check_remote_hooks(
         None => false,
     };
     if !need_banner {
-        dlog(&format!(
+        log_debug("UPDATER", &format!(
             "hooks-check: workspace={workspace_id} agent=claude-code current={current_opt:?} latest={claude_latest} → up-to-date or missing"
         ));
         return;
@@ -414,7 +414,7 @@ pub(crate) async fn check_remote_hooks(
         })
         .unwrap_or_default();
     if dismissed.contains(&claude_latest) {
-        dlog(&format!(
+        log_debug("UPDATER", &format!(
             "hooks-check: workspace={workspace_id} claude-code v{claude_latest} silently dismissed"
         ));
         return;
@@ -605,7 +605,7 @@ pub(crate) async fn download_and_install_update(
     // Step 3: download to %TEMP%.
     let temp_dir = std::env::temp_dir();
     let dest = temp_dir.join(format!("winmux-update-{}.exe", manifest.version));
-    dlog(&format!(
+    log_info("UPDATER", &format!(
         "updater: downloading {} -> {:?} (expected sha256 {expected_sha})",
         nsis_url, dest
     ));
@@ -622,7 +622,7 @@ pub(crate) async fn download_and_install_update(
             "downloaded installer failed integrity check — expected {expected_sha}, got {actual_sha} — aborting"
         ));
     }
-    dlog(&format!("updater: sha256 verified ({actual_sha})"));
+    log_info("UPDATER", &format!("updater: sha256 verified ({actual_sha})"));
 
     // Step 5: spawn the installer detached and schedule app exit.
     // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS so the installer
@@ -643,7 +643,7 @@ pub(crate) async fn download_and_install_update(
             .spawn()
             .map_err(|e| format!("spawn installer: {e}"))?;
     }
-    dlog("updater: installer spawned — scheduling app exit in 800ms");
+    log_info("UPDATER", "updater: installer spawned — scheduling app exit in 800ms");
 
     // Step 6: schedule exit. We can't exit synchronously here because
     // the FE needs the Ok(()) return to fire before we go away
@@ -859,7 +859,7 @@ pub(crate) async fn updater_list_versions(force: bool) -> Result<Vec<ReleaseInfo
         }
         Err(e) => {
             if let Some(stale) = cached_versions_stale() {
-                dlog(&format!(
+                log_warn("UPDATER", &format!(
                     "updater: list_versions fetch failed ({e}) — serving stale cache"
                 ));
                 Ok(stale)
@@ -885,7 +885,7 @@ fn backup_settings_file(tag: &str) -> Result<String, String> {
         .collect();
     let dest = dir.join(format!("settings.backup-before-{safe_tag}.json"));
     std::fs::copy(&src, &dest).map_err(|e| format!("backup settings: {e}"))?;
-    dlog(&format!("updater: backed up settings.json -> {}", dest.display()));
+    log_info("UPDATER", &format!("updater: backed up settings.json -> {}", dest.display()));
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -918,7 +918,7 @@ pub(crate) async fn updater_install_version(
     }
 
     let dest = std::env::temp_dir().join(format!("winmux-install-{}.exe", rel.version));
-    dlog(&format!(
+    log_info("UPDATER", &format!(
         "updater: installing {} from {} -> {:?}",
         rel.tag, nsis_url, dest
     ));
@@ -936,9 +936,9 @@ pub(crate) async fn updater_install_version(
                     "integrity check failed — expected {expected}, got {actual}"
                 ));
             }
-            dlog(&format!("updater: sha256 verified for {} ({actual})", rel.tag));
+            log_info("UPDATER", &format!("updater: sha256 verified for {} ({actual})", rel.tag));
         }
-        None => dlog(&format!(
+        None => log_warn("UPDATER", &format!(
             "updater: {} has no published checksum — relying on GitHub TLS",
             rel.tag
         )),
@@ -960,7 +960,7 @@ pub(crate) async fn updater_install_version(
             .spawn()
             .map_err(|e| format!("spawn installer: {e}"))?;
     }
-    dlog(&format!(
+    log_info("UPDATER", &format!(
         "updater: installer for {} spawned — exiting in 800ms",
         rel.tag
     ));

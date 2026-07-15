@@ -45,7 +45,7 @@ async fn stream_download(
         .ok()
         .and_then(|m| m.size)
         .unwrap_or(0);
-    crate::dlog_tag("FM", &format!("download begin remote={remote_path} size={total}"));
+    crate::log_debug("FM", &format!("download begin remote={remote_path} size={total}"));
     let mut file = sftp
         .open(remote_path)
         .await
@@ -88,8 +88,8 @@ async fn stream_download(
 /// Only paths + sizes are logged (metadata — Rule #1 safe); never file bytes.
 fn fm_log<T>(op: &str, detail: &str, res: Result<T, String>) -> Result<T, String> {
     match &res {
-        Ok(_) => crate::dlog_tag("FM", &format!("{op} ok — {detail}")),
-        Err(e) => crate::dlog_tag("FM", &format!("{op} FAILED — {detail}: {e}")),
+        Ok(_) => crate::log_info("FM", &format!("{op} ok — {detail}")),
+        Err(e) => crate::log_warn("FM", &format!("{op} FAILED — {detail}: {e}")),
     }
     res
 }
@@ -618,7 +618,7 @@ pub(crate) async fn pane_upload_dropped(
     file.shutdown().await.ok();
     drop(file);
     let _ = sftp.close().await;
-    crate::dlog(&format!(
+    crate::log_info("FM", &format!(
         "[drop] uploaded {} bytes to {} (ws={}, pane={})",
         bytes.len(),
         remote_path,
@@ -1323,7 +1323,7 @@ pub(crate) async fn file_manager_zip_remote(
         // debug.log. Log metadata (workspace, output, exit code, stderr)
         // so "zip: command not found" (exit 127) is diagnosable. The
         // frontend turns 127 into a tar-fallback offer.
-        crate::dlog(&format!(
+        crate::log_warn("FM", &format!(
             "file_manager_zip_remote FAILED ws={workspace_id} out={output_name} exit={code}: {out}"
         ));
         return Err(format!("remote zip failed (exit {code}): {out}"));
@@ -1367,7 +1367,7 @@ pub(crate) async fn file_manager_targz_remote(
     let cmd = parts.join(" ");
     let (out, code) = remote_exec(&handle, &cmd).await?;
     if code != 0 {
-        crate::dlog(&format!(
+        crate::log_error("FM", &format!(
             "file_manager_targz_remote FAILED ws={workspace_id} out={output_name} exit={code}: {out}"
         ));
         return Err(format!("remote tar failed (exit {code}): {out}"));

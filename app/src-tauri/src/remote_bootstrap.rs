@@ -7,7 +7,7 @@
 
 use tauri::AppHandle;
 
-use crate::dlog;
+use crate::log_debug;
 use crate::SshClient;
 
 // Re-export the public surface so existing crate::remote_bootstrap::*
@@ -42,7 +42,7 @@ fn read_resource_bytes(rel: &str) -> Result<Vec<u8>, String> {
             ))
         }
     };
-    dlog(&format!("bootstrap: embedded resource {rel:?} → {} bytes", bytes.len()));
+    log_debug("BOOT", &format!("bootstrap: embedded resource {rel:?} → {} bytes", bytes.len()));
     Ok(bytes.to_vec())
 }
 
@@ -55,7 +55,7 @@ pub async fn bootstrap(
     _app: &AppHandle,
     force: bool,
 ) -> Result<BootstrapStatus, String> {
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: using embedded manifest ({} bytes)",
         REMOTE_MANIFEST.len()
     ));

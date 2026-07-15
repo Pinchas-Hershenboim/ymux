@@ -192,7 +192,7 @@ async fn run_builtin(
             .await;
             if let Ok(o) = &out {
                 if o.contains("STILL_PRESENT") {
-                    crate::dlog_tag("ADDON", "insights uninstall — binary STILL PRESENT after rm");
+                    crate::log_error("ADDON", "insights uninstall — binary STILL PRESENT after rm");
                     return Err(
                         "could not remove the daemon binary on the server (still present after rm)"
                             .into(),
@@ -421,7 +421,7 @@ pub(crate) async fn nginx_proxy_install(
     if !valid_domain(domain) {
         return Err("invalid domain".into());
     }
-    crate::dlog_tag("MOBILE", &format!("nginx install begin domain={domain}"));
+    crate::log_debug("MOBILE", &format!("nginx install begin domain={domain}"));
     let prefix = resolve_privilege(handle).await?;
     let script_path = format!("{home}/.winmux/run/nginx-install.sh");
     let _ = exec(handle, &format!("mkdir -p \"{home}/.winmux/run\""), 8).await;
@@ -438,11 +438,11 @@ pub(crate) async fn nginx_proxy_install(
     // at the persistent server-side log for the full detail.
     let tail: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     for l in tail.iter().rev().take(12).rev() {
-        crate::dlog_tag("MOBILE", l);
+        crate::log_debug("MOBILE", l);
     }
     let log_path = format!("{home}/.winmux/logs/mobile-install.log");
     if out.contains("WINMUX_NGINX_OK") {
-        crate::dlog_tag("MOBILE", &format!("nginx install OK domain={domain}"));
+        crate::log_info("MOBILE", &format!("nginx install OK domain={domain}"));
         Ok(format!("nginx + TLS ready for {domain}"))
     } else {
         // Prefer the explicit "[mobile] FAILED: …" line the script emits.
@@ -454,7 +454,7 @@ pub(crate) async fn nginx_proxy_install(
             .map(str::trim)
             .or_else(|| tail.last().copied())
             .unwrap_or("(no output — likely a timeout during apt/certbot)");
-        crate::dlog_tag("MOBILE", &format!("nginx install FAILED domain={domain}: {reason}"));
+        crate::log_error("MOBILE", &format!("nginx install FAILED domain={domain}: {reason}"));
         Err(format!(
             "nginx install failed: {reason}. Full log on the server: {log_path}"
         ))
@@ -680,7 +680,7 @@ async fn status_for(m: &AddonManifest, handle: &SshHandle<SshClient>, home: &str
         .as_deref()
         .map(|iv| iv != m.version)
         .unwrap_or(false);
-    crate::dlog_tag(
+    crate::log_debug(
         "ADDON",
         &format!(
             "detect id={} → installed={installed} version={}",
@@ -724,7 +724,7 @@ async fn run_lifecycle(
     op: &str,
     pick: impl Fn(&AddonManifest) -> AddonAction,
 ) -> Result<AddonStatus, String> {
-    crate::dlog_tag("ADDON", &format!("{op} id={id} — begin"));
+    crate::log_debug("ADDON", &format!("{op} id={id} — begin"));
     let m = manifest_for(id).ok_or_else(|| format!("unknown add-on {id}"))?;
     let handle =
         pick_handle(state, workspace_id).ok_or("no active SSH session for this workspace")?;
@@ -738,13 +738,13 @@ async fn run_lifecycle(
     // community-add-ons work.)
     let action = pick(&m);
     if let Err(e) = run_action(&action, &handle, &home).await {
-        crate::dlog_tag("ADDON", &format!("{op} id={id} — action FAILED: {e}"));
+        crate::log_error("ADDON", &format!("{op} id={id} — action FAILED: {e}"));
         let mut s = status_for(&m, &handle, &home).await;
         s.last_error = Some(e);
         return Ok(s);
     }
     let s = status_for(&m, &handle, &home).await;
-    crate::dlog_tag("ADDON", &format!("{op} id={id} — done (installed={})", s.installed));
+    crate::log_info("ADDON", &format!("{op} id={id} — done (installed={})", s.installed));
     Ok(s)
 }
 
@@ -823,7 +823,7 @@ pub(crate) async fn insights_fetch(
         Some(i) => raw[..i].trim_end_matches('\n').to_string(),
         None => raw.clone(),
     };
-    crate::dlog_tag(
+    crate::log_debug(
         "MONITOR",
         &format!("fetch path={path} http={status} body_len={}", body.len()),
     );
@@ -889,7 +889,7 @@ pub(crate) async fn insights_hygiene_kill(
          'http://127.0.0.1:7879/hygiene/kill'"
     );
     let out = exec(&handle, &cmd, 12).await?;
-    crate::dlog_tag("MONITOR", &format!("hygiene kill pids={} → {}", pids.len(), out.trim()));
+    crate::log_info("MONITOR", &format!("hygiene kill pids={} → {}", pids.len(), out.trim()));
     Ok(out)
 }
 

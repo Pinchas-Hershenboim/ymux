@@ -47,7 +47,7 @@ fn make_listener(name: &str) -> Result<NamedPipeServer, String> {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(e)) => Err(format!("create pipe: {e}")),
         Err(_) => {
-            crate::dlog(&format!(
+            crate::log_warn("RPC", &format!(
                 "rpc_server: max_instances({PIPE_MAX_INSTANCES}) panicked, falling back to 100"
             ));
             build(100).map_err(|e| format!("fallback create pipe: {e}"))
@@ -87,7 +87,7 @@ fn spawn_listener_pool(name: String, size: usize, state: AppState, app: AppHandl
                 let listener = match make_listener(&name) {
                     Ok(l) => l,
                     Err(e) => {
-                        crate::dlog(&format!(
+                        crate::log_warn("RPC", &format!(
                             "rpc_server: pool slot {slot} make_listener failed: {e} — retrying in 500ms"
                         ));
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -104,7 +104,7 @@ fn spawn_listener_pool(name: String, size: usize, state: AppState, app: AppHandl
                         tokio::spawn(handle_client_with_telemetry(listener, state2, app2));
                     }
                     Err(e) => {
-                        crate::dlog(&format!(
+                        crate::log_warn("RPC", &format!(
                             "rpc_server: pool slot {slot} connect failed: {e}"
                         ));
                     }
@@ -132,10 +132,10 @@ async fn handle_client_with_telemetry(
     use std::sync::atomic::Ordering;
     let conn_id = format!("{:05x}", HANDLER_SEQ.fetch_add(1, Ordering::Relaxed));
     let start = std::time::Instant::now();
-    crate::dlog(&format!("rpc_server: handler {conn_id} START"));
+    crate::log_debug("RPC", &format!("rpc_server: handler {conn_id} START"));
     handle_client(stream, state, app).await;
     let elapsed_ms = start.elapsed().as_millis();
-    crate::dlog(&format!(
+    crate::log_debug("RPC", &format!(
         "rpc_server: handler {conn_id} END {elapsed_ms} ms"
     ));
 }
@@ -1193,7 +1193,7 @@ async fn dispatch(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120)
                 .clamp(1, 600);
-            crate::dlog(&format!(
+            crate::log_debug("RPC", &format!(
                 "feed.push: kind={} subkind={} timeout={}s req_id={}",
                 params.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
                 params.get("subkind").and_then(|v| v.as_str()).unwrap_or(""),
@@ -1232,7 +1232,7 @@ async fn dispatch(
                         .and_then(|ti| ti.get("command"))
                         .and_then(|c| c.as_str());
                     let verdict = winmux_policy::evaluate(tool_name, bash_cmd);
-                    crate::dlog(&format!(
+                    crate::log_debug("RPC", &format!(
                         "feed.push: policy tool={} decision={:?} matched={:?} req_id={}",
                         tool_name, verdict.decision, verdict.matched, req_id
                     ));
@@ -1599,7 +1599,7 @@ async fn dispatch(
             // Phase 65 (bug FF): log remote-triggered disconnects so we can
             // tell if something on the server (a hook / CLI call) is what
             // closed the pane when Claude exited.
-            crate::dlog(&format!("rpc pane.disconnect (remote-triggered) pane={pane_id}"));
+            crate::log_info("RPC", &format!("rpc pane.disconnect (remote-triggered) pane={pane_id}"));
             // Mirror what pane_disconnect Tauri command does, minus the
             // teardown_command path (which only matters for app shutdown).
             let sid = state.core.pane_sessions.lock().unwrap().remove(&pane_id);
