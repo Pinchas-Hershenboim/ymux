@@ -135,6 +135,11 @@ async fn run_builtin(
             .await
         }
         routines::HOOKS_INSTALL => {
+            // Unified logging: freshly installed hooks read
+            // `~/.winmux/log-level`, so seed it with the desktop's setting.
+            let _ =
+                crate::log_sync::push_log_level(handle, &crate::settings::log_level_setting())
+                    .await;
             exec(
                 handle,
                 &format!(
@@ -586,6 +591,9 @@ fi
 echo "WINMUX_DOCKER=$NOTE"
 "#
     );
+    // Unified logging: seed `~/.winmux/log-level` BEFORE starting the daemon
+    // so its level-file watcher picks up the desktop's setting immediately.
+    let _ = crate::log_sync::push_log_level(handle, &crate::settings::log_level_setting()).await;
     let r = exec(handle, &start, 25).await?;
     let started = r
         .lines()

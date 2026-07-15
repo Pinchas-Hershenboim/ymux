@@ -35,7 +35,66 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 /// leaks in here becomes a prompt-injection payload for whichever
 /// LLM reads the log next.
 fn hook_dlog(msg: &str) {
+    hook_log(HookLevel::Info, msg);
+}
+
+/// Severity for hook log lines. Mirrors `winmux_core::LogLevel` (the CLI
+/// stays dependency-light, so it carries its own copy) and renders in the
+/// system-wide unified format: `[ts] [LEVEL] [HOOK] msg`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum HookLevel {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+}
+
+impl HookLevel {
+    /// Fixed-width column so merged logs align (`[DEBUG]`, `[INFO ]`, …).
+    fn column(self) -> &'static str {
+        match self {
+            HookLevel::Debug => "DEBUG",
+            HookLevel::Info => "INFO ",
+            HookLevel::Warn => "WARN ",
+            HookLevel::Error => "ERROR",
+        }
+    }
+}
+
+/// Write threshold, resolved once per process (each hook is a fresh
+/// process, so "once" is effectively "per hook invocation"):
+/// `WINMUX_HOOK_VERBOSE` → Debug (back-compat), else the desktop-pushed
+/// `~/.winmux/log-level` file, else Info.
+fn hook_level_threshold() -> HookLevel {
+    static THRESHOLD: std::sync::OnceLock<HookLevel> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        if hook_verbose() {
+            return HookLevel::Debug;
+        }
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let Some(home) = home else {
+            return HookLevel::Info;
+        };
+        let path = std::path::PathBuf::from(home).join(".winmux").join("log-level");
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "debug" => HookLevel::Debug,
+                "warn" | "warning" => HookLevel::Warn,
+                "error" => HookLevel::Error,
+                _ => HookLevel::Info,
+            },
+            Err(_) => HookLevel::Info,
+        }
+    })
+}
+
+/// Leveled hook logger. Same content rules as the doc comment above
+/// (`hook_dlog`): metadata only, never prompt/PTY content.
+fn hook_log(level: HookLevel, msg: &str) {
     use std::io::Write as _;
+    if level < hook_level_threshold() {
+        return;
+    }
     // v0.4.5 (security): one-shot migration of any pre-v0.4.4
     // hook-debug.log before we touch the file. See
     // `migrate_hook_log_if_legacy` for the full rationale.
@@ -48,16 +107,13 @@ fn hook_dlog(msg: &str) {
         return;
     }
     let path = dir.join("hook-debug.log");
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "{} {}", ts, msg);
+        let _ = writeln!(f, "[{ts}] [{}] [HOOK] {msg}", level.column());
     }
 }
 
@@ -160,14 +216,13 @@ fn hook_verbose() -> bool {
     )
 }
 
-/// Verbose-only variant of [`hook_dlog`]: writes the full trace line ONLY when
-/// `WINMUX_HOOK_VERBOSE` is set. Interesting/rare events (denials, timeouts,
-/// static fallbacks, RPC errors) stay on `hook_dlog` so they always land.
+/// Debug-level trace line: lands only when the threshold is Debug (via
+/// `WINMUX_HOOK_VERBOSE` or a desktop-pushed `~/.winmux/log-level` of
+/// "debug"). Interesting/rare events (denials, timeouts, static fallbacks,
+/// RPC errors) use `hook_log(Warn/Error, ..)` so they always land.
 /// Like `hook_dlog`, callers pass metadata only — never PTY / prompt content.
 fn hook_vlog(msg: &str) {
-    if hook_verbose() {
-        hook_dlog(msg);
-    }
+    hook_log(HookLevel::Debug, msg);
 }
 
 /// Phase 66 (66.D.1): the CLI's own copy of the permission policy, used
@@ -229,8 +284,14 @@ async fn tunnel_healthy() -> bool {
         .await;
         match r {
             Ok(Ok(_)) => return true,
-            Ok(Err(e)) => hook_dlog(&format!("claude-hook ping attempt={attempt} err={e}")),
-            Err(_) => hook_dlog(&format!("claude-hook ping attempt={attempt} timed out")),
+            Ok(Err(e)) => hook_log(
+                HookLevel::Warn,
+                &format!("claude-hook ping attempt={attempt} err={e}"),
+            ),
+            Err(_) => hook_log(
+                HookLevel::Warn,
+                &format!("claude-hook ping attempt={attempt} timed out"),
+            ),
         }
         if attempt == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -249,9 +310,10 @@ async fn feed_push_with_retry(params: &Value, max_attempts: u32) -> Result<Value
         match rpc_call("feed.push", params.clone()).await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                hook_dlog(&format!(
-                    "claude-hook feed.push attempt={attempt} err={e}"
-                ));
+                hook_log(
+                    HookLevel::Warn,
+                    &format!("claude-hook feed.push attempt={attempt} err={e}"),
+                );
                 last = e;
                 if attempt + 1 < max_attempts {
                     let ms = if attempt == 0 { 200 } else { 500 };
@@ -2102,10 +2164,13 @@ async fn real_main() -> ExitCode {
                 // Rule #1: `reason` can embed a truncated segment of the tool
                 // command (winmux_policy) — never write it to the log file.
                 // Metadata only. (It still goes to Claude via print below.)
-                hook_dlog(&format!(
-                    "static-fallback decision={decision} req_id={request_id} \
-                     (desktop unreachable)"
-                ));
+                hook_log(
+                    HookLevel::Warn,
+                    &format!(
+                        "static-fallback decision={decision} req_id={request_id} \
+                         (desktop unreachable)"
+                    ),
+                );
                 print_pre_tool_use(decision, Some(&reason));
                 return ExitCode::SUCCESS;
             }
@@ -2227,11 +2292,14 @@ async fn real_main() -> ExitCode {
                     // (better than a hard error). Lifecycle hooks stay
                     // silent (they don't need a response anyway). Legacy
                     // subcommands keep the old exit-code shape.
-                    hook_dlog(&format!(
-                        "claude-hook BRANCH=rpc-error-fallback error={e} \
-                         subcommand={subcommand} request_id={request_id} \
-                         (Claude Code's built-in UI will be shown)"
-                    ));
+                    hook_log(
+                        HookLevel::Warn,
+                        &format!(
+                            "claude-hook BRANCH=rpc-error-fallback error={e} \
+                             subcommand={subcommand} request_id={request_id} \
+                             (Claude Code's built-in UI will be shown)"
+                        ),
+                    );
                     eprintln!(
                         "winmux claude-hook: pipe error: {} (using static fallback policy)",
                         e
@@ -2245,10 +2313,13 @@ async fn real_main() -> ExitCode {
                             let (decision, reason) = static_fallback_decision(&payload);
                             // Rule #1: never log `reason` (can embed command
                             // text). Metadata only — the error kind is safe.
-                            hook_dlog(&format!(
-                                "static-fallback decision={decision} req_id={request_id} \
-                                 error={e}"
-                            ));
+                            hook_log(
+                                HookLevel::Warn,
+                                &format!(
+                                    "static-fallback decision={decision} req_id={request_id} \
+                                     error={e}"
+                                ),
+                            );
                             print_pre_tool_use(decision, Some(&reason));
                             return ExitCode::SUCCESS;
                         }

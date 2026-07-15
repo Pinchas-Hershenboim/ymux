@@ -8,4 +8,15 @@ export type LogsSettings = {
 /**
  * Delete debug logs untouched for this many days (0 = keep forever).
  */
-retention_days: number, };
+retention_days: number, 
+/**
+ * Unified-logger threshold: "debug" | "info" (internally warn/error
+ * always pass). Applied via `winmux_core::set_log_level` on every load
+ * and save, and pushed to connected remote hosts (`~/.winmux/log-level`).
+ */
+level: string, 
+/**
+ * Pull the remote logs (server / hooks / install) into the local
+ * debug.log every sync cycle so users read ONE file.
+ */
+remote_sync: boolean, };

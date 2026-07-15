@@ -12,6 +12,7 @@ mod dev;
 mod diff_pane;
 mod file_manager;
 mod local_wizard;
+mod log_sync;
 mod notes;
 mod osc_notify;
 mod pairing;
@@ -2286,6 +2287,16 @@ async fn spawn_ssh(
         }
     }
 
+    // Unified logging: converge this host on the desktop's log level
+    // (`~/.winmux/log-level`, read by the Go server watcher + CLI hooks).
+    // Best-effort — a failure never blocks the shell.
+    {
+        let level = state.settings.lock().unwrap().logs.level.clone();
+        if let Err(e) = log_sync::push_log_level(&handle, &level).await {
+            dlog(&format!("log-level push on connect failed: {e}"));
+        }
+    }
+
     // Phase 6.3 → 47.A: ask server to forward a port back to us. With
     // port=0 the server picks a free one and returns it. Forwarded
     // channels arrive in our Handler's `server_channel_open_forwarded_tcpip`
@@ -4446,20 +4457,26 @@ fn workspace_split(
 
 // ─── Phase 8.A: browser-pane commands ───────────────────────────────────────
 
-/// ring buffer; the CLI surfaces them via `winmux dev console-tail`.
+/// Unified frontend log sink: writes a `[UI:TAG]` line to debug.log through
+/// the leveled logger AND pushes into the dev ring buffer so `winmux dev
+/// console-tail` keeps working. The frontend logger filters client-side too,
+/// but this gate is authoritative (popouts that never load settings still
+/// behave). Replaces the old `diag_log` + `dev_console_log` pair.
 #[tauri::command]
-fn dev_console_log(
+fn ui_log(
     state: State<'_, AppState>,
     level: String,
+    tag: String,
     message: String,
-    ts: i64,
 ) -> Result<(), String> {
+    let lvl = winmux_core::LogLevel::from_str(&level);
+    winmux_core::log_at(lvl, &format!("UI:{tag}"), &message);
     dev::push_console(
         &state.console_buffer,
         dev::ConsoleEntry {
-            level,
-            message,
-            ts,
+            level: lvl.as_str().to_string(),
+            message: format!("[{}] {message}", tag.to_uppercase()),
+            ts: chrono::Utc::now().timestamp_millis(),
         },
     );
     Ok(())
@@ -5913,12 +5930,13 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
         let mut out: Vec<String> = s
             .lines()
             .rev()
-            // dlog writes "[<ts>] <msg>" — require that prefix so we only
-            // surface real log entries. Multi-line logged commands put their
-            // continuation lines (e.g. a shell snippet's own `echo "ERROR …"`)
-            // on un-prefixed lines; those are NOT errors and were polluting
-            // the doctor report.
-            .filter(|l| l.starts_with('[') && (l.contains("ERROR") || l.contains("WARN")))
+            // The unified logger writes "[<ts>] [LEVEL] [TAG] <msg>" — match
+            // the level column exactly so a message merely *containing* the
+            // word ERROR (e.g. a logged shell snippet's own `echo "ERROR …"`)
+            // can't pollute the doctor report.
+            .filter(|l| {
+                l.starts_with('[') && (l.contains("] [ERROR] [") || l.contains("] [WARN ] ["))
+            })
             .take(10)
             .map(|s| s.to_string())
             .collect();
@@ -5948,22 +5966,6 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
 #[tauri::command]
 fn doctor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(build_doctor_snapshot(&state))
-}
-
-// Phase 48-D: frontend stall instrumentation. The FE drives a 100ms
-// heartbeat and a longtask PerformanceObserver; when either spots
-// >threshold gaps, it calls this to record them in debug.log with a
-// `[ui]` prefix so post-hoc support tickets can correlate UI jank
-// with backend activity.
-#[tauri::command]
-fn diag_log(level: String, msg: String) -> Result<(), String> {
-    let lvl = match level.to_ascii_lowercase().as_str() {
-        "error" => "ERROR",
-        "warn" | "warning" => "WARN",
-        _ => "INFO",
-    };
-    dlog(&format!("[ui] {lvl}: {msg}"));
-    Ok(())
 }
 
 #[tauri::command]
@@ -6258,10 +6260,16 @@ pub fn run() {
                 }
             }
             // Phase 75: prune stale debug logs so they can't accumulate.
+            // Unified logging: apply the persisted threshold before anything
+            // else logs (save_to_disk keeps it in sync from here on), then
+            // start the remote-log sync loop (pulls server/hooks/install
+            // logs into the local debug.log every 60s).
             {
-                let days = state.settings.lock().unwrap().logs.retention_days;
-                prune_logs(days);
+                let logs = state.settings.lock().unwrap().logs.clone();
+                winmux_core::set_log_level(winmux_core::LogLevel::from_str(&logs.level));
+                prune_logs(logs.retention_days);
             }
+            log_sync::spawn_log_sync(app.handle().clone());
             // Phase 39.B: one-time migration. Workspaces created before
             // Phase 39 flipped the auto_port_forward default still have
             // `true` saved and keep auto-forwarding on every connect
@@ -6508,10 +6516,9 @@ pub fn run() {
             pane_set_title,
             pane_set_annotation,
             workspace_reset_layout,
-            dev_console_log,
+            ui_log,
             pty_write,
             pty_resize,
-            diag_log,
             doctor,
             notifications_list,
             notifications_clear,
