@@ -86,6 +86,10 @@ export function LocalSetupFlow(p: Props) {
   let unlistenComplete: UnlistenFn | null = null;
 
   onMount(async () => {
+    // Inspect runs concurrently with listener registration — the
+    // listeners only need to be live before local_setup_start (a user
+    // click), not before the read-only inspect.
+    void runInspect();
     unlisten = await listen<StepProgress>("local-setup:progress", (e) => {
       setStepStates((prev) => ({ ...prev, [e.payload.step_index]: e.payload }));
     });
@@ -93,7 +97,6 @@ export function LocalSetupFlow(p: Props) {
       setResult(e.payload);
       setStep("done");
     });
-    await runInspect();
   });
   onCleanup(() => {
     if (unlisten) unlisten();
