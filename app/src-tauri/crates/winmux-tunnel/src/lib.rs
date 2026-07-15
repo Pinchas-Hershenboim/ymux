@@ -142,7 +142,7 @@ pub async fn bridge_to_pipe(
     // a genuine give-up surfaces via spawn_bridge's dlog.
     let pipe_name = pipe_name();
     let mut backoff_ms = 25u64;
-    let mut pipe = loop {
+    let pipe = loop {
         match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
             Ok(c) => break c,
             Err(e) if e.raw_os_error() == Some(231) && backoff_ms <= 800 => {
