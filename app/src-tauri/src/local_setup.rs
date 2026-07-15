@@ -116,6 +116,116 @@ async fn run_capture(
         .map_err(|_| format!("{what}: timed out after {timeout_secs}s"))?
 }
 
+// ─── WSL RPC bridge (hooks from inside WSL → app) ────────────────────
+//
+// The CLI inside a distro dials WINMUX_SOCKET_ADDR over TCP (the same
+// path a remote SSH server uses via the reverse tunnel); Windows named
+// pipes are unreachable from WSL2 Linux. This is a lazy, app-lifetime
+// TCP listener that HMAC-gates every connection with a per-run token
+// (Rule #8: the token never reaches logs) and bridges accepted streams
+// into the named-pipe RPC server via winmux_tunnel::bridge_stream_to_pipe.
+//
+// Bind surface: 0.0.0.0 — in NAT mode the distro reaches the host via
+// the vEthernet gateway IP (which varies per boot), in mirrored mode via
+// 127.0.0.1. The HMAC challenge-response is the gate, exactly like the
+// SSH tunnel path.
+
+static WSL_BRIDGE: tokio::sync::OnceCell<(u16, std::sync::Arc<String>)> =
+    tokio::sync::OnceCell::const_new();
+
+pub(crate) async fn ensure_wsl_bridge() -> Result<(u16, std::sync::Arc<String>), String> {
+    WSL_BRIDGE
+        .get_or_try_init(|| async {
+            let token = std::sync::Arc::new(winmux_tunnel::generate_token());
+            let listener = tokio::net::TcpListener::bind(("0.0.0.0", 0))
+                .await
+                .map_err(|e| format!("wsl-bridge bind: {e}"))?;
+            let port = listener
+                .local_addr()
+                .map_err(|e| format!("wsl-bridge local_addr: {e}"))?
+                .port();
+            let token_for_loop = token.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, _peer)) => {
+                            let tok = token_for_loop.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) =
+                                    winmux_tunnel::bridge_stream_to_pipe(stream, &tok).await
+                                {
+                                    // Handshake failures are expected noise from
+                                    // port scanners — engineer-only log.
+                                    tracing::debug!("wsl-bridge: {e}");
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            dlog(&format!("wsl-bridge accept error: {e}"));
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    }
+                }
+            });
+            dlog(&format!("wsl-bridge: listening on 0.0.0.0:{port} (HMAC-gated)"));
+            Ok((port, token))
+        })
+        .await
+        .cloned()
+}
+
+/// Resolve the address a process INSIDE the distro should dial to reach
+/// the Windows-side bridge: mirrored/wsl1 networking → 127.0.0.1, NAT →
+/// the default-route gateway. `wslinfo --networking-mode` ships inside
+/// every WSL2 distro on current WSL; absence falls back to NAT.
+pub(crate) async fn resolve_wsl_host_addr(distro: Option<&str>, port: u16) -> Option<String> {
+    let script = "echo \"MODE $(wslinfo --networking-mode 2>/dev/null || echo nat)\"; \
+                  echo \"GW $(ip route list default 2>/dev/null | head -1 | cut -d' ' -f3)\"";
+    let (code, out) = wsl_exec(distro, None, script).await.ok()?;
+    if code != 0 {
+        return None;
+    }
+    let mut mode = "nat".to_string();
+    let mut gw = String::new();
+    for line in out.lines() {
+        if let Some(v) = line.trim().strip_prefix("MODE ") {
+            mode = v.trim().to_string();
+        } else if let Some(v) = line.trim().strip_prefix("GW ") {
+            gw = v.trim().to_string();
+        }
+    }
+    let ip = match mode.as_str() {
+        "mirrored" | "wsl1" | "none" => "127.0.0.1".to_string(),
+        _ if !gw.is_empty() => gw,
+        _ => return None,
+    };
+    Some(format!("{ip}:{port}"))
+}
+
+/// Write `~/.winmux/run/last.env` inside the distro so the CLI picks up
+/// the bridge address + token even outside the tmux environment (the
+/// same file the remote bootstrap writes over SSH). Token never logged.
+pub(crate) async fn write_wsl_env_file(
+    distro: Option<&str>,
+    socket_addr: &str,
+    token: &str,
+    pane_id: &str,
+) -> Result<(), String> {
+    let script = format!(
+        "mkdir -p \"$HOME/.winmux/run\" && \
+         printf 'WINMUX_SOCKET_ADDR=%s\\nWINMUX_TUNNEL_TOKEN=%s\\nWINMUX_PANE_ID=%s\\n' {a} {t} {p} > \"$HOME/.winmux/run/last.env\" && \
+         chmod 0600 \"$HOME/.winmux/run/last.env\"",
+        a = shell_quote(socket_addr),
+        t = shell_quote(token),
+        p = shell_quote(pane_id)
+    );
+    let (code, out) = wsl_exec(distro, None, &script).await?;
+    if code != 0 {
+        return Err(format!("write last.env failed (exit {code}): {out}"));
+    }
+    Ok(())
+}
+
 // ─── Detection ───────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize, ts_rs::TS)]

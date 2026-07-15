@@ -916,7 +916,8 @@ fn load_fallback_env_file() {
     if std::env::var("WINMUX_SOCKET_ADDR").is_ok() {
         return;
     }
-    let home = match std::env::var_os("HOME") {
+    // Phase 80: USERPROFILE fallback for native-Windows runs.
+    let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         Some(h) => h,
         None => return,
     };

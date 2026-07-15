@@ -1782,7 +1782,9 @@ fn spawn_wsl_pty(
     // Phase 80: persistent mode — type the tmux attach-or-create script
     // into the shell 900ms after spawn, exactly like the SSH path (after
     // env exports + setup_command). If tmux isn't installed in the
-    // distro the fallback echo leaves a plain shell.
+    // distro the fallback echo leaves a plain shell. The WSL RPC bridge
+    // (TCP → named pipe, HMAC-gated) supplies the WINMUX_* env the CLI
+    // needs for hooks — the local twin of the SSH reverse tunnel.
     if let Some(name) = tmux_name {
         let use_winmux_tmux_conf = state
             .settings
@@ -1793,20 +1795,47 @@ fn spawn_wsl_pty(
         let sessions_clone = state.core.sessions.clone();
         let id_clone = id.clone();
         let pane_for_exec = pane_id.clone();
+        let distro_for_task = distro.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            // Best-effort bridge + env-file wiring; a failure just means
+            // hooks stay silent for this pane (same posture as a remote
+            // whose tunnel failed) — the terminal itself is unaffected.
+            let mut socket_addr = String::new();
+            let mut token = String::new();
+            match local_setup::ensure_wsl_bridge().await {
+                Ok((port, tok)) => {
+                    if let Some(addr) =
+                        local_setup::resolve_wsl_host_addr(distro_for_task.as_deref(), port).await
+                    {
+                        if let Err(e) = local_setup::write_wsl_env_file(
+                            distro_for_task.as_deref(),
+                            &addr,
+                            &tok,
+                            &pane_for_exec,
+                        )
+                        .await
+                        {
+                            crate::dlog(&format!("wsl-bridge: env file write failed: {e}"));
+                        }
+                        socket_addr = addr;
+                        token = tok.as_str().to_string();
+                    } else {
+                        crate::dlog("wsl-bridge: host address resolution failed — hooks disabled for this pane");
+                    }
+                }
+                Err(e) => crate::dlog(&format!("wsl-bridge: start failed: {e}")),
+            }
             crate::dlog(&format!(
                 "tmux(wsl): new-session -A -s '{}' (pane {}, {} winmux conf)",
                 name,
                 pane_for_exec,
                 if use_winmux_tmux_conf { "with" } else { "without" }
             ));
-            // WSL RPC bridge (hooks) lands separately — until it wires a
-            // socket_addr through here, env injection is skipped.
             let script = build_tmux_attach_script(
                 &name,
-                "",
-                "",
+                &socket_addr,
+                &token,
                 &pane_for_exec,
                 use_winmux_tmux_conf,
                 "[winmux] tmux not installed in WSL — falling back to plain shell",
