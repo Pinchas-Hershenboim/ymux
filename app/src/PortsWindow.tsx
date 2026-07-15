@@ -3,6 +3,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ForwardRow, Workspace } from "./types";
 import { t } from "./i18n";
 import { IconClose, IconCheck, IconGlobe } from "./icons";
+import { createLogger } from "./logger";
+
+const log = createLogger("PORTS");
 
 // Phase 46: detect-only + click-to-forward. The watcher reports
 // LISTEN ports → row appears with [Forward]. User clicks → backend
@@ -99,7 +102,7 @@ export function PortsWindow(p: Props) {
   const browserUrl = (localPort: number) => `http://127.0.0.1:${localPort}`;
 
   const openInBrowser = (localPort: number) => {
-    void openUrl(browserUrl(localPort)).catch((e) => console.warn("openUrl failed", e));
+    void openUrl(browserUrl(localPort)).catch((e) => log.warn("openUrl failed", e));
   };
 
   const startAndOpen = async (remotePort: number) => {
@@ -109,7 +112,7 @@ export function PortsWindow(p: Props) {
       const local = await p.onStart(w.id, remotePort);
       openInBrowser(local);
     } catch (e) {
-      console.error("forward_port_start failed", e);
+      log.error("forward_port_start failed", e);
       const msg = typeof e === "string" ? e : String(e);
       window.alert(t("ports.window.error.unreachable", { local: remotePort, msg }));
     }

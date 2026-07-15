@@ -5,6 +5,9 @@ import { t } from "./i18n";
 import { ConnectExistingFlow } from "./ConnectExistingFlow";
 import { AddonsTab } from "./AddonsTab";
 import { IconClose, IconBadgePlus, IconLink, IconCheck, IconCircle } from "./icons";
+import { createLogger } from "./logger";
+
+const log = createLogger("PROVISION");
 
 // Phase 14.A type mirrors — see src-tauri/src/provisioning.rs.
 interface InspectResult {
@@ -158,13 +161,13 @@ export function ProvisioningWizard(p: Props) {
       const pf = await invoke<ProfilesFile>("provisioning_profiles_list");
       setProfiles(pf.profiles);
     } catch (e) {
-      console.warn("provisioning_profiles_list failed", e);
+      log.warn("provisioning_profiles_list failed", e);
     }
     try {
       const cat = await invoke<[string, string][]>("provisioning_step_catalog");
       setStepCatalog(cat);
     } catch (e) {
-      console.warn("provisioning_step_catalog failed", e);
+      log.warn("provisioning_step_catalog failed", e);
     }
     unlisten = await listen<StepProgress>("provisioning:progress", (e) => {
       setLogLines((prev) => [...prev, e.payload]);
@@ -321,7 +324,7 @@ export function ProvisioningWizard(p: Props) {
                 <label
                   class={`provisioning-mode-row ${mode() === "new" ? "active" : ""}`}
                   onClick={() => {
-                    console.log("[provision] mode → new");
+                    log.debug("mode → new");
                     setMode("new");
                   }}
                 >
@@ -340,7 +343,7 @@ export function ProvisioningWizard(p: Props) {
                 <label
                   class={`provisioning-mode-row ${mode() === "existing" ? "active" : ""}`}
                   onClick={() => {
-                    console.log("[provision] mode → existing");
+                    log.debug("mode → existing");
                     setMode("existing");
                   }}
                 >
@@ -590,7 +593,7 @@ export function ProvisioningWizard(p: Props) {
                             try {
                               await navigator.clipboard.writeText(line);
                             } catch (e) {
-                              console.warn("clipboard write failed", e);
+                              log.warn("clipboard write failed", e);
                             }
                           }}
                         >

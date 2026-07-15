@@ -16,6 +16,9 @@ import {
   type Geometry,
 } from "./floatingWindow";
 import { IconGlobe, IconClose, IconRefresh, IconUnplug, IconWarning } from "./icons";
+import { createLogger } from "./logger";
+
+const log = createLogger("BROWSER");
 
 // Phase 53 → 60 → 62.C: workspace-level Browser floating window.
 //
@@ -386,7 +389,7 @@ export function BrowserWindow(p: Props) {
           return invoke("workspace_browser_navigate", { workspaceId: id, url });
         }
       })
-      .catch((err) => console.error("workspace_browser_show failed", err));
+      .catch((err) => log.error("workspace_browser_show failed", err));
   });
 
   // Hide the Webview when the window CLOSES (not only on unmount — the

@@ -29,6 +29,9 @@ import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
+import { createLogger } from "./logger";
+
+const log = createLogger("SETTINGS");
 
 interface Props {
   open: boolean;
@@ -63,7 +66,7 @@ export function SettingsModal(p: Props) {
     try {
       setLogTail(await invoke<string>("read_log_tail", { n: 200 }));
     } catch (e) {
-      console.warn("read_log_tail failed", e);
+      log.warn("read_log_tail failed", e);
     }
   };
   // Phase 75: clear the debug log now, then refresh the viewer.
@@ -72,7 +75,7 @@ export function SettingsModal(p: Props) {
       await invoke("clear_debug_log_cmd");
       await refreshLogTail();
     } catch (e) {
-      console.warn("clear_debug_log_cmd failed", e);
+      log.warn("clear_debug_log_cmd failed", e);
     }
   };
   // Phase 48-C: /doctor snapshot — paste-friendly JSON for bug reports.
@@ -100,7 +103,7 @@ export function SettingsModal(p: Props) {
         await saveSettings(next);
         setLastSaved(Date.now());
       } catch (e) {
-        console.error("settings_save failed", e);
+        log.error("settings_save failed", e);
       } finally {
         setSaving(false);
       }
@@ -119,16 +122,16 @@ export function SettingsModal(p: Props) {
     setTheme({ ansi: { ...p.settings.theme.ansi, ...patch } });
 
   onMount(async () => {
-    try { setPresets(await getPresets()); } catch (e) { console.warn(e); }
-    try { setFonts(await listSystemFonts()); } catch (e) { console.warn(e); }
+    try { setPresets(await getPresets()); } catch (e) { log.warn("getPresets failed", e); }
+    try { setFonts(await listSystemFonts()); } catch (e) { log.warn("listSystemFonts failed", e); }
     // Phase 38: resolve the debug.log path for the Logs section.
-    try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { console.warn(e); }
+    try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { log.warn("log_dir_path failed", e); }
   });
 
   // Phase 38: Logs section actions.
   const onOpenLogFolder = () => {
     if (!logPath()) return;
-    void revealItemInDir(logPath()).catch((e) => console.warn("revealItemInDir failed", e));
+    void revealItemInDir(logPath()).catch((e) => log.warn("revealItemInDir failed", e));
   };
   const onCopyLogPath = async () => {
     if (!logPath()) return;
@@ -137,7 +140,7 @@ export function SettingsModal(p: Props) {
       setLogCopied(true);
       setTimeout(() => setLogCopied(false), 1500);
     } catch (e) {
-      console.warn("clipboard write failed", e);
+      log.warn("clipboard write failed", e);
     }
   };
 
@@ -157,7 +160,7 @@ export function SettingsModal(p: Props) {
       applyTheme(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("apply preset failed", e);
+      log.error("apply preset failed", e);
     }
   };
 
@@ -169,7 +172,7 @@ export function SettingsModal(p: Props) {
       applyTheme(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("reset failed", e);
+      log.error("reset failed", e);
     }
   };
 
@@ -185,10 +188,10 @@ export function SettingsModal(p: Props) {
         const fresh = await loadSettings();
         p.onChange(fresh);
       } catch (e) {
-        console.warn("refresh settings after check failed", e);
+        log.warn("refresh settings after check failed", e);
       }
     } catch (e) {
-      console.error("check updates failed", e);
+      log.error("check updates failed", e);
     } finally {
       setChecking(false);
     }

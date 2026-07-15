@@ -75,8 +75,11 @@ import {
   type WorkspaceGroup,
   type WorkspacesFile,
 } from "./types";
+import { createLogger, setLoggerLevel } from "./logger";
 import "@xterm/xterm/css/xterm.css";
 import "./App.css";
+
+const log = createLogger("APP");
 
 type PaneStatus = { msg: string; err: boolean };
 
@@ -142,7 +145,7 @@ function App() {
     try {
       await invoke("workspace_ensure_connected", { workspaceId: ws.id });
     } catch (e) {
-      console.warn("armWorkspaceConnection failed", e);
+      log.warn("armWorkspaceConnection failed", e);
     } finally {
       setConnectingWs(null);
     }
@@ -295,7 +298,7 @@ function App() {
     try {
       await invoke("updater_remind_later", { hours: 24 });
     } catch (e) {
-      console.warn("updater_remind_later failed", e);
+      log.warn("updater_remind_later failed", e);
     }
     setUpdateBanner(null);
   };
@@ -307,7 +310,7 @@ function App() {
       try {
         await invoke("updater_skip_version", { version: v });
       } catch (e) {
-        console.warn("updater_skip_version failed", e);
+        log.warn("updater_skip_version failed", e);
       }
     }
     setUpdateBanner(null);
@@ -364,7 +367,7 @@ function App() {
     const next: Settings = { ...s, sidebar_mode: mode };
     setSettings(next);
     void saveSettings(next).catch((e) =>
-      console.warn("saveSettings (sidebar_mode) failed", e),
+      log.warn("saveSettings (sidebar_mode) failed", e),
     );
   };
   // Phase 65.P: Ctrl+B toggles full ↔ icons (two modes only); the
@@ -420,7 +423,7 @@ function App() {
   const applyZoom = (f: number) => {
     const clamped = Math.max(0.3, Math.min(3, f));
     setZoomFactor(clamped);
-    void getCurrentWebview().setZoom(clamped).catch((e) => console.warn("setZoom failed", e));
+    void getCurrentWebview().setZoom(clamped).catch((e) => log.warn("setZoom failed", e));
   };
   // Phase 18: hooks-outdated banners — at most one banner per agent
   // at a time; the user dismisses (skip-this-version persists), defers
@@ -551,7 +554,7 @@ function App() {
       }).catch(async () => {
         // Older builds without ssh_exec_in_workspace — fall back to a
         // pane.send: ask the user to run the command themselves.
-        console.warn("ssh_exec_in_workspace not available; user must run manually");
+        log.warn("ssh_exec_in_workspace not available; user must run manually");
       });
       flashSummaryToast("ok", t("hooks_update.toast_done", { version: b.latest }));
       setHooksBanner(null);
@@ -590,7 +593,7 @@ function App() {
     try {
       await saveSettings(next);
     } catch (e) {
-      console.warn("saveSettings failed (skipHooksVersion)", e);
+      log.warn("saveSettings failed (skipHooksVersion)", e);
     }
     setHooksBanner(null);
   };
@@ -633,7 +636,7 @@ function App() {
       const m = await invoke<Record<string, string>>("pane_persistence_list");
       setPanePersistence(m ?? {});
     } catch (e) {
-      console.warn("pane_persistence_list failed", e);
+      log.warn("pane_persistence_list failed", e);
     }
   };
   const refreshNotes = async () => {
@@ -641,7 +644,7 @@ function App() {
       const f = await invoke<NotesFile>("notes_load");
       setNotes(f.notes ?? []);
     } catch (e) {
-      console.warn("notes_load failed", e);
+      log.warn("notes_load failed", e);
     }
   };
   const FEED_AUTO_DISMISS_MS = 3000;
@@ -709,7 +712,7 @@ function App() {
         }
       }
     } catch (e) {
-      console.error("popout_pane failed", e);
+      log.error("popout_pane failed", e);
     }
   };
 
@@ -973,7 +976,7 @@ function App() {
     if (s.auto_connect_on_workspace_select === false) return;
     if (ws.connection?.type !== "ssh") return;
     void invoke("workspace_ensure_connected", { workspaceId: ws.id }).catch((e) =>
-      console.warn("workspace_ensure_connected failed", e),
+      log.warn("workspace_ensure_connected failed", e),
     );
   });
 
@@ -990,7 +993,7 @@ function App() {
   // when auto_port_forward is off (it forwards on demand per chosen port).
   const ensurePortsSnapshot = (wsId: string) => {
     void invoke("workspace_ensure_port_watcher", { workspaceId: wsId }).catch((e) =>
-      console.warn("workspace_ensure_port_watcher failed", e),
+      log.warn("workspace_ensure_port_watcher failed", e),
     );
     void invoke<{ remote_port: number; addr: string; family: string }[]>(
       "list_detected_ports",
@@ -1009,7 +1012,7 @@ function App() {
           return [...other, ...mine];
         });
       })
-      .catch((e) => console.warn("list_detected_ports failed", e));
+      .catch((e) => log.warn("list_detected_ports failed", e));
   };
 
   let lastPortsEnsuredWs: string | null = null;
@@ -1068,7 +1071,7 @@ function App() {
       const f = await invoke<WorkspacesFile>("workspace_create", { input });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_create failed", e);
+      log.error("workspace_create failed", e);
     }
   };
 
@@ -1097,7 +1100,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_update failed", e);
+      log.error("workspace_update failed", e);
     }
   };
 
@@ -1113,7 +1116,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error(e);
+      log.error("workspace_rename failed", e);
     }
   };
 
@@ -1134,7 +1137,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error(e);
+      log.error("workspace_delete failed", e);
     }
   };
 
@@ -1150,7 +1153,7 @@ function App() {
         if (firstPane) setActivePaneId(firstPane);
       }
     } catch (e) {
-      console.error(e);
+      log.error("workspace_set_active failed", e);
     }
   };
 
@@ -1168,7 +1171,7 @@ function App() {
         workspaces: f.workspaces.map((w) => (w.id === updated.id ? updated : w)),
       });
     } catch (e) {
-      console.error("workspace_set_auto_port_forward failed", e);
+      log.error("workspace_set_auto_port_forward failed", e);
     }
   };
 
@@ -1200,7 +1203,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("split failed", e);
+      log.error("split failed", e);
     }
   };
 
@@ -1224,7 +1227,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_swap_panes failed", e);
+      log.error("workspace_swap_panes failed", e);
     }
   };
 
@@ -1247,7 +1250,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser navigate failed", e);
+      log.error("browser navigate failed", e);
     }
   };
 
@@ -1261,7 +1264,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser go-back failed", e);
+      log.error("browser go-back failed", e);
     }
   };
 
@@ -1275,7 +1278,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser go-home failed", e);
+      log.error("browser go-home failed", e);
     }
   };
 
@@ -1294,7 +1297,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_reset_layout failed", e);
+      log.error("workspace_reset_layout failed", e);
     }
   };
 
@@ -1309,7 +1312,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser set-forward failed", e);
+      log.error("browser set-forward failed", e);
     }
   };
 
@@ -1323,7 +1326,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("close failed", e);
+      log.error("close failed", e);
     }
   };
 
@@ -1522,7 +1525,7 @@ function App() {
     try {
       await invoke("pane_disconnect", { paneId });
     } catch (e) {
-      console.warn("disconnect failed", e);
+      log.warn("disconnect failed", e);
     }
     const sid = paneToSession.get(paneId);
     if (sid) {
@@ -1539,7 +1542,7 @@ function App() {
     try {
       await invoke("pane_kill_session", { paneId });
     } catch (e) {
-      console.warn("kill_session failed", e);
+      log.warn("kill_session failed", e);
     }
     const sid = paneToSession.get(paneId);
     if (sid) {
@@ -1594,7 +1597,7 @@ function App() {
     try {
       sttRecorder.stop();
     } catch (e) {
-      console.warn("stt stop failed", e);
+      log.warn("stt stop failed", e);
     }
   };
 
@@ -1632,7 +1635,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_distribute_evenly failed", e);
+      log.error("workspace_distribute_evenly failed", e);
     }
   };
 
@@ -1773,7 +1776,7 @@ function App() {
       e.preventDefault();
       navigator.clipboard.readText().then((text) => {
         if (text) pasteIntoActiveTerminal(text);
-      }).catch((err) => console.warn("paste failed", err));
+      }).catch((err) => log.warn("paste failed", err));
       return;
     }
     // Phase 17: Claude session summary.
@@ -1891,7 +1894,7 @@ function App() {
         }
       }
     } catch (e) {
-      console.error("refreshFromBackend failed", e);
+      log.error("refreshFromBackend failed", e);
     }
   };
 
@@ -1899,7 +1902,7 @@ function App() {
     // Phase 48-D: lightweight UI-stall instrumentation. A 100ms heartbeat
     // measures actual elapsed vs expected and reports gaps >300ms; a
     // PerformanceObserver on `longtask` reports any single task >200ms.
-    // Both go to debug.log via the `diag_log` tauri command so future
+    // Both go to debug.log via the unified logger so future
     // support tickets can correlate UI jank with backend activity.
     // No cleanup: these run for the app's lifetime.
     {
@@ -1912,20 +1915,14 @@ function App() {
         const gap = now - lastTick;
         lastTick = now;
         if (gap > STALL_THRESHOLD_MS) {
-          void invoke("diag_log", {
-            level: "warn",
-            msg: `UI stall: ${Math.round(gap)}ms (expected ~${HEARTBEAT_MS}ms)`,
-          }).catch(() => {});
+          log.warn(`UI stall: ${Math.round(gap)}ms (expected ~${HEARTBEAT_MS}ms)`);
         }
       }, HEARTBEAT_MS);
       try {
         const obs = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
             if (entry.duration > LONGTASK_THRESHOLD_MS) {
-              void invoke("diag_log", {
-                level: "warn",
-                msg: `longtask ${entry.name || "(anon)"} ${Math.round(entry.duration)}ms`,
-              }).catch(() => {});
+              log.warn(`longtask ${entry.name || "(anon)"} ${Math.round(entry.duration)}ms`);
             }
           }
         });
@@ -1940,6 +1937,7 @@ function App() {
     try {
       const s = await loadSettings();
       setSettings(s);
+      setLoggerLevel(s.logs?.level ?? "info");
       applyTheme(s);
       applyI18nSettings(s.i18n);
       // #1: seed the Notification Center with any notifications already
@@ -1948,7 +1946,7 @@ function App() {
         const seed = await invoke<NotifItem[]>("notifications_list");
         setNotifications(seed.map((n) => ({ ...n, kind: n.kind || "agent" })).reverse());
       } catch (e) {
-        console.warn("notifications_list failed", e);
+        log.warn("notifications_list failed", e);
       }
       setShortcutTable(buildShortcutTable(s.shortcuts ?? DEFAULT_SHORTCUTS));
       setCtrlCCopyOnSelect(
@@ -1956,7 +1954,7 @@ function App() {
       );
       setMirrorArrowsRtl(s.terminal?.mirror_arrows_rtl ?? true);
     } catch (e) {
-      console.warn("settings_load failed", e);
+      log.warn("settings_load failed", e);
     }
     await refreshFromBackend();
     const ws0 = file().workspaces.find((w) => w.id === file().active_workspace_id);
@@ -2052,7 +2050,7 @@ function App() {
         if (it.state !== "pending") scheduleFeedDismiss(it.request_id);
       }
     } catch (e) {
-      console.warn("feed_list failed", e);
+      log.warn("feed_list failed", e);
     }
     // Phase 6.5 feed events.
     unlistens.push(
@@ -2259,6 +2257,7 @@ function App() {
     unlistens.push(
       await listen<Settings>("settings:changed", (e) => {
         setSettings(e.payload);
+        setLoggerLevel(e.payload.logs?.level ?? "info");
         applyTheme(e.payload);
         applyI18nSettings(e.payload.i18n);
         setShortcutTable(
@@ -2423,7 +2422,7 @@ function App() {
                 await invoke<WorkspaceGroup>("workspace_group_create", { name, color });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_create failed", e); }
+              } catch (e) { log.error("workspace_group_create failed", e); }
             })();
           }}
           onGroupRename={(id, name) => {
@@ -2432,7 +2431,7 @@ function App() {
                 await invoke("workspace_group_update", { id, name, color: null, isCollapsed: null });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_update rename failed", e); }
+              } catch (e) { log.error("workspace_group_update rename failed", e); }
             })();
           }}
           onGroupSetColor={(id, color) => {
@@ -2441,7 +2440,7 @@ function App() {
                 await invoke("workspace_group_update", { id, name: null, color, isCollapsed: null });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_update color failed", e); }
+              } catch (e) { log.error("workspace_group_update color failed", e); }
             })();
           }}
           onGroupToggleCollapse={(id, isCollapsed) => {
@@ -2450,7 +2449,7 @@ function App() {
                 await invoke("workspace_group_update", { id, name: null, color: null, isCollapsed });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_update collapse failed", e); }
+              } catch (e) { log.error("workspace_group_update collapse failed", e); }
             })();
           }}
           onGroupDelete={(id) => {
@@ -2459,7 +2458,7 @@ function App() {
                 await invoke("workspace_group_delete", { id });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_delete failed", e); }
+              } catch (e) { log.error("workspace_group_delete failed", e); }
             })();
           }}
           onWorkspaceSetGroup={(workspaceId, groupId) => {
@@ -2468,7 +2467,7 @@ function App() {
                 await invoke("workspace_set_group", { workspaceId, groupId });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_set_group failed", e); }
+              } catch (e) { log.error("workspace_set_group failed", e); }
             })();
           }}
           // beta.3 (ws-dragdrop): direct drag reorder. Both commands
@@ -2484,7 +2483,7 @@ function App() {
                   newIndex,
                 });
                 updateFile(f);
-              } catch (e) { console.error("workspace_reorder failed", e); }
+              } catch (e) { log.error("workspace_reorder failed", e); }
             })();
           }}
           onGroupReorder={(groupId, newIndex) => {
@@ -2495,7 +2494,7 @@ function App() {
                   newIndex,
                 });
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_reorder failed", e); }
+              } catch (e) { log.error("workspace_group_reorder failed", e); }
             })();
           }}
           onActivate={handleSetActive}
@@ -2801,7 +2800,7 @@ function App() {
                         title: title.trim() === "" ? null : title,
                       })
                         .then((f) => updateFile(f))
-                        .catch((e) => console.error("pane_set_title failed", e));
+                        .catch((e) => log.error("pane_set_title failed", e));
                     }}
                     onSetAnnotation={(pid, annotation) => {
                       const ws = activeWs();
@@ -2814,7 +2813,7 @@ function App() {
                       })
                         .then((f) => updateFile(f))
                         .catch((e) =>
-                          console.error("pane_set_annotation failed", e)
+                          log.error("pane_set_annotation failed", e)
                         );
                     }}
                     onRatioDrag={(sid, r) => setRatio(sid, r, false)}
@@ -2963,7 +2962,7 @@ function App() {
                 });
               }
             } catch (e) {
-              console.error("open created workspace failed", e);
+              log.error("open created workspace failed", e);
             }
           }}
         />
@@ -3015,7 +3014,7 @@ function App() {
             workspaceId: id,
             enabled: v,
           }).catch((e) =>
-            console.error("workspace_set_claude_separate_account failed", e),
+            log.error("workspace_set_claude_separate_account failed", e),
           );
         }}
         onClose={() => setAddonsWin(null)}
@@ -3249,22 +3248,22 @@ function App() {
             paneId: null,
           })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_add failed", e));
+            .catch((e) => log.error("notes_add failed", e));
         }}
         onDone={(id) =>
           invoke("notes_update", { id, status: "done" })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_update done failed", e))
+            .catch((e) => log.error("notes_update done failed", e))
         }
         onReopen={(id) =>
           invoke("notes_update", { id, status: "open" })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_update reopen failed", e))
+            .catch((e) => log.error("notes_update reopen failed", e))
         }
         onDelete={(id) =>
           invoke("notes_delete", { id })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_delete failed", e))
+            .catch((e) => log.error("notes_delete failed", e))
         }
       />
 
@@ -3282,7 +3281,7 @@ function App() {
             )
           );
           invoke("feed_decide", { requestId: rid, decision: dec }).catch(
-            (err) => console.error("feed_decide failed", err)
+            (err) => log.error("feed_decide failed", err)
           );
         }}
         onDismiss={(rid) =>
