@@ -16,44 +16,12 @@ import type { ProvisioningError, StepProgress, RunHandle } from "./provisioningT
 // Backend contract (src-tauri/src/local_setup.rs): commands
 // `local_setup_inspect` / `local_setup_start`, events
 // `local-setup:progress` (same StepProgress payload as provisioning) and
-// `local-setup:complete`. ALL contract knowledge stays in this file.
+// `local-setup:complete`. The payload types are ts-rs generated bindings;
+// all other contract knowledge (step names, event names) stays here.
 
-interface ToolStatus {
-  present: boolean;
-  version: string | null;
-  path: string | null;
-}
-
-interface WslInspect {
-  wsl_present: boolean;
-  wsl_ready: boolean;
-  distros: string[];
-  default_distro: string | null;
-  tmux_installed: boolean | null;
-  winmux_cli_state: string | null; // "ok" | "stale" | "missing"
-  tmux_conf_ok: boolean | null;
-  claude_inside: boolean | null;
-  hooks_version_inside: string | null;
-}
-
-interface LocalSetupInspect {
-  winget: ToolStatus;
-  git: ToolStatus;
-  node: ToolStatus;
-  npm: ToolStatus;
-  claude: ToolStatus;
-  codex: ToolStatus;
-  gemini: ToolStatus;
-  wsl: WslInspect;
-  local_hooks_version: string | null;
-  local_claude_dir: boolean;
-}
-
-interface LocalSetupResult {
-  run_id: string;
-  workspace_id: string | null;
-  workspace_name: string | null;
-}
+import type { ToolStatus } from "./bindings/ToolStatus";
+import type { LocalSetupInspect } from "./bindings/LocalSetupInspect";
+import type { LocalSetupResult } from "./bindings/LocalSetupResult";
 
 interface Props {
   onCreated: (workspaceId: string) => void;

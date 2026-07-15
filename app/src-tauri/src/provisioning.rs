@@ -470,6 +470,13 @@ pub(crate) enum ProvisioningError {
         exit_code: i32,
         stderr: String,
     },
+    /// Phase 80: a LOCAL install step (local_setup.rs engine) needs
+    /// administrator elevation and/or a reboot (WSL feature enable).
+    /// The wizard renders an instruction card; the run stays retryable.
+    ElevationRequired {
+        step: String,
+        hint: String,
+    },
     /// Fallback for failures that don't fit the structured cases
     /// (SSH connect, local key generation, etc.).
     Generic(String),
@@ -483,6 +490,9 @@ impl ProvisioningError {
             ),
             ProvisioningError::StepFailed { step, exit_code, .. } => {
                 format!("Step '{step}' failed (exit {exit_code})")
+            }
+            ProvisioningError::ElevationRequired { step, hint } => {
+                format!("Step '{step}' needs administrator elevation. {hint}")
             }
             ProvisioningError::Generic(s) => s.clone(),
         }
@@ -521,7 +531,9 @@ fn new_run_id() -> String {
     format!("prov_{t:x}_{n:x}")
 }
 
-fn iso_now() -> String {
+// Phase 80: pub(crate) — the local_setup engine stamps the same
+// StepProgress payloads.
+pub(crate) fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
@@ -1101,7 +1113,8 @@ fn derive_workspace_name(host: &str) -> String {
     }
 }
 
-fn workspace_color_for_host(host: &str) -> String {
+// Phase 80: pub(crate) — local_setup's WSL-workspace finalize reuses it.
+pub(crate) fn workspace_color_for_host(host: &str) -> String {
     const PALETTE: &[&str] = &[
         "#7aa2f7", // accent blue
         "#4ec9b0", // success teal
