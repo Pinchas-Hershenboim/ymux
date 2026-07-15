@@ -8,7 +8,6 @@ import {
   IconGlobe,
   IconGitBranch,
   IconPlus,
-  IconCloud,
   IconChevronDown,
 } from "./icons";
 import type { SidebarMode } from "./settings";
@@ -68,10 +67,10 @@ interface Props {
   // but not blocking (`waitingWorkspaceIds` is the blocking red dot).
   hookPulseWorkspaceIds?: Set<string>;
   onActivate: (id: string) => void;
+  /** Phase 80 — opens the unified SetupWizard (server new/existing +
+   *  local existing/smart-install all live behind this one button; the
+   *  old separate "provision server" button/prop is gone). */
   onCreate: () => void;
-  /** Phase 14.A — open the server provisioning wizard (Phase 65.R: its
-   *  "existing" mode now hosts the connect-to-existing-server flow). */
-  onProvision: () => void;
   /** Phase 38 — open the settings modal from the sidebar gear. */
   onOpenSettings: () => void;
   /** Phase 39 — open the notes window from the sidebar. */
@@ -648,10 +647,6 @@ export function Sidebar(p: Props) {
           {t("sidebar.new_group")}
         </button>
       </Show>
-      <button class="ws-provision" onClick={p.onProvision} title={t("sidebar.provision_server_tooltip")}>
-        <span class="ws-action-emoji"><IconCloud /></span>
-        <span class="ws-action-label">{t("sidebar.provision_server")}</span>
-      </button>
       <Show when={dragKind() !== null && ghostPos() !== null}>
         <div
           class="ws-ghost"

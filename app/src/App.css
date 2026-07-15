@@ -201,8 +201,7 @@ body {
   border-top: none;
 }
 .sidebar.icons .ws-action-half,
-.sidebar.icons .ws-add,
-.sidebar.icons .ws-provision {
+.sidebar.icons .ws-add {
   flex: none;
   width: 32px;
   height: 32px;
@@ -218,8 +217,7 @@ body {
   box-shadow: none;
 }
 .sidebar.icons .ws-action-half:hover,
-.sidebar.icons .ws-add:hover,
-.sidebar.icons .ws-provision:hover {
+.sidebar.icons .ws-add:hover {
   background: var(--w-surface-hi);
   color: var(--w-text);
   border-color: var(--w-border);
@@ -3061,21 +3059,29 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   color: var(--w-error);
 }
 
-/* ─── Phase 14.A: provisioning wizard ─── */
+/* ─── Phase 14.A: provisioning wizard (Phase 80: the standalone
+       .ws-provision sidebar button was folded into .ws-add — the
+       unified SetupWizard is the single entry point) ─── */
 
-.ws-provision {
-  margin: 8px 8px 0 8px;
-  background: rgba(122, 162, 247, 0.08);
-  color: var(--w-accent);
+/* Phase 80: breadcrumb + back button in the SetupWizard header.
+   Logical properties only — the wizard renders in RTL locales too. */
+.setup-breadcrumb {
+  margin-inline-start: 8px;
+}
+.setup-back-btn {
+  margin-inline-start: auto;
+  margin-inline-end: 6px;
+  background: transparent;
+  color: var(--w-text-dim);
   border: 1px solid var(--w-border-hi);
   border-radius: var(--w-r-sm);
-  padding: 7px;
+  padding: 4px 10px;
   font-size: var(--w-fs-md);
   cursor: pointer;
   transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
   font-family: inherit;
 }
-.ws-provision:hover {
+.setup-back-btn:hover {
   background: rgba(122, 162, 247, 0.18);
   border-color: var(--w-accent);
   color: var(--w-text);
