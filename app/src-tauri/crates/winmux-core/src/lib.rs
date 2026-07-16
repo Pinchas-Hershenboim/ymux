@@ -636,6 +636,7 @@ mod tests {
             connection: conn,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,

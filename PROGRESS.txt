@@ -27,3 +27,25 @@ NOTES: local WIP stash "wip: terminal/textDirection changes during sync-commit"
   kept in stash@{0} — appears to be a stale copy of font/RTL work already
   committed remotely (7956c30, a20f375). Safe to drop after Yossi confirms.
 ==================================================================
+
+==================================================================
+[2026-07-16 ~14:30 IDT] session=multi-machine-sync
+TASK: Phase 81 - server-side session-meta: Claude titles on tmux sessions + shared/local picker scope
+FILES:
+  A app/src-tauri/cli/src/session_meta.rs
+  M app/src-tauri/cli/src/main.rs (session-meta subcommand + stop/session-end hook wiring)
+  M app/src-tauri/src/lib.rs (machine_id, meta join+filter in pane_list_tmux_sessions, origin write at tmux spawn, label sync in pane_set_title, update_pane_auto_title)
+  M app/src-tauri/src/rpc_server.rs (stop push -> auto_title)
+  M app/src-tauri/src/settings.rs (session_visibility, default shared)
+  M app/src-tauri/src/updater.rs (ssh_exec_simple pub(crate))
+  M app/src-tauri/crates/winmux-types/src/lib.rs (LayoutNode auto_title)
+  M app/src-tauri/crates/winmux-core/src/lib.rs (backfill destructure)
+  M app/src/PaneView.tsx, types.ts, App.css, SettingsModal.tsx, settings.ts, i18n/{en,he,ru,ar}.json
+  M hooks/claude-code.json (synced v1.1.0 -> v1.2.0, dropped SessionStart/Notification)
+  M docs/ARCHITECTURE.md, docs/DECISIONS.md
+RESULT: compiles-untested (cargo check workspace + CLI unit tests + ts-rs bindings + tsc all clean; NOT live-verified on a real server yet)
+NOTES: server file ~/.winmux/session-meta.json; grep keywords: session-meta, machine-id,
+  auto_title, session_visibility, origin-if-absent, label-hex. Verification checklist in
+  DECISIONS.md Phase 81 entry. Worktree resources/ was missing winmux-cli.exe (gitignored)
+  - copied from main repo checkout to unblock cargo check.
+==================================================================
