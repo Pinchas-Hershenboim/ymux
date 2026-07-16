@@ -555,45 +555,6 @@ export function SettingsModal(p: Props) {
               {/* ── Terminal ─────────────────────────────────────────── */}
               <Show when={tab() === "terminal"}>
                 <section>
-                  <h4>{t("settings.terminal.cursor")}</h4>
-                  <div class="settings-radio-row">
-                    <For each={["block", "bar", "underline"] as const}>
-                      {(c) => (
-                        <label class="settings-radio">
-                          <input
-                            type="radio"
-                            name="cursor"
-                            value={c}
-                            checked={p.settings.terminal.cursor_style === c}
-                            onChange={() => update("terminal", { ...p.settings.terminal, cursor_style: c })}
-                          />
-                          <span>{c}</span>
-                        </label>
-                      )}
-                    </For>
-                  </div>
-                </section>
-                <section>
-                  <h4>{t("settings.terminal.buffer.title")}</h4>
-                  <label>
-                    <span>{t("settings.terminal.scrollback")}</span>
-                    <input
-                      type="number"
-                      min="100"
-                      max="100000"
-                      step="500"
-                      value={p.settings.terminal.scrollback_lines}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, scrollback_lines: parseInt(e.currentTarget.value) || 10000 })}
-                    />
-                  </label>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.terminal.allow_proposed_api}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, allow_proposed_api: e.currentTarget.checked })}
-                    />
-                    <span>Allow xterm.js proposed API (needed for WebGL)</span>
-                  </label>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -849,14 +810,6 @@ export function SettingsModal(p: Props) {
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
-                      checked={p.settings.hooks.enabled}
-                      onChange={(e) => update("hooks", { ...p.settings.hooks, enabled: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.hooks.enabled")}</span>
-                  </label>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
                       checked={p.settings.hooks.policy_enabled ?? true}
                       onChange={(e) => update("hooks", { ...p.settings.hooks, policy_enabled: e.currentTarget.checked })}
                     />
@@ -918,18 +871,6 @@ export function SettingsModal(p: Props) {
                     />
                   </label>
                   <p class="settings-hint">{t("settings.hooks.custom_gate.hint")}</p>
-                  <label>
-                    <span>{t("settings.hooks.policy_preset")}</span>
-                    <select
-                      value={p.settings.hooks.policy_preset}
-                      onChange={(e) => update("hooks", { ...p.settings.hooks, policy_preset: e.currentTarget.value })}
-                    >
-                      <option value="paranoid">paranoid — every tool prompts</option>
-                      <option value="default">default — risky tools only</option>
-                      <option value="relaxed">relaxed — auto-allow trusted tools</option>
-                      <option value="auto">auto — never prompt (deprecated)</option>
-                    </select>
-                  </label>
                   <p class="settings-hint">
                     To install/refresh the OS-level hook entries, run{" "}
                     <code>winmux setup-hooks --agent claude --force</code>{" "}
@@ -949,14 +890,6 @@ export function SettingsModal(p: Props) {
                       onChange={(e) => update("notifications", { ...p.settings.notifications, toast_enabled: e.currentTarget.checked })}
                     />
                     <span>Show OS toast notifications (workspace events, updates)</span>
-                  </label>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.notifications.sound_enabled}
-                      onChange={(e) => update("notifications", { ...p.settings.notifications, sound_enabled: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.notifications.sound_enabled")}</span>
                   </label>
                   {/* cmux-A A1: pane pulse on OSC 9/99/777 activity. */}
                   <label class="settings-checkbox">

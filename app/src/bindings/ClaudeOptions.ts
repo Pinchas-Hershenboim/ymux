@@ -3,11 +3,4 @@
 /**
  * Phase 17: Claude-specific options.
  */
-export type ClaudeOptions = { auto_summarize_on_stop: boolean, summary_history_count: number, summary_prompt: string, 
-/**
- * `"auto"` lets the prompt itself control language (default).
- * A specific ISO code (`"he"`, `"en"`) appends a hint like
- * "Respond in Hebrew." to the prompt. Frontend currently just
- * surfaces "auto" — the field is here for future expansion.
- */
-summary_language: string, };
+export type ClaudeOptions = { auto_summarize_on_stop: boolean, summary_history_count: number, summary_prompt: string, };
