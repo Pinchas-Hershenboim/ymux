@@ -276,3 +276,25 @@ RESULT: cargo check+test (19 suites ok), go test ./... ok, tsc clean.
 NOTES: beta.3-unified fully merged (worktree removable); design-pass-01
   salvaged earlier on main; 67-mobile stays frozen per DECISIONS.
 ==================================================================
+
+------------------------------------------------------------------
+[2026-07-16 17:40 IDT] session=integration (worktree)
+TASK: mouse regression in the integration build (Yossi live test) —
+  selection on mixed Hebrew/English lines started from the wrong segment,
+  RTL caret one cell forward again.
+ROOT CAUSE: ad40fbf (TUI-owns-bidi) merged without its required live
+  smoke; with Claude foreground it forces dir=ltr on all rows → the RTL
+  mouse mirror (a20f375) never fires while the browser still bidi-reorders
+  Hebrew runs → click/selection mapping breaks. Proven live from Yossi's
+  debug.log ("tui-owns-bidi on pane=..." at 17:06/17:07).
+FILES:
+  M app/src/terminalInstance.ts (revert gates; keep rtl-mouse debug log)
+  M app/src/textDirection.ts + .test.ts (revert nextTuiOwnsBidi; 37/37)
+  M docs/RTL-TEST.md (revert section), docs/DECISIONS.md (Open entry)
+RESULT: revert committed (1626ce4), tsc clean, textDirection 37/37 green.
+  Rebuilt exe -> ~/winmux-integration-test.exe. NEEDS Yossi re-test:
+  selection precise on the screenshot scenario + caret adjacent; debug.log
+  should show "rtl-mouse: ... MIRROR" lines and ZERO "tui-owns-bidi".
+LESSON: a branch whose own commit says "needs live smoke before merge"
+  must not ride an integration round without that smoke.
+------------------------------------------------------------------

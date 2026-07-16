@@ -25,6 +25,12 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-07-16 — TUI-owns-bidi (ad40fbf) reverted from the integration branch — mouse regression
+- **Context:** the branch `rtl-claude-visual-order` merged into `claude/integration` WITHOUT its required live smoke (its own commit said "compiles-untested … needs live smoke per docs/RTL-TEST.md before merge"). Yossi's live test caught it: mouse selection on mixed Hebrew/English lines started from the wrong segment and the RTL caret sat one cell forward again — forcing `dir=ltr` on all rows while Claude is foreground disarms the RTL mouse-coordinate mirror (`a20f375`) and `isCurrentLineRtl()`, but the browser still bidi-reorders Hebrew runs inside LTR rows, so click→column mapping breaks.
+- **Action taken:** clean `git revert ad40fbf` on `claude/integration` (`1626ce4`); the `rtl-mouse:` per-click debug logging stays in. The double-bidi display quirk it addressed (trailing "?" jumps to line start typing Hebrew into local Claude) is back — long-standing, cosmetic.
+- **To bring it back, the round must include:** (1) mouse mapping that stays correct on forced-LTR rows with RTL runs (the missing half of the feature); (2) title forwarding through tmux for remote panes (bundled conf has no `set-titles`); (3) a real live smoke per docs/RTL-TEST.md before merge.
+- **State:** Open — branch `rtl-claude-visual-order` alive, unscheduled.
+
 ### 2026-07-15 — Redesign directions: ship as themes, not a chosen single look
 - **Context:** Claude Design handoff exported the WINMUX main screen in four visual directions (Industry / Broadsheet / Modernist / Classical). The design chat ended before Yossi picked one. Asked; Yossi: "why not all of them as themes?" + connect the real repo + main screen then extrapolate.
 - **Options:** (A) pick one direction and restyle; (B) all four as selectable theme presets on the existing engine; (C) static mock screen.
