@@ -284,10 +284,6 @@ pub(crate) struct Font {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct TerminalSettings {
-    pub cursor_style: String,
-    pub scrollback_lines: u32,
-    pub bidi_enabled: bool,
-    pub allow_proposed_api: bool,
     /// Phase 15.A: how to handle Hebrew / Arabic in the terminal.
     /// One of "auto_per_line" (default, Termius-style — DOM renderer
     /// + dir="auto" on every row), "bidi_reorder" (legacy v1, WebGL +
@@ -334,9 +330,6 @@ fn default_rtl_mode() -> String {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct Hooks {
-    pub enabled: bool,
-    pub agents: Vec<String>,
-    pub policy_preset: String,
     /// Phase 18.1: which PreToolUse matcher to install in the agent's
     /// settings.json. `"restrictive"` (default) only matches risky tools
     /// (`Bash|Write|Edit|MultiEdit|NotebookEdit|Task`); `"all"` matches
@@ -384,7 +377,6 @@ fn default_matcher_mode() -> String {
 pub(crate) struct Notifications {
     /// Master switch — when false, no hook toasts at all.
     pub toast_enabled: bool,
-    pub sound_enabled: bool,
     // Phase 66 (KK): per-event toast toggles. Defaults chosen to cut noise
     // — lifecycle session events are silent; "needs you" / "finished" /
     // security events surface. Older settings.json loads with these
@@ -419,7 +411,6 @@ pub(crate) struct Notifications {
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct Updates {
     pub check_on_startup: bool,
-    pub auto_download: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,11 +491,6 @@ pub(crate) struct ClaudeOptions {
     pub auto_summarize_on_stop: bool,
     pub summary_history_count: u32,
     pub summary_prompt: String,
-    /// `"auto"` lets the prompt itself control language (default).
-    /// A specific ISO code (`"he"`, `"en"`) appends a hint like
-    /// "Respond in Hebrew." to the prompt. Frontend currently just
-    /// surfaces "auto" — the field is here for future expansion.
-    pub summary_language: String,
 }
 
 impl Default for ClaudeOptions {
@@ -513,7 +499,6 @@ impl Default for ClaudeOptions {
             auto_summarize_on_stop: false,
             summary_history_count: 10,
             summary_prompt: "Summarize the last {N} exchanges in 2-3 sentences in the same language the conversation used.".to_string(),
-            summary_language: "auto".into(),
         }
     }
 }
@@ -937,10 +922,6 @@ impl Default for Font {
 impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
-            cursor_style: "bar".into(),
-            scrollback_lines: 10000,
-            bidi_enabled: true,
-            allow_proposed_api: true,
             rtl_mode: default_rtl_mode(),
             use_winmux_tmux_config: true,
             mirror_arrows_rtl: true,
@@ -953,9 +934,6 @@ impl Default for TerminalSettings {
 impl Default for Hooks {
     fn default() -> Self {
         Self {
-            enabled: true,
-            agents: vec!["claude".into()],
-            policy_preset: "default".into(),
             matcher_mode: default_matcher_mode(),
             policy_enabled: true,
             auto_install: true,
@@ -969,7 +947,6 @@ impl Default for Notifications {
     fn default() -> Self {
         Self {
             toast_enabled: true,
-            sound_enabled: false,
             toast_session_start: false,
             // v0.4.4: SessionEnd ("session closed") is a rare, meaningful
             // signal — default it ON so the user actually learns a session
@@ -989,7 +966,6 @@ impl Default for Updates {
     fn default() -> Self {
         Self {
             check_on_startup: true,
-            auto_download: false,
             // Real manifest served as a static file from the repo's main
             // branch via raw.githubusercontent.com — no GitHub Pages, no
             // API rate limits. Updated as part of each release flow

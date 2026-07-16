@@ -4,7 +4,7 @@ export type Notifications = {
 /**
  * Master switch — when false, no hook toasts at all.
  */
-toast_enabled: boolean, sound_enabled: boolean, 
+toast_enabled: boolean, 
 /**
  * Claude session started — noisy, default OFF.
  */
