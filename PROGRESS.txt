@@ -27,3 +27,26 @@ NOTES: local WIP stash "wip: terminal/textDirection changes during sync-commit"
   kept in stash@{0} — appears to be a stale copy of font/RTL work already
   committed remotely (7956c30, a20f375). Safe to drop after Yossi confirms.
 ==================================================================
+==================================================================
+DATE: 2026-07-16 19:00 (+03:00)
+TASK: Group creation moved into workspace context menu (sidebar cleanup)
+  - Removed the bottom "New group" button + inline input from Sidebar
+    (it sat between "New workspace" and "Provision server", no icon).
+  - "Move to group ▸" submenu now ends with "+ Group…" → inline name
+    input → creates the group AND assigns the workspace in one step.
+  - onGroupCreate prop now returns Promise<WorkspaceGroup | null> so
+    the submenu can chain workspace_set_group on the new group id.
+  - New-group color rotates through GROUP_PICKER_COLORS instead of
+    always amber. Fixed autofocus (doesn't fire on dynamically
+    inserted elements) with an explicit ref → el.focus().
+  - Dead CSS removed: .ws-add-group (+ icons-mode variant).
+  - Group-state persistence investigated per user report ("groups
+    vanish after restart"): code path is correct end-to-end; loss was
+    caused by a pre-groups binary (installed app.exe dated Jun 22,
+    feature landed Jul 9) rewriting workspaces.json without the
+    `groups` field. Decision: no code change; update installed app.
+FILES: app/src/Sidebar.tsx, app/src/App.tsx, app/src/App.css
+RESULT: verified-live (dev build, isolated WINMUX_CONFIG_DIR: created
+  group via context menu incl. keyboard-only flow, assign/delete/
+  re-create exercised; tsc --noEmit clean)
+==================================================================
