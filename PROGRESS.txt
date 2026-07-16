@@ -250,3 +250,29 @@ NOTES: root cause proven with a ConPTY probe typing into claude.exe
   Remote panes: tmux doesn't forward titles (no set-titles in bundled
   conf) — followup in FOLLOWUPS.md.
 ==================================================================
+
+==================================================================
+[2026-07-16 16:20 IDT] session=integration (worktree)
+TASK: integrate all live branches into one tree for the beta test+release
+  round. Branch claude/integration, merge order (easy->hard):
+  1) redesign/winmux-directions (FF, 6 commits — themes + terminal contrast)
+  2) rtl-claude-visual-order (TUI-owns-bidi; PROGRESS.txt union)
+  3) claude/winmux-multi-machine-sync (docs only; DECISIONS ours — main newer)
+  4) claude/unified-logging (Phase 79, 15 commits; 8 conflict files —
+     kept 66.F evaluate_with + Phase 79 log_debug in rpc_server; both
+     helper fns in settings.rs; LTR pin + --w-font-mono in App.css;
+     main's newer remeasureFont/applyFontOnce kept, diag_log->log.info;
+     2.1.4 linux binaries+manifest taken from the logging branch)
+  5) claude/unified-setup-smart-installer (Phase 80, 6 commits; Welcome
+     CTAs rewired to SetupWizard deep-links; KillTarget SSH/WSL kept with
+     leveled logging; CreateWorkspaceModal edit-only rewrite kept;
+     ProvisioningWizard.tsx deletion accepted; Phase 80 code swept to the
+     unified logger — 12 console.* + 8 dlog sites)
+FILES: see merge commits 3b1e808 / 0e17bd3 / 4cb7e5a / e0679bf
+RESULT: cargo check+test (19 suites ok), go test ./... ok, tsc clean.
+  resources/winmux-cli.exe rebuilt from merged CLI source. Release exe
+  build in progress -> ~/winmux-integration-test.exe for Yossi's live
+  regression pass.
+NOTES: beta.3-unified fully merged (worktree removable); design-pass-01
+  salvaged earlier on main; 67-mobile stays frozen per DECISIONS.
+==================================================================
