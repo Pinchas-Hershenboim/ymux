@@ -271,17 +271,6 @@ export function SettingsModal(p: Props) {
     }
   };
 
-  const fmtAge = (iso?: string | null) => {
-    if (!iso) return "never";
-    const t = Date.parse(iso);
-    if (Number.isNaN(t)) return iso ?? "—";
-    const sec = Math.max(1, Math.floor((Date.now() - t) / 1000));
-    if (sec < 60) return `${sec}s ago`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-    return `${Math.floor(sec / 86400)}d ago`;
-  };
-
   const savedAge = createMemo(() => {
     if (saving()) return "saving…";
     if (!lastSaved()) return "";
@@ -338,9 +327,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.autoConnect.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.autoConnect.hint")}
-                  </p>
                   {/* Unshipped-fivefer (#3): browser session persistence. */}
                   <label class="settings-checkbox">
                     <input
@@ -350,9 +336,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.persistBrowser.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.persistBrowser.hint")}
-                  </p>
                   <label>
                     <span>{t("settings.autoDestroy.label")}</span>
                     <input
@@ -368,9 +351,6 @@ export function SettingsModal(p: Props) {
                       }}
                     />
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.autoDestroy.hint")}
-                  </p>
                 </section>
                 <section>
                   <label class="settings-checkbox">
@@ -381,18 +361,12 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.terminal.use_winmux_tmux_config.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.use_winmux_tmux_config.hint")}
-                  </p>
                 </section>
                 {/* Phase 81: tmux session picker scope — shared (all
                     sessions on the server, the multi-machine default) vs
                     local (only sessions this machine created). */}
                 <section>
                   <h4>{t("settings.sessions.visibility.label")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.sessions.visibility.hint")}
-                  </p>
                   <For each={[
                     ["shared", "settings.sessions.visibility.shared"],
                     ["local", "settings.sessions.visibility.local"],
@@ -420,9 +394,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.terminal.auto_reset_on_connect.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.auto_reset_on_connect.hint")}
-                  </p>
                 </section>
               </Show>
 
@@ -527,15 +498,9 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </label>
-                  <p class="settings-hint">
-                    {t("settings.font.web.hint", { example: "Iosevka" })}
-                  </p>
                 </section>
                 <section>
                   <h4>{t("settings.terminal.rtl.title")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.terminal.rtl.hint")}
-                  </p>
                   <For each={[
                     ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
                     ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
@@ -564,9 +529,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.terminal.auto_direction.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.auto_direction.hint")}
-                  </p>
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
@@ -575,9 +537,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.mirror_arrows_rtl.hint")}
-                  </p>
                 </section>
               </Show>
 
@@ -673,9 +632,6 @@ export function SettingsModal(p: Props) {
               <Show when={tab() === "shortcuts"}>
                 <section>
                   <h4>{t("settings.shortcuts.title")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.shortcuts.hint")}
-                  </p>
                   <For each={[
                     ["copy", "settings.shortcuts.copy"],
                     ["paste", "settings.shortcuts.paste"],
@@ -727,9 +683,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.hooks.policy_enabled")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.hooks.policy_enabled.hint")}
-                  </p>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -738,9 +691,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.hooks.auto_install")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.hooks.auto_install.hint")}
-                  </p>
                   {/* Phase 66.F: user-editable policy lists. One pattern per
                       line; blanks dropped on blur. Enforced desktop-side by
                       the feed.push engine (the CLI static fallback keeps the
@@ -763,7 +713,6 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </label>
-                  <p class="settings-hint">{t("settings.hooks.custom_block.hint")}</p>
                   <label class="modal-textarea-label">
                     <span>{t("settings.hooks.custom_gate")}</span>
                     <textarea
@@ -782,12 +731,6 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </label>
-                  <p class="settings-hint">{t("settings.hooks.custom_gate.hint")}</p>
-                  <p class="settings-hint">
-                    To install/refresh the OS-level hook entries, run{" "}
-                    <code>winmux setup-hooks --agent claude --force</code>{" "}
-                    in any terminal.
-                  </p>
                 </section>
                 <section>
                   <h4>{t("settings.notifications.toasts.title")}</h4>
@@ -808,7 +751,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("notifications.pane_pulse_label")}</span>
                   </label>
-                  <p class="settings-hint">{t("notifications.pane_pulse_help")}</p>
                 </section>
                 {(() => {
                   const getHN = (): HookNotificationSettings =>
@@ -939,9 +881,6 @@ export function SettingsModal(p: Props) {
                           />
                           <span>{t("hooksNotif.sound_master")}</span>
                         </label>
-                        <p class="settings-hint">
-                          {t("hooksNotif.sound_master.hint")}
-                        </p>
                         <div class="hooksNotif-group">
                           <h5 class="hooksNotif-group-head">
                             {t("hooksNotif.group.interactive")}
@@ -967,9 +906,6 @@ export function SettingsModal(p: Props) {
               <Show when={tab() === "ai"}>
                 <section>
                   <h4>{t("settings.claude.title")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.claude.hint")}
-                  </p>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -1012,9 +948,6 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </label>
-                  <p class="settings-hint">
-                    {t("settings.claude.prompt_hint")}
-                  </p>
 
                   {/* Phase 78: usage-indicator display + auto-refresh (one row). */}
                   <h4 style="margin-top:18px">{t("claudeUsage.settings.title")}</h4>
@@ -1060,11 +993,9 @@ export function SettingsModal(p: Props) {
                       />
                     </label>
                   </div>
-                  <p class="settings-hint">{t("claudeUsage.settings.hint")}</p>
                 </section>
                 <section>
                   <h4>{t("settings.stt.title")}</h4>
-                  <p class="settings-hint">{t("settings.stt.hint")}</p>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -1196,12 +1127,6 @@ export function SettingsModal(p: Props) {
                       onChange={(e) => update("updates", { ...p.settings.updates, manifest_url: e.currentTarget.value || null })}
                     />
                   </label>
-                  <p class="settings-hint">
-                    Last check: {fmtAge(p.settings.updates.last_check_iso)}
-                    <Show when={p.settings.updates.last_seen_version}>
-                      {" "}· latest seen: {p.settings.updates.last_seen_version}
-                    </Show>
-                  </p>
                   <button class="primary" disabled={checking()} onClick={onCheckUpdates}>
                     {checking() ? "Checking…" : "Check now"}
                   </button>
@@ -1289,7 +1214,6 @@ export function SettingsModal(p: Props) {
                       <option value="debug">{t("settings.logs.levelDebug")}</option>
                     </select>
                   </div>
-                  <div class="settings-hint">{t("settings.logs.level_hint")}</div>
                   <div class="settings-logs-row">
                     <label>
                       <input
@@ -1305,7 +1229,6 @@ export function SettingsModal(p: Props) {
                       {t("settings.logs.remoteSync")}
                     </label>
                   </div>
-                  <div class="settings-hint">{t("settings.logs.remoteSync_hint")}</div>
                   {/* Phase 75: retention + clear. */}
                   <hr class="modal-sep" />
                   <div class="settings-logs-row">
@@ -1324,7 +1247,6 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </div>
-                  <div class="settings-hint">{t("settings.logs.retention_hint")}</div>
                   <div class="settings-logs-actions">
                     <button onClick={() => void clearLogs()}>{t("settings.logs.clear")}</button>
                   </div>
