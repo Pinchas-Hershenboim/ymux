@@ -299,7 +299,14 @@ export interface Settings {
   // Design Pass 01 (#2): dark/light appearance axis. Backend defaults to
   // "system" via serde(default); older settings.json load unchanged.
   theme_mode?: ThemeMode;
+  // Phase 81: tmux session picker scope. "shared" (backend default) =
+  // every session on the server; "local" = only sessions this machine
+  // created (origin-less sessions stay visible — fail-open).
+  session_visibility?: SessionVisibility;
 }
+
+// Phase 81: multi-machine session picker scope.
+export type SessionVisibility = "shared" | "local";
 
 // Design Pass 01 (#2): appearance polarity. "system" follows the OS.
 export type ThemeMode = "dark" | "light" | "system";

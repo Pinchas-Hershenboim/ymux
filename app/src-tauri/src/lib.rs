@@ -342,6 +342,60 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("workspaces.json"))
 }
 
+/// Phase 81: stable per-install machine id — the `origin` value written
+/// into the server-side session-meta map so the picker can tell which
+/// machine created each tmux session. Lives in its own file
+/// (%APPDATA%/winmux/machine-id), NOT settings.json, so "Reset all
+/// settings" never changes this machine's identity. Generated once as
+/// `<sanitized COMPUTERNAME>-<4 hex>`; read back forever after.
+pub(crate) fn machine_id() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = match config_dir() {
+                Ok(d) => d.join("machine-id"),
+                Err(_) => return "winmux-unknown".to_string(),
+            };
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                let existing = existing.trim().to_string();
+                if !existing.is_empty() {
+                    return existing;
+                }
+            }
+            let host = std::env::var("COMPUTERNAME")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "winmux".to_string());
+            let host: String = host
+                .trim()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+                .collect();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let id = format!("{}-{:04x}", host, (nanos & 0xffff) as u16);
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            // Atomic (Rule #7): tmp + rename, like every other config write.
+            let tmp = path.with_file_name(format!("machine-id.{}.tmp", std::process::id()));
+            if std::fs::write(&tmp, &id).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+            id
+        })
+        .clone()
+}
+
+/// Phase 81: hex-encoded UTF-8 for `session-meta set --label-hex` — the
+/// label crosses an SSH exec as plain hex so Hebrew/RTL text never meets
+/// shell quoting.
+pub(crate) fn hex_utf8(s: &str) -> String {
+    s.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     use std::io::Write as _;
 
@@ -424,6 +478,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
                 connection: Some(conn),
                 browser: None,
                 title: None,
+                auto_title: None,
                 annotation: None,
                 color: None,
                 emoji: None,
@@ -752,6 +807,7 @@ pub(crate) fn split_pane_in(
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -820,6 +876,7 @@ pub(crate) fn split_pane_in(
                     connection: new_conn,
                     browser: new_browser,
                     title: None,
+                    auto_title: None,
                     annotation: None,
                     // Phase 31: new pane from a split inherits from the
                     // workspace by default (None = inherit). User can
@@ -836,6 +893,7 @@ pub(crate) fn split_pane_in(
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     // Phase 31: preserve the original pane's identity
                     // across the split — it's the same logical pane,
@@ -864,6 +922,7 @@ pub(crate) fn split_pane_in(
                         connection,
                         browser,
                         title,
+                        auto_title,
                         annotation,
                         color,
                         emoji,
@@ -937,6 +996,7 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -953,6 +1013,7 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     color,
                     emoji,
@@ -1017,11 +1078,14 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
 /// Phase 7.A: update title and/or annotation on a pane leaf. Each `Option<Option<…>>`
 /// arg has three states: `None` = leave unchanged, `Some(None)` = clear,
 /// `Some(Some(value))` = set.
+/// Phase 81: same tri-state for `new_auto_title` (the Claude-derived
+/// fallback title set from the stop hook).
 pub(crate) fn update_pane_in(
     node: LayoutNode,
     target: &str,
     new_title: Option<Option<String>>,
     new_annotation: Option<Option<String>>,
+    new_auto_title: Option<Option<String>>,
 ) -> LayoutNode {
     match node {
         LayoutNode::Pane {
@@ -1030,6 +1094,7 @@ pub(crate) fn update_pane_in(
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -1044,6 +1109,7 @@ pub(crate) fn update_pane_in(
                     connection,
                     browser,
                     title: new_title.unwrap_or(title),
+                    auto_title: new_auto_title.unwrap_or(auto_title),
                     annotation: new_annotation.unwrap_or(annotation),
                     color,
                     emoji,
@@ -1058,6 +1124,7 @@ pub(crate) fn update_pane_in(
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     color,
                     emoji,
@@ -1081,15 +1148,77 @@ pub(crate) fn update_pane_in(
                 target,
                 new_title.clone(),
                 new_annotation.clone(),
+                new_auto_title.clone(),
             )),
             second: Box::new(update_pane_in(
                 *second,
                 target,
                 new_title,
                 new_annotation,
+                new_auto_title,
             )),
             ratio,
         },
+    }
+}
+
+/// Phase 81: current auto_title of a pane leaf (None when the pane isn't
+/// in this subtree or has no auto_title).
+fn pane_auto_title_in(node: &LayoutNode, target: &str) -> Option<String> {
+    match node {
+        LayoutNode::Pane { pane_id, auto_title, .. } => {
+            if pane_id == target { auto_title.clone() } else { None }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            pane_auto_title_in(first, target).or_else(|| pane_auto_title_in(second, target))
+        }
+    }
+}
+
+/// Phase 81: persist a Claude-derived title on a pane (stop-hook path,
+/// rpc_server feed.push). Touches ONLY `auto_title` — the user's manual
+/// `title` always wins in the UI. No-ops when the pane is gone or the
+/// value is unchanged (a stop fires every turn; skip the disk churn).
+pub(crate) fn update_pane_auto_title(
+    state: &AppState,
+    app: &AppHandle,
+    pane_id: &str,
+    new_title: &str,
+) {
+    let changed = {
+        let mut file = state.workspaces.lock().unwrap();
+        let Some(ws_id) = find_workspace_for_pane(&file, pane_id) else {
+            return;
+        };
+        let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+            return;
+        };
+        let unchanged = ws
+            .layout
+            .as_ref()
+            .and_then(|l| pane_auto_title_in(l, pane_id))
+            .as_deref()
+            == Some(new_title);
+        if unchanged {
+            false
+        } else {
+            if let Some(layout) = ws.layout.take() {
+                ws.layout = Some(update_pane_in(
+                    layout,
+                    pane_id,
+                    None,
+                    None,
+                    Some(Some(new_title.to_string())),
+                ));
+            }
+            true
+        }
+    };
+    if changed {
+        if let Err(e) = persist(state) {
+            log_warn("WORKSPACE", &format!("auto_title: persist failed: {e}"));
+        }
+        let _ = app.emit("workspaces:changed", ());
     }
 }
 
@@ -2303,6 +2432,7 @@ async fn provision_existing_install_key(
             connection: Some(conn),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -2945,9 +3075,35 @@ async fn spawn_ssh(
                 use_winmux_tmux_conf,
                 "[winmux] tmux not installed on remote — falling back to plain shell",
             );
-            let mut sessions = sessions_clone.lock().unwrap();
-            if let Some(Session::Ssh(ssh)) = sessions.get_mut(&id_clone) {
-                let _ = ssh.try_send(SshCmd::Data(script.into_bytes()));
+            {
+                let mut sessions = sessions_clone.lock().unwrap();
+                if let Some(Session::Ssh(ssh)) = sessions.get_mut(&id_clone) {
+                    let _ = ssh.try_send(SshCmd::Data(script.into_bytes()));
+                }
+            }
+            // Phase 81: record this machine as the session's origin in the
+            // server-side session-meta map (multi-machine sync). Separate
+            // exec channel — NOT typed into the PTY — after the session has
+            // had time to exist. `--origin-if-absent` means attaching to
+            // another machine's session never steals its origin. Fire-and-
+            // forget: an old/missing server CLI just errors quietly.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let origin_cmd = format!(
+                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --origin {} --origin-if-absent 2>/dev/null || true",
+                shell_quote(&name_clone),
+                shell_quote(&machine_id()),
+            );
+            let handle = {
+                let sessions = sessions_clone.lock().unwrap();
+                match sessions.get(&id_clone) {
+                    Some(Session::Ssh(ssh)) => Some(ssh.handle.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(h) = handle {
+                if let Err(e) = crate::updater::ssh_exec_simple(&h, &origin_cmd).await {
+                    log_warn("SSH", &format!("session-meta: origin write failed: {e}"));
+                }
             }
         });
     }
@@ -3465,6 +3621,7 @@ fn workspace_create(
             connection: Some(conn),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -3607,6 +3764,7 @@ fn workspace_reset_layout(
             connection: Some(inferred),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -4006,6 +4164,7 @@ fn make_swap_placeholder_pane(pane_id: String) -> LayoutNode {
         connection: None,
         browser: None,
         title: None,
+        auto_title: None,
         annotation: None,
         color: None,
         emoji: None,
@@ -4925,7 +5084,7 @@ fn pane_set_title(
         let mut file = state.workspaces.lock().unwrap();
         if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
             if let Some(layout) = ws.layout.take() {
-                ws.layout = Some(update_pane_in(layout, &pane_id, Some(normalized.clone()), None));
+                ws.layout = Some(update_pane_in(layout, &pane_id, Some(normalized.clone()), None, None));
             }
         }
     }
@@ -4940,25 +5099,34 @@ fn pane_set_title(
     // The Phase 23.J disabled remote-tmux-rename side-effect stays
     // disabled — labels give us the user-friendly Hebrew title
     // experience without crossing the FFI panic boundary.
-    if let Some(label_text) = normalized.as_deref() {
-        let tmux_target = {
-            let pane_sessions = state.core.pane_sessions.lock().ok();
-            let sid = pane_sessions
-                .as_ref()
-                .and_then(|m| m.get(&pane_id).cloned());
-            drop(pane_sessions);
-            sid.and_then(|sid| {
-                state.core.sessions.lock().ok().and_then(|sessions| {
-                    match sessions.get(&sid) {
-                        Some(Session::Ssh(s)) => s.tmux_session.clone(),
-                        _ => None,
-                    }
-                })
-            })
+    let tmux_target = lookup_tmux_for_pane(&state, &pane_id);
+    if let (Some(label_text), Some((_, _, tmux_name))) = (normalized.as_deref(), tmux_target.as_ref())
+    {
+        set_tmux_label_internal(&workspace_id, tmux_name, label_text);
+    }
+
+    // Phase 81: mirror the label into the server-side session-meta map so
+    // EVERY machine's picker shows it (the local tmux-labels.json above is
+    // per-machine). Label travels as hex-UTF8 — no shell quoting for
+    // Hebrew, and no tmux rename (the Phase 23.J constraint stands).
+    // Fire-and-forget over a separate exec channel.
+    if let Some((_sid, handle, tmux_name)) = tmux_target {
+        let cmd = match normalized.as_deref() {
+            Some(label) => format!(
+                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --label-hex {} 2>/dev/null || true",
+                shell_quote(&tmux_name),
+                hex_utf8(label),
+            ),
+            None => format!(
+                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --clear-label 2>/dev/null || true",
+                shell_quote(&tmux_name),
+            ),
         };
-        if let Some(tmux_name) = tmux_target {
-            set_tmux_label_internal(&workspace_id, &tmux_name, label_text);
-        }
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = crate::updater::ssh_exec_simple(&handle, &cmd).await {
+                log_warn("SSH", &format!("session-meta: label write failed: {e}"));
+            }
+        });
     }
 
     let _ = app.emit("workspaces:changed", ());
@@ -4969,11 +5137,8 @@ fn pane_set_title(
 /// return (session_id, ssh handle clone, current tmux session name).
 /// Returns None if the pane has no session, the session is not SSH,
 /// or it has no tmux wrapper.
-/// Phase 23.J: orphaned for now — the only caller (the spawned
-/// rename task in pane_set_title) was disabled pending root-cause
-/// of the Hebrew-title crash. Kept in place so Phase 23.K can
-/// re-enable without re-writing it.
-#[allow(dead_code)]
+/// Phase 81: re-enabled — pane_set_title uses it to mirror labels
+/// into the server-side session-meta map (no tmux rename involved).
 fn lookup_tmux_for_pane(
     state: &AppState,
     pane_id: &str,
@@ -5059,7 +5224,7 @@ fn pane_set_annotation(
         let mut file = state.workspaces.lock().unwrap();
         if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
             if let Some(layout) = ws.layout.take() {
-                ws.layout = Some(update_pane_in(layout, &pane_id, None, Some(normalized)));
+                ws.layout = Some(update_pane_in(layout, &pane_id, None, Some(normalized), None));
             }
         }
     }
@@ -5442,6 +5607,38 @@ pub(crate) struct TmuxSessionInfo {
     pub attached: bool,
     pub windows: u32,
     pub last_attached: i64,
+    /// Phase 81: joined from the server-side `~/.winmux/session-meta.json`.
+    /// Picker display precedence: label > claude_title > name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
+    /// Machine id that created the session (see `machine_id()`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+/// Phase 81: deserialization mirror of the Linux CLI's session-meta file
+/// (cli/src/session_meta.rs — keep the shapes in sync). Unknown fields
+/// are ignored so CLI-side schema additions never break the desktop.
+#[derive(Deserialize, Default)]
+struct SessionMetaFileMirror {
+    #[serde(default)]
+    sessions: HashMap<String, SessionMetaEntryMirror>,
+}
+
+#[derive(Deserialize, Default)]
+struct SessionMetaEntryMirror {
+    #[serde(default)]
+    claude_session_id: Option<String>,
+    #[serde(default)]
+    claude_title: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 /// Phase 23.F: enumerate the tmux sessions live on a workspace's
@@ -5503,7 +5700,11 @@ async fn pane_list_tmux_sessions(
             return Ok(vec![]);
         }
     };
-    let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
+    // Phase 81: same roundtrip also fetches the server-side session-meta
+    // map (Claude titles / labels / origins written by the Linux CLI).
+    // Missing file → empty segment after the marker → no metadata, which
+    // is exactly the pre-81 behaviour.
+    let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
     use russh::ChannelMsg;
     let mut ch = handle
         .channel_open_session()
@@ -5524,25 +5725,56 @@ async fn pane_list_tmux_sessions(
     })
     .await;
     let _ = ch.close().await;
-    Ok(parse_tmux_sessions(&String::from_utf8_lossy(&stdout)))
+    let mut out = parse_tmux_sessions(&String::from_utf8_lossy(&stdout));
+    // Phase 81: visibility scope. "shared" (default) = every session on
+    // the server; "local" = only sessions this machine created. Origin-less
+    // sessions (pre-81, or servers with an old CLI) stay visible — fail-open
+    // so the filter can never hide something the user can't get back.
+    // SSH-only: WSL sessions are inherently this-machine, so the early
+    // return above never filters.
+    let visibility = state
+        .settings
+        .lock()
+        .ok()
+        .map(|s| s.session_visibility.clone())
+        .unwrap_or_else(|| "shared".to_string());
+    if visibility == "local" {
+        let my_id = machine_id();
+        out.retain(|s| s.origin.as_deref().map_or(true, |o| o.is_empty() || o == my_id));
+    }
+    Ok(out)
 }
 
 /// Phase 80: parse `tmux list-sessions -F '<name>|<created>|<attached>|
 /// <windows>|<last_attached>'` output — shared by the SSH and WSL list
-/// paths.
+/// paths. Phase 81: the SSH script appends the server-side session-meta
+/// JSON after a `<<<WINMUX_META>>>` marker; when present, label /
+/// claude_title / origin are joined onto the sessions. Garbled or absent
+/// JSON degrades to no metadata, never to an error.
 fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
+    let (list_text, meta_text) = match text.split_once("<<<WINMUX_META>>>") {
+        Some((a, b)) => (a, b),
+        None => (text, ""),
+    };
+    let meta: SessionMetaFileMirror =
+        serde_json::from_str(meta_text.trim()).unwrap_or_default();
     let mut out = Vec::new();
-    for line in text.lines() {
+    for line in list_text.lines() {
         let line = line.trim();
         if line.is_empty() { continue; }
         let parts: Vec<&str> = line.split('|').collect();
         if parts.len() < 5 { continue; }
+        let m = meta.sessions.get(parts[0]);
         out.push(TmuxSessionInfo {
             name: parts[0].to_string(),
             created: parts[1].parse().unwrap_or(0),
             attached: parts[2] == "1",
             windows: parts[3].parse().unwrap_or(0),
             last_attached: parts[4].parse().unwrap_or(0),
+            label: m.and_then(|m| m.label.clone()),
+            claude_title: m.and_then(|m| m.claude_title.clone()),
+            claude_session_id: m.and_then(|m| m.claude_session_id.clone()),
+            origin: m.and_then(|m| m.origin.clone()),
         });
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
@@ -7072,6 +7304,7 @@ mod pane_swap_tests {
             connection: None,
             browser: None,
             title: Some(format!("title-{id}")),
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -7291,6 +7524,7 @@ mod migration_tests {
             connection: None,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,

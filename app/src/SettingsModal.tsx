@@ -606,6 +606,32 @@ export function SettingsModal(p: Props) {
                     {t("settings.terminal.use_winmux_tmux_config.hint")}
                   </p>
                 </section>
+                {/* Phase 81: tmux session picker scope — shared (all
+                    sessions on the server, the multi-machine default) vs
+                    local (only sessions this machine created). */}
+                <section>
+                  <h4>{t("settings.sessions.visibility.label")}</h4>
+                  <p class="settings-hint" style="margin-top:0">
+                    {t("settings.sessions.visibility.hint")}
+                  </p>
+                  <For each={[
+                    ["shared", "settings.sessions.visibility.shared"],
+                    ["local", "settings.sessions.visibility.local"],
+                  ] as const}>
+                    {([id, labelKey]) => (
+                      <label class="settings-radio" style="grid-template-columns: none !important; display: flex !important; align-items: flex-start; gap: 8px;">
+                        <input
+                          type="radio"
+                          name="session-visibility"
+                          value={id}
+                          checked={(p.settings.session_visibility ?? "shared") === id}
+                          onChange={() => update("session_visibility", id)}
+                        />
+                        <span style="flex:1">{t(labelKey)}</span>
+                      </label>
+                    )}
+                  </For>
+                </section>
                 <section>
                   <h4>{t("settings.terminal.rtl.title")}</h4>
                   <p class="settings-hint" style="margin-top:0">

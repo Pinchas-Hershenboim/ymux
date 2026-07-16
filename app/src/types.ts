@@ -44,12 +44,23 @@ export interface CreateWorkspaceInput {
 
 // Phase 23.F: shape returned by pane_list_tmux_sessions. Used by
 // the Connect (tmux) picker.
+// Phase 81: optional fields joined from the server-side
+// ~/.winmux/session-meta.json (absent on old-CLI servers). Display
+// precedence: label > claude_title > name.
 export interface TmuxSessionInfo {
   name: string;
   created: number;
   attached: boolean;
   windows: number;
   last_attached: number;
+  /** Manual label the user gave the pane (shared across machines). */
+  label?: string;
+  /** Claude session title extracted from the transcript. */
+  claude_title?: string;
+  /** Claude session UUID running inside this tmux session. */
+  claude_session_id?: string;
+  /** machine-id of the winmux install that created the session. */
+  origin?: string;
 }
 
 // Phase 24.D: ChatRole / MessageStatus / ChatMessage / ClaudeChatState

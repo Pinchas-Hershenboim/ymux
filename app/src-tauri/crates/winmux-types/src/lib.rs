@@ -228,6 +228,12 @@ pub enum LayoutNode {
         // unchanged until the user edits one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        // Phase 81: Claude-derived title, set automatically from the stop
+        // hook's transcript summary. Display fallback only — the manual
+        // `title` above always wins when present. Kept separate so a hook
+        // update never clobbers something the user typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         annotation: Option<String>,
         // Phase 31: per-pane identity. None = inherit from the parent
@@ -600,6 +606,7 @@ mod tests {
             connection: conn,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -625,6 +632,7 @@ mod tests {
         for f in [
             "browser",
             "title",
+            "auto_title",
             "annotation",
             "color",
             "emoji",
@@ -644,6 +652,7 @@ mod tests {
             connection: None,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,

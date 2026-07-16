@@ -1163,6 +1163,7 @@ fn finalize_wsl_workspace(
         help_topic: None,
         diff_source: None,
         smart_bidi: None,
+        auto_title: None,
     };
     let ws = Workspace {
         id: new_workspace_id(),

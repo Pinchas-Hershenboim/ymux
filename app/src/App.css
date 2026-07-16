@@ -4152,6 +4152,17 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Phase 81: raw tmux session name under a friendly (label / Claude
+   title) primary line in the tmux picker. */
+.nc-resume-raw {
+  margin-top: 3px;
+  color: var(--w-text-faint);
+  font-size: var(--w-fs-xs);
+  font-family: var(--w-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .nc-browse-path {
   font-family: var(--w-font-mono);
   font-size: var(--w-fs-sm);

@@ -533,6 +533,7 @@ async fn dispatch(
                     connection: Some(input.connection),
                     browser: None,
                     title: None,
+                    auto_title: None,
                     annotation: None,
                     color: None,
                     emoji: None,
@@ -1005,7 +1006,7 @@ async fn dispatch(
                 let mut file = state.workspaces.lock().unwrap();
                 if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
                     if let Some(layout) = ws.layout.take() {
-                        ws.layout = Some(update_pane_in(layout, &pane_id, Some(title), None));
+                        ws.layout = Some(update_pane_in(layout, &pane_id, Some(title), None, None));
                     }
                 }
             }
@@ -1036,7 +1037,7 @@ async fn dispatch(
                 if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
                     if let Some(layout) = ws.layout.take() {
                         ws.layout =
-                            Some(update_pane_in(layout, &pane_id, None, Some(annotation)));
+                            Some(update_pane_in(layout, &pane_id, None, Some(annotation), None));
                     }
                 }
             }
@@ -1366,6 +1367,23 @@ async fn dispatch(
                         // beta.3 Fix 1: sound-gated by hook_notifications.
                         let sound = hook_toast_should_sound(&s.hook_notifications, &subkind);
                         show_toast_with_sound(&tt, &tb, sound);
+                    }
+                }
+            }
+
+            // Phase 81: the stop push may carry the Claude session title
+            // (extracted server-side from the transcript by the CLI).
+            // Persist it as the pane's auto_title — a display fallback
+            // only; the manual pane title always wins. Old CLIs simply
+            // never send the param.
+            if subkind == "stop" {
+                if let (Some(pane), Some(new_t)) = (
+                    item.pane_id.as_deref(),
+                    params.get("claude_title").and_then(|v| v.as_str()),
+                ) {
+                    let new_t = new_t.trim();
+                    if !new_t.is_empty() {
+                        crate::update_pane_auto_title(state, app, pane, new_t);
                     }
                 }
             }
@@ -1836,6 +1854,7 @@ async fn dispatch(
                     connection: Some(inferred),
                     browser: None,
                     title: None,
+                    auto_title: None,
                     annotation: None,
                     color: None,
                     emoji: None,

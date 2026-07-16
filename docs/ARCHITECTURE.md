@@ -98,6 +98,8 @@ workspaces and their layouts are persisted.
 | `known_hosts.json` | `%APPDATA%\winmux\` | `lib.rs::SshClient::check_server_key` on first/match/replace. |
 | `debug.log` | `%APPDATA%\winmux\` | `dlog()` everywhere. Append-only. |
 | `last.env` | `~/.winmux/run/` (remote) | Written by tunnel bootstrap before the shell starts; CLI on Linux loads it as a fallback when sshd strips per-channel env vars. |
+| `session-meta.json` | `~/.winmux/` (remote) | Phase 81 multi-machine sync: tmux session → `{claude_session_id, claude_title, label, origin, updated_at}`. Written by the Linux CLI (`session-meta` subcommand + the Claude `stop`/`session-end` hooks); read by the desktop in the same SSH roundtrip as `tmux list-sessions`. Atomic tmp+rename, last-writer-wins, lazy-pruned against `tmux ls` on every write. |
+| `machine-id` | `%APPDATA%\winmux\` | Phase 81: stable per-install id (`<COMPUTERNAME>-<4hex>`), the `origin` value for sessions this machine creates. Deliberately outside settings.json so "Reset settings" keeps identity. |
 
 ## Bundled resources
 
