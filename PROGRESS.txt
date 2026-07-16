@@ -437,3 +437,15 @@ NOTE: their message claimed 6 modified files; actual was 2 (App.css +
 RESULT: cargo test 116/116, tsc clean, frontend 48/48. Committed on
   claude/integration, branch pointer synced. Release build running.
 ------------------------------------------------------------------
+==================================================================
+[2026-07-17 ~00:50 IDT] session=integration (round 9 - mouse rollback)
+TASK: Yossi: rounds 3-4 mouse work (native selection + output freeze)
+  "got tangled" - return mouse to exactly v0.4.5-beta.1 release behavior.
+FIX: git checkout e3ec47f -- app/src/terminalInstance.ts (single-file;
+  all rounds 3-4 delta was isolated there, +138/-18). mouseRtl.ts +
+  textDirection.ts already byte-identical to the release tag. Kept:
+  beta.1 mirror + block-aware + rtl-mouse debug telemetry. Removed:
+  nativeSelMode, _selectionService disable, selectionText(), flushPending
+  freeze gate. Recoverable from history: 461f163, 6f26f9f.
+RESULT: tsc clean, 48/48 tests. DECISIONS saga entry updated (round 5).
+------------------------------------------------------------------

@@ -103,13 +103,6 @@ interface XtermInternals {
       hasValidSize?: boolean;
       measure?: () => void;
     };
-    // v0.4.5 round 2 (RTL native selection): disable() makes xterm's
-    // mousedown return BEFORE its preventDefault, so the browser's own
-    // (bidi-correct) selection can run on RTL rows. enable() restores.
-    _selectionService?: {
-      enable?: () => void;
-      disable?: () => void;
-    };
   };
 }
 
@@ -344,7 +337,7 @@ export function pasteIntoActiveTerminal(text: string): void {
 export async function copyTerminalSelection(): Promise<boolean> {
   for (const ti of g_terminals) {
     if (!ti.container.contains(document.activeElement)) continue;
-    const sel = ti.selectionText();
+    const sel = ti.term.getSelection();
     if (!sel) return false;
     try {
       await navigator.clipboard.writeText(sel);
@@ -381,7 +374,7 @@ function onTermMenuKey(e: KeyboardEvent): void {
 }
 function showTerminalContextMenu(ti: TerminalInstance, x: number, y: number): void {
   dismissTerminalMenu();
-  const sel = ti.selectionText();
+  const sel = ti.term.getSelection();
   const menu = document.createElement("div");
   menu.className = "term-ctx-menu";
   const addItem = (label: string, enabled: boolean, action: () => void) => {
@@ -498,21 +491,6 @@ export class TerminalInstance {
   // events over an RTL row, dispatches a synthetic MouseEvent with clientX
   // mirrored around the row midpoint. See mouseRtl.ts for the rationale.
   private rtlMouseTeardown: (() => void) | null = null;
-  /** True while the BROWSER owns selection on this pane's RTL rows
-   *  (xterm SelectionService disabled; see installRtlMouseCapture). */
-  private nativeSelMode = false;
-  /** Wall-clock start of the output freeze that guards the native
-   *  selection (0 = not frozen). See flushPending. */
-  private nativeSelFreezeStart = 0;
-
-  /** Freeze cap: after 8s of held output flush anyway — better a degraded
-   *  selection than a pane that looks hung under a long-forgotten drag. */
-  private nativeSelFreezeExpired(): boolean {
-    return (
-      this.nativeSelFreezeStart > 0 &&
-      Date.now() - this.nativeSelFreezeStart > 8000
-    );
-  }
 
   constructor(paneId: string) {
     this.paneId = paneId;
@@ -666,7 +644,7 @@ export class TerminalInstance {
         !e.metaKey &&
         (e.key === "c" || e.key === "C")
       ) {
-        const sel = this.selectionText();
+        const sel = this.term.getSelection();
         if (sel) {
           navigator.clipboard.writeText(sel).catch((err) =>
             log.warn("ctrl-c copy failed", err)
@@ -790,30 +768,17 @@ export class TerminalInstance {
   }
 
   /**
-   * v0.4.4-beta.4 (RTL mouse fix) + v0.4.5 round 2 (native selection):
-   * capture-phase listeners on the terminal element that make clicks and
-   * selection land where the user points on RTL rows.
+   * v0.4.4-beta.4 (RTL mouse fix): capture-phase listeners on the terminal
+   * element that mirror `clientX` for events landing over an RTL row. See
+   * mouseRtl.ts for the math and the docs on why we intercept in capture
+   * phase (xterm.js binds its own mousedown to `this.element` in bubble
+   * phase, and its drag lifecycle attaches mousemove/mouseup to `document`
+   * -- also bubble). Capture on `this.container` fires before either.
    *
-   * Two regimes, decided per mousedown:
-   *
-   * 1. NO app mouse tracking (bare shell / scrollback) + left-click on an
-   *    RTL row → hand selection to the BROWSER: temporarily disable xterm's
-   *    SelectionService (its mousedown then returns before preventDefault,
-   *    letting the browser default run) and set `user-select: text` on the
-   *    rows host. The browser owns the bidi paint of these rows, so its
-   *    hit-testing and highlight are glyph-accurate — including MIXED
-   *    Hebrew/English lines, where the beta.4 midpoint mirror landed wrong
-   *    (bidi lays segments out piecewise; a pure reversal only matches
-   *    all-RTL rows). Copy paths read the native selection first (see
-   *    selectionText()). Exits on the next mousedown / empty-click mouseup.
-   *
-   * 2. App IS tracking the mouse (tmux `mouse on`, htop, Claude fullscreen)
-   *    → the beta.4 coordinate mirror: re-dispatch the event with clientX
-   *    mirrored around the row midpoint so the SGR-encoded cell matches the
-   *    mirrored paint. (The app owns selection; we can only fix the coords.)
-   *
-   * The listeners are a no-op over LTR rows, outside `.xterm-rows`, and in
-   * non-`auto_per_line` modes (WebGL renderer — no per-row DOM).
+   * The listener is a no-op when the pointer is over an LTR row, over no
+   * row (whitespace / outside `.xterm-rows`), or when the DOM renderer
+   * isn't being used (the `dir` attributes only get set in `auto_per_line`
+   * mode with the DOM renderer -- the WebGL renderer has no per-row DOM).
    *
    * Re-entry: `dispatchEvent` re-enters the capture phase, so we gate on
    * `event.isTrusted` to skip synthetic events we ourselves fired.
@@ -822,74 +787,23 @@ export class TerminalInstance {
     if (this.rtlModeAtConstruct !== "auto_per_line") return;
     const el = this.container;
 
-    const selSvc = () =>
-      (this.term as unknown as XtermInternals)._core?._selectionService;
-
-    const exitNative = (rowsHost: HTMLElement | null): void => {
-      if (!this.nativeSelMode) return;
-      this.nativeSelMode = false;
-      this.nativeSelFreezeStart = 0;
-      const sel = document.getSelection();
-      if (sel && sel.anchorNode && el.contains(sel.anchorNode)) {
-        sel.removeAllRanges();
-      }
-      if (rowsHost) rowsHost.style.userSelect = "";
-      selSvc()?.enable?.();
-      // Release any output held during the freeze (see flushPending).
-      if (this.pendingChunks.length > 0 && this.flushRafId === null) {
-        this.flushRafId = requestAnimationFrame(() => this.flushPending());
-      }
-    };
-
     const forward = (e: MouseEvent): void => {
       // Skip synthetic events we dispatched (re-entry guard). Only real
       // OS-generated events are trusted.
       if (!e.isTrusted) return;
       const rowsHost = el.querySelector(".xterm-rows") as HTMLElement | null;
       if (!rowsHost) return;
-      const tracking = this.term.modes.mouseTrackingMode !== "none";
-
+      const row = findRow(rowsHost, e.clientY);
+      // rtl-mouse debug (mousedown only, metadata only — Rule #1: coords and
+      // flags, never row text): one line per click so a live log shows
+      // whether the mirror fired and with what numbers.
       if (e.type === "mousedown") {
-        const downRow = findRow(rowsHost, e.clientY);
-        // rtl-mouse debug (metadata only — Rule #1: coords and flags, never
-        // row text): one line per click so a live log shows which regime
-        // handled it and with what numbers.
         log.debug(
           `rtl-mouse: pane=${this.paneId} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} ` +
-            `row=${downRow ? `${downRow.dir}[${Math.round(downRow.left)}..${Math.round(downRow.right)}]` : "none"} ` +
+            `row=${row ? `${row.dir}[${Math.round(row.left)}..${Math.round(row.right)}]` : "none"} ` +
             `track=${this.term.modes.mouseTrackingMode}`,
         );
-        // A fresh press always settles the previous native selection first.
-        exitNative(rowsHost);
-        if (!tracking && e.button === 0 && downRow?.dir === "rtl") {
-          this.term.clearSelection();
-          selSvc()?.disable?.();
-          rowsHost.style.userSelect = "text";
-          this.nativeSelMode = true;
-          this.nativeSelFreezeStart = Date.now();
-          log.debug(`rtl-mouse: pane=${this.paneId} NATIVE selection start`);
-          // No stopPropagation / preventDefault: the event flows on so pane
-          // activation + xterm focus still happen; with the SelectionService
-          // disabled xterm skips ITS preventDefault and the browser starts
-          // its own (bidi-correct) selection.
-          return;
-        }
       }
-
-      if (this.nativeSelMode) {
-        // Browser owns the drag; nothing to mirror. A plain click (mouseup
-        // with no selection) restores xterm selection immediately so
-        // shift-click / word-select on LTR rows isn't left dead.
-        if (e.type === "mouseup") {
-          const sel = document.getSelection();
-          if (!sel || sel.isCollapsed) exitNative(rowsHost);
-        }
-        return;
-      }
-
-      if (!tracking) return; // untracked events over LTR rows: xterm native
-
-      const row = findRow(rowsHost, e.clientY);
       if (!row || row.dir !== "rtl") return;
       const newX = transformMouseX(e.clientX, row);
       if (newX === e.clientX) return;
@@ -958,32 +872,10 @@ export class TerminalInstance {
     // hit. Documented as a known limitation.
 
     this.rtlMouseTeardown = () => {
-      exitNative(el.querySelector(".xterm-rows") as HTMLElement | null);
       for (const ev of events) {
         el.removeEventListener(ev, forward as EventListener, true);
       }
     };
-  }
-
-  /**
-   * Selection text for every copy path (Ctrl+C copy-on-select, the
-   * right-click menu, the global copy shortcut). When the RTL native
-   * selection is active (see installRtlMouseCapture) the browser selection
-   * anchored inside this pane wins; otherwise xterm's own selection.
-   * Both return LOGICAL (buffer) order — row DOM order is unaffected by
-   * the bidi paint — so the clipboard is correct either way.
-   */
-  selectionText(): string {
-    const nat = document.getSelection();
-    if (
-      nat &&
-      !nat.isCollapsed &&
-      nat.anchorNode &&
-      this.container.contains(nat.anchorNode)
-    ) {
-      return nat.toString();
-    }
-    return this.term.getSelection();
   }
 
   /**
@@ -1376,18 +1268,6 @@ export class TerminalInstance {
   private flushPending() {
     this.flushRafId = null;
     if (this.pendingChunks.length === 0) return;
-    // v0.4.5 round 4 (RTL native selection): while the browser owns a
-    // selection over this pane's rows, HOLD output. Every term.write
-    // rewrites row DOM, which destroys/freezes the browser's selection
-    // mid-drag (Claude's spinner repaints made it look "stuck"). Chunks
-    // keep queueing; exitNative / the freeze cap flushes them. Same idea
-    // as tmux pausing output in copy-mode.
-    if (this.nativeSelMode && !this.nativeSelFreezeExpired()) {
-      if (this.flushRafId === null) {
-        this.flushRafId = requestAnimationFrame(() => this.flushPending());
-      }
-      return;
-    }
     const merged = this.pendingChunks.join("");
     this.pendingChunks = [];
     // Phase 62.C (J.1): record (once, metadata only - Rule #1) whether
