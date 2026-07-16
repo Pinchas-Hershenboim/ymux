@@ -412,3 +412,17 @@ NOTES: README from that session plans Phase D (settings tab merges) -
   keep Logs tab features (component filter, LTR viewer, level select)
   when it lands. RTL policy note there matches our DECISIONS entries.
 ------------------------------------------------------------------
+==================================================================
+[2026-07-16 ~21:50 IDT] session=integration (round 7 - settings Phase D)
+TASK: settings-refactor-walkthrough session wrote Phase D directly into
+  this worktree (SettingsModal + 4 i18n): 14 tabs -> 7 (general,
+  textLocale, appearance, shortcuts, agentNotif, ai, system).
+REVIEW: verified survivors before committing - Logs component filter
+  (logTags memo), LTR settings-logs-viewer x3, level select + remote_sync,
+  AddonsTab (line 1340), preset grid + mode toggle, STT, updates,
+  rtl_mode/mirror_arrows, policy_enabled. Default tab theme -> general.
+  Removed stray .write-test file.
+RESULT: cargo test 116/116, tsc clean, frontend 48/48. Commit 0f882f9
+  on claude/integration; settings-refactor-walkthrough branch -f synced.
+  Release build running.
+------------------------------------------------------------------
