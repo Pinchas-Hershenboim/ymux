@@ -2476,14 +2476,16 @@ function App() {
           hookPulseWorkspaceIds={activeHookWorkspaceIdsReactive()}
           pendingNotifCount={paneNotified().size}
           groups={file().groups ?? []}
-          onGroupCreate={(name, color) => {
-            void (async () => {
-              try {
-                await invoke<WorkspaceGroup>("workspace_group_create", { name, color });
-                const f = await invoke<WorkspacesFile>("workspaces_load");
-                updateFile(f);
-              } catch (e) { log.error("workspace_group_create failed", e); }
-            })();
+          onGroupCreate={async (name, color) => {
+            try {
+              const g = await invoke<WorkspaceGroup>("workspace_group_create", { name, color });
+              const f = await invoke<WorkspacesFile>("workspaces_load");
+              updateFile(f);
+              return g;
+            } catch (e) {
+              log.error("workspace_group_create failed", e);
+              return null;
+            }
           }}
           onGroupRename={(id, name) => {
             void (async () => {

@@ -6164,21 +6164,6 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .group-swatch-picker button.selected {
   border-color: var(--w-text, #e6edf3);
 }
-.ws-add-group {
-  width: 100%;
-  padding: 6px 8px;
-  background: transparent;
-  border: 1px dashed var(--w-border, #21262d);
-  border-radius: var(--w-r-sm, 4px);
-  color: var(--w-text-dim, #999);
-  cursor: pointer;
-  font-size: 12px;
-  margin-top: 4px;
-}
-.ws-add-group:hover {
-  color: var(--w-text, #e6edf3);
-  border-color: var(--w-border-hi, #333);
-}
 .group-inline-input {
   width: 100%;
   padding: 4px 6px;
@@ -6195,10 +6180,6 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .sidebar.icons .group-header-name,
 .sidebar.icons .group-header-count {
   display: none;
-}
-.sidebar.icons .ws-add-group {
-  padding: 6px 4px;
-  font-size: 14px;
 }
 
 /* ─── beta.3 (ws-dragdrop): drag-and-drop reordering ─────────────────
