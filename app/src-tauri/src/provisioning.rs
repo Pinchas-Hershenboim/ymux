@@ -1026,6 +1026,7 @@ fn finalize_workspace(
         connection: Some(new_conn.clone()),
         browser: None,
         title: None,
+        auto_title: None,
         annotation: None,
         color: None,
         emoji: None,

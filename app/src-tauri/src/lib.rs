@@ -476,6 +476,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
                 connection: Some(conn),
                 browser: None,
                 title: None,
+                auto_title: None,
                 annotation: None,
                 color: None,
                 emoji: None,
@@ -804,6 +805,7 @@ pub(crate) fn split_pane_in(
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -872,6 +874,7 @@ pub(crate) fn split_pane_in(
                     connection: new_conn,
                     browser: new_browser,
                     title: None,
+                    auto_title: None,
                     annotation: None,
                     // Phase 31: new pane from a split inherits from the
                     // workspace by default (None = inherit). User can
@@ -888,6 +891,7 @@ pub(crate) fn split_pane_in(
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     // Phase 31: preserve the original pane's identity
                     // across the split — it's the same logical pane,
@@ -916,6 +920,7 @@ pub(crate) fn split_pane_in(
                         connection,
                         browser,
                         title,
+                        auto_title,
                         annotation,
                         color,
                         emoji,
@@ -989,6 +994,7 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -1005,6 +1011,7 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     color,
                     emoji,
@@ -1069,11 +1076,14 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
 /// Phase 7.A: update title and/or annotation on a pane leaf. Each `Option<Option<…>>`
 /// arg has three states: `None` = leave unchanged, `Some(None)` = clear,
 /// `Some(Some(value))` = set.
+/// Phase 81: same tri-state for `new_auto_title` (the Claude-derived
+/// fallback title set from the stop hook).
 pub(crate) fn update_pane_in(
     node: LayoutNode,
     target: &str,
     new_title: Option<Option<String>>,
     new_annotation: Option<Option<String>>,
+    new_auto_title: Option<Option<String>>,
 ) -> LayoutNode {
     match node {
         LayoutNode::Pane {
@@ -1082,6 +1092,7 @@ pub(crate) fn update_pane_in(
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -1096,6 +1107,7 @@ pub(crate) fn update_pane_in(
                     connection,
                     browser,
                     title: new_title.unwrap_or(title),
+                    auto_title: new_auto_title.unwrap_or(auto_title),
                     annotation: new_annotation.unwrap_or(annotation),
                     color,
                     emoji,
@@ -1110,6 +1122,7 @@ pub(crate) fn update_pane_in(
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     color,
                     emoji,
@@ -1133,15 +1146,77 @@ pub(crate) fn update_pane_in(
                 target,
                 new_title.clone(),
                 new_annotation.clone(),
+                new_auto_title.clone(),
             )),
             second: Box::new(update_pane_in(
                 *second,
                 target,
                 new_title,
                 new_annotation,
+                new_auto_title,
             )),
             ratio,
         },
+    }
+}
+
+/// Phase 81: current auto_title of a pane leaf (None when the pane isn't
+/// in this subtree or has no auto_title).
+fn pane_auto_title_in(node: &LayoutNode, target: &str) -> Option<String> {
+    match node {
+        LayoutNode::Pane { pane_id, auto_title, .. } => {
+            if pane_id == target { auto_title.clone() } else { None }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            pane_auto_title_in(first, target).or_else(|| pane_auto_title_in(second, target))
+        }
+    }
+}
+
+/// Phase 81: persist a Claude-derived title on a pane (stop-hook path,
+/// rpc_server feed.push). Touches ONLY `auto_title` — the user's manual
+/// `title` always wins in the UI. No-ops when the pane is gone or the
+/// value is unchanged (a stop fires every turn; skip the disk churn).
+pub(crate) fn update_pane_auto_title(
+    state: &AppState,
+    app: &AppHandle,
+    pane_id: &str,
+    new_title: &str,
+) {
+    let changed = {
+        let mut file = state.workspaces.lock().unwrap();
+        let Some(ws_id) = find_workspace_for_pane(&file, pane_id) else {
+            return;
+        };
+        let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+            return;
+        };
+        let unchanged = ws
+            .layout
+            .as_ref()
+            .and_then(|l| pane_auto_title_in(l, pane_id))
+            .as_deref()
+            == Some(new_title);
+        if unchanged {
+            false
+        } else {
+            if let Some(layout) = ws.layout.take() {
+                ws.layout = Some(update_pane_in(
+                    layout,
+                    pane_id,
+                    None,
+                    None,
+                    Some(Some(new_title.to_string())),
+                ));
+            }
+            true
+        }
+    };
+    if changed {
+        if let Err(e) = persist(state) {
+            dlog(&format!("auto_title: persist failed: {e}"));
+        }
+        let _ = app.emit("workspaces:changed", ());
     }
 }
 
@@ -2103,6 +2178,7 @@ async fn provision_existing_install_key(
             connection: Some(conn),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -3306,6 +3382,7 @@ fn workspace_create(
             connection: Some(conn),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -3448,6 +3525,7 @@ fn workspace_reset_layout(
             connection: Some(inferred),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -3847,6 +3925,7 @@ fn make_swap_placeholder_pane(pane_id: String) -> LayoutNode {
         connection: None,
         browser: None,
         title: None,
+        auto_title: None,
         annotation: None,
         color: None,
         emoji: None,
@@ -4760,7 +4839,7 @@ fn pane_set_title(
         let mut file = state.workspaces.lock().unwrap();
         if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
             if let Some(layout) = ws.layout.take() {
-                ws.layout = Some(update_pane_in(layout, &pane_id, Some(normalized.clone()), None));
+                ws.layout = Some(update_pane_in(layout, &pane_id, Some(normalized.clone()), None, None));
             }
         }
     }
@@ -4900,7 +4979,7 @@ fn pane_set_annotation(
         let mut file = state.workspaces.lock().unwrap();
         if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
             if let Some(layout) = ws.layout.take() {
-                ws.layout = Some(update_pane_in(layout, &pane_id, None, Some(normalized)));
+                ws.layout = Some(update_pane_in(layout, &pane_id, None, Some(normalized), None));
             }
         }
     }
@@ -6882,6 +6961,7 @@ mod pane_swap_tests {
             connection: None,
             browser: None,
             title: Some(format!("title-{id}")),
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -7101,6 +7181,7 @@ mod migration_tests {
             connection: None,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
