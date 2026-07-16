@@ -26,7 +26,7 @@ use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_debug, log_error, log_info, log_warn, AppState};
 
 // ─── profile + step model ──────────────────────────────────────────────────
 
@@ -547,7 +547,7 @@ pub(crate) async fn provisioning_start(
     };
     if let Some(pw) = input.initial_password.as_ref() {
         if let Err(e) = save_workspace_secret(&input.workspace_id, pw) {
-            dlog(&format!("provisioning: save secret failed: {e}"));
+            log_warn("PROVISION", &format!("provisioning: save secret failed: {e}"));
         }
     }
 
@@ -894,7 +894,7 @@ async fn run_provisioning(
                 _ => {}
             }
         } else {
-            dlog(&format!(
+            log_warn("PROVISION", &format!(
                 "provisioning {run_id}: step {idx} {kind:?} failed — leaving run paused for retry"
             ));
             // Don't auto-abort; the wizard surfaces a retry button.
@@ -913,13 +913,13 @@ async fn run_provisioning(
                 created_workspace_name = Some(name);
             }
             Err(e) => {
-                dlog(&format!(
+                log_error("PROVISION", &format!(
                     "provisioning {run_id}: workspace creation failed: {e}"
                 ));
             }
         }
     } else {
-        dlog(&format!(
+        log_warn("PROVISION", &format!(
             "provisioning {run_id}: skipping workspace creation (keypair_ok={keypair_ok} deploy_ok={deploy_ok} test_ok={test_ok})"
         ));
     }
@@ -1352,7 +1352,7 @@ async fn preflight_sudo(
     // Already root? sudo is irrelevant.
     if let Ok((code, out)) = exec_status(handle, "id -u").await {
         if code == 0 && out.trim() == "0" {
-            dlog("provisioning: preflight — user is root, skipping sudo check");
+            log_debug("PROVISION", "provisioning: preflight — user is root, skipping sudo check");
             return Ok(());
         }
     }
@@ -1360,7 +1360,7 @@ async fn preflight_sudo(
     // diagnostic) on the same stream we capture.
     match exec_status(handle, "sudo -n true 2>&1").await {
         Ok((0, _)) => {
-            dlog("provisioning: preflight — passwordless sudo works");
+            log_debug("PROVISION", "provisioning: preflight — passwordless sudo works");
             Ok(())
         }
         Ok((_, stderr)) => Err(ProvisioningError::SudoRequired {
@@ -1450,7 +1450,7 @@ async fn connect_existing_discover_inner(
     users.sort();
     users.dedup();
 
-    dlog(&format!(
+    log_debug("PROVISION", &format!(
         "connect_existing_discover: host={host} user={user} is_root={is_root} can_sudo={can_sudo} group={sudo_group} accounts={}",
         users.len()
     ));
@@ -1623,7 +1623,7 @@ async fn connect_existing_execute_inner(
         exec_capture(&mut handle, &cmd)
             .await
             .map_err(|e| format!("create user '{target}': {e}"))?;
-        dlog(&format!(
+        log_info("PROVISION", &format!(
             "connect_existing: ensured user '{target}' (grant_sudo={}) on {host}",
             input.grant_sudo
         ));
@@ -1671,7 +1671,7 @@ async fn connect_existing_execute_inner(
         })?;
     let _ = exec_capture(&mut h2, "true").await;
     drop(h2);
-    dlog(&format!(
+    log_info("PROVISION", &format!(
         "connect_existing: key-only validation OK for '{target}'@{host}"
     ));
 
@@ -1692,7 +1692,7 @@ async fn connect_existing_execute_inner(
     };
     let (workspace_id, workspace_name) =
         finalize_workspace(state, app, &prov_input, &local_key_path)?;
-    dlog(&format!(
+    log_info("PROVISION", &format!(
         "connect_existing: workspace '{workspace_name}' ({workspace_id}) ready for '{target}'@{host}"
     ));
     Ok(ConnectExistingResult {

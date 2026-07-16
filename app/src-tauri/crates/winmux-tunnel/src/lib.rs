@@ -12,7 +12,7 @@ use russh::{Channel, ChannelMsg};
 use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 
-use winmux_core::{dlog, pipe_name, SshClient};
+use winmux_core::{log_debug, log_info, log_warn, pipe_name, SshClient};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -126,10 +126,10 @@ pub async fn bridge_to_pipe(
     let mut bs = BufStream::new(stream);
 
     if let Err(e) = perform_handshake(&mut bs, expected_token).await {
-        dlog(&format!("tunnel: handshake REJECTED — {e}"));
+        log_warn("TUNNEL", &format!("tunnel: handshake REJECTED — {e}"));
         return Err(e);
     }
-    dlog("tunnel: handshake OK");
+    log_debug("TUNNEL", "tunnel: handshake OK");
 
     // Open a fresh client connection to the local pipe server.
     // Phase 39.A: on ERROR_PIPE_NOT_AVAILABLE (231) — all server
@@ -142,7 +142,7 @@ pub async fn bridge_to_pipe(
     // a genuine give-up surfaces via spawn_bridge's dlog.
     let pipe_name = pipe_name();
     let mut backoff_ms = 25u64;
-    let mut pipe = loop {
+    let pipe = loop {
         match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
             Ok(c) => break c,
             Err(e) if e.raw_os_error() == Some(231) && backoff_ms <= 800 => {
@@ -157,7 +157,7 @@ pub async fn bridge_to_pipe(
         }
     };
 
-    dlog("tunnel: bridging channel <-> pipe");
+    log_debug("TUNNEL", "tunnel: bridging channel <-> pipe");
     bridge_copy(bs, pipe).await;
     Ok(())
 }
@@ -188,8 +188,8 @@ where
         n
     };
     tokio::select! {
-        r = a2b => dlog(&format!("tunnel: bridge done (a→b: {r:?})")),
-        r = b2a => dlog(&format!("tunnel: bridge done (b→a: {r:?})")),
+        r = a2b => log_debug("TUNNEL", &format!("tunnel: bridge done (a→b: {r:?})")),
+        r = b2a => log_debug("TUNNEL", &format!("tunnel: bridge done (b→a: {r:?})")),
     }
 }
 
@@ -227,7 +227,7 @@ pub async fn write_remote_env_file(
         env_file, body, env_file
     );
     exec_simple(handle, &write_cmd).await?;
-    dlog(&format!("tunnel: wrote {} ({} bytes)", env_file, body.len()));
+    log_info("TUNNEL", &format!("tunnel: wrote {} ({} bytes)", env_file, body.len()));
     Ok(())
 }
 
@@ -261,7 +261,7 @@ pub fn spawn_bridge(channel: Channel<russh::client::Msg>, token: std::sync::Arc<
     tokio::spawn(async move {
         if let Err(e) = bridge_to_pipe(channel, &token).await {
             tracing::warn!("tunnel bridge: {e}");
-            dlog(&format!("tunnel: bridge error: {e}"));
+            log_warn("TUNNEL", &format!("tunnel: bridge error: {e}"));
         }
     });
 }

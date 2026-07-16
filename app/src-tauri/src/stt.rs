@@ -32,7 +32,7 @@
 use serde::Deserialize;
 use tauri::State;
 
-use crate::{dlog, AppState};
+use crate::{log_debug, AppState};
 
 #[derive(Deserialize)]
 struct TranscribeResponse {
@@ -175,7 +175,7 @@ pub(crate) async fn stt_transcribe_local(
     .await
     .map_err(|e| format!("stt join: {e}"))??;
 
-    dlog(&format!(
+    log_debug("STT", &format!(
         "stt_transcribe_local: endpoint={} audio_bytes={} returned_chars={}",
         endpoint_log,
         audio_len,

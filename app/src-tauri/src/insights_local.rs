@@ -295,13 +295,13 @@ async fn connect_docker() -> Result<Option<bollard::Docker>, String> {
             match d.ping().await {
                 Ok(_) => Ok(Some(d)),
                 Err(e) => {
-                    crate::dlog_tag("INSIGHTS-LOCAL", &format!("docker ping failed: {e}"));
+                    crate::log_warn("INSIGHTS-LOCAL", &format!("docker ping failed: {e}"));
                     Ok(None)
                 }
             }
         }
         Err(e) => {
-            crate::dlog_tag("INSIGHTS-LOCAL", &format!("docker connect failed: {e}"));
+            crate::log_warn("INSIGHTS-LOCAL", &format!("docker connect failed: {e}"));
             Ok(None)
         }
     }

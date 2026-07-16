@@ -4,6 +4,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import qrcode from "qrcode-generator";
 import { t } from "./i18n";
 import { IconClose, IconCircle, IconSmartphone } from "./icons";
+import { createLogger } from "./logger";
+
+const log = createLogger("MOBILE");
 
 // Phase 70.C — Mobile pairing tab inside the Monitor. Drives the nginx-proxy
 // install + the daemon's pairing endpoints via the mobile_pairing_* commands.
@@ -245,7 +248,7 @@ export function MobilePairing(p: { workspaceId?: string }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
-      console.warn("clipboard write failed", e);
+      log.warn("clipboard write failed", e);
     }
   };
 

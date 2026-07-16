@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_warn, AppState};
 
 // ─── shell detection ──────────────────────────────────────────────────────
 
@@ -335,7 +335,7 @@ pub(crate) fn record_recent_path(
     }
     let snapshot = state.recent_paths.lock().unwrap().clone();
     if let Err(e) = save_recent_to_disk(&snapshot) {
-        dlog(&format!("recent_paths save failed: {e}"));
+        log_warn("WIZARD", &format!("recent_paths save failed: {e}"));
     }
     Ok(())
 }

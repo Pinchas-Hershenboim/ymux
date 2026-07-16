@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::dlog;
+use crate::log_info;
 
 // ─── ssh-config parsing ────────────────────────────────────────────────────
 
@@ -403,7 +403,7 @@ pub(crate) fn fix_key_permissions(path: String) -> Result<PermsResult, String> {
         .args(["/remove:g", "*S-1-1-0"]) // Everyone
         .output();
     run(&["/grant:r", &format!("{}:(F)", user)])?;
-    dlog(&format!("connect_wizard: fixed perms on {path} (user={user})"));
+    log_info("WIZARD", &format!("connect_wizard: fixed perms on {path} (user={user})"));
     let (ok, err) = check_perms_inner(&p);
     Ok(PermsResult { ok, error: err })
 }

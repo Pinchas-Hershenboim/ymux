@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_debug, log_info, log_warn, AppState};
 
 // ─── beta.3: hook-type enum + per-hook enable/sound settings ───────────────
 
@@ -715,6 +715,14 @@ fn default_theme_mode() -> String {
     "system".to_string()
 }
 
+/// Current persisted log level ("debug"/"info"/…), for callers without
+/// AppState access (addon install paths pushing `~/.winmux/log-level`).
+pub(crate) fn log_level_setting() -> String {
+    load_from_disk()
+        .map(|s| s.logs.level)
+        .unwrap_or_else(|_| default_log_level())
+}
+
 /// Phase 75: debug.log retention. The log auto-rotates at a size cap and is
 /// pruned on startup once older than `retention_days`.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
@@ -723,16 +731,31 @@ pub(crate) struct LogsSettings {
     /// Delete debug logs untouched for this many days (0 = keep forever).
     #[serde(default = "default_log_retention_days")]
     pub retention_days: u32,
+    /// Unified-logger threshold: "debug" | "info" (internally warn/error
+    /// always pass). Applied via `winmux_core::set_log_level` on every load
+    /// and save, and pushed to connected remote hosts (`~/.winmux/log-level`).
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    /// Pull the remote logs (server / hooks / install) into the local
+    /// debug.log every sync cycle so users read ONE file.
+    #[serde(default = "default_true")]
+    pub remote_sync: bool,
 }
 
 fn default_log_retention_days() -> u32 {
     7
 }
 
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 impl Default for LogsSettings {
     fn default() -> Self {
         Self {
             retention_days: default_log_retention_days(),
+            level: default_log_level(),
+            remote_sync: true,
         }
     }
 }
@@ -1266,7 +1289,11 @@ fn save_to_disk(file: &Settings) -> Result<(), String> {
         f.sync_all().map_err(|e| format!("fsync: {e}"))?;
     }
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    dlog(&format!("settings save: {} bytes -> {:?}", text.len(), path));
+    // Every settings write funnels through here (mutate / RPC patch / reset),
+    // so this is the one choke point where the logger threshold tracks the
+    // persisted value.
+    winmux_core::set_log_level(winmux_core::LogLevel::from_str(&file.logs.level));
+    log_debug("SETTINGS", &format!("settings save: {} bytes -> {:?}", text.len(), path));
     Ok(())
 }
 
@@ -1305,7 +1332,7 @@ fn migrate_settings(s: &mut Settings) -> bool {
     if is_placeholder {
         s.updates.manifest_url = Some(DEFAULT_MANIFEST_URL.to_string());
         changed = true;
-        dlog("settings: migrated placeholder manifest_url → default");
+        log_info("SETTINGS", "settings: migrated placeholder manifest_url → default");
     }
     changed
 }
@@ -1318,7 +1345,7 @@ pub(crate) fn load_from_disk() -> Result<Settings, String> {
         // discovering it in the UI. Best-effort — don't fail load if the
         // initial write hits a permissions issue.
         if let Err(e) = save_to_disk(&s) {
-            dlog(&format!("settings: initial save failed: {e}"));
+            log_warn("SETTINGS", &format!("settings: initial save failed: {e}"));
         }
         return Ok(s);
     }
@@ -1337,7 +1364,7 @@ pub(crate) fn load_from_disk() -> Result<Settings, String> {
             // Forward-compat: if the schema grew, fall back to defaults rather
             // than refusing to start. The user can re-save from the UI to
             // upgrade their on-disk file.
-            dlog(&format!(
+            log_warn("SETTINGS", &format!(
                 "settings: parse {:?} failed ({e}) — using defaults",
                 path
             ));
@@ -1356,12 +1383,19 @@ fn mutate<F: FnOnce(&mut Settings) -> Result<(), String>>(
     app: &AppHandle,
     f: F,
 ) -> Result<Settings, String> {
+    let old_level;
     {
         let mut s = state.settings.lock().unwrap();
+        old_level = s.logs.level.clone();
         f(&mut s)?;
     }
     persist(state)?;
     let s = state.settings.lock().unwrap().clone();
+    // Level changed → converge the remote fleet (best-effort, background).
+    // The local threshold is already applied inside save_to_disk.
+    if s.logs.level != old_level {
+        crate::log_sync::push_log_level_to_all(state, s.logs.level.clone());
+    }
     let _ = app.emit("settings:changed", &s);
     Ok(s)
 }

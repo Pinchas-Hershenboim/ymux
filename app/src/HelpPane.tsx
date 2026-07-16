@@ -1,6 +1,9 @@
 import { createEffect, createMemo, onMount } from "solid-js";
 import { marked } from "marked";
 import { currentLanguage, t, type Language } from "./i18n";
+import { createLogger } from "./logger";
+
+const log = createLogger("HELP");
 
 // Phase 33: in-app help pane. Renders one of a small set of bundled
 // markdown documents (currently just ssh-key-setup) keyed by `topic`
@@ -71,7 +74,7 @@ export function HelpPane(p: Props) {
             btn.textContent = t("help.copyCode");
           }, 1500);
         } catch (e) {
-          console.warn("clipboard write failed", e);
+          log.warn("clipboard write failed", e);
         }
       });
       wrap.appendChild(btn);

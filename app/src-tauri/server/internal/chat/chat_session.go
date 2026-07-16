@@ -10,13 +10,17 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"winmux-server/internal/logging"
 )
+
+// logger is the chat subsystem's component logger (Phase 79.D unified format).
+var logger = logging.New("SRV:CHAT")
 
 // session status values (mirrored in the SQLite `status` column).
 const (
@@ -154,7 +158,7 @@ func (m *SessionManager) sweepIdle() {
 	for _, s := range victims {
 		s.stop("idle sweep")
 		m.forget(s.id)
-		log.Printf("chat: swept idle session %s", s.id)
+		logger.Info("swept idle session", "session", s.id)
 	}
 }
 
@@ -312,7 +316,7 @@ func (s *Session) drainStderr(r io.Reader) {
 		n++
 	}
 	if n > 0 {
-		log.Printf("chat: session %s stderr produced %d line(s)", s.id, n)
+		logger.Info("session stderr produced output", "session", s.id, "lines", n)
 	}
 }
 
@@ -408,7 +412,7 @@ func (s *Session) stop(reason string) {
 			_ = p.Process.Kill()
 		}
 	}()
-	log.Printf("chat: session %s stopped (%s)", s.id, reason)
+	logger.Info("session stopped", "session", s.id, "reason", reason)
 }
 
 // ─── fan-out ─────────────────────────────────────────────────────────────
@@ -448,7 +452,7 @@ func (s *Session) emit(event []byte) {
 		select {
 		case sub.ch <- event:
 		default:
-			log.Printf("chat: session %s dropped event for slow client %d", s.id, sub.id)
+			logger.Warn("dropped event for slow client", "session", s.id, "client", sub.id)
 		}
 	}
 	s.subMu.Unlock()

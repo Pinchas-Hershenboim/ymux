@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
 import { IconGitBranch, IconCheck, IconClose } from "./icons";
 import type { Connection, EnvVar, Workspace } from "./types";
+import { createLogger } from "./logger";
+
+const log = createLogger("WORKSPACE");
 
 // Phase 13.A wizard data shapes — mirror the Rust definitions in
 // src-tauri/src/connect_wizard.rs.
@@ -178,7 +181,7 @@ export function CreateWorkspaceModal(p: Props) {
       setEmoji(ws.emoji || "");
       setCustomHex(ws.color || "");
     } catch (e) {
-      console.error("workspace_set_identity failed", e);
+      log.error("workspace_set_identity failed", e);
     }
   };
 
@@ -234,7 +237,7 @@ export function CreateWorkspaceModal(p: Props) {
     void invoke("workspace_set_auto_port_forward", {
       workspaceId: p.editing.id,
       enabled,
-    }).catch((e) => console.error("workspace_set_auto_port_forward failed", e));
+    }).catch((e) => log.error("workspace_set_auto_port_forward failed", e));
   };
 
   // Phase 49-B: spawn `git worktree add` from the workspace's cwd. The
@@ -269,14 +272,14 @@ export function CreateWorkspaceModal(p: Props) {
       setSshHosts(hosts);
       setSshHostsLoaded(true);
     } catch (e) {
-      console.warn("parse_ssh_config failed", e);
+      log.warn("parse_ssh_config failed", e);
       setSshHostsLoaded(true);
     }
     try {
       const keys = await invoke<DetectedKey[]>("list_ssh_keys");
       setDetectedKeys(keys);
     } catch (e) {
-      console.warn("list_ssh_keys failed", e);
+      log.warn("list_ssh_keys failed", e);
     }
     // Phase 12.C: load the local PTY wizard inputs too. Both are cheap
     // (one PATH walk + one tiny JSON read) so we always pre-fetch even
@@ -285,13 +288,13 @@ export function CreateWorkspaceModal(p: Props) {
       const shells = await invoke<ShellInfo[]>("detect_local_shells");
       setDetectedShells(shells);
     } catch (e) {
-      console.warn("detect_local_shells failed", e);
+      log.warn("detect_local_shells failed", e);
     }
     try {
       const paths = await invoke<RecentPathSuggestion[]>("list_recent_paths");
       setRecentPaths(paths);
     } catch (e) {
-      console.warn("list_recent_paths failed", e);
+      log.warn("list_recent_paths failed", e);
     }
   };
 
@@ -309,7 +312,7 @@ export function CreateWorkspaceModal(p: Props) {
       const r = await invoke<PermsResult>("check_key_permissions", { path });
       setKeyPerms(r);
     } catch (e) {
-      console.warn("check_key_permissions failed", e);
+      log.warn("check_key_permissions failed", e);
     }
   };
 
@@ -326,7 +329,7 @@ export function CreateWorkspaceModal(p: Props) {
       const r = await invoke<PermsResult>("fix_key_permissions", { path });
       setKeyPerms(r);
     } catch (e) {
-      console.error("fix_key_permissions failed", e);
+      log.error("fix_key_permissions failed", e);
       setKeyPerms({ ok: false, error: String(e) });
     }
   };

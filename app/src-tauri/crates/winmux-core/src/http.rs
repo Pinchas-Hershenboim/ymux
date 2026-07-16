@@ -82,7 +82,7 @@ where
         match req.call() {
             Ok(resp) => {
                 if attempt > 0 {
-                    crate::dlog_tag(
+                    crate::log_info(
                         "HTTP",
                         &format!("get_with_retry: recovered on attempt {} host={host_for_log}", attempt + 1),
                     );
@@ -94,7 +94,7 @@ where
                 return Err(ureq::Error::Status(code, resp));
             }
             Err(e @ ureq::Error::Transport(_)) => {
-                crate::dlog_tag(
+                crate::log_warn(
                     "HTTP",
                     &format!(
                         "get_with_retry: transport error on attempt {}/{MAX_ATTEMPTS} host={host_for_log}",

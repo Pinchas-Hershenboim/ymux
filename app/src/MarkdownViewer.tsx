@@ -4,6 +4,9 @@ import DOMPurify from "dompurify";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { t } from "./i18n";
 import { markdownDoc, closeMarkdown } from "./mdViewerStore";
+import { createLogger } from "./logger";
+
+const log = createLogger("MARKDOWN");
 import { IconFile, IconClose } from "./icons";
 import {
   clampToViewport,
@@ -76,9 +79,9 @@ export function MarkdownViewer() {
     e.preventDefault();
     const href = a.getAttribute("href") ?? "";
     if (/^(https?:\/\/|mailto:)/i.test(href)) {
-      void openUrl(href).catch((err) => console.warn("openUrl failed", err));
+      void openUrl(href).catch((err) => log.warn("openUrl failed", err));
     } else {
-      console.warn("[md-viewer] blocked non-external link:", href);
+      log.warn(`blocked non-external link: ${href}`);
     }
   };
 

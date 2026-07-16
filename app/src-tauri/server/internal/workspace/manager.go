@@ -7,14 +7,17 @@ package workspace
 
 import (
 	"encoding/json"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"winmux-server/internal/core"
+	"winmux-server/internal/logging"
 )
+
+// logger is the workspace subsystem's component logger (Phase 79.D).
+var logger = logging.New("SRV:WS")
 
 // liveSession holds the in-memory fan-out channels for a session's subscribers.
 type liveSession struct {
@@ -192,15 +195,15 @@ func (m *Manager) maybePush(ev Event) {
 		return
 	}
 	if n := m.SubscriberCount(ev.SessionID); n > 0 {
-		log.Printf("push: skip event=%s session=%s (%d live subscriber(s))", ev.Type, ev.SessionID, n)
+		logger.Debug("push skip: live subscribers present", "event", ev.Type, "session", ev.SessionID, "subscribers", n)
 		return
 	}
 	targets := m.pusher.ActiveDeviceIDs()
 	if len(targets) == 0 {
-		log.Printf("push: skip event=%s session=%s (no active devices)", ev.Type, ev.SessionID)
+		logger.Debug("push skip: no active devices", "event", ev.Type, "session", ev.SessionID)
 		return
 	}
-	log.Printf("push: fanout event=%s session=%s → %d device(s)", ev.Type, ev.SessionID, len(targets))
+	logger.Debug("push fanout", "event", ev.Type, "session", ev.SessionID, "devices", len(targets))
 	frame := eventPayloadMap(ev)
 	// beta.3 Fix 3: resolve the workspace name so the phone can render
 	// "[<workspace>] tool needs approval" instead of just the session id.

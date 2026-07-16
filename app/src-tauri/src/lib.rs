@@ -16,6 +16,7 @@ mod file_manager;
 // JSON shape so `insights_fetch` can route local vs. SSH transparently.
 mod insights_local;
 mod local_wizard;
+mod log_sync;
 mod notes;
 mod osc_notify;
 mod pairing;
@@ -281,8 +282,8 @@ pub(crate) fn new_workspace_id() -> String {
 // callsite resolves unchanged.
 pub(crate) use winmux_core::{
     backfill_terminal_connections, clear_debug_log, collect_panes, collect_panes_with_kind,
-    config_dir, config_dir_pub, dlog, dlog_tag, first_terminal_connection,
-    first_terminal_connection_pub, prune_logs, shell_quote,
+    config_dir, config_dir_pub, first_terminal_connection, first_terminal_connection_pub,
+    log_debug, log_error, log_info, log_warn, prune_logs, shell_quote,
 };
 
 /// Phase 38: absolute path to the debug log, for the Settings → Logs
@@ -332,7 +333,7 @@ fn read_log_tail(n: usize) -> Result<String, String> {
 #[tauri::command]
 fn clear_debug_log_cmd() -> Result<(), String> {
     clear_debug_log()?;
-    dlog_tag("LOGS", "debug.log cleared by user");
+    log_info("LOGS", "debug.log cleared by user");
     Ok(())
 }
 
@@ -344,7 +345,7 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     use std::io::Write as _;
 
     if file.workspaces.is_empty() && file.active_workspace_id.is_none() {
-        dlog(&format!(
+        log_warn("WORKSPACE", &format!(
             "save_to_disk: writing empty state (workspaces=0). version={}",
             file.version
         ));
@@ -371,7 +372,7 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     }
 
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "save_to_disk: wrote {} bytes ({} workspaces) → {:?}",
         text.len(),
         file.workspaces.len(),
@@ -382,9 +383,9 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
 
 fn load_from_disk() -> Result<WorkspacesFile, String> {
     let path = config_path()?;
-    dlog(&format!("load_from_disk: path={:?} exists={}", path, path.exists()));
+    log_debug("WORKSPACE", &format!("load_from_disk: path={:?} exists={}", path, path.exists()));
     if !path.exists() {
-        dlog("load_from_disk: file absent → fresh empty state (LoadState=Loaded)");
+        log_info("WORKSPACE", "load_from_disk: file absent → fresh empty state (LoadState=Loaded)");
         return Ok(WorkspacesFile {
             version: 1,
             active_workspace_id: None,
@@ -393,10 +394,10 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         });
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
-    dlog(&format!("load_from_disk: read {} bytes", text.len()));
+    log_debug("WORKSPACE", &format!("load_from_disk: read {} bytes", text.len()));
     let mut file: WorkspacesFile = serde_json::from_str(&text)
         .map_err(|e| format!("parse {:?}: {e}", path))?;
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "load_from_disk: parsed OK, version={}, {} workspaces, active={:?}",
         file.version,
         file.workspaces.len(),
@@ -459,7 +460,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
             ws.layout = Some(new_layout);
             if changed {
                 migrated = true;
-                dlog(&format!(
+                log_info("WORKSPACE", &format!(
                     "load_from_disk: ws={} backfilled Terminal pane connections \
                      (claudechat/claudelog → Terminal migration)",
                     ws.id
@@ -477,10 +478,10 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         migrated = true;
     }
     if migrated {
-        dlog("load_from_disk: migration ran — saving migrated layout");
+        log_info("WORKSPACE", "load_from_disk: migration ran — saving migrated layout");
         match save_to_disk(&file) {
-            Ok(()) => dlog("load_from_disk: migration save OK"),
-            Err(e) => dlog(&format!("load_from_disk: migration save FAILED: {e}")),
+            Ok(()) => log_info("WORKSPACE", "load_from_disk: migration save OK"),
+            Err(e) => log_warn("WORKSPACE", &format!("load_from_disk: migration save FAILED: {e}")),
         }
     }
     Ok(file)
@@ -654,7 +655,7 @@ pub(crate) fn persist(state: &AppState) -> Result<(), String> {
     match load_state {
         Some(LoadState::Loaded) => {}
         Some(LoadState::Failed) => {
-            dlog("persist: REFUSING — load_state=Failed, would clobber existing data");
+            log_error("WORKSPACE", "persist: REFUSING — load_state=Failed, would clobber existing data");
             return Err(
                 "persistence disabled: workspaces.json failed to load earlier; \
                  fix the file and restart"
@@ -662,7 +663,7 @@ pub(crate) fn persist(state: &AppState) -> Result<(), String> {
             );
         }
         None => {
-            dlog("persist: REFUSING — load_state=None (setup hasn't completed)");
+            log_warn("WORKSPACE", "persist: REFUSING — load_state=None (setup hasn't completed)");
             return Err("persistence not yet initialized".into());
         }
     }
@@ -1474,7 +1475,7 @@ fn emit_exit(app: &AppHandle, session_id: &str, reason: Option<String>) {
     // disconnect (e.g. "Claude quit closed the connection") is traceable
     // in debug.log — pair this with the ssh-disconnect Eof/Close/transport
     // lines to see WHY the channel ended (bash exit vs network vs RPC).
-    dlog(&format!(
+    log_info("PTY", &format!(
         "pty:exit session={session_id} reason={}",
         reason.as_deref().unwrap_or("(none)")
     ));
@@ -1662,7 +1663,7 @@ async fn ssh_key_offer_dismiss(
         // the dismiss itself — worst case the offer pops once more).
         if let Ok(snapshot) = state.settings.lock().map(|s| s.clone()) {
             if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                dlog(&format!("ssh_key_offer_dismiss: settings save failed: {e}"));
+                log_warn("SSH", &format!("ssh_key_offer_dismiss: settings save failed: {e}"));
             }
         }
         let _ = app.emit("settings:changed", ());
@@ -1687,7 +1688,7 @@ async fn ssh_cancel_reconnect(
     if let Some(sid) = pane_sessions.get(&pane_id) {
         if let Some(Session::Ssh(ssh)) = sessions.get(sid) {
             ssh.reconnecting.store(false, std::sync::atomic::Ordering::Relaxed);
-            dlog(&format!("ssh_cancel_reconnect: pane={pane_id} flag cleared"));
+            log_info("SSH", &format!("ssh_cancel_reconnect: pane={pane_id} flag cleared"));
         }
     }
     Ok(())
@@ -1846,7 +1847,7 @@ async fn ssh_key_generate_and_install(
         // offer may pop once more.
         if let Ok(snapshot) = state.settings.lock().map(|s| s.clone()) {
             if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                dlog(&format!(
+                log_warn("SSH", &format!(
                     "ssh_key_generate_and_install: settings save failed: {e}"
                 ));
             }
@@ -1854,7 +1855,7 @@ async fn ssh_key_generate_and_install(
         let _ = app.emit("settings:changed", ());
     }
 
-    dlog(&format!(
+    log_info("SSH", &format!(
         "ssh_key_generate_and_install: installed key for ws={workspace_id} user={ssh_user} host={ssh_host}"
     ));
     Ok(priv_str)
@@ -2075,7 +2076,7 @@ async fn provision_existing_install_key(
     persist(&state)?;
     let _ = app.emit("workspaces:changed", ());
 
-    dlog(&format!(
+    log_info("WORKSPACE", &format!(
         "provision_existing_install_key: created ws={workspace_id} host={host} user={ssh_user}"
     ));
     Ok(workspace_id)
@@ -2150,9 +2151,9 @@ async fn connect_and_authenticate(
         bridge_spawner: Some(std::sync::Arc::new(tunnel::spawn_bridge)),
     };
 
-    dlog(&format!("ssh.connect: client::connect to {} starting", target));
+    log_debug("SSH", &format!("ssh.connect: client::connect to {} starting", target));
     let connect_res = client::connect(config, (host, port), sh).await;
-    dlog(&format!(
+    log_debug("SSH", &format!(
         "ssh.connect: client::connect to {} returned (ok={})",
         target,
         connect_res.is_ok()
@@ -2211,13 +2212,13 @@ async fn spawn_ssh(
     // a specific orphan session to attach to.
     tmux_session_name: Option<String>,
 ) -> Result<String, String> {
-    dlog(&format!(
+    log_debug("SSH", &format!(
         "spawn_ssh: entry ws={} pane={} target={}@{}:{}",
         workspace_id, pane_id, user, host, port
     ));
     // Phase 41: connect + host-key + auth now live in the shared
     // `connect_and_authenticate` helper (includes the Phase 38 keepalive).
-    dlog("spawn_ssh: connect_and_authenticate begin");
+    log_debug("SSH", "spawn_ssh: connect_and_authenticate begin");
     let SshHandshake {
         mut handle,
         auth_method,
@@ -2232,7 +2233,7 @@ async fn spawn_ssh(
         accept_unknown_host,
     )
     .await?;
-    dlog(&format!("spawn_ssh: authenticated method={auth_method:?}"));
+    log_info("SSH", &format!("spawn_ssh: authenticated method={auth_method:?}"));
 
     // Phase 32.B: offer to convert a password-auth connection to key
     // auth. Skipped when the user previously ticked "don't show again",
@@ -2261,7 +2262,7 @@ async fn spawn_ssh(
 
     // Phase 6.2: best-effort bootstrap of the winmux Linux binary on the remote.
     // We never block the user's shell on this — failures are surfaced via pane:status.
-    dlog("spawn_ssh: bootstrap starting");
+    log_debug("SSH", "spawn_ssh: bootstrap starting");
     emit_pane_status_event(app, &pane_id, "bootstrapping winmux…");
     match remote_bootstrap::bootstrap(&mut handle, app, false).await {
         Ok(remote_bootstrap::BootstrapStatus::AlreadyOk) => {
@@ -2290,6 +2291,16 @@ async fn spawn_ssh(
         }
     }
 
+    // Unified logging: converge this host on the desktop's log level
+    // (`~/.winmux/log-level`, read by the Go server watcher + CLI hooks).
+    // Best-effort — a failure never blocks the shell.
+    {
+        let level = state.settings.lock().unwrap().logs.level.clone();
+        if let Err(e) = log_sync::push_log_level(&handle, &level).await {
+            log_warn("LOGS", &format!("log-level push on connect failed: {e}"));
+        }
+    }
+
     // Phase 6.3 → 47.A: ask server to forward a port back to us. With
     // port=0 the server picks a free one and returns it. Forwarded
     // channels arrive in our Handler's `server_channel_open_forwarded_tcpip`
@@ -2305,7 +2316,7 @@ async fn spawn_ssh(
         let (home_out, _) = match remote_get_home(&mut handle).await {
             Ok(v) => v,
             Err(e) => {
-                dlog(&format!("tunnel: skip env-file write — couldn't read $HOME: {e}"));
+                log_warn("TUNNEL", &format!("tunnel: skip env-file write — couldn't read $HOME: {e}"));
                 (String::new(), 1)
             }
         };
@@ -2316,7 +2327,7 @@ async fn spawn_ssh(
                 tunnel::write_remote_env_file(&mut handle, home, &socket_addr, &token, &pane_id)
                     .await
             {
-                dlog(&format!("tunnel: env-file write failed: {e}"));
+                log_warn("TUNNEL", &format!("tunnel: env-file write failed: {e}"));
             }
         }
     }
@@ -2468,21 +2479,21 @@ async fn spawn_ssh(
                             exit_reason = Some(format!("exit {exit_status}"));
                         }
                         Some(ChannelMsg::Eof) => {
-                            dlog(&format!(
+                            log_info("SSH", &format!(
                                 "ssh-disconnect: clean Eof, workspace={} pane={} channel={:?} last_activity_ms={}",
                                 workspace_for_task, pane_for_task, ch_id, last_data_at.elapsed().as_millis()
                             ));
                             break;
                         }
                         Some(ChannelMsg::Close) => {
-                            dlog(&format!(
+                            log_info("SSH", &format!(
                                 "ssh-disconnect: clean Close, workspace={} pane={} channel={:?} last_activity_ms={}",
                                 workspace_for_task, pane_for_task, ch_id, last_data_at.elapsed().as_millis()
                             ));
                             break;
                         }
                         None => {
-                            dlog(&format!(
+                            log_warn("SSH", &format!(
                                 "ssh-disconnect: transport dropped (likely network/keepalive timeout), workspace={} pane={} channel={:?} last_activity_ms={}",
                                 workspace_for_task, pane_for_task, ch_id, last_data_at.elapsed().as_millis()
                             ));
@@ -2500,7 +2511,7 @@ async fn spawn_ssh(
                             let was_already =
                                 reconnecting_for_task.swap(true, std::sync::atomic::Ordering::Relaxed);
                             if was_already {
-                                dlog(&format!(
+                                log_debug("SSH", &format!(
                                     "ssh-disconnect: reconnect already announced for pane={}, skipping duplicate emit",
                                     pane_for_task
                                 ));
@@ -2583,7 +2594,7 @@ async fn spawn_ssh(
                 .unwrap()
                 .remove(&workspace_for_task);
             if aborted {
-                dlog(&format!(
+                log_info("TUNNEL", &format!(
                     "port-watch[{workspace_for_task}]: workspace disconnected, watcher stopped"
                 ));
             }
@@ -2689,7 +2700,7 @@ async fn spawn_ssh(
             // attaches to <name> if it exists (reconnect resumes), else
             // creates it. <name> is deterministic per winmux pane unless
             // the picker supplied an explicit one.
-            crate::dlog(&format!(
+            crate::log_debug("SSH", &format!(
                 "tmux: new-session -A -s '{}' (pane {}, {} winmux conf)",
                 name_clone,
                 pane_for_exec,
@@ -2737,7 +2748,8 @@ pub(crate) fn kill_session_inner(s: &mut Session) {
             let _ = l.killer.kill();
         }
         Session::Ssh(ssh) => {
-            dlog(
+            log_info(
+                "SSH",
                 "session detach: closing SSH channel (tmux session stays alive on the server for reconnect)",
             );
             let _ = ssh.try_send(SshCmd::Kill);
@@ -2773,13 +2785,13 @@ async fn setup_workspace_reverse_tunnel(
 ) -> u16 {
     let remote_port = match handle.tcpip_forward("127.0.0.1", 0).await {
         Ok(p) => {
-            dlog(&format!(
+            log_info("TUNNEL", &format!(
                 "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward got remote port {p}"
             ));
             p as u16
         }
         Err(e) => {
-            dlog(&format!(
+            log_warn("TUNNEL", &format!(
                 "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward failed: {e}"
             ));
             tracing::warn!("tcpip_forward[{workspace_id}] failed: {e}");
@@ -2873,7 +2885,7 @@ async fn spawn_port_watcher(
                 h.abort();
             }
             state.core.port_watchers.lock().unwrap().remove(workspace_id);
-            dlog(&format!(
+            log_debug("TUNNEL", &format!(
                 "port-watch[{workspace_id}]: stale slot, replacing with fresh watcher"
             ));
         }
@@ -2909,7 +2921,7 @@ async fn spawn_port_watcher(
     let mut wchan = match handle.channel_open_session().await {
         Ok(c) => c,
         Err(e) => {
-            dlog(&format!("port-watch[{workspace_id}]: channel_open_session failed: {e}"));
+            log_warn("TUNNEL", &format!("port-watch[{workspace_id}]: channel_open_session failed: {e}"));
             state.core.port_watchers.lock().unwrap().remove(workspace_id);
             return Err(format!("channel_open: {e}"));
         }
@@ -2926,7 +2938,7 @@ async fn spawn_port_watcher(
         shell_quote(workspace_id)
     );
     if let Err(e) = wchan.exec(true, cmd.as_str()).await {
-        dlog(&format!("port-watch[{workspace_id}]: exec failed: {e}"));
+        log_warn("TUNNEL", &format!("port-watch[{workspace_id}]: exec failed: {e}"));
         state.core.port_watchers.lock().unwrap().remove(workspace_id);
         return Err(format!("exec failed: {e}"));
     }
@@ -2942,7 +2954,7 @@ async fn spawn_port_watcher(
         }
         watchers.lock().unwrap().remove(&ws_guard);
         tasks.lock().unwrap().remove(&ws_guard);
-        dlog(&format!(
+        log_debug("TUNNEL", &format!(
             "port-watch[{ws_guard}]: channel closed, watcher slot freed"
         ));
     });
@@ -2951,7 +2963,7 @@ async fn spawn_port_watcher(
         .lock()
         .unwrap()
         .insert(workspace_id.to_string(), task);
-    dlog(&format!(
+    log_info("TUNNEL", &format!(
         "port-watch[{workspace_id}]: launched (remote_port={remote_port})"
     ));
     Ok(())
@@ -2980,7 +2992,7 @@ fn clear_workspace_detection(state: &AppState, app: &AppHandle, workspace_id: &s
         "port-detection-cleared",
         serde_json::json!({ "workspace_id": workspace_id }),
     );
-    dlog(&format!(
+    log_debug("TUNNEL", &format!(
         "port-watch[{workspace_id}]: detection cleared (was_running={})",
         aborted.is_some()
     ));
@@ -3082,7 +3094,7 @@ pub(crate) async fn open_auto_forward(
     // (127.0.0.1) — services are reachable from this machine, never the
     // LAN/external IP. Logged explicitly so a future "it's going through
     // my external IP" report can be ruled out from the debug.log.
-    dlog(&format!(
+    log_info("TUNNEL", &format!(
         "open_auto_forward[{}:{}]: bound 127.0.0.1:{} (loopback only, kernel-assigned)",
         workspace_id, remote_port, local_port
     ));
@@ -3104,7 +3116,7 @@ pub(crate) async fn open_auto_forward(
             Err(_) => "200ms timeout".to_string(),
             Ok(Ok(_)) => unreachable!(),
         };
-        dlog(&format!(
+        log_warn("TUNNEL", &format!(
             "open_auto_forward[{}:{}]: sanity probe to {} FAILED ({why}) — tearing down",
             workspace_id, remote_port, probe_target
         ));
@@ -3113,7 +3125,7 @@ pub(crate) async fn open_auto_forward(
             "forward bound but localhost:{local_port} unreachable ({why})"
         ));
     }
-    dlog(&format!(
+    log_debug("TUNNEL", &format!(
         "open_auto_forward[{}:{}]: sanity probe to {} OK",
         workspace_id, remote_port, probe_target
     ));
@@ -3194,7 +3206,7 @@ fn layout_has_ssh_consumer_pane(node: &LayoutNode) -> bool {
 #[tauri::command]
 fn workspaces_load(state: State<'_, AppState>) -> Result<WorkspacesFile, String> {
     let file = state.workspaces.lock().unwrap().clone();
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "workspaces_load: returning {} workspaces, active={:?}",
         file.workspaces.len(),
         file.active_workspace_id
@@ -3988,7 +4000,7 @@ async fn try_ensure_port_watcher(state: &AppState, workspace_id: &str) {
     let handle = match find_ssh_handle_for_workspace(state, workspace_id) {
         Some(h) => h,
         None => {
-            dlog(&format!(
+            log_debug("TUNNEL", &format!(
                 "ensure_port_watcher[{workspace_id}]: no live SSH session — skip"
             ));
             return;
@@ -4007,7 +4019,7 @@ async fn try_ensure_port_watcher(state: &AppState, workspace_id: &str) {
             let _ = spawn_port_watcher(state, &handle, workspace_id, rp, &tok).await;
         }
         _ => {
-            dlog(&format!(
+            log_debug("TUNNEL", &format!(
                 "ensure_port_watcher[{workspace_id}]: session has no reverse tunnel yet — open a terminal pane to bootstrap"
             ));
         }
@@ -4368,7 +4380,7 @@ fn workspace_create_worktree(
         }
     }
     persist(&state)?;
-    dlog(&format!(
+    log_info("WORKSPACE", &format!(
         "[worktree] created {} for ws={} branch={}",
         target.display(),
         workspace_id,
@@ -4450,20 +4462,26 @@ fn workspace_split(
 
 // ─── Phase 8.A: browser-pane commands ───────────────────────────────────────
 
-/// ring buffer; the CLI surfaces them via `winmux dev console-tail`.
+/// Unified frontend log sink: writes a `[UI:TAG]` line to debug.log through
+/// the leveled logger AND pushes into the dev ring buffer so `winmux dev
+/// console-tail` keeps working. The frontend logger filters client-side too,
+/// but this gate is authoritative (popouts that never load settings still
+/// behave). Replaces the old `diag_log` + `dev_console_log` pair.
 #[tauri::command]
-fn dev_console_log(
+fn ui_log(
     state: State<'_, AppState>,
     level: String,
+    tag: String,
     message: String,
-    ts: i64,
 ) -> Result<(), String> {
+    let lvl = winmux_core::LogLevel::from_str(&level);
+    winmux_core::log_at(lvl, &format!("UI:{tag}"), &message);
     dev::push_console(
         &state.console_buffer,
         dev::ConsoleEntry {
-            level,
-            message,
-            ts,
+            level: lvl.as_str().to_string(),
+            message: format!("[{}] {message}", tag.to_uppercase()),
+            ts: chrono::Utc::now().timestamp_millis(),
         },
     );
     Ok(())
@@ -4602,7 +4620,7 @@ fn workspace_distribute_evenly(
     }
     persist(&state)?;
     let _ = app.emit("workspaces:changed", ());
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "workspace_distribute_evenly: ws={workspace_id} reset {count} split(s)"
     ));
     Ok(state.workspaces.lock().unwrap().clone())
@@ -4660,7 +4678,7 @@ fn pane_set_smart_bidi(
     // chunk takes the new state.
     bidi_filter::set_pane_enabled(&state.bidi_filters, &pane_id, enabled);
     let _ = app.emit("workspaces:changed", ());
-    dlog(&format!(
+    log_debug("PTY", &format!(
         "[bidi] pane_set_smart_bidi: ws={} pane={} enabled={}",
         workspace_id, pane_id, enabled
     ));
@@ -4885,7 +4903,7 @@ async fn workspace_ensure_connected(
                     .values()
                     .any(|s| matches!(s, Session::Ssh(ssh) if ssh.workspace_id == workspace_id));
                 if already {
-                    dlog(&format!(
+                    log_debug("SSH", &format!(
                         "workspace_ensure_connected: {workspace_id} connected by a pane mid-auth — dropping spare headless handle"
                     ));
                     return Ok(());
@@ -4910,7 +4928,7 @@ async fn workspace_ensure_connected(
                 .values()
                 .any(|s| matches!(s, Session::Ssh(ssh) if ssh.workspace_id == workspace_id));
             if already {
-                dlog(&format!(
+                log_debug("SSH", &format!(
                     "workspace_ensure_connected: {workspace_id} connected by a pane mid-tunnel-setup — dropping spare headless handle"
                 ));
                 return Ok(());
@@ -4932,7 +4950,7 @@ async fn workspace_ensure_connected(
                 }),
             );
             drop(sessions);
-            dlog(&format!(
+            log_info("SSH", &format!(
                 "workspace_ensure_connected: headless session up for {workspace_id} (method={auth_method:?})"
             ));
             Ok(())
@@ -4940,7 +4958,7 @@ async fn workspace_ensure_connected(
         Err(e) => {
             // Most commonly: no key/agent → password-only, which we can't
             // prompt for here. Skip silently; the terminal-pane path handles it.
-            dlog(&format!(
+            log_debug("SSH", &format!(
                 "workspace_ensure_connected: skipped for {workspace_id}: {e}"
             ));
             Ok(())
@@ -5198,7 +5216,7 @@ async fn pane_list_tmux_sessions(
     let handle = match handle {
         Some(h) => h,
         None => {
-            dlog(&format!(
+            log_debug("SSH", &format!(
                 "pane_list_tmux_sessions: no live SSH handle for ws={workspace_id}, returning empty list"
             ));
             return Ok(vec![]);
@@ -5279,12 +5297,12 @@ fn load_tmux_labels() -> TmuxLabelsFile {
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
-            dlog(&format!("tmux-labels: read failed: {e}"));
+            log_warn("WORKSPACE", &format!("tmux-labels: read failed: {e}"));
             return TmuxLabelsFile::default();
         }
     };
     serde_json::from_str(&text).unwrap_or_else(|e| {
-        dlog(&format!("tmux-labels: parse failed: {e}"));
+        log_warn("WORKSPACE", &format!("tmux-labels: parse failed: {e}"));
         TmuxLabelsFile::default()
     })
 }
@@ -5333,7 +5351,7 @@ fn set_tmux_label_internal(workspace_id: &str, session_name: &str, label: &str) 
             .insert(session_name.to_string(), trimmed.to_string());
     }
     if let Err(e) = save_tmux_labels(&file) {
-        dlog(&format!("tmux-labels: save failed: {e}"));
+        log_warn("WORKSPACE", &format!("tmux-labels: save failed: {e}"));
     }
 }
 
@@ -5697,7 +5715,7 @@ async fn pane_kill_session(
         match handle.channel_open_session().await {
             Ok(mut ch) => {
                 if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
-                    dlog(&format!("pane_kill_session: exec failed: {e}"));
+                    log_warn("SSH", &format!("pane_kill_session: exec failed: {e}"));
                 }
                 // Drain the channel briefly so the server completes the exec.
                 let _ = tokio::time::timeout(
@@ -5714,7 +5732,7 @@ async fn pane_kill_session(
                 let _ = ch.close().await;
             }
             Err(e) => {
-                dlog(&format!("pane_kill_session: channel_open failed: {e}"));
+                log_warn("SSH", &format!("pane_kill_session: channel_open failed: {e}"));
             }
         }
     }
@@ -5917,12 +5935,13 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
         let mut out: Vec<String> = s
             .lines()
             .rev()
-            // dlog writes "[<ts>] <msg>" — require that prefix so we only
-            // surface real log entries. Multi-line logged commands put their
-            // continuation lines (e.g. a shell snippet's own `echo "ERROR …"`)
-            // on un-prefixed lines; those are NOT errors and were polluting
-            // the doctor report.
-            .filter(|l| l.starts_with('[') && (l.contains("ERROR") || l.contains("WARN")))
+            // The unified logger writes "[<ts>] [LEVEL] [TAG] <msg>" — match
+            // the level column exactly so a message merely *containing* the
+            // word ERROR (e.g. a logged shell snippet's own `echo "ERROR …"`)
+            // can't pollute the doctor report.
+            .filter(|l| {
+                l.starts_with('[') && (l.contains("] [ERROR] [") || l.contains("] [WARN ] ["))
+            })
             .take(10)
             .map(|s| s.to_string())
             .collect();
@@ -5952,22 +5971,6 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
 #[tauri::command]
 fn doctor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(build_doctor_snapshot(&state))
-}
-
-// Phase 48-D: frontend stall instrumentation. The FE drives a 100ms
-// heartbeat and a longtask PerformanceObserver; when either spots
-// >threshold gaps, it calls this to record them in debug.log with a
-// `[ui]` prefix so post-hoc support tickets can correlate UI jank
-// with backend activity.
-#[tauri::command]
-fn diag_log(level: String, msg: String) -> Result<(), String> {
-    let lvl = match level.to_ascii_lowercase().as_str() {
-        "error" => "ERROR",
-        "warn" | "warning" => "WARN",
-        _ => "INFO",
-    };
-    dlog(&format!("[ui] {lvl}: {msg}"));
-    Ok(())
 }
 
 #[tauri::command]
@@ -6061,7 +6064,7 @@ async fn popout_pane(
     let mut last_err = String::new();
     let mut built = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        dlog(&format!(
+        log_debug("APP", &format!(
             "popout_pane: building window label={label} size={win_w}x{win_h} (attempt {attempt}/{MAX_ATTEMPTS})"
         ));
         match tauri::WebviewWindowBuilder::new(
@@ -6080,7 +6083,7 @@ async fn popout_pane(
             }
             Err(e) => {
                 last_err = e.to_string();
-                dlog(&format!(
+                log_warn("APP", &format!(
                     "popout_pane: build attempt {attempt}/{MAX_ATTEMPTS} FAILED: {last_err}"
                 ));
                 if attempt < MAX_ATTEMPTS {
@@ -6091,7 +6094,7 @@ async fn popout_pane(
     }
     let win = built
         .ok_or_else(|| format!("popout window failed after {MAX_ATTEMPTS} attempts: {last_err}"))?;
-    dlog(&format!("popout_pane: window {label} built ok"));
+    log_info("APP", &format!("popout_pane: window {label} built ok"));
 
     // Tell the app when the popout closes (user X, or the frontend closing
     // itself on pty:exit) so the origin pane can re-attach input + resize.
@@ -6145,7 +6148,7 @@ pub fn run() {
             .name()
             .unwrap_or("<unnamed>")
             .to_string();
-        dlog(&format!(
+        log_error("APP", &format!(
             "PANIC at {location}: {msg}\n  thread: {thread_name}\n  backtrace:\n{bt}"
         ));
         // Re-emit to stderr so any wrapping process (cargo run, tauri
@@ -6170,7 +6173,7 @@ pub fn run() {
         }
         let _ = std::fs::create_dir_all(&profile);
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &profile);
-        dlog(&format!("webview2 profile folder: {}", profile.display()));
+        log_debug("APP", &format!("webview2 profile folder: {}", profile.display()));
     }
 
     tauri::Builder::default()
@@ -6179,12 +6182,12 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let state: State<AppState> = app.state();
-            dlog("─── setup() starting ───");
+            log_debug("APP", "─── setup() starting ───");
             // Phase 8.E hotfix: log the exact config dir up front so we can
             // tell whether the binary is resolving the right path. Honors
             // `WINMUX_CONFIG_DIR` env var override if set.
             let cfg_dir = config_dir().ok();
-            dlog(&format!(
+            log_info("APP", &format!(
                 "setup: config_dir = {:?} (override env WINMUX_CONFIG_DIR = {:?})",
                 cfg_dir,
                 std::env::var("WINMUX_CONFIG_DIR").ok()
@@ -6208,22 +6211,22 @@ pub fn run() {
             .inner_size(1100.0, 700.0)
             .build()
             .map_err(|e| Box::<dyn std::error::Error>::from(format!("main window: {e}")))?;
-            dlog("setup: main webview created");
+            log_debug("APP", "setup: main webview created");
             // Unshipped-fivefer (#2): system tray. Best-effort — a failure
             // just means no tray + no close-to-tray (see on_window_event).
             match tray::init(app.handle()) {
-                Ok(()) => dlog("setup: system tray created"),
-                Err(e) => dlog(&format!("setup: tray init failed (continuing): {e}")),
+                Ok(()) => log_debug("APP", "setup: system tray created"),
+                Err(e) => log_warn("APP", &format!("setup: tray init failed (continuing): {e}")),
             }
             match load_from_disk() {
                 Ok(file) => {
                     *state.workspaces.lock().unwrap() = file;
                     *state.load_state.lock().unwrap() = Some(LoadState::Loaded);
-                    dlog("setup: load_state = Loaded");
+                    log_info("APP", "setup: load_state = Loaded");
                 }
                 Err(e) => {
                     *state.load_state.lock().unwrap() = Some(LoadState::Failed);
-                    dlog(&format!(
+                    log_error("APP", &format!(
                         "setup: load FAILED: {e} — load_state = Failed (persists will refuse)"
                     ));
                     tracing::warn!("workspaces load failed: {e}");
@@ -6234,10 +6237,10 @@ pub fn run() {
                 Ok(nf) => {
                     let count = nf.notes.len();
                     *state.notes.lock().unwrap() = nf;
-                    dlog(&format!("setup: notes loaded ({count} notes)"));
+                    log_info("APP", &format!("setup: notes loaded ({count} notes)"));
                 }
                 Err(e) => {
-                    dlog(&format!("setup: notes load failed: {e} (starting empty)"));
+                    log_warn("APP", &format!("setup: notes load failed: {e} (starting empty)"));
                 }
             }
             // Phase 12.C: load recent paths history (or empty on first run).
@@ -6245,27 +6248,33 @@ pub fn run() {
                 Ok(rf) => {
                     let count = rf.entries.len();
                     *state.recent_paths.lock().unwrap() = rf;
-                    dlog(&format!("setup: recent_paths loaded ({count} entries)"));
+                    log_info("APP", &format!("setup: recent_paths loaded ({count} entries)"));
                 }
                 Err(e) => {
-                    dlog(&format!("setup: recent_paths load failed: {e} (starting empty)"));
+                    log_warn("APP", &format!("setup: recent_paths load failed: {e} (starting empty)"));
                 }
             }
             // Phase 9.A: load settings (or write defaults on first run).
             match settings::load_from_disk() {
                 Ok(s) => {
-                    dlog(&format!("setup: settings loaded (theme.preset={})", s.theme.preset));
+                    log_info("APP", &format!("setup: settings loaded (theme.preset={})", s.theme.preset));
                     *state.settings.lock().unwrap() = s;
                 }
                 Err(e) => {
-                    dlog(&format!("setup: settings load failed: {e} (using defaults)"));
+                    log_warn("APP", &format!("setup: settings load failed: {e} (using defaults)"));
                 }
             }
             // Phase 75: prune stale debug logs so they can't accumulate.
+            // Unified logging: apply the persisted threshold before anything
+            // else logs (save_to_disk keeps it in sync from here on), then
+            // start the remote-log sync loop (pulls server/hooks/install
+            // logs into the local debug.log every 60s).
             {
-                let days = state.settings.lock().unwrap().logs.retention_days;
-                prune_logs(days);
+                let logs = state.settings.lock().unwrap().logs.clone();
+                winmux_core::set_log_level(winmux_core::LogLevel::from_str(&logs.level));
+                prune_logs(logs.retention_days);
             }
+            log_sync::spawn_log_sync(app.handle().clone());
             // Phase 39.B: one-time migration. Workspaces created before
             // Phase 39 flipped the auto_port_forward default still have
             // `true` saved and keep auto-forwarding on every connect
@@ -6290,13 +6299,13 @@ pub fn run() {
                     };
                     if changed > 0 {
                         match persist(&state) {
-                            Ok(()) => dlog(&format!(
+                            Ok(()) => log_info("APP", &format!(
                                 "migration phase_39: flipped {changed} workspace(s) auto_port_forward to false"
                             )),
-                            Err(e) => dlog(&format!("migration phase_39: save failed: {e}")),
+                            Err(e) => log_warn("APP", &format!("migration phase_39: save failed: {e}")),
                         }
                     } else {
-                        dlog("migration phase_39: no workspaces needed flipping");
+                        log_debug("APP", "migration phase_39: no workspaces needed flipping");
                     }
                     // Mark done + persist settings (do this regardless of
                     // `changed` so the migration never re-runs).
@@ -6306,7 +6315,7 @@ pub fn run() {
                         s.clone()
                     };
                     if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                        dlog(&format!("migration phase_39: settings save failed: {e}"));
+                        log_warn("APP", &format!("migration phase_39: settings save failed: {e}"));
                     }
                 }
             }
@@ -6334,13 +6343,13 @@ pub fn run() {
                     };
                     if changed > 0 {
                         match persist(&state) {
-                            Ok(()) => dlog(&format!(
+                            Ok(()) => log_info("APP", &format!(
                                 "migration phase_53: rewrote {changed} Browser/FileManager pane(s) to Terminal"
                             )),
-                            Err(e) => dlog(&format!("migration phase_53: save failed: {e}")),
+                            Err(e) => log_warn("APP", &format!("migration phase_53: save failed: {e}")),
                         }
                     } else {
-                        dlog("migration phase_53: no legacy Browser/FileManager panes found");
+                        log_debug("APP", "migration phase_53: no legacy Browser/FileManager panes found");
                     }
                     let snapshot = {
                         let mut s = state.settings.lock().unwrap();
@@ -6348,7 +6357,7 @@ pub fn run() {
                         s.clone()
                     };
                     if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                        dlog(&format!("migration phase_53: settings save failed: {e}"));
+                        log_warn("APP", &format!("migration phase_53: settings save failed: {e}"));
                     }
                 }
             }
@@ -6385,7 +6394,7 @@ pub fn run() {
                                         && now.saturating_sub(w.last_active_at) > ttl_secs;
                                     let empty = w.layout.is_none();
                                     if stale && empty {
-                                        dlog(&format!(
+                                        log_info("WORKSPACE", &format!(
                                             "auto-destroy: removing workspace {} ({}) — empty + last_active {} days ago",
                                             w.id,
                                             w.name,
@@ -6400,7 +6409,7 @@ pub fn run() {
                             };
                             if removed > 0 {
                                 if let Err(e) = persist(&state) {
-                                    dlog(&format!("auto-destroy: save failed: {e}"));
+                                    log_warn("WORKSPACE", &format!("auto-destroy: save failed: {e}"));
                                 }
                             }
                         }
@@ -6428,8 +6437,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 rpc_server::run(state_clone, app_handle).await;
             });
-            dlog(&format!("setup: rpc server spawned on {}", rpc_server::pipe_name()));
-            dlog("─── setup() done ───");
+            log_info("APP", &format!("setup: rpc server spawned on {}", rpc_server::pipe_name()));
+            log_debug("APP", "─── setup() done ───");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -6521,10 +6530,9 @@ pub fn run() {
             pane_set_title,
             pane_set_annotation,
             workspace_reset_layout,
-            dev_console_log,
+            ui_log,
             pty_write,
             pty_resize,
-            diag_log,
             doctor,
             notifications_list,
             notifications_clear,

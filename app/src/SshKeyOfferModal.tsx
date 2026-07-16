@@ -2,6 +2,9 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "./i18n";
+import { createLogger } from "./logger";
+
+const log = createLogger("SSH");
 
 // Phase 32.B: SSH key auto-setup offer.
 // When the user authenticates via password, the backend emits
@@ -75,7 +78,7 @@ export function SshKeyOfferModal() {
     try {
       await invoke("ssh_key_offer_dismiss", { dontShowAgain: dontShow() });
     } catch (e) {
-      console.warn("ssh_key_offer_dismiss failed", e);
+      log.warn("ssh_key_offer_dismiss failed", e);
     }
     close();
   };
@@ -98,7 +101,7 @@ export function SshKeyOfferModal() {
         helpTopic: "ssh-key-setup",
       });
     } catch (e) {
-      console.warn("workspace_split (help) failed", e);
+      log.warn("workspace_split (help) failed", e);
     }
     close();
   };

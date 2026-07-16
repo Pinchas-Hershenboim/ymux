@@ -27,7 +27,7 @@ use russh::client;
 use russh_keys::key::PrivateKeyWithHashAlg;
 use russh_keys::{HashAlg, PrivateKey};
 
-use winmux_core::{dlog, SshClient};
+use winmux_core::{log_debug, log_error, log_warn, SshClient};
 
 /// Which auth method succeeded for the active SSH session. Surfaced to
 /// `spawn_ssh` (still in `app`) so a successful Password auth can prompt
@@ -93,7 +93,7 @@ pub async fn try_agent_auth(
         ("openssh-ssh-agent", r"\\.\pipe\openssh-ssh-agent"),
         ("pageant", r"\\.\pipe\pageant"),
     ] {
-        dlog(&format!("ssh.auth: agent probe {label} ({pipe_path})"));
+        log_debug("SSH", &format!("ssh.auth: agent probe {label} ({pipe_path})"));
         // Hard 2-second cap on the connect — if Pageant's pipe is alive but
         // its server is wedged, `connect_named_pipe` can block indefinitely.
         let connect_fut =
@@ -105,15 +105,15 @@ pub async fn try_agent_auth(
         .await
         {
             Ok(Ok(a)) => {
-                dlog(&format!("ssh.auth: agent probe {label} CONNECTED"));
+                log_debug("SSH", &format!("ssh.auth: agent probe {label} CONNECTED"));
                 a
             }
             Ok(Err(e)) => {
-                dlog(&format!("ssh.auth: agent probe {label} not reachable: {e}"));
+                log_debug("SSH", &format!("ssh.auth: agent probe {label} not reachable: {e}"));
                 continue;
             }
             Err(_) => {
-                dlog(&format!(
+                log_warn("SSH", &format!(
                     "ssh.auth: agent probe {label} TIMED OUT after 2s — skipping"
                 ));
                 continue;
@@ -126,15 +126,15 @@ pub async fn try_agent_auth(
         .await
         {
             Ok(Ok(ids)) => {
-                dlog(&format!("ssh.auth: agent {label} offered {} identit(y/ies)", ids.len()));
+                log_debug("SSH", &format!("ssh.auth: agent {label} offered {} identit(y/ies)", ids.len()));
                 ids
             }
             Ok(Err(e)) => {
-                dlog(&format!("ssh.auth: agent {label} request_identities: {e}"));
+                log_warn("SSH", &format!("ssh.auth: agent {label} request_identities: {e}"));
                 continue;
             }
             Err(_) => {
-                dlog(&format!(
+                log_warn("SSH", &format!(
                     "ssh.auth: agent {label} request_identities TIMED OUT after 2s — skipping"
                 ));
                 continue;
@@ -145,18 +145,18 @@ pub async fn try_agent_auth(
         }
         any_agent_seen = true;
         for id in identities {
-            dlog(&format!("ssh.auth: agent {label} attempting authenticate_publickey_with"));
+            log_debug("SSH", &format!("ssh.auth: agent {label} attempting authenticate_publickey_with"));
             match handle.authenticate_publickey_with(user, id, &mut agent).await {
                 Ok(true) => {
-                    dlog(&format!("ssh.auth: agent {label} authenticated OK"));
+                    log_debug("SSH", &format!("ssh.auth: agent {label} authenticated OK"));
                     return Some(true);
                 }
                 Ok(false) => {
-                    dlog(&format!("ssh.auth: agent {label} key not accepted by server"));
+                    log_debug("SSH", &format!("ssh.auth: agent {label} key not accepted by server"));
                     continue;
                 }
                 Err(e) => {
-                    dlog(&format!("ssh.auth: agent {label} auth error: {e}"));
+                    log_warn("SSH", &format!("ssh.auth: agent {label} auth error: {e}"));
                     continue;
                 }
             }
@@ -164,10 +164,10 @@ pub async fn try_agent_auth(
     }
 
     if any_agent_seen {
-        dlog("ssh.auth: agent probes done — no agent identity worked");
+        log_debug("SSH", "ssh.auth: agent probes done — no agent identity worked");
         Some(false)
     } else {
-        dlog("ssh.auth: no agent reachable on any pipe");
+        log_debug("SSH", "ssh.auth: no agent reachable on any pipe");
         None
     }
 }
@@ -185,7 +185,7 @@ pub async fn try_authenticate(
     key_passphrase: Option<&str>,
     password: Option<&str>,
 ) -> Result<Option<AuthMethod>, String> {
-    dlog(&format!(
+    log_debug("SSH", &format!(
         "ssh.auth: begin user={} key_path={:?} key_passphrase={} password={}",
         user,
         key_path,
@@ -194,9 +194,9 @@ pub async fn try_authenticate(
     ));
 
     // 1) ssh-agent (OpenSSH agent / Pageant via named pipe).
-    dlog("ssh.auth: step 1 — try_agent_auth");
+    log_debug("SSH", "ssh.auth: step 1 — try_agent_auth");
     if let Some(true) = try_agent_auth(handle, user).await {
-        dlog("ssh.auth: step 1 OK (agent)");
+        log_debug("SSH", "ssh.auth: step 1 OK (agent)");
         return Ok(Some(AuthMethod::Agent));
     }
 
@@ -210,7 +210,7 @@ pub async fn try_authenticate(
     // the file with std::fs ourselves (which uses CreateFileW correctly) and
     // handing the bytes to russh-keys' in-memory parser, `decode_secret_key`.
     if let Some(p) = key_path {
-        dlog(&format!(
+        log_debug("SSH", &format!(
             "ssh.auth: step 2 — explicit key file {p:?} bytes={:?} len={}",
             p.as_bytes(),
             p.len()
@@ -219,18 +219,18 @@ pub async fn try_authenticate(
             Ok(t) => t,
             Err(e) => {
                 let s = e.to_string();
-                dlog(&format!("ssh.auth: read {p} ERR: {s}"));
+                log_error("SSH", &format!("ssh.auth: read {p} ERR: {s}"));
                 return Err(format!("load key {p}: {s}"));
             }
         };
-        dlog(&format!(
+        log_debug("SSH", &format!(
             "ssh.auth: read {p} OK ({} bytes, head={:?})",
             key_text.len(),
             key_text.lines().next().unwrap_or("")
         ));
         match russh_keys::decode_secret_key(&key_text, key_passphrase) {
             Ok(key) => {
-                dlog(&format!(
+                log_debug("SSH", &format!(
                     "ssh.auth: key {p} decoded — attempting authenticate_publickey"
                 ));
                 let pkwh = pkwh(key)?;
@@ -238,14 +238,14 @@ pub async fn try_authenticate(
                     .authenticate_publickey(user, pkwh)
                     .await
                     .map_err(|e| e.to_string())?;
-                dlog(&format!("ssh.auth: step 2 publickey result = {r}"));
+                log_debug("SSH", &format!("ssh.auth: step 2 publickey result = {r}"));
                 if r {
                     return Ok(Some(AuthMethod::Key));
                 }
             }
             Err(e) => {
                 let s = e.to_string();
-                dlog(&format!("ssh.auth: decode_secret_key {p} ERR: {s}"));
+                log_warn("SSH", &format!("ssh.auth: decode_secret_key {p} ERR: {s}"));
                 if key_load_needs_passphrase(&s) {
                     if key_passphrase.is_none() {
                         return Err(format!("KEY_PASSPHRASE_REQUIRED:{}", p));
@@ -261,17 +261,17 @@ pub async fn try_authenticate(
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map_err(|e| e.to_string())?;
-    dlog(&format!("ssh.auth: step 3 — default key paths under {home}/.ssh/"));
+    log_debug("SSH", &format!("ssh.auth: step 3 — default key paths under {home}/.ssh/"));
     for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
         let p = format!("{}/.ssh/{}", home, name);
         if !Path::new(&p).exists() {
             continue;
         }
-        dlog(&format!("ssh.auth: step 3 trying {p}"));
+        log_debug("SSH", &format!("ssh.auth: step 3 trying {p}"));
         let text = match std::fs::read_to_string(&p) {
             Ok(t) => t,
             Err(e) => {
-                dlog(&format!("ssh.auth: step 3 read {p} skip: {e}"));
+                log_debug("SSH", &format!("ssh.auth: step 3 read {p} skip: {e}"));
                 continue;
             }
         };
@@ -281,7 +281,7 @@ pub async fn try_authenticate(
                     .authenticate_publickey(user, pkwh)
                     .await
                     .map_err(|e| e.to_string())?;
-                dlog(&format!("ssh.auth: step 3 {p} result = {r}"));
+                log_debug("SSH", &format!("ssh.auth: step 3 {p} result = {r}"));
                 if r {
                     return Ok(Some(AuthMethod::Key));
                 }
@@ -291,17 +291,17 @@ pub async fn try_authenticate(
 
     // 4) Password (sent to remote, not key passphrase).
     if let Some(pw) = password {
-        dlog("ssh.auth: step 4 — password");
+        log_debug("SSH", "ssh.auth: step 4 — password");
         let r = handle
             .authenticate_password(user, pw)
             .await
             .map_err(|e| e.to_string())?;
-        dlog(&format!("ssh.auth: step 4 password result = {r}"));
+        log_debug("SSH", &format!("ssh.auth: step 4 password result = {r}"));
         if r {
             return Ok(Some(AuthMethod::Password));
         }
     }
 
-    dlog("ssh.auth: ALL methods exhausted, no auth succeeded");
+    log_warn("SSH", "ssh.auth: ALL methods exhausted, no auth succeeded");
     Ok(None)
 }

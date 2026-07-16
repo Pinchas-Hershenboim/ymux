@@ -18,7 +18,11 @@ import (
 // used to create a fresh http.Client + Transport per poll, leaking each
 // Transport's keep-alive idle pool into dockerd (RSS growth to 8 GB on a
 // 34-container host in ~16 h). See app/src-tauri/server/internal/insights/docker.go.
-const Version = "2.1.3"
+// 2.1.4 (Phase 79): unified logging — slog with the system-wide line format
+// ([ts] [LEVEL] [SRV:COMP] msg) into insights.log + a 30s watcher on
+// ~/.winmux/log-level so the desktop's Settings→Logs level applies without a
+// service restart. Bumped so the add-on offers the update.
+const Version = "2.1.4"
 
 // FrameVersion is the WebSocket frame-contract version (PHASE-77-DESIGN §4.4).
 // It is sent in the WS `hello` frame; a client that refuses an unknown value

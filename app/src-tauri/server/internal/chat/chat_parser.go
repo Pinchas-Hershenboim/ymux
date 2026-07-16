@@ -11,7 +11,6 @@ package chat
 
 import (
 	"encoding/json"
-	"log"
 )
 
 type claudeEnvelope struct {
@@ -50,7 +49,7 @@ func (s *Session) handleClaudeLine(line []byte) {
 	var env claudeEnvelope
 	if err := json.Unmarshal(line, &env); err != nil {
 		// Metadata only (Rule #1) — never the content.
-		log.Printf("chat: session %s unparsable stdout line (%d bytes)", s.id, len(line))
+		logger.Warn("session unparsable stdout line", "session", s.id, "bytes", len(line))
 		return
 	}
 	s.mgr.store.bumpActivity(s.id, 0)
@@ -115,7 +114,7 @@ func (s *Session) emitMessageBlocks(raw json.RawMessage, assistant bool) {
 	}
 	var msg claudeMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		log.Printf("chat: session %s message block parse failed", s.id)
+		logger.Warn("session message block parse failed", "session", s.id)
 		return
 	}
 	for _, b := range msg.Content {

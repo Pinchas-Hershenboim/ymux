@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -18,8 +17,8 @@ import (
 // both the /docker endpoint and the sampler so the cause is unambiguous in
 // insights.log (this patch's whole point).
 func logDockerUnavailable(socket, reason, detail string) {
-	log.Printf("docker: unavailable reason=%s socket=%s uid=%d detail=%q",
-		reason, socket, os.Getuid(), detail)
+	logger.Warn("docker unavailable",
+		"reason", reason, "socket", socket, "uid", os.Getuid(), "detail", detail)
 }
 
 // dockerCandidates lists the socket paths we probe, in priority order. The

@@ -4972,6 +4972,10 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   white-space: pre-wrap;
   word-break: break-word;
   margin: 6px 0;
+  /* Log lines are always English ([ts] [LEVEL] [TAG] …) — pin the viewer
+     LTR so an RTL UI language (he/ar) doesn't mirror it. */
+  direction: ltr;
+  text-align: left;
 }
 
 /* Phase 39: sidebar paired action row (Notes + Settings). */
@@ -5062,6 +5066,9 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .ports-row-actions button:hover { color: var(--w-text, #e6edf3); }
 .ports-row-label { cursor: pointer; }
 .settings-logs-path {
+  /* Filesystem path — always LTR, even in an RTL UI. */
+  direction: ltr;
+  text-align: left;
   font-family: var(--w-font-mono, "Cascadia Mono", monospace);
   font-size: 12px;
   background: var(--w-surface, #161b22);

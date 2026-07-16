@@ -17,7 +17,7 @@ use russh::client::Handle;
 use russh::ChannelMsg;
 use serde::Deserialize;
 
-use winmux_core::{dlog, shell_quote, SshClient};
+use winmux_core::{log_debug, log_error, log_info, log_warn, shell_quote, SshClient};
 
 const REMOTE_DIR: &str = ".winmux/bin";
 /// Phase tmux-conf: the per-arch-independent assets — currently just
@@ -78,7 +78,7 @@ async fn ssh_exec(
     handle: &mut Handle<SshClient>,
     cmd: &str,
 ) -> Result<(String, i32), String> {
-    dlog(&format!("bootstrap: exec '{}'", cmd_summary(cmd)));
+    log_debug("BOOT", &format!("bootstrap: exec '{}'", cmd_summary(cmd)));
     let mut chan = handle
         .channel_open_session()
         .await
@@ -101,7 +101,7 @@ async fn ssh_exec(
     let _ = chan.close().await;
     let stdout_str = String::from_utf8_lossy(&stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&stderr).to_string();
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: exec '{}' exit={} stdout={:?} stderr={:?}",
         cmd_summary(cmd),
         exit_code,
@@ -134,11 +134,11 @@ async fn upload_via_sftp(
     // ("Failure: Failure"); rename(2) instead swaps the directory entry to a
     // fresh inode, so a still-running old binary never blocks the replace.
     let tmp_path = format!("{abs_remote_path}.tmp");
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "remote bootstrap: uploading to {tmp_path} then atomic-rename to {abs_remote_path} (sha256 {expected_hash})"
     ));
 
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: opening sftp subsystem for {} ({} bytes)",
         tmp_path,
         bytes.len()
@@ -147,42 +147,42 @@ async fn upload_via_sftp(
         .channel_open_session()
         .await
         .map_err(|e| {
-            dlog(&format!("bootstrap: sftp channel_open failed: {e}"));
+            log_error("BOOT", &format!("bootstrap: sftp channel_open failed: {e}"));
             format!("open sftp channel: {e}")
         })?;
     chan.request_subsystem(true, "sftp")
         .await
         .map_err(|e| {
-            dlog(&format!("bootstrap: sftp request_subsystem failed: {e}"));
+            log_error("BOOT", &format!("bootstrap: sftp request_subsystem failed: {e}"));
             format!("request sftp: {e}")
         })?;
     let stream = chan.into_stream();
     let sftp = russh_sftp::client::SftpSession::new(stream)
         .await
         .map_err(|e| {
-            dlog(&format!("bootstrap: SftpSession::new failed: {e}"));
+            log_error("BOOT", &format!("bootstrap: SftpSession::new failed: {e}"));
             format!("sftp init: {e}")
         })?;
-    dlog("bootstrap: sftp session ready");
+    log_debug("BOOT", "bootstrap: sftp session ready");
 
     {
         let mut file = sftp
             .create(&tmp_path)
             .await
             .map_err(|e| {
-                dlog(&format!("bootstrap: sftp.create {tmp_path} failed: {e}"));
+                log_error("BOOT", &format!("bootstrap: sftp.create {tmp_path} failed: {e}"));
                 format!("sftp create {tmp_path}: {e}")
             })?;
         file.write_all(bytes)
             .await
             .map_err(|e| {
-                dlog(&format!("bootstrap: sftp write_all failed: {e}"));
+                log_error("BOOT", &format!("bootstrap: sftp write_all failed: {e}"));
                 format!("sftp write: {e}")
             })?;
         file.flush().await.ok();
         file.shutdown().await.ok();
     }
-    dlog("bootstrap: sftp temp upload complete");
+    log_debug("BOOT", "bootstrap: sftp temp upload complete");
 
     let _ = sftp.close().await;
 
@@ -194,14 +194,14 @@ async fn upload_via_sftp(
     );
     let (_, mv_code) = ssh_exec(handle, &mv_cmd).await?;
     if mv_code != 0 {
-        dlog(&format!(
+        log_error("BOOT", &format!(
             "bootstrap: atomic rename {tmp_path} -> {abs_remote_path} failed (exit {mv_code})"
         ));
         return Err(format!(
             "rename {tmp_path} -> {abs_remote_path}: exit {mv_code}"
         ));
     }
-    dlog("bootstrap: sftp upload complete (atomic rename done)");
+    log_debug("BOOT", "bootstrap: sftp upload complete (atomic rename done)");
 
     Ok(())
 }
@@ -213,7 +213,7 @@ pub async fn bootstrap(
     force: bool,
     auto_install_hooks: bool,
 ) -> Result<BootstrapStatus, String> {
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: starting (force={force} auto_install_hooks={auto_install_hooks})"
     ));
 
@@ -225,17 +225,17 @@ pub async fn bootstrap(
     let triple = match detect_triple(&uname) {
         Some(t) => t,
         None => {
-            dlog(&format!("bootstrap: unsupported arch '{}'", uname.trim()));
+            log_warn("BOOT", &format!("bootstrap: unsupported arch '{}'", uname.trim()));
             return Ok(BootstrapStatus::UnsupportedArch(uname.trim().to_string()));
         }
     };
-    dlog(&format!("bootstrap: triple = {}", triple));
+    log_debug("BOOT", &format!("bootstrap: triple = {}", triple));
 
     // Resolve manifest entry for this triple.
     let entry = manifest
         .get(triple)
         .ok_or_else(|| format!("no manifest entry for {triple}"))?;
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: manifest entry path={} sha256={}",
         entry.path, entry.sha256
     ));
@@ -249,7 +249,7 @@ pub async fn bootstrap(
     let remote_dir_abs = format!("{}/{}", home, REMOTE_DIR);
     let remote_bin_abs = format!("{}/{}", remote_dir_abs, entry.path);
     let remote_symlink_abs = format!("{}/winmux", remote_dir_abs);
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: remote paths — dir={} bin={} symlink={}",
         remote_dir_abs, remote_bin_abs, remote_symlink_abs
     ));
@@ -263,7 +263,7 @@ pub async fn bootstrap(
         .await?;
         let remote_hash = sum_out.trim().to_lowercase();
         if remote_hash == entry.sha256.to_lowercase() {
-            dlog("bootstrap: hash matches existing — skipping upload");
+            log_debug("BOOT", "bootstrap: hash matches existing — skipping upload");
             // Ensure symlink anyway.
             let _ = ssh_exec(
                 handle,
@@ -280,7 +280,7 @@ pub async fn bootstrap(
             }
             return Ok(BootstrapStatus::AlreadyOk);
         }
-        dlog(&format!(
+        log_debug("BOOT", &format!(
             "bootstrap: hash mismatch — remote='{}' expected='{}' — will upload",
             remote_hash, entry.sha256
         ));
@@ -312,7 +312,7 @@ pub async fn bootstrap(
     .await?;
     let after_hash = verify_out.trim().to_lowercase();
     if after_hash != entry.sha256.to_lowercase() {
-        dlog(&format!(
+        log_error("BOOT", &format!(
             "bootstrap: FAILED post-upload hash mismatch: got {} expected {}",
             after_hash, entry.sha256
         ));
@@ -321,7 +321,7 @@ pub async fn bootstrap(
             entry.sha256
         ));
     }
-    dlog("bootstrap: COMPLETE — upload verified");
+    log_info("BOOT", "bootstrap: COMPLETE — upload verified");
 
     // Phase 18: add `~/.winmux/bin` to the user's shell rc file so a
     // fresh non-winmux SSH session also gets `winmux` on PATH.
@@ -361,12 +361,12 @@ async fn ensure_hooks_installed(handle: &mut Handle<SshClient>, symlink_abs: &st
             // Log only the final status line (e.g. "Done. …") — never the
             // full output, which can include remote paths.
             let last = out.trim().lines().last().unwrap_or("").trim();
-            dlog(&format!(
+            log_debug("BOOT", &format!(
                 "bootstrap: setup-hooks exit={code} status={:?}",
                 last
             ));
         }
-        Err(e) => dlog(&format!("bootstrap: setup-hooks exec failed: {e}")),
+        Err(e) => log_warn("BOOT", &format!("bootstrap: setup-hooks exec failed: {e}")),
     }
 }
 
@@ -383,7 +383,7 @@ async fn ensure_tmux_conf(
     let entry = match manifest.get(TMUX_CONF_MANIFEST_KEY) {
         Some(e) => e,
         None => {
-            dlog("bootstrap: tmux-conf entry missing from manifest — skipping upload");
+            log_warn("BOOT", "bootstrap: tmux-conf entry missing from manifest — skipping upload");
             return;
         }
     };
@@ -399,29 +399,29 @@ async fn ensure_tmux_conf(
         {
             Ok(v) => v,
             Err(e) => {
-                dlog(&format!("bootstrap: tmux-conf hash check failed: {e}"));
+                log_warn("BOOT", &format!("bootstrap: tmux-conf hash check failed: {e}"));
                 return;
             }
         };
         if sum_out.trim().to_lowercase() == entry.sha256.to_lowercase() {
-            dlog("bootstrap: tmux-conf hash matches — skipping upload");
+            log_debug("BOOT", "bootstrap: tmux-conf hash matches — skipping upload");
             return;
         }
     }
 
     if let Err(e) = ssh_exec(handle, &format!("mkdir -p {remote_base}")).await {
-        dlog(&format!("bootstrap: mkdir for tmux-conf failed: {e}"));
+        log_warn("BOOT", &format!("bootstrap: mkdir for tmux-conf failed: {e}"));
         return;
     }
     let bytes = match resource_loader(&entry.path) {
         Ok(b) => b,
         Err(e) => {
-            dlog(&format!("bootstrap: read tmux-conf bundle failed: {e}"));
+            log_warn("BOOT", &format!("bootstrap: read tmux-conf bundle failed: {e}"));
             return;
         }
     };
     if let Err(e) = upload_via_sftp(handle, &remote_conf, &bytes, &entry.sha256).await {
-        dlog(&format!("bootstrap: upload tmux-conf failed: {e}"));
+        log_warn("BOOT", &format!("bootstrap: upload tmux-conf failed: {e}"));
         return;
     }
     let _ = ssh_exec(handle, &format!("chmod 0644 {remote_conf}")).await;
@@ -431,7 +431,7 @@ async fn ensure_tmux_conf(
     // see pane connect). Re-sourcing the conf into a running server would
     // reset `mouse` back to off globally and fight that injection on
     // every new pane. New sessions still pick up the conf via `-f`.
-    dlog(&format!(
+    log_info("BOOT", &format!(
         "bootstrap: tmux-conf uploaded ({} bytes)",
         bytes.len()
     ));
@@ -467,19 +467,19 @@ async fn ensure_path_in_rc(handle: &mut Handle<SshClient>) {
         Ok((out, _exit)) => {
             let line = out.trim();
             if line.starts_with("ADDED ") {
-                dlog(&format!(
+                log_info("BOOT", &format!(
                     "bootstrap: added PATH entry to {}",
                     line.trim_start_matches("ADDED ").trim()
                 ));
             } else if line.starts_with("EXISTS ") {
-                dlog(&format!(
+                log_debug("BOOT", &format!(
                     "bootstrap: PATH already configured in {}",
                     line.trim_start_matches("EXISTS ").trim()
                 ));
             } else {
-                dlog(&format!("bootstrap: ensure_path_in_rc: {line}"));
+                log_debug("BOOT", &format!("bootstrap: ensure_path_in_rc: {line}"));
             }
         }
-        Err(e) => dlog(&format!("bootstrap: ensure_path_in_rc failed: {e}")),
+        Err(e) => log_warn("BOOT", &format!("bootstrap: ensure_path_in_rc failed: {e}")),
     }
 }

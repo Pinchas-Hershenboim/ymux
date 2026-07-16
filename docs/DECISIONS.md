@@ -39,12 +39,22 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 - **Folded in (2026-07-15):** the 2026-05-27 “MCP server in browser” deferral — same underlying question (is the external MCP project alive?). One decision closes both.
 - **State:** Open — needs Yossi’s call. Yossi (2026-07-15): a cardinal decision, deliberately deferred until the cleanup round is done.
 
-### 2026-07-15 — Log follow-ups — PARKED until the logging overhaul is verified, then close
-- **Yossi (2026-07-15):** the logging process is being rebuilt right now; these stay parked until it’s finished and proven working, and are then slated for deletion/closure rather than being built as-is.
-- **`dlog_tag` sweep** — 152 untagged `dlog(` sites vs 20 tagged; tag `[SSH]` `[BOOTSTRAP]` `[TUNNEL]` `[RPC]` (deferred from Phase 73). Re-evaluate against the new logging process — may become moot.
-- **Server-side log-retention flag** — the daemon janitor is a fixed 7-day; the desktop retention setting doesn’t propagate (noted in Phase 75). Same: re-evaluate after the overhaul.
-- **Recording Suite (#3.4)** — unrelated to logs but parked in the same sweep; unbuilt since May, nobody asked. Kill candidate at the same checkpoint.
-- **State:** Open — parked; revisit at the logging-overhaul checkpoint and close what’s moot.
+### 2026-07-15 — Log follow-ups — updated post-overhaul (Phase 79)
+- **Yossi (2026-07-15):** parked until the logging overhaul lands; the overhaul (Phase 79, branch `claude/unified-logging`) is now implemented — statuses updated:
+- **`dlog_tag` sweep** — ✅ **MOOT/DONE**: Phase 79.E converted all 245 sites to leveled `log_*` with component tags. Close once the branch merges.
+- **Server-side log-retention flag** — still open, but now has a cheap path: Phase 79 introduced `~/.winmux/log-level` (desktop-pushed file, Go server watches it). Retention can ride the same mechanism (e.g. a `~/.winmux/log-retention` file or one combined config file read by the janitor). Effort: S.
+- **Recording Suite (#3.4)** — unrelated to logs; kill candidate, awaiting Yossi's checkpoint call.
+- **State:** Open — close item 1 at merge; item 2 is a small follow-up; item 3 needs a call.
+
+### 2026-07-15 — Phase 79 follow-ups: smoke, rebake, build-warning cleanup
+Deferred items out of the unified-logging overhaul (Phase 79) — each is a self-contained session:
+- **Manual smoke with a live host (required before release):** Settings → Logs → switch to Debug → `[DEBUG]` lines appear immediately and `~/.winmux/log-level` updates on a connected host (server converges ≤30s, no restart); frontend error → `[UI:*]` line in tail + `winmux dev console-tail`; wait ~60s with a connected workspace → `[SYNC]` markers + `[SRV:*]`/`[HOOK]` lines merged into local debug.log; truncate a remote log → next cycle resumes near EOF without duplication; Clear button works.
+- **Rebake embedded remote binaries — ✅ DONE (2026-07-15, same day):** Yossi flagged the deferral as wrong (the rebake was in the approved plan). `winmux-server-linux-{x64,arm64}` rebuilt with the slog migration, versions bumped 2.1.3 → 2.1.4 (`core.Version` + `INSIGHTS_VERSION`) so existing installs get the update offer (79.F); the bundled Linux CLI + manifest SHA rebaked via the tauri build (79.G). Existing remotes upgrade via Add-ons → Update.
+- **ts-rs serde-attr warning noise (~73 per build):** ts-rs can't parse multi-key attrs like `#[serde(default, skip_serializing_if = "Option::is_none")]` and ignores them. Mostly noise, but there's a real gap underneath: ignored `skip_serializing_if` means generated TS types declare fields required that JSON may omit (masked today by the hand-mirrored types in `app/src/settings.ts`). Fix = ts-rs upgrade or splitting attrs across lines on ~dozens of structs. Effort: M, mechanical.
+- **`renumber_group_list` dead_code warning** — `app/src-tauri/src/lib.rs` (~:569), beta.3 ws-dragdrop scaffolding with zero callers. Wire it into the group drag-drop path or delete it (check whether group reordering shipped). Effort: S. (Also spawned as a session chip 2026-07-15.)
+- **Vite chunk-size warning** — 1.3 MB minified bundle > 500 kB limit. Real fix = code-splitting/dynamic imports; low priority for a local desktop webview (no network fetch). Effort: M-L. Snooze candidate: raise `chunkSizeWarningLimit` to silence.
+- **State:** Open — smoke + rebake belong to the next release cut; the three warning items are independent cleanup sessions.
+
 
 <!-- Backlog seeded from a scan of herdr (https://github.com/ogulcancelik/herdr) —
      a CLI agent multiplexer, v0.5.9 / 906★ as of May 2026. Ideas, not commitments. -->
@@ -99,6 +109,13 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 ### 2026-07-15 — (II) RTL caret — CLOSED, fixed by Approach C (thread open since 2026-06-26)
 - **Context:** the caret sat one cell off on RTL lines; parked for a month because xterm's minified DOM renderer + `dir="auto"` rows made any blind CSS fix likely to break LTR, and a live data point was never captured.
 - **Resolution:** the v0.4.4-beta.1 per-line direction work — Approach C (`521e116`), which computes an explicit per-row `dir` via `lineDirection()` and aligned the caret arrow-mirroring to the same rule — fixed it as a side effect. **Yossi confirmed live (2026-07-15): caret sits correctly on Hebrew lines in beta.1+.** No further action; the devtools-inspection plan is moot.
+
+### 2026-07-15 — Unified logging: one format, one file, level in Settings
+- **Context:** logging was scattered across 6 destinations with no level control and no uniform structure (desktop `debug.log` in `[unix_ms]` format, `tracing` to stdout, 123 raw frontend `console.*`, Go server stdlib `log` to `insights.log`, CLI `hook-debug.log` in `unix_secs` format, provisioning `mobile-install.log` raw). Yossi asked for: a mandatory logger everywhere, a debug/info setting in Settings, everything readable in ONE place, and a uniform line format that names the writing component.
+- **Decisions (Yossi, 2026-07-15):** (1) "one place" = **physical aggregation** — a 60s desktop sync pulls new lines from the 3 remote logs into the local `debug.log` (remote files stay as backup/fallback); (2) Settings exposes only **debug|info** (internally 4 levels; warn/error always written); (3) **full sweep** of all call sites in all layers.
+- **Outcome:** unified line format `[YYYY-MM-DD HH:MM:SS.mmm +TZ] [LEVEL] [COMP] msg` everywhere. `winmux_core::log_debug/info/warn/error(tag, msg)` + global `AtomicU8` threshold (`dlog`/`dlog_tag` remain as info-level shims, zero in-tree callers). Frontend `app/src/logger.ts` (`createLogger(tag)`) → `ui_log` command (replaced `diag_log` + `dev_console_log`; ring buffer for `winmux dev console-tail` retained). Go server migrated to `log/slog` with a custom handler (`internal/logging`) + 30s watcher on `~/.winmux/log-level`. CLI `hook_log(level, msg)` reads the same file (`WINMUX_HOOK_VERBOSE` still forces debug). Level propagates: instantly local (settings save funnel), on connect / addon install / level change to remotes (`log_sync::push_log_level`). New `src/log_sync.rs`: per-host byte cursors in `log-sync.json` (atomic), one combined exec per host, 256KB/file/cycle cap, truncate-detection resets near EOF, partial trailing lines held back. Settings → Logs: level select + remote-sync checkbox (i18n ×4). Doctor's recent-errors filter tightened to the `] [ERROR] [` column. This also closes Phase 73's deferred tag sweep.
+- **Note:** Go server changes require rebaking `resources/winmux-server-linux-*` (and the CLI `winmux-linux-x64`) via the cross-compile pipeline before they reach users.
+- **Incident note:** the original implementation worktree (`remote-control-ff33ac`) was deleted from disk with all work uncommitted before the commit step; everything was rebuilt from the session context + re-run sweeps in the `unified-logging` worktree. Lesson: commit per phase in long worktree sessions.
 
 ### 2026-07-15 — Netfree TLS fix: rustls + `native-certs`, NOT native-tls (revises f00fa1f)
 - **Context:** `f00fa1f` (beta.3-netfree) switched ureq to `default-features = false, features = ["native-tls"]` so the updater trusts the Windows Certificate Store (Netfree root). A parallel session hit a build error, and the investigation found the deeper problem too.

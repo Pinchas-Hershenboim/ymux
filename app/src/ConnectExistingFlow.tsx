@@ -5,6 +5,9 @@ import { IconClose, IconCheck } from "./icons";
 import type { ServerDiscovery } from "./bindings/ServerDiscovery";
 import type { ConnectExistingInput } from "./bindings/ConnectExistingInput";
 import type { ConnectExistingResult } from "./bindings/ConnectExistingResult";
+import { createLogger } from "./logger";
+
+const log = createLogger("CONNECT");
 
 // Phase 65.R: the "Connect to existing server" multi-machine SSH
 // onboarding flow, embedded inside the Provisioning wizard's "connect to
@@ -80,8 +83,8 @@ export function ConnectExistingFlow(p: Props) {
       setDiscovery(d);
       // Phase 65.R-fix: diagnostic — confirms discover ran and what the
       // picker will offer (captured by `winmux dev console-tail`).
-      console.log(
-        `[connect-existing] discovered users=${JSON.stringify(d.users)} ` +
+      log.debug(
+        `discovered users=${JSON.stringify(d.users)} ` +
           `is_root=${d.is_root} can_sudo=${d.can_sudo} → step=choose`
       );
       // Phase 65.R-fix: steer away from root. The backend now excludes

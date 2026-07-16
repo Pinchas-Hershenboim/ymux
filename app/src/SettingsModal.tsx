@@ -19,6 +19,7 @@ import {
   DEFAULT_CLAUDE_SETTINGS,
   DEFAULT_CLAUDE_USAGE_SETTINGS,
   DEFAULT_HOOK_NOTIFICATIONS,
+  DEFAULT_LOGS_SETTINGS,
   HookType,
   HookNotificationSettings,
   INTERACTIVE_HOOKS,
@@ -29,6 +30,9 @@ import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
+import { createLogger } from "./logger";
+
+const log = createLogger("SETTINGS");
 
 interface Props {
   open: boolean;
@@ -59,20 +63,46 @@ export function SettingsModal(p: Props) {
   const [logPath, setLogPath] = createSignal<string>("");
   const [logCopied, setLogCopied] = createSignal(false);
   const [logTail, setLogTail] = createSignal<string>("");
+  // Unified logging: component filter ([HOOK] / [SRV:METRICS] / [SSH] / …).
+  // "" = all. Filtering fetches a deeper tail so a sparse tag still shows
+  // meaningful history.
+  const [logFilter, setLogFilter] = createSignal<string>("");
   const refreshLogTail = async () => {
     try {
-      setLogTail(await invoke<string>("read_log_tail", { n: 200 }));
+      setLogTail(
+        await invoke<string>("read_log_tail", { n: logFilter() ? 2000 : 200 }),
+      );
     } catch (e) {
-      console.warn("read_log_tail failed", e);
+      log.warn("read_log_tail failed", e);
     }
   };
+  // Distinct component tags discovered in the fetched tail. Line shape:
+  // `[ts] [LEVEL] [TAG] msg` — the tag is the third bracket group.
+  const LOG_TAG_RE = /^\[[^\]]+\] \[[A-Z ]{5}\] \[([^\]]+)\]/;
+  const logTags = createMemo<string[]>(() => {
+    const tags = new Set<string>();
+    for (const line of logTail().split("\n")) {
+      const m = LOG_TAG_RE.exec(line);
+      if (m) tags.add(m[1]);
+    }
+    return [...tags].sort();
+  });
+  const filteredLogTail = createMemo<string>(() => {
+    const tag = logFilter();
+    if (!tag) return logTail();
+    const needle = `] [${tag}] `;
+    return logTail()
+      .split("\n")
+      .filter((l) => l.includes(needle))
+      .join("\n");
+  });
   // Phase 75: clear the debug log now, then refresh the viewer.
   const clearLogs = async () => {
     try {
       await invoke("clear_debug_log_cmd");
       await refreshLogTail();
     } catch (e) {
-      console.warn("clear_debug_log_cmd failed", e);
+      log.warn("clear_debug_log_cmd failed", e);
     }
   };
   // Phase 48-C: /doctor snapshot — paste-friendly JSON for bug reports.
@@ -100,7 +130,7 @@ export function SettingsModal(p: Props) {
         await saveSettings(next);
         setLastSaved(Date.now());
       } catch (e) {
-        console.error("settings_save failed", e);
+        log.error("settings_save failed", e);
       } finally {
         setSaving(false);
       }
@@ -119,16 +149,16 @@ export function SettingsModal(p: Props) {
     setTheme({ ansi: { ...p.settings.theme.ansi, ...patch } });
 
   onMount(async () => {
-    try { setPresets(await getPresets()); } catch (e) { console.warn(e); }
-    try { setFonts(await listSystemFonts()); } catch (e) { console.warn(e); }
+    try { setPresets(await getPresets()); } catch (e) { log.warn("getPresets failed", e); }
+    try { setFonts(await listSystemFonts()); } catch (e) { log.warn("listSystemFonts failed", e); }
     // Phase 38: resolve the debug.log path for the Logs section.
-    try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { console.warn(e); }
+    try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { log.warn("log_dir_path failed", e); }
   });
 
   // Phase 38: Logs section actions.
   const onOpenLogFolder = () => {
     if (!logPath()) return;
-    void revealItemInDir(logPath()).catch((e) => console.warn("revealItemInDir failed", e));
+    void revealItemInDir(logPath()).catch((e) => log.warn("revealItemInDir failed", e));
   };
   const onCopyLogPath = async () => {
     if (!logPath()) return;
@@ -137,7 +167,7 @@ export function SettingsModal(p: Props) {
       setLogCopied(true);
       setTimeout(() => setLogCopied(false), 1500);
     } catch (e) {
-      console.warn("clipboard write failed", e);
+      log.warn("clipboard write failed", e);
     }
   };
 
@@ -183,7 +213,7 @@ export function SettingsModal(p: Props) {
       applyTheme(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("apply preset failed", e);
+      log.error("apply preset failed", e);
     }
   };
 
@@ -198,7 +228,7 @@ export function SettingsModal(p: Props) {
       await saveSettings(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("settings_save failed", e);
+      log.error("settings_save failed", e);
       return;
     }
     const base = redesignBase(next.theme.preset);
@@ -216,7 +246,7 @@ export function SettingsModal(p: Props) {
       applyTheme(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("reset failed", e);
+      log.error("reset failed", e);
     }
   };
 
@@ -232,10 +262,10 @@ export function SettingsModal(p: Props) {
         const fresh = await loadSettings();
         p.onChange(fresh);
       } catch (e) {
-        console.warn("refresh settings after check failed", e);
+        log.warn("refresh settings after check failed", e);
       }
     } catch (e) {
-      console.error("check updates failed", e);
+      log.error("check updates failed", e);
     } finally {
       setChecking(false);
     }
@@ -1166,7 +1196,23 @@ export function SettingsModal(p: Props) {
               <Show when={tab() === "logs"}>
                 <section>
                   <h4>{t("settings.logs.recent")}</h4>
-                  <pre class="settings-logs-viewer">{logTail()}</pre>
+                  {/* Component filter — tags discovered from the tail itself. */}
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.filter")}</span>
+                    <select
+                      value={logFilter()}
+                      onChange={(e) => {
+                        setLogFilter(e.currentTarget.value);
+                        void refreshLogTail();
+                      }}
+                    >
+                      <option value="">{t("settings.logs.filterAll")}</option>
+                      <For each={logTags()}>
+                        {(tag) => <option value={tag}>{tag}</option>}
+                      </For>
+                    </select>
+                  </div>
+                  <pre class="settings-logs-viewer">{filteredLogTail()}</pre>
                   <div class="settings-logs-actions">
                     <button onClick={() => void refreshLogTail()}>
                       {t("settings.logs.refresh")}
@@ -1185,6 +1231,40 @@ export function SettingsModal(p: Props) {
                       {logCopied() ? t("settings.updates.logs.copied") : t("settings.updates.logs.copyPath")}
                     </button>
                   </div>
+                  {/* Unified logging: level threshold + remote sync. */}
+                  <hr class="modal-sep" />
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.level")}</span>
+                    <select
+                      value={p.settings.logs?.level ?? "info"}
+                      onChange={(e) =>
+                        update("logs", {
+                          ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                          level: e.currentTarget.value === "debug" ? "debug" : "info",
+                        })
+                      }
+                    >
+                      <option value="info">{t("settings.logs.levelInfo")}</option>
+                      <option value="debug">{t("settings.logs.levelDebug")}</option>
+                    </select>
+                  </div>
+                  <div class="settings-hint">{t("settings.logs.level_hint")}</div>
+                  <div class="settings-logs-row">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={p.settings.logs?.remote_sync ?? true}
+                        onChange={(e) =>
+                          update("logs", {
+                            ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                            remote_sync: e.currentTarget.checked,
+                          })
+                        }
+                      />{" "}
+                      {t("settings.logs.remoteSync")}
+                    </label>
+                  </div>
+                  <div class="settings-hint">{t("settings.logs.remoteSync_hint")}</div>
                   {/* Phase 75: retention + clear. */}
                   <hr class="modal-sep" />
                   <div class="settings-logs-row">
@@ -1197,6 +1277,7 @@ export function SettingsModal(p: Props) {
                       value={p.settings.logs?.retention_days ?? 7}
                       onChange={(e) =>
                         update("logs", {
+                          ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
                           retention_days: Math.max(0, Math.min(365, parseInt(e.currentTarget.value || "0", 10) || 0)),
                         })
                       }

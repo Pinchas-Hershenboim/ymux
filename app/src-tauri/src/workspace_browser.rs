@@ -38,7 +38,7 @@ use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, State, Url, Webview, WebviewUrl,
 };
 
-use crate::{config_dir, dlog, AppState};
+use crate::{config_dir, log_debug, log_info, log_warn, AppState};
 
 /// Map of `workspace_id -> Webview`. Exactly one entry per workspace
 /// that has opened its Browser at least once this session. Cleared
@@ -154,7 +154,7 @@ pub(crate) async fn workspace_browser_show(
             LogicalSize::new(w.max(1.0), h.max(1.0)),
         ) {
             Ok(wv) => {
-                dlog(&format!(
+                log_debug("BROWSER", &format!(
                     "[workspace_browser_show] add_child ws={} ok (attempt {}/{})",
                     workspace_id, attempt, MAX_ATTEMPTS
                 ));
@@ -163,7 +163,7 @@ pub(crate) async fn workspace_browser_show(
             }
             Err(e) => {
                 last_err = e.to_string();
-                dlog(&format!(
+                log_warn("BROWSER", &format!(
                     "[workspace_browser_show] add_child ws={} attempt {}/{} FAILED: {}",
                     workspace_id, attempt, MAX_ATTEMPTS, last_err
                 ));
@@ -182,7 +182,7 @@ pub(crate) async fn workspace_browser_show(
         .unwrap()
         .insert(workspace_id.clone(), webview);
 
-    dlog(&format!(
+    log_info("BROWSER", &format!(
         "[workspace_browser_show] spawned ws={} url={} rect=({:.0},{:.0},{:.0},{:.0})",
         workspace_id, url, x, y, w, h
     ));
@@ -228,7 +228,7 @@ pub(crate) async fn workspace_browser_navigate(
     // Phase 62.C (F.1): log the destination so a "browser isn't reaching
     // the service" report can be checked against the actual URL (should
     // be http://127.0.0.1:<port>, never localhost / an external IP).
-    dlog(&format!(
+    log_info("BROWSER", &format!(
         "[workspace_browser_navigate] ws={} url={}",
         workspace_id, url
     ));
@@ -265,7 +265,7 @@ pub(crate) async fn workspace_browser_close(
         .remove(&workspace_id);
     if let Some(w) = webview {
         let _ = w.close();
-        dlog(&format!(
+        log_debug("BROWSER", &format!(
             "[workspace_browser_close] dropped webview ws={}",
             workspace_id
         ));
@@ -312,12 +312,12 @@ pub(crate) fn cleanup_workspace_sessions(workspace_id: &str) {
         return;
     }
     match std::fs::remove_dir_all(&dir) {
-        Ok(()) => dlog(&format!(
+        Ok(()) => log_info("BROWSER", &format!(
             "[workspace_browser] cleaned sessions dir for ws={} at {}",
             workspace_id,
             dir.display()
         )),
-        Err(e) => dlog(&format!(
+        Err(e) => log_warn("BROWSER", &format!(
             "[workspace_browser] FAILED to clean sessions dir {}: {}",
             dir.display(),
             e

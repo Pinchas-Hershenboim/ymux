@@ -6,7 +6,6 @@ package chat
 
 import (
 	"database/sql"
-	"log"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -150,7 +149,7 @@ func (s *ChatStore) updateSessionStatus(id, status string) {
 		`UPDATE sessions SET status=?, last_activity_at=? WHERE id=?`,
 		status, time.Now().Unix(), id)
 	if err != nil {
-		log.Printf("chat: update status %s: %v", id, err)
+		logger.Error("update session status failed", "session", id, "err", err)
 	}
 }
 

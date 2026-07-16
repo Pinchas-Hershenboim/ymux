@@ -21,7 +21,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{dlog, AppState, DiffSource, LayoutNode};
+use crate::{log_debug, AppState, DiffSource, LayoutNode};
 
 const POLL_INTERVAL_MS: u64 = 800;
 
@@ -123,7 +123,7 @@ pub(crate) fn start_watcher(app: AppHandle, state: AppState, pane_id: String) {
         loop {
             let Some((cwd, source)) = lookup_pane_context(&state, &pane_id_for_task) else {
                 // Pane is gone — stop.
-                dlog(&format!(
+                log_debug("DIFF", &format!(
                     "[diff_pane] watcher exiting: pane {} no longer present",
                     pane_id_for_task
                 ));

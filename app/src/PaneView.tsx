@@ -6,6 +6,9 @@ import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
 import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
+import { createLogger } from "./logger";
+
+const log = createLogger("PANE");
 import { TechText } from "./TechText";
 import {
   paneDragStore,
@@ -167,7 +170,7 @@ export function PaneView(p: Props) {
       setPaneEmoji(emoji);
       setCustomHex(color ?? "");
     } catch (e) {
-      console.error("pane_set_identity failed", e);
+      log.error("pane_set_identity failed", e);
     }
   };
   const pickColor = (hex: string) => {
@@ -580,7 +583,7 @@ export function PaneView(p: Props) {
       setDropMsg(t("pane.drop.uploaded", { name: basename }));
       return remote;
     } catch (e) {
-      console.error("pane_upload_dropped failed", e);
+      log.error("pane_upload_dropped failed", e);
       setDropMsg(t("pane.drop.failed", { name: basename, err: String(e) }));
       return null;
     }
@@ -598,7 +601,7 @@ export function PaneView(p: Props) {
   const writeToPty = (s: string) => {
     if (!ti?.sessionId) return;
     void invoke("pty_write", { sessionId: ti.sessionId, data: s }).catch(
-      (e) => console.error("pty_write failed", e),
+      (e) => log.error("pty_write failed", e),
     );
   };
 
@@ -679,7 +682,7 @@ export function PaneView(p: Props) {
           })();
         });
       } catch (e) {
-        console.warn("pane: onDragDropEvent failed:", e);
+        log.warn("onDragDropEvent failed", e);
       }
     })();
 
@@ -939,7 +942,7 @@ export function PaneView(p: Props) {
               workspaceId: p.workspaceId,
               paneId: p.pane.pane_id,
               enabled: next,
-            }).catch((err) => console.error("pane_set_smart_bidi failed", err));
+            }).catch((err) => log.error("pane_set_smart_bidi failed", err));
           }}
         >
           <IconArrowLeftRight size={14} />

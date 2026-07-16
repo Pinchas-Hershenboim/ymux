@@ -59,47 +59,152 @@ pub fn config_dir_pub() -> Result<PathBuf, String> {
     config_dir()
 }
 
-/// User-visible debug log. Writes a timestamped line to
-/// `<config_dir>/debug.log`. Errors are intentionally swallowed —
-/// logging must never crash the caller. See CLAUDE.md Rule 9 for the
-/// dlog-vs-tracing audience distinction.
 /// Size cap for `debug.log` before it rotates to `debug.log.1`. Bounds the
 /// on-disk footprint to ~2× this (current + one rotation) so a chatty session
 /// can't balloon the log — the v0.3.1 pipe-leak produced ~936k lines.
 pub const DEBUG_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
-pub fn dlog(msg: &str) {
+/// Severity for the unified user-visible log. Repr matches the atomic
+/// threshold below; ordering is Debug < Info < Warn < Error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum LogLevel {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+}
+
+impl LogLevel {
+    /// Parse a persisted/user-supplied level. Unknown values fall back to
+    /// Info so a corrupt settings value can never silence errors.
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "debug" => LogLevel::Debug,
+            "warn" | "warning" => LogLevel::Warn,
+            "error" => LogLevel::Error,
+            _ => LogLevel::Info,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+
+    /// Fixed-width column for the log line (`[DEBUG]`, `[INFO ]`, …) so the
+    /// component tag lines up vertically when scanning the file.
+    fn column(self) -> &'static str {
+        match self {
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO ",
+            LogLevel::Warn => "WARN ",
+            LogLevel::Error => "ERROR",
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => LogLevel::Debug,
+            2 => LogLevel::Warn,
+            3 => LogLevel::Error,
+            _ => LogLevel::Info,
+        }
+    }
+}
+
+/// Global write threshold for `log_at`. Default Info; Settings → Logs flips
+/// it to Debug. Relaxed ordering is fine — a racy line during a level change
+/// is harmless.
+static GLOBAL_LOG_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+pub fn set_log_level(level: LogLevel) {
+    GLOBAL_LOG_LEVEL.store(level as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn log_level() -> LogLevel {
+    LogLevel::from_u8(GLOBAL_LOG_LEVEL.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Append one already-formatted line to `<config_dir>/debug.log`, rotating at
+/// the size cap. Errors are intentionally swallowed — logging must never
+/// crash the caller.
+fn write_line(line: &str) {
     if let Ok(dir) = config_dir() {
         let p = dir.join("debug.log");
         // Rotate once the active log passes the cap (cheap: one stat per line;
-        // dlog already does an open/write/close per call).
+        // we already do an open/write/close per call).
         if let Ok(meta) = std::fs::metadata(&p) {
             if meta.len() > DEBUG_LOG_MAX_BYTES {
                 let _ = std::fs::rename(&p, dir.join("debug.log.1"));
             }
         }
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
         let _ = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&p)
             .and_then(|mut f| {
                 use std::io::Write as _;
-                writeln!(f, "[{ts}] {msg}")
+                writeln!(f, "{line}")
             });
     }
 }
 
-/// User-visible debug log, tagged by subsystem so the single `debug.log` reads
-/// as organized per-service streams — e.g. `[MONITOR]`, `[MOBILE]`, `[ADDON]`,
-/// `[TUNNEL]`, `[SSH]`. The tag is uppercased for at-a-glance scanning. Prefer
-/// this over bare `dlog` for new subsystem logging. See CLAUDE.md Rule 9 for
+/// Append a line verbatim (no timestamp/level/tag prefix), still honoring
+/// rotation. For the remote-log sync, whose pulled lines already carry the
+/// unified prefix from their origin host. Rule 1 applies to the writers on
+/// the remote side: pulled content must be log metadata, never PTY content.
+pub fn append_raw_line(line: &str) {
+    write_line(line);
+}
+
+/// The unified user-visible log line: `[ts] [LEVEL] [TAG] msg` where ts is
+/// local time with UTC offset (`2026-07-15 14:32:05.123 +03:00`) so lines
+/// merged from other machines still correlate. Lines below the global
+/// threshold are dropped. Rule 1: never log PTY input/output content — only
+/// metadata (pane IDs, byte counts, error kinds). See CLAUDE.md Rule 9 for
 /// the dlog-vs-tracing audience distinction.
+pub fn log_at(level: LogLevel, tag: &str, msg: &str) {
+    if level < log_level() {
+        return;
+    }
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
+    write_line(&format!(
+        "[{ts}] [{}] [{}] {msg}",
+        level.column(),
+        tag.to_uppercase()
+    ));
+}
+
+pub fn log_debug(tag: &str, msg: &str) {
+    log_at(LogLevel::Debug, tag, msg);
+}
+
+pub fn log_info(tag: &str, msg: &str) {
+    log_at(LogLevel::Info, tag, msg);
+}
+
+pub fn log_warn(tag: &str, msg: &str) {
+    log_at(LogLevel::Warn, tag, msg);
+}
+
+pub fn log_error(tag: &str, msg: &str) {
+    log_at(LogLevel::Error, tag, msg);
+}
+
+/// Legacy shim: untagged info-level line. Prefer `log_*` with a component
+/// tag; kept so out-of-tree callers keep compiling.
+pub fn dlog(msg: &str) {
+    log_at(LogLevel::Info, "APP", msg);
+}
+
+/// Legacy shim: tagged info-level line. Prefer the leveled `log_*` family.
 pub fn dlog_tag(subsystem: &str, msg: &str) {
-    dlog(&format!("[{}] {msg}", subsystem.to_uppercase()));
+    log_at(LogLevel::Info, subsystem, msg);
 }
 
 /// Phase 75: prune debug logs so they can't accumulate. Deletes the rotated
@@ -946,5 +1051,84 @@ mod tests {
         // No fractional seconds (use Secs precision).
         assert!(!s.contains('.'), "no fractional seconds expected, got {s}");
         assert_eq!(s.len(), 20, "expected 20-char RFC 3339, got {s}");
+    }
+
+    // ── unified logger ─────────────────────────────────────────────
+
+    #[test]
+    fn log_level_parse_round_trip_and_fallback() {
+        for l in [
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            assert_eq!(LogLevel::from_str(l.as_str()), l);
+        }
+        assert_eq!(LogLevel::from_str("WARNING"), LogLevel::Warn);
+        assert_eq!(LogLevel::from_str(" Debug "), LogLevel::Debug);
+        // Unknown / corrupt values must never silence errors → Info.
+        assert_eq!(LogLevel::from_str("verbose"), LogLevel::Info);
+        assert_eq!(LogLevel::from_str(""), LogLevel::Info);
+    }
+
+    #[test]
+    fn log_level_ordering() {
+        assert!(LogLevel::Debug < LogLevel::Info);
+        assert!(LogLevel::Info < LogLevel::Warn);
+        assert!(LogLevel::Warn < LogLevel::Error);
+    }
+
+    // The fs-backed assertions share one test: WINMUX_CONFIG_DIR and the
+    // global level are process-wide, so splitting them would race under
+    // the parallel test runner.
+    #[test]
+    fn log_at_format_threshold_and_raw_append() {
+        let dir = std::env::temp_dir().join(format!("winmux-core-logtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("WINMUX_CONFIG_DIR", &dir);
+
+        set_log_level(LogLevel::Info);
+        log_debug("ssh", "below threshold, dropped");
+        log_info("ssh", "hello info");
+        log_error("Tunnel", "boom");
+        append_raw_line("[2026-07-15 09:00:00.000 +00:00] [INFO ] [SRV:CHAT] remote line");
+
+        let text = std::fs::read_to_string(dir.join("debug.log")).expect("debug.log written");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "debug line must be filtered out: {text}");
+        // `[YYYY-MM-DD HH:MM:SS.mmm +HH:MM] [LEVEL] [TAG] msg` — check shape,
+        // level column width, and tag uppercasing.
+        assert!(
+            lines[0].contains("] [INFO ] [SSH] hello info"),
+            "unexpected line: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("] [ERROR] [TUNNEL] boom"),
+            "unexpected line: {}",
+            lines[1]
+        );
+        assert!(lines[0].starts_with('['), "timestamp prefix: {}", lines[0]);
+        // Raw append is verbatim — no double prefix.
+        assert_eq!(
+            lines[2],
+            "[2026-07-15 09:00:00.000 +00:00] [INFO ] [SRV:CHAT] remote line"
+        );
+
+        // Debug threshold lets debug through; legacy shims stay info-level.
+        set_log_level(LogLevel::Debug);
+        log_debug("fm", "now visible");
+        dlog("legacy untagged");
+        dlog_tag("boot", "legacy tagged");
+        let text = std::fs::read_to_string(dir.join("debug.log")).expect("debug.log written");
+        assert!(text.contains("] [DEBUG] [FM] now visible"), "{text}");
+        assert!(text.contains("] [INFO ] [APP] legacy untagged"), "{text}");
+        assert!(text.contains("] [INFO ] [BOOT] legacy tagged"), "{text}");
+
+        // Restore defaults for any test that runs after us.
+        set_log_level(LogLevel::Info);
+        std::env::remove_var("WINMUX_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

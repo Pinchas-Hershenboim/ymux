@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import html2canvas from "html2canvas";
 import { t } from "./i18n";
+import { createLogger } from "./logger";
+
+const log = createLogger("BROWSER");
 import type { LayoutNode, SplitDirection } from "./types";
 import {
   IconArrowLeft,
@@ -143,7 +146,7 @@ export function BrowserPane(p: Props) {
         await invoke("browser_pane_navigate", {
           paneId: p.pane.pane_id,
           url: rewritten,
-        }).catch((err) => console.error("browser_pane_navigate failed", err));
+        }).catch((err) => log.error("browser_pane_navigate failed", err));
       }
     } catch (err) {
       setResolveErr(String(err));
@@ -213,7 +216,7 @@ export function BrowserPane(p: Props) {
       y,
       w,
       h,
-    }).catch((err) => console.error("browser_pane_resize failed", err));
+    }).catch((err) => log.error("browser_pane_resize failed", err));
   };
   const queueResize = () => {
     if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
@@ -244,7 +247,7 @@ export function BrowserPane(p: Props) {
           h: Math.round(r.height),
         };
       })
-      .catch((err) => console.error("browser_pane_spawn failed", err));
+      .catch((err) => log.error("browser_pane_spawn failed", err));
 
     // Track every layout change that could move/resize the slot.
     const ro = new ResizeObserver(queueResize);

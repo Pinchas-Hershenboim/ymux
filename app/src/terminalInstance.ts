@@ -6,6 +6,9 @@ import type {
   IClipboardProvider,
   ClipboardSelectionType,
 } from "@xterm/addon-clipboard";
+import { createLogger } from "./logger";
+
+const log = createLogger("TERMINAL");
 
 // Phase LL: OSC 52 clipboard provider — WRITE-ONLY. A remote program (e.g.
 // Claude's fullscreen renderer) can copy its selection into the OS clipboard
@@ -22,9 +25,9 @@ const g_oscClipboardProvider: IClipboardProvider = {
   ): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
-      console.debug("[osc52] copied", text.length, "chars to clipboard");
+      log.debug(`osc52: copied ${text.length} chars to clipboard`);
     } catch (e) {
-      console.warn("OSC52 clipboard write failed", e);
+      log.warn("osc52: clipboard write failed", e);
     }
   },
 };
@@ -193,7 +196,7 @@ export function setTerminalTheme(theme: ITheme): void {
       ti.term.options.minimumContrastRatio = 4.5;
       ti.term.refresh(0, ti.term.rows - 1);
     } catch (e) {
-      console.warn("setTerminalTheme: per-instance update failed", e);
+      log.warn("setTerminalTheme: per-instance update failed", e);
     }
   }
 }
@@ -212,7 +215,7 @@ export function setTerminalFont(family: string, sizePt: number): void {
       ti.logFontSwap("afterSet");
       requestAnimationFrame(() => ti.logFontSwap("settled"));
     } catch (e) {
-      console.warn("setTerminalFont: per-instance update failed", e);
+      log.warn("setTerminalFont: per-instance update failed", e);
     }
   }
 }
@@ -232,7 +235,7 @@ export function setTerminalFontSize(sizePt: number): void {
       ti.fitAndResize();
       ti.term.refresh(0, ti.term.rows - 1);
     } catch (e) {
-      console.warn("setTerminalFontSize: per-instance update failed", e);
+      log.warn("setTerminalFontSize: per-instance update failed", e);
     }
   }
 }
@@ -328,7 +331,7 @@ export function pasteIntoActiveTerminal(text: string): void {
     // the pane. Re-assert focus on the pasted-into terminal.
     target?.term.focus();
   } catch (e) {
-    console.warn("paste failed", e);
+    log.warn("paste failed", e);
   }
 }
 
@@ -344,7 +347,7 @@ export async function copyTerminalSelection(): Promise<boolean> {
       await navigator.clipboard.writeText(sel);
       return true;
     } catch (e) {
-      console.warn("clipboard.writeText failed", e);
+      log.warn("clipboard.writeText failed", e);
       return false;
     }
   }
@@ -393,7 +396,7 @@ function showTerminalContextMenu(ti: TerminalInstance, x: number, y: number): vo
     if (sel) {
       navigator.clipboard
         .writeText(sel)
-        .catch((err) => console.warn("terminal copy failed", err));
+        .catch((err) => log.warn("terminal copy failed", err));
     }
   });
   addItem(t("term.ctx.paste"), true, () => {
@@ -405,7 +408,7 @@ function showTerminalContextMenu(ti: TerminalInstance, x: number, y: number): vo
         // the terminal so the caret stays at the paste site.
         ti.term.focus();
       })
-      .catch((err) => console.warn("terminal paste failed", err));
+      .catch((err) => log.warn("terminal paste failed", err));
   });
   addItem(t("term.ctx.selectAll"), true, () => ti.term.selectAll());
 
@@ -547,7 +550,7 @@ export class TerminalInstance {
             return;
           }
           if (/^https?:\/\//i.test(uri)) {
-            void openUrl(uri).catch((e) => console.warn("openUrl failed", e));
+            void openUrl(uri).catch((e) => log.warn("openUrl failed", e));
           }
         },
         hover: (_event: MouseEvent, uri: string) => {
@@ -599,10 +602,7 @@ export class TerminalInstance {
           const path = m[1];
           if (!this.fileLinkMatchLogged) {
             this.fileLinkMatchLogged = true;
-            void invoke("diag_log", {
-              level: "info",
-              msg: `[file] link provider matched in pane ${this.paneId}`,
-            }).catch(() => {});
+            log.info(`[file] link provider matched in pane ${this.paneId}`);
           }
           (links ??= []).push({
             // xterm buffer ranges are 1-based with an inclusive end cell.
@@ -658,7 +658,7 @@ export class TerminalInstance {
         const sel = this.term.getSelection();
         if (sel) {
           navigator.clipboard.writeText(sel).catch((err) =>
-            console.warn("ctrl-c copy failed", err)
+            log.warn("ctrl-c copy failed", err)
           );
           return false; // swallow — don't send SIGINT
         }
@@ -698,9 +698,7 @@ export class TerminalInstance {
     // scroll. (One-time note in the console for future debugging.)
     if (!g_loggedNoWheelProxy) {
       g_loggedNoWheelProxy = true;
-      console.log(
-        "[winmux] terminal: native wheel scrollback enabled, no wheel proxy",
-      );
+      log.debug("native wheel scrollback enabled, no wheel proxy");
     }
 
     // Phase 15.A: only load the WebGL addon for the non-auto modes.
@@ -719,7 +717,7 @@ export class TerminalInstance {
         // (the "terminal goes blank after resizing post-conversation"
         // bug).
         addon.onContextLoss(() => {
-          console.warn("WebGL context lost — falling back to DOM renderer");
+          log.warn("WebGL context lost — falling back to DOM renderer");
           try {
             addon.dispose();
           } catch {}
@@ -733,7 +731,7 @@ export class TerminalInstance {
         this.term.loadAddon(addon);
         this.webglAddon = addon;
       } catch (e) {
-        console.warn("WebGL addon unavailable", e);
+        log.warn("WebGL addon unavailable", e);
       }
     }
 
@@ -934,10 +932,7 @@ export class TerminalInstance {
     this.tuiOwnsBidi = next;
     // Metadata only (Rule #1): titles can derive from conversation content
     // (Claude's auto topic titles) — never log the title itself.
-    void invoke("diag_log", {
-      level: "info",
-      msg: `tui-owns-bidi ${next ? "on" : "off"} pane=${this.paneId}`,
-    }).catch(() => {});
+    log.info(`tui-owns-bidi ${next ? "on" : "off"} pane=${this.paneId}`);
     this.applyRowDirections(true);
   }
 
@@ -1019,7 +1014,7 @@ export class TerminalInstance {
       }
       if (this.sessionId)
         invoke("pty_write", { sessionId: this.sessionId, data: out }).catch(
-          (err) => console.error("pty_write failed", err)
+          (err) => log.error("pty_write failed", err)
         );
     });
     // Phase 25.C: force a pty_resize on attach so tmux gets the
@@ -1040,7 +1035,7 @@ export class TerminalInstance {
     try {
       this.term.write(MOUSE_DISABLE_SEQ);
     } catch (e) {
-      console.warn("resetMouseModes failed", e);
+      log.warn("resetMouseModes failed", e);
     }
   }
 
@@ -1051,7 +1046,7 @@ export class TerminalInstance {
     try {
       this.term.write(MOUSE_DISABLE_SEQ + "\x1b[0m");
     } catch (e) {
-      console.warn("resetTerminal failed", e);
+      log.warn("resetTerminal failed", e);
     }
   }
 
@@ -1144,10 +1139,9 @@ export class TerminalInstance {
   logFontSwap(label: string): void {
     const cs = this.cs();
     const fam = String(this.term.options.fontFamily ?? "").slice(0, 40);
-    void invoke("diag_log", {
-      level: "info",
-      msg: `[font-swap] ${label} pane=${this.paneId} charSvc=${cs?.width}x${cs?.height} size=${this.term.options.fontSize} fam=${JSON.stringify(fam)}`,
-    }).catch(() => {});
+    log.info(
+      `[font-swap] ${label} pane=${this.paneId} charSvc=${cs?.width}x${cs?.height} size=${this.term.options.fontSize} fam=${JSON.stringify(fam)}`,
+    );
   }
 
   /** Apply a font family + size to THIS terminal exactly the way
@@ -1197,10 +1191,9 @@ export class TerminalInstance {
         if (!g_terminals.has(this)) return;
         this.applyFontOnce(real, px);
         const cs = this.cs();
-        void invoke("diag_log", {
-          level: "info",
-          msg: `[font-fix] pane=${this.paneId} afterSwap charSvc=${cs?.width}x${cs?.height} size=${this.term.options.fontSize}`,
-        }).catch(() => {});
+        log.info(
+          `[font-fix] pane=${this.paneId} afterSwap charSvc=${cs?.width}x${cs?.height} size=${this.term.options.fontSize}`,
+        );
       });
     });
   }
@@ -1305,10 +1298,7 @@ export class TerminalInstance {
     // them) - not a linkHandler bug.
     if (!this.oscHyperlinkLogged && merged.includes("]8;")) {
       this.oscHyperlinkLogged = true;
-      void invoke("diag_log", {
-        level: "info",
-        msg: `OSC8 hyperlink sequence detected in pane ${this.paneId}`,
-      }).catch(() => {});
+      log.info(`OSC8 hyperlink sequence detected in pane ${this.paneId}`);
     }
     // The reorder pipeline keys off the LIVE rtl mode (g_rtlMode), so
     // a settings change takes effect on the very next flush - no
