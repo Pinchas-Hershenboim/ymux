@@ -139,19 +139,33 @@ struct Section {
 /// Build the one-round-trip command: for each file, a size marker line then
 /// the delta bytes. `===WMX <id> <size>===` markers are chosen to never
 /// collide with log content (they start a line and we generate them).
+///
+/// A file with no cursor yet (first contact) gets a size-probe ONLY — no
+/// body. The caller seeds its cursor near the remote EOF, so history isn't
+/// back-filled into the local log (live evidence: three hosts' full logs
+/// flooded local rotation within minutes).
+///
+/// The whole command runs with stderr dropped: exec() captures stdout and
+/// stderr INTERLEAVED, and a shell redirection failure (missing file) used
+/// to leak "bash: line 1: …: No such file or directory" into the middle of
+/// pulled lines.
 fn build_pull_cmd(offsets: &HashMap<String, u64>) -> String {
     let mut parts: Vec<String> = Vec::new();
     for (id, rel) in REMOTE_FILES {
-        let off = offsets.get(id).copied().unwrap_or(0);
         let path = format!("$HOME/{rel}");
-        parts.push(format!(
-            "printf '===WMX %s %s===\\n' {id} \"$(wc -c < \"{path}\" 2>/dev/null || echo 0)\"; \
-             tail -c +{start} \"{path}\" 2>/dev/null | head -c {max}",
-            start = off + 1,
-            max = MAX_PULL_BYTES,
-        ));
+        let size_marker = format!(
+            "printf '===WMX %s %s===\\n' {id} \"$([ -f \"{path}\" ] && wc -c < \"{path}\" || echo 0)\""
+        );
+        match offsets.get(id) {
+            Some(off) => parts.push(format!(
+                "{size_marker}; tail -c +{start} \"{path}\" | head -c {max}",
+                start = off + 1,
+                max = MAX_PULL_BYTES,
+            )),
+            None => parts.push(size_marker),
+        }
     }
-    parts.join("; ")
+    format!("{{ {}; }} 2>/dev/null", parts.join("; "))
 }
 
 /// Split the combined output back into per-file sections. Pure — unit-tested.
@@ -182,9 +196,15 @@ fn parse_sections(out: &str) -> Vec<Section> {
 }
 
 /// Apply one section: append complete lines to debug.log, return the new
-/// cursor offset. Pure with respect to cursor math — unit-tested via
-/// `advance_cursor`.
-fn ingest_section(host: &str, sec: &Section, old_offset: u64) -> u64 {
+/// cursor offset. Pure with respect to cursor math — unit-tested directly.
+///
+/// `old_offset = None` means first contact with this file: seed the cursor
+/// near the remote EOF and append nothing — the merged log starts "from
+/// now", it doesn't import history.
+fn ingest_section(host: &str, sec: &Section, old_offset: Option<u64>) -> u64 {
+    let Some(old_offset) = old_offset else {
+        return sec.size.saturating_sub(TRUNCATE_RESUME_BYTES);
+    };
     // Remote rotated/truncated (size shrank below our cursor): resume near
     // the new EOF next cycle — never re-ingest a whole file.
     if sec.size < old_offset {
@@ -240,9 +260,9 @@ pub(crate) fn spawn_log_sync(app: tauri::AppHandle) {
                 match exec(&handle, &cmd, 20).await {
                     Ok(out) => {
                         for sec in parse_sections(&out) {
-                            let old = offsets.get(&sec.file_id).copied().unwrap_or(0);
+                            let old = offsets.get(&sec.file_id).copied();
                             let new = ingest_section(&host, &sec, old);
-                            if new != old {
+                            if old != Some(new) {
                                 offsets.insert(sec.file_id.clone(), new);
                             }
                         }
@@ -301,16 +321,49 @@ mod tests {
             body: String::new(),
         };
         // Stored offset (5000) is beyond the new size (100) → resume near EOF.
-        assert_eq!(ingest_section("h", &sec, 5000), 0); // 100 < 64KB → 0
+        assert_eq!(ingest_section("h", &sec, Some(5000)), 0); // 100 < 64KB → 0
         let sec_big = Section {
             file_id: "server".into(),
             size: 200_000,
             body: String::new(),
         };
         assert_eq!(
-            ingest_section("h", &sec_big, 500_000),
+            ingest_section("h", &sec_big, Some(500_000)),
             200_000 - TRUNCATE_RESUME_BYTES
         );
+    }
+
+    #[test]
+    fn first_contact_seeds_cursor_near_eof_without_ingesting() {
+        // No cursor yet → seed near EOF, append nothing (no history import).
+        let sec = Section {
+            file_id: "server".into(),
+            size: 700_000,
+            body: String::new(),
+        };
+        assert_eq!(
+            ingest_section("h", &sec, None),
+            700_000 - TRUNCATE_RESUME_BYTES
+        );
+        // Small/missing file → 0.
+        let small = Section {
+            file_id: "hooks".into(),
+            size: 100,
+            body: String::new(),
+        };
+        assert_eq!(ingest_section("h", &small, None), 0);
+    }
+
+    #[test]
+    fn build_pull_cmd_first_contact_probes_size_only_and_drops_stderr() {
+        // Unknown files get the size marker but NO tail (no history pull),
+        // and the whole command's stderr is dropped so shell redirection
+        // errors can't interleave into captured output.
+        let cmd = build_pull_cmd(&HashMap::new());
+        assert!(!cmd.contains("tail -c"), "no body pull on first contact: {cmd}");
+        assert!(cmd.starts_with("{ "), "stderr-dropping group: {cmd}");
+        assert!(cmd.ends_with("; } 2>/dev/null"), "stderr dropped: {cmd}");
+        assert!(cmd.contains("[ -f"), "missing-file guard: {cmd}");
     }
 
     #[test]
@@ -325,7 +378,7 @@ mod tests {
             size: 1000,
             body: "full line one\nfull line two\npartial without newl".into(),
         };
-        let new = ingest_section("host1", &sec, 10);
+        let new = ingest_section("host1", &sec, Some(10));
         // 10 + len("full line one\nfull line two\n")
         assert_eq!(new, 10 + 28);
         let text = std::fs::read_to_string(dir.join("debug.log")).expect("log written");
@@ -338,7 +391,7 @@ mod tests {
             size: 1000,
             body: "no newline here".into(),
         };
-        assert_eq!(ingest_section("host1", &sec2, 42), 42);
+        assert_eq!(ingest_section("host1", &sec2, Some(42)), 42);
 
         std::env::remove_var("WINMUX_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
@@ -349,8 +402,10 @@ mod tests {
         let mut offsets = HashMap::new();
         offsets.insert("server".to_string(), 500u64);
         let cmd = build_pull_cmd(&offsets);
-        // server resumes at offset+1; the others start at 1.
+        // server (known cursor) resumes at offset+1; the others (first
+        // contact) get a size probe only.
         assert!(cmd.contains("tail -c +501"));
+        assert_eq!(cmd.matches("tail -c").count(), 1);
         assert!(cmd.contains("===WMX %s %s==="));
         assert!(cmd.contains(".winmux/hook-debug.log"));
         assert!(cmd.contains("head -c 262144"));
