@@ -62,13 +62,39 @@ export function SettingsModal(p: Props) {
   const [logPath, setLogPath] = createSignal<string>("");
   const [logCopied, setLogCopied] = createSignal(false);
   const [logTail, setLogTail] = createSignal<string>("");
+  // Unified logging: component filter ([HOOK] / [SRV:METRICS] / [SSH] / …).
+  // "" = all. Filtering fetches a deeper tail so a sparse tag still shows
+  // meaningful history.
+  const [logFilter, setLogFilter] = createSignal<string>("");
   const refreshLogTail = async () => {
     try {
-      setLogTail(await invoke<string>("read_log_tail", { n: 200 }));
+      setLogTail(
+        await invoke<string>("read_log_tail", { n: logFilter() ? 2000 : 200 }),
+      );
     } catch (e) {
       log.warn("read_log_tail failed", e);
     }
   };
+  // Distinct component tags discovered in the fetched tail. Line shape:
+  // `[ts] [LEVEL] [TAG] msg` — the tag is the third bracket group.
+  const LOG_TAG_RE = /^\[[^\]]+\] \[[A-Z ]{5}\] \[([^\]]+)\]/;
+  const logTags = createMemo<string[]>(() => {
+    const tags = new Set<string>();
+    for (const line of logTail().split("\n")) {
+      const m = LOG_TAG_RE.exec(line);
+      if (m) tags.add(m[1]);
+    }
+    return [...tags].sort();
+  });
+  const filteredLogTail = createMemo<string>(() => {
+    const tag = logFilter();
+    if (!tag) return logTail();
+    const needle = `] [${tag}] `;
+    return logTail()
+      .split("\n")
+      .filter((l) => l.includes(needle))
+      .join("\n");
+  });
   // Phase 75: clear the debug log now, then refresh the viewer.
   const clearLogs = async () => {
     try {
@@ -1054,7 +1080,23 @@ export function SettingsModal(p: Props) {
               <Show when={tab() === "logs"}>
                 <section>
                   <h4>{t("settings.logs.recent")}</h4>
-                  <pre class="settings-logs-viewer">{logTail()}</pre>
+                  {/* Component filter — tags discovered from the tail itself. */}
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.filter")}</span>
+                    <select
+                      value={logFilter()}
+                      onChange={(e) => {
+                        setLogFilter(e.currentTarget.value);
+                        void refreshLogTail();
+                      }}
+                    >
+                      <option value="">{t("settings.logs.filterAll")}</option>
+                      <For each={logTags()}>
+                        {(tag) => <option value={tag}>{tag}</option>}
+                      </For>
+                    </select>
+                  </div>
+                  <pre class="settings-logs-viewer">{filteredLogTail()}</pre>
                   <div class="settings-logs-actions">
                     <button onClick={() => void refreshLogTail()}>
                       {t("settings.logs.refresh")}

@@ -484,6 +484,8 @@
   "settings.logs.level_hint": "דיבאג מתעד כל פרט לפתרון תקלות; מידע שומר רק אירועים משמעותיים. אזהרות ושגיאות נרשמות תמיד. חל על האפליקציה ועל מארחים מרוחקים מחוברים.",
   "settings.logs.remoteSync": "משיכת לוגים מרוחקים ללוג הזה",
   "settings.logs.remoteSync_hint": "בכל דקה, שורות חדשות מלוגי השרת, ה-hooks וההתקנה המרוחקים ממוזגות לכאן — קובץ אחד מספר את כל הסיפור. העותקים המרוחקים נשמרים כגיבוי.",
+  "settings.logs.filter": "סינון לפי רכיב",
+  "settings.logs.filterAll": "כל הרכיבים",
   "notes.window.title": "הערות — {workspace}",
   "notes.empty": "אין הערות עדיין.",
   "workspace.delete.notesWarning": "לסביבה הזו יש {count} הערות שיימחקו. להמשיך?",
