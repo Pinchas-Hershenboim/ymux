@@ -1290,18 +1290,30 @@ export function PaneView(p: Props) {
                 <p class="nc-hint">{t("connect.tmuxPick.hint")}</p>
                 <div class="nc-resume-list">
                   <For each={tmuxPick()!}>
-                    {(s) => (
-                      <div class="nc-resume-row" onClick={() => pickTmuxSession(s.name)} title={s.name}>
-                        <div class="nc-resume-head">
-                          <span class="nc-resume-proj"><IconTerminal size={14} /> {s.name}</span>
-                          <span class="nc-resume-badge">{s.windows}w</span>
-                          <Show when={s.attached}>
-                            <span class="nc-resume-badge">{t("connect.newConn.tmuxAttached")}</span>
+                    {(s) => {
+                      // Phase 81: friendly name from the server-side
+                      // session-meta map — manual label beats the Claude
+                      // session title beats the raw tmux name. When a
+                      // friendly name shows, the raw name drops to a
+                      // muted secondary line so cross-machine sessions
+                      // stay identifiable AND attachable.
+                      const friendly = s.label ?? s.claude_title;
+                      return (
+                        <div class="nc-resume-row" onClick={() => pickTmuxSession(s.name)} title={s.name}>
+                          <div class="nc-resume-head">
+                            <span class="nc-resume-proj"><IconTerminal size={14} /> {friendly ?? s.name}</span>
+                            <span class="nc-resume-badge">{s.windows}w</span>
+                            <Show when={s.attached}>
+                              <span class="nc-resume-badge">{t("connect.newConn.tmuxAttached")}</span>
+                            </Show>
+                            <span class="nc-resume-age">{fmtSessionAge(s.last_attached || s.created)}</span>
+                          </div>
+                          <Show when={friendly}>
+                            <div class="nc-resume-raw">{s.name}</div>
                           </Show>
-                          <span class="nc-resume-age">{fmtSessionAge(s.last_attached || s.created)}</span>
                         </div>
-                      </div>
-                    )}
+                      );
+                    }}
                   </For>
                 </div>
               </div>
