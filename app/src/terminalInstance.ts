@@ -501,6 +501,18 @@ export class TerminalInstance {
   /** True while the BROWSER owns selection on this pane's RTL rows
    *  (xterm SelectionService disabled; see installRtlMouseCapture). */
   private nativeSelMode = false;
+  /** Wall-clock start of the output freeze that guards the native
+   *  selection (0 = not frozen). See flushPending. */
+  private nativeSelFreezeStart = 0;
+
+  /** Freeze cap: after 8s of held output flush anyway — better a degraded
+   *  selection than a pane that looks hung under a long-forgotten drag. */
+  private nativeSelFreezeExpired(): boolean {
+    return (
+      this.nativeSelFreezeStart > 0 &&
+      Date.now() - this.nativeSelFreezeStart > 8000
+    );
+  }
 
   constructor(paneId: string) {
     this.paneId = paneId;
@@ -816,12 +828,17 @@ export class TerminalInstance {
     const exitNative = (rowsHost: HTMLElement | null): void => {
       if (!this.nativeSelMode) return;
       this.nativeSelMode = false;
+      this.nativeSelFreezeStart = 0;
       const sel = document.getSelection();
       if (sel && sel.anchorNode && el.contains(sel.anchorNode)) {
         sel.removeAllRanges();
       }
       if (rowsHost) rowsHost.style.userSelect = "";
       selSvc()?.enable?.();
+      // Release any output held during the freeze (see flushPending).
+      if (this.pendingChunks.length > 0 && this.flushRafId === null) {
+        this.flushRafId = requestAnimationFrame(() => this.flushPending());
+      }
     };
 
     const forward = (e: MouseEvent): void => {
@@ -849,6 +866,7 @@ export class TerminalInstance {
           selSvc()?.disable?.();
           rowsHost.style.userSelect = "text";
           this.nativeSelMode = true;
+          this.nativeSelFreezeStart = Date.now();
           log.debug(`rtl-mouse: pane=${this.paneId} NATIVE selection start`);
           // No stopPropagation / preventDefault: the event flows on so pane
           // activation + xterm focus still happen; with the SelectionService
@@ -1358,6 +1376,18 @@ export class TerminalInstance {
   private flushPending() {
     this.flushRafId = null;
     if (this.pendingChunks.length === 0) return;
+    // v0.4.5 round 4 (RTL native selection): while the browser owns a
+    // selection over this pane's rows, HOLD output. Every term.write
+    // rewrites row DOM, which destroys/freezes the browser's selection
+    // mid-drag (Claude's spinner repaints made it look "stuck"). Chunks
+    // keep queueing; exitNative / the freeze cap flushes them. Same idea
+    // as tmux pausing output in copy-mode.
+    if (this.nativeSelMode && !this.nativeSelFreezeExpired()) {
+      if (this.flushRafId === null) {
+        this.flushRafId = requestAnimationFrame(() => this.flushPending());
+      }
+      return;
+    }
     const merged = this.pendingChunks.join("");
     this.pendingChunks = [];
     // Phase 62.C (J.1): record (once, metadata only - Rule #1) whether
