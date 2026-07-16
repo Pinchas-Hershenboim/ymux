@@ -25,6 +25,13 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-07-16 — RTL mouse/selection: THREE fixes reverted from integration — the baseline wins
+- **Round 2 finding (same day, after the ad40fbf revert below wasn't enough):** the build Yossi calls precise (`winmux-beta3-unified-logging-test.exe`, branch `claude/unified-logging`, base `731ef64`) contains **neither** `a20f375` (mouse-coordinate mirror) **nor** `728f955` (block-aware row directions) — that pair reached main via merge `970ffb9` and was never in his daily build. The mirror assumes an RTL row is a pure visual reversal; the browser lays mixed Hebrew/English rows out bidi-segment-wise, so mirrored clicks map to the wrong cells (live telemetry: `MIRROR 1420->806` on rows the block pass flagged rtl). Block-aware detection widens the damage (whole table blocks → dir=rtl).
+- **Action:** `git revert -m 1 970ffb9` on `claude/integration` (`f116d44`) — terminal RTL behavior back to exactly the known-good build: per-row `detectDirection`, native xterm click mapping, no `mouseRtl.ts`. A metadata-only mousedown debug logger stays (`rtl-mouse:` lines). The event-driven font re-measure (`12f5ab4`) kept.
+- **Note for main:** main still carries a20f375+728f955+ad40fbf. Whenever integration merges back, these reverts ride along — do NOT re-resolve in their favor.
+- **To rebuild the feature properly (one round, all or nothing):** real bidi hit-testing (per-segment, not midpoint mirror), block/row direction decided together with the click mapping, tmux title forwarding for the TUI-owns-bidi half, and a live smoke on Yossi's actual content before merge.
+- **State:** Open — branches alive (`rtl-claude-visual-order`, history of `beta.4-rtl-select`), unscheduled.
+
 ### 2026-07-16 — TUI-owns-bidi (ad40fbf) reverted from the integration branch — mouse regression
 - **Context:** the branch `rtl-claude-visual-order` merged into `claude/integration` WITHOUT its required live smoke (its own commit said "compiles-untested … needs live smoke per docs/RTL-TEST.md before merge"). Yossi's live test caught it: mouse selection on mixed Hebrew/English lines started from the wrong segment and the RTL caret sat one cell forward again — forcing `dir=ltr` on all rows while Claude is foreground disarms the RTL mouse-coordinate mirror (`a20f375`) and `isCurrentLineRtl()`, but the browser still bidi-reorders Hebrew runs inside LTR rows, so click→column mapping breaks.
 - **Action taken:** clean `git revert ad40fbf` on `claude/integration` (`1626ce4`); the `rtl-mouse:` per-click debug logging stays in. The double-bidi display quirk it addressed (trailing "?" jumps to line start typing Hebrew into local Claude) is back — long-standing, cosmetic.

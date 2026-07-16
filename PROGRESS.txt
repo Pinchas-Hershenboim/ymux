@@ -298,3 +298,19 @@ RESULT: revert committed (1626ce4), tsc clean, textDirection 37/37 green.
 LESSON: a branch whose own commit says "needs live smoke before merge"
   must not ride an integration round without that smoke.
 ------------------------------------------------------------------
+
+------------------------------------------------------------------
+[2026-07-16 18:05 IDT] session=integration (worktree) — round 2
+TASK: mouse still wrong after the ad40fbf revert. Telemetry showed the
+  coordinate mirror firing (MIRROR 1420->806). Diffed terminal files vs
+  the build Yossi calls precise (claude/unified-logging): it contains
+  NEITHER a20f375 (mouse mirror) NOR 728f955 (block-aware rows) — the
+  pair reached main via merge 970ffb9, never in his daily build.
+FILES: revert -m 1 970ffb9 (f116d44): D mouseRtl.ts/.test.ts, terminal
+  back to per-row detectDirection + native click mapping; kept 12f5ab4
+  event-driven font measure + a metadata-only mousedown debug logger.
+RESULT: tsc clean, textDirection 23/23. Rebuilt exe -> user home.
+  DECISIONS Open entry updated (three RTL fixes out; return = one proper
+  round: bidi hit-testing + tmux titles + live smoke). NEEDS Yossi
+  re-test on the exact screenshot scenario.
+------------------------------------------------------------------
