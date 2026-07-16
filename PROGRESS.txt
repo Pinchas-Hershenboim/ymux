@@ -426,3 +426,14 @@ RESULT: cargo test 116/116, tsc clean, frontend 48/48. Commit 0f882f9
   on claude/integration; settings-refactor-walkthrough branch -f synced.
   Release build running.
 ------------------------------------------------------------------
+==================================================================
+[2026-07-17 ~00:05 IDT] session=integration (round 8 - settings Phase F)
+TASK: Phase F from settings-refactor-walkthrough session (written direct
+  to worktree): 26 hints purged, fmtAge orphan removed, modal 900->1100px
+  with fixed height min(90vh,820px), internal scroll in .settings-pane
+  with scrollbar-gutter stable. SettingsModal 1412->1334 lines.
+NOTE: their message claimed 6 modified files; actual was 2 (App.css +
+  SettingsModal.tsx) - i18n hint keys left in place (harmless orphans).
+RESULT: cargo test 116/116, tsc clean, frontend 48/48. Committed on
+  claude/integration, branch pointer synced. Release build running.
+------------------------------------------------------------------
