@@ -463,7 +463,7 @@ pub(crate) async fn ssh_exec_in_workspace(
     ssh_exec_simple(&handle, &cmd).await
 }
 
-async fn ssh_exec_simple(
+pub(crate) async fn ssh_exec_simple(
     handle: &std::sync::Arc<russh::client::Handle<crate::SshClient>>,
     cmd: &str,
 ) -> Result<String, String> {

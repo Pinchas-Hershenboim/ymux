@@ -671,6 +671,17 @@ pub(crate) struct Settings {
     /// loading unchanged.
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
+    /// Phase 81: tmux session picker scope — "shared" (default) shows every
+    /// session on the server (multi-machine: home sees office sessions and
+    /// vice versa); "local" hides sessions whose recorded origin is another
+    /// machine (origin-less legacy sessions stay visible — fail-open). A
+    /// String (not an enum) per the sidebar_mode / theme_mode pattern.
+    #[serde(default = "default_session_visibility")]
+    pub session_visibility: String,
+}
+
+fn default_session_visibility() -> String {
+    "shared".to_string()
 }
 
 fn default_sidebar_mode() -> String {
@@ -972,6 +983,7 @@ impl Default for Settings {
             persist_browser_sessions: true,
             hook_notifications: HookSettings::default(),
             theme_mode: default_theme_mode(),
+            session_visibility: default_session_visibility(),
         }
     }
 }
