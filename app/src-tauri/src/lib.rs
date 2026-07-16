@@ -15,6 +15,7 @@ mod file_manager;
 // Monitor panel on Local workspaces. Commands mirror the remote daemon's
 // JSON shape so `insights_fetch` can route local vs. SSH transparently.
 mod insights_local;
+mod local_setup;
 mod local_wizard;
 mod log_sync;
 mod notes;
@@ -1598,8 +1599,260 @@ fn spawn_local_pty(
             writer,
             master: pair.master,
             killer,
+            tmux_session: None,
+            wsl_distro: None,
         }),
     );
+    Ok(id)
+}
+
+/// Phase 80: the tmux attach-or-create script typed into a fresh shell
+/// ~900ms after spawn (after env exports + setup_command have settled).
+/// Shared by persistent SSH panes (sent over the SSH channel) and WSL
+/// panes (written straight to the local PTY). An empty `socket_addr`
+/// skips the WINMUX_* env injection into tmux's global environment
+/// (WSL panes pass empty until the WSL RPC bridge hands them a real
+/// address). `fallback_msg` must not contain single quotes.
+fn build_tmux_attach_script(
+    name: &str,
+    socket_addr: &str,
+    token: &str,
+    pane_id: &str,
+    use_winmux_tmux_conf: bool,
+    fallback_msg: &str,
+) -> String {
+    let mut script = String::new();
+    // Push the env vars into tmux's global environment so a re-attach to
+    // a long-lived session sees the *current* WINMUX_SOCKET_ADDR/
+    // TUNNEL_TOKEN/PANE_ID rather than the stale ones from the original
+    // creation. The `2>/dev/null` swallows the harmless "no server
+    // running" message when this is the first attach.
+    if !socket_addr.is_empty() {
+        script.push_str(&format!(
+            "tmux set-environment -g WINMUX_SOCKET_ADDR {} 2>/dev/null; ",
+            shell_quote(socket_addr)
+        ));
+        script.push_str(&format!(
+            "tmux set-environment -g WINMUX_TUNNEL_TOKEN {} 2>/dev/null; ",
+            shell_quote(token)
+        ));
+        script.push_str(&format!(
+            "tmux set-environment -g WINMUX_PANE_ID {} 2>/dev/null; ",
+            shell_quote(pane_id)
+        ));
+    }
+    // Phase tmux-conf: when enabled, point tmux at our bundled conf via
+    // `-f ~/.winmux/tmux.conf`. Falls through to the user's own
+    // ~/.tmux.conf if the file is absent (tmux logs a warning and uses
+    // defaults — non-fatal). When the setting is off, omit -f so the
+    // user's conf alone applies.
+    let tmux_flags = if use_winmux_tmux_conf {
+        "-f $HOME/.winmux/tmux.conf "
+    } else {
+        ""
+    };
+    // Phase 65 (bug EE): the bundled conf ships `mouse off` (the
+    // known-good display config — `mouse on` in the conf garbled Claude
+    // Code's live output). We still want tmux-native wheel scrollback,
+    // so turn mouse on via the new-session command chain (`\; set -g
+    // mouse on`) instead of in the conf.
+    script.push_str(&format!(
+        "command -v tmux >/dev/null 2>&1 && exec tmux {flags}new-session -A -s {name} \\; set -g mouse on || echo '{msg}'\r\n",
+        flags = tmux_flags,
+        name = shell_quote(name),
+        msg = fallback_msg
+    ));
+    script
+}
+
+// ─── Phase 80: WSL PTY spawn ─────────────────────────────────────────────────
+
+/// Spawn a pane inside a WSL distro via `wsl.exe`, optionally wrapped in
+/// tmux for persistence — the exact mechanism persistent SSH panes use,
+/// transported over wsl.exe instead of an SSH channel. The distro's
+/// default (login) shell is used; `--cd` accepts a Windows path and
+/// translates it to /mnt/... inside.
+fn spawn_wsl_pty(
+    state: &AppState,
+    pane_id: String,
+    app: &AppHandle,
+    distro: Option<String>,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    tmux_name: Option<String>,
+) -> Result<String, String> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("openpty failed: {e}"))?;
+
+    // Rule #3: argv arrays only — no string-built command lines.
+    let mut cmd = CommandBuilder::new("wsl.exe");
+    if let Some(d) = distro.as_deref() {
+        if !d.is_empty() {
+            cmd.arg("-d");
+            cmd.arg(d);
+        }
+    }
+    if let Some(d) = cwd.as_deref() {
+        if Path::new(d).is_dir() {
+            cmd.arg("--cd");
+            cmd.arg(d);
+        }
+    }
+    // Same hyperlink/TERM nudges as spawn_local_pty — WSLENV is not
+    // needed for these: wsl.exe forwards the env of the PTY child it
+    // spawns only for WSLENV-listed vars, but TERM/COLORTERM are set by
+    // the login shell inside anyway and the FORCE_HYPERLINK* vars ride
+    // through WSLENV below.
+    cmd.env("FORCE_HYPERLINK", "1");
+    cmd.env("FORCE_HYPERLINKS", "1");
+    cmd.env("CLAUDE_CODE_FORCE_HYPERLINKS", "1");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env(
+        "WSLENV",
+        "FORCE_HYPERLINK:FORCE_HYPERLINKS:CLAUDE_CODE_FORCE_HYPERLINKS:COLORTERM",
+    );
+    tracing::debug!("spawn_wsl_pty[{pane_id}]: distro={distro:?} tmux={tmux_name:?}");
+    let mut child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("spawn wsl.exe failed: {e}"))?;
+    drop(pair.slave);
+
+    let killer = child.clone_killer();
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("clone_reader failed: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("take_writer failed: {e}"))?;
+
+    let id = next_session_id();
+    let id_for_thread = id.clone();
+    let pane_for_thread = pane_id.clone();
+    let app_for_thread = app.clone();
+    let sessions_for_thread = state.core.sessions.clone();
+    let pane_sessions_for_thread = state.core.pane_sessions.clone();
+    let bidi_for_thread = state.bidi_filters.clone();
+    thread::spawn(move || {
+        let mut leftover: Vec<u8> = Vec::new();
+        let mut osc = osc_notify::OscNotifyParser::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => emit_data(
+                    &app_for_thread,
+                    &id_for_thread,
+                    &buf[..n],
+                    &mut leftover,
+                    &pane_for_thread,
+                    &mut osc,
+                    &bidi_for_thread,
+                ),
+                Err(_) => break,
+            }
+        }
+        let _ = child.wait();
+        cleanup_session_maps(
+            &sessions_for_thread,
+            &pane_sessions_for_thread,
+            &pane_for_thread,
+            &id_for_thread,
+        );
+        emit_exit(&app_for_thread, &id_for_thread, None);
+    });
+
+    state.core.sessions.lock().unwrap().insert(
+        id.clone(),
+        Session::Local(LocalSession {
+            writer,
+            master: pair.master,
+            killer,
+            tmux_session: tmux_name.clone(),
+            wsl_distro: distro.clone(),
+        }),
+    );
+
+    // Phase 80: persistent mode — type the tmux attach-or-create script
+    // into the shell 900ms after spawn, exactly like the SSH path (after
+    // env exports + setup_command). If tmux isn't installed in the
+    // distro the fallback echo leaves a plain shell. The WSL RPC bridge
+    // (TCP → named pipe, HMAC-gated) supplies the WINMUX_* env the CLI
+    // needs for hooks — the local twin of the SSH reverse tunnel.
+    if let Some(name) = tmux_name {
+        let use_winmux_tmux_conf = state
+            .settings
+            .lock()
+            .ok()
+            .map(|s| s.terminal.use_winmux_tmux_config)
+            .unwrap_or(true);
+        let sessions_clone = state.core.sessions.clone();
+        let id_clone = id.clone();
+        let pane_for_exec = pane_id.clone();
+        let distro_for_task = distro.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            // Best-effort bridge + env-file wiring; a failure just means
+            // hooks stay silent for this pane (same posture as a remote
+            // whose tunnel failed) — the terminal itself is unaffected.
+            let mut socket_addr = String::new();
+            let mut token = String::new();
+            match local_setup::ensure_wsl_bridge().await {
+                Ok((port, tok)) => {
+                    if let Some(addr) =
+                        local_setup::resolve_wsl_host_addr(distro_for_task.as_deref(), port).await
+                    {
+                        if let Err(e) = local_setup::write_wsl_env_file(
+                            distro_for_task.as_deref(),
+                            &addr,
+                            &tok,
+                            &pane_for_exec,
+                        )
+                        .await
+                        {
+                            crate::log_warn("RPC", &format!("wsl-bridge: env file write failed: {e}"));
+                        }
+                        socket_addr = addr;
+                        token = tok.as_str().to_string();
+                    } else {
+                        crate::log_warn("RPC", "wsl-bridge: host address resolution failed — hooks disabled for this pane");
+                    }
+                }
+                Err(e) => crate::log_warn("RPC", &format!("wsl-bridge: start failed: {e}")),
+            }
+            crate::log_info("PTY", &format!(
+                "tmux(wsl): new-session -A -s '{}' (pane {}, {} winmux conf)",
+                name,
+                pane_for_exec,
+                if use_winmux_tmux_conf { "with" } else { "without" }
+            ));
+            let script = build_tmux_attach_script(
+                &name,
+                &socket_addr,
+                &token,
+                &pane_for_exec,
+                use_winmux_tmux_conf,
+                "[winmux] tmux not installed in WSL — falling back to plain shell",
+            );
+            let mut sessions = sessions_clone.lock().unwrap();
+            if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
+                use std::io::Write as _;
+                let _ = l.writer.write_all(script.as_bytes());
+                let _ = l.writer.flush();
+            }
+        });
+    }
     Ok(id)
 }
 
@@ -2670,31 +2923,6 @@ async fn spawn_ssh(
             // Wait a touch longer than schedule_setup_injection (which fires
             // at 500ms) so our exec lands AFTER the env exports + setup_command.
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-            let mut script = String::new();
-            if !socket_addr.is_empty() {
-                script.push_str(&format!(
-                    "tmux set-environment -g WINMUX_SOCKET_ADDR {} 2>/dev/null; ",
-                    shell_quote(&socket_addr)
-                ));
-                script.push_str(&format!(
-                    "tmux set-environment -g WINMUX_TUNNEL_TOKEN {} 2>/dev/null; ",
-                    shell_quote(&token_clone)
-                ));
-                script.push_str(&format!(
-                    "tmux set-environment -g WINMUX_PANE_ID {} 2>/dev/null; ",
-                    shell_quote(&pane_for_exec)
-                ));
-            }
-            // Phase tmux-conf: when enabled, point tmux at our bundled
-            // conf via `-f ~/.winmux/tmux.conf`. Falls through to the
-            // user's own ~/.tmux.conf if the file is absent (tmux
-            // logs a warning and uses defaults — non-fatal). When the
-            // setting is off, omit -f so the user's conf alone applies.
-            let tmux_flags = if use_winmux_tmux_conf {
-                "-f $HOME/.winmux/tmux.conf "
-            } else {
-                ""
-            };
             // Phase 65: log the exact session name + conf mode so tmux
             // persistence is debuggable. `new-session -A -s <name>`
             // attaches to <name> if it exists (reconnect resumes), else
@@ -2706,18 +2934,17 @@ async fn spawn_ssh(
                 pane_for_exec,
                 if use_winmux_tmux_conf { "with" } else { "without" }
             ));
-            // Phase 65 (bug EE): the bundled conf ships `mouse off` (the
-            // known-good display config — `mouse on` in the conf garbled
-            // Claude Code's live output). We still want tmux-native wheel
-            // scrollback, so turn mouse on via the new-session command
-            // chain (`\; set -g mouse on`) instead of in the conf. This
-            // applies it to the session at attach time, separate from the
-            // -f conf, exactly as Yossi asked.
-            script.push_str(&format!(
-                "command -v tmux >/dev/null 2>&1 && exec tmux {flags}new-session -A -s {name} \\; set -g mouse on || echo '[winmux] tmux not installed on remote — falling back to plain shell'\r\n",
-                flags = tmux_flags,
-                name = shell_quote(&name_clone)
-            ));
+            // Phase 80: script construction shared with WSL panes — see
+            // build_tmux_attach_script for the env-injection + -f conf +
+            // mouse-on rationale comments.
+            let script = build_tmux_attach_script(
+                &name_clone,
+                &socket_addr,
+                &token_clone,
+                &pane_for_exec,
+                use_winmux_tmux_conf,
+                "[winmux] tmux not installed on remote — falling back to plain shell",
+            );
             let mut sessions = sessions_clone.lock().unwrap();
             if let Some(Session::Ssh(ssh)) = sessions.get_mut(&id_clone) {
                 let _ = ssh.try_send(SshCmd::Data(script.into_bytes()));
@@ -5065,6 +5292,9 @@ async fn pane_connect(
     let shell_kind = match &conn {
         Connection::Local { shell } => detect_shell_kind(&pick_default_shell(shell.clone())),
         Connection::Ssh { .. } => ShellKind::Posix,
+        // Phase 80: WSL panes run the distro's login shell — POSIX, so
+        // env-line formatting + smart-connect scripts come out right.
+        Connection::Wsl { .. } => ShellKind::Posix,
     };
 
     // Kill any prior session for this pane.
@@ -5077,6 +5307,36 @@ async fn pane_connect(
     let session_id = match conn {
         Connection::Local { shell } => {
             spawn_local_pty(&state, pane_id.clone(), &app, shell, cwd, cols, rows)?
+        }
+        // Phase 80: WSL panes default to PERSISTENT (tmux) — persistence
+        // is the point of the smart local setup. mode="plain" still
+        // forces a bare shell, mirroring the SSH mode override.
+        Connection::Wsl { distro } => {
+            let effective_persistent = match mode.as_deref() {
+                Some("tmux") => true,
+                Some("plain") => false,
+                _ => persistent.unwrap_or(true),
+            };
+            let tmux_name = if effective_persistent {
+                Some(
+                    effective_tmux_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| sanitize_tmux_session_name(&pane_id)),
+                )
+            } else {
+                None
+            };
+            spawn_wsl_pty(
+                &state,
+                pane_id.clone(),
+                &app,
+                distro,
+                cwd,
+                cols,
+                rows,
+                tmux_name,
+            )?
         }
         Connection::Ssh {
             host,
@@ -5194,6 +5454,27 @@ async fn pane_list_tmux_sessions(
     state: State<'_, AppState>,
     workspace_id: String,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
+    // Phase 80: WSL workspaces list their sessions via wsl.exe — no SSH
+    // handle involved, and it works before any pane has connected (the
+    // tmux server inside the distro is reachable whenever wsl.exe is).
+    let wsl_distro: Option<Option<String>> = {
+        let file = state.workspaces.lock().unwrap();
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .and_then(|w| match &w.connection {
+                Some(Connection::Wsl { distro }) => Some(distro.clone()),
+                _ => None,
+            })
+    };
+    if let Some(distro) = wsl_distro {
+        let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
+        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, script)
+            .await
+            .unwrap_or((-1, String::new()));
+        return Ok(parse_tmux_sessions(&text));
+    }
+
     // Phase 23.H: silent Ok([]) fallback when no live SSH handle.
     // Previously we errored ("no active SSH session for this workspace"),
     // but the user typically clicks Connect (tmux) BEFORE any pane has
@@ -5243,7 +5524,13 @@ async fn pane_list_tmux_sessions(
     })
     .await;
     let _ = ch.close().await;
-    let text = String::from_utf8_lossy(&stdout);
+    Ok(parse_tmux_sessions(&String::from_utf8_lossy(&stdout)))
+}
+
+/// Phase 80: parse `tmux list-sessions -F '<name>|<created>|<attached>|
+/// <windows>|<last_attached>'` output — shared by the SSH and WSL list
+/// paths.
+fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim();
@@ -5259,7 +5546,7 @@ async fn pane_list_tmux_sessions(
         });
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
-    Ok(out)
+    out
 }
 
 // ─── Phase 23.K: local tmux session labels ─────────────────────────────────
@@ -5661,10 +5948,12 @@ fn pane_persistence_get(
     let sid = sessions_map.get(&pane_id)?.clone();
     drop(sessions_map);
     let sessions = state.core.sessions.lock().unwrap();
-    if let Some(Session::Ssh(s)) = sessions.get(&sid) {
-        return s.tmux_session.clone();
+    match sessions.get(&sid) {
+        Some(Session::Ssh(s)) => s.tmux_session.clone(),
+        // Phase 80: WSL panes carry their tmux name on LocalSession.
+        Some(Session::Local(l)) => l.tmux_session.clone(),
+        None => None,
     }
-    None
 }
 
 /// Phase 11.A: list every (pane_id → tmux_session_name) currently active.
@@ -5678,10 +5967,14 @@ fn pane_persistence_list(
     let pane_sessions = state.core.pane_sessions.lock().unwrap().clone();
     let sessions = state.core.sessions.lock().unwrap();
     for (pane, sid) in pane_sessions {
-        if let Some(Session::Ssh(s)) = sessions.get(&sid) {
-            if let Some(name) = &s.tmux_session {
-                out.insert(pane, name.clone());
-            }
+        // Phase 80: Local sessions carry a tmux name too (WSL panes).
+        let name = match sessions.get(&sid) {
+            Some(Session::Ssh(s)) => s.tmux_session.clone(),
+            Some(Session::Local(l)) => l.tmux_session.clone(),
+            None => None,
+        };
+        if let Some(name) = name {
+            out.insert(pane, name);
         }
     }
     out
@@ -5701,40 +5994,76 @@ async fn pane_kill_session(
     let Some(sid) = sid_opt else {
         return Ok(());
     };
-    // Snapshot the SSH handle + tmux name without holding the lock across the
+    // Snapshot the kill target without holding the lock across the
     // .await — russh's Handle is shared as Arc<> so this is cheap.
-    let (handle_arc, tmux_name) = {
+    // Phase 80: WSL panes (Session::Local with a tmux name) kill their
+    // session via wsl.exe instead of an SSH exec channel.
+    enum KillTarget {
+        Ssh(Arc<client::Handle<SshClient>>, String),
+        Wsl(Option<String>, String),
+        None,
+    }
+    let target = {
         let sessions = state.core.sessions.lock().unwrap();
         match sessions.get(&sid) {
-            Some(Session::Ssh(s)) => (Some(s.handle.clone()), s.tmux_session.clone()),
-            _ => (None, None),
+            Some(Session::Ssh(s)) => match &s.tmux_session {
+                Some(name) => KillTarget::Ssh(s.handle.clone(), name.clone()),
+                None => KillTarget::None,
+            },
+            Some(Session::Local(l)) => match &l.tmux_session {
+                Some(name) => KillTarget::Wsl(l.wsl_distro.clone(), name.clone()),
+                None => KillTarget::None,
+            },
+            None => KillTarget::None,
         }
     };
-    if let (Some(handle), Some(name)) = (handle_arc, tmux_name) {
-        let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
-        match handle.channel_open_session().await {
-            Ok(mut ch) => {
-                if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
-                    log_warn("SSH", &format!("pane_kill_session: exec failed: {e}"));
-                }
-                // Drain the channel briefly so the server completes the exec.
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(800),
-                    async {
-                        while let Some(msg) = ch.wait().await {
-                            if matches!(msg, ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close) {
-                                break;
+    match target {
+        KillTarget::Ssh(handle, name) => {
+            let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
+            match handle.channel_open_session().await {
+                Ok(mut ch) => {
+                    if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
+                        log_warn("SSH", &format!("pane_kill_session: exec failed: {e}"));
+                    }
+                    // Drain the channel briefly so the server completes the exec.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(800),
+                        async {
+                            while let Some(msg) = ch.wait().await {
+                                if matches!(msg, ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close) {
+                                    break;
+                                }
                             }
-                        }
-                    },
-                )
-                .await;
-                let _ = ch.close().await;
-            }
-            Err(e) => {
-                log_warn("SSH", &format!("pane_kill_session: channel_open failed: {e}"));
+                        },
+                    )
+                    .await;
+                    let _ = ch.close().await;
+                }
+                Err(e) => {
+                    log_warn("SSH", &format!("pane_kill_session: channel_open failed: {e}"));
+                }
             }
         }
+        KillTarget::Wsl(distro, name) => {
+            // Pure argv — tmux receives the name verbatim, no shell in
+            // between, so no quoting is needed at all here (Rule #3).
+            let mut c = local_setup::wsl_cmd();
+            if let Some(d) = distro.as_deref() {
+                if !d.is_empty() {
+                    c.arg("-d").arg(d);
+                }
+            }
+            c.arg("--").arg("tmux").arg("kill-session").arg("-t").arg(&name);
+            match c.output().await {
+                Ok(out) if !out.status.success() => log_warn("PTY", &format!(
+                    "pane_kill_session(wsl): tmux kill-session exited {:?}",
+                    out.status.code()
+                )),
+                Ok(_) => {}
+                Err(e) => log_warn("PTY", &format!("pane_kill_session(wsl): spawn failed: {e}")),
+            }
+        }
+        KillTarget::None => {}
     }
     // Now close the shell + remove session bookkeeping. This re-uses the
     // existing pane_disconnect logic by removing from pane_sessions and
@@ -6570,6 +6899,9 @@ pub fn run() {
             provisioning::provisioning_profile_save,
             provisioning::provisioning_profile_delete,
             provisioning::provisioning_step_catalog,
+            // Phase 80: local smart setup (wizard "local → new").
+            local_setup::local_setup_inspect,
+            local_setup::local_setup_start,
             file_manager::file_list_local,
             file_manager::file_list_remote,
             file_manager::file_home_local,

@@ -23,9 +23,24 @@ export type { ClaudeUsage } from "./bindings/ClaudeUsage";
 export type { ModelUsage } from "./bindings/ModelUsage";
 
 import type { Connection } from "./bindings/Connection";
+import type { EnvVar } from "./bindings/EnvVar";
 import type { LayoutNode } from "./bindings/LayoutNode";
 import type { PaneKind } from "./bindings/PaneKind";
 import type { Workspace } from "./bindings/Workspace";
+
+// Phase 80 (unified setup wizard): the payload every create flow hands to
+// App.handleCreate → workspace_create. Previously duplicated inline in
+// CreateWorkspaceModal props and App.tsx; the wizard's quick flows would
+// have made it a 4th copy.
+export interface CreateWorkspaceInput {
+  name: string;
+  connection: Connection;
+  color?: string;
+  cwd?: string;
+  setup_command?: string;
+  teardown_command?: string;
+  env?: EnvVar[];
+}
 
 // Phase 23.F: shape returned by pane_list_tmux_sessions. Used by
 // the Connect (tmux) picker.
@@ -178,6 +193,8 @@ export function effectiveIdentity(
 
 export function describeConnection(c: Connection): string {
   if (c.type === "local") return c.shell ? `local · ${c.shell}` : "local";
+  // Phase 80: WSL-tmux workspaces.
+  if (c.type === "wsl") return c.distro ? `wsl · ${c.distro}` : "wsl";
   return `ssh ${c.user}@${c.host}:${c.port}`;
 }
 

@@ -122,7 +122,17 @@ pub async fn bridge_to_pipe(
     channel: Channel<russh::client::Msg>,
     expected_token: &str,
 ) -> Result<(), String> {
-    let stream = channel.into_stream();
+    bridge_stream_to_pipe(channel.into_stream(), expected_token).await
+}
+
+/// Phase 80: the transport-agnostic core of `bridge_to_pipe` — same HMAC
+/// handshake + pipe bridge over ANY duplex stream. The WSL RPC bridge
+/// feeds it plain TcpStreams (WSL2 Linux can't reach Windows named
+/// pipes); the SSH reverse-tunnel path feeds it russh channel streams.
+pub async fn bridge_stream_to_pipe<S>(stream: S, expected_token: &str) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut bs = BufStream::new(stream);
 
     if let Err(e) = perform_handshake(&mut bs, expected_token).await {

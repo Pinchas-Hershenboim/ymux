@@ -11,7 +11,7 @@ import { LayoutView } from "./LayoutView";
 import { setPaneSwapHandler } from "./paneDrag";
 import { FeedPanel } from "./FeedPanel";
 import { NotesModal } from "./NotesModal";
-import { ProvisioningWizard } from "./ProvisioningWizard";
+import { SetupWizard } from "./SetupWizard";
 import { InsightsWindow } from "./InsightsWindow";
 import { ClaudeUsageIndicator } from "./ClaudeUsageIndicator";
 import {
@@ -66,6 +66,7 @@ import {
   isRemoteWorkspace,
   pruneLayout,
   type Connection,
+  type CreateWorkspaceInput,
   type EnvVar,
   type FeedItem,
   type ForwardRow,
@@ -116,11 +117,16 @@ function App() {
     active_workspace_id: null,
     workspaces: [],
   });
-  const [showCreate, setShowCreate] = createSignal(false);
-  // Design Pass 01 (#1): lets the Welcome "Connect via SSH" CTA open the
-  // create modal pre-set to SSH. Reset to "local" on close so the plain
-  // "+ New workspace" entry points still default to a local shell.
-  const [createInitialType, setCreateInitialType] = createSignal<"local" | "ssh">("local");
+  // Phase 80 (unified setup wizard): one entry point for every create
+  // flow. `false` = closed; an object = open (a FRESH object per open, so
+  // the keyed <Show> fully remounts the wizard each time — Phase 56-A
+  // semantics). `target` deep-links the level-1 pick (palette "SSH:
+  // Provision a server" pre-selects server; the Welcome CTAs deep-link
+  // too). Editing an existing workspace is a separate modal driven by
+  // `editingWorkspace` below.
+  const [showSetup, setShowSetup] = createSignal<
+    false | { target?: "server" | "local" }
+  >(false);
   // Unshipped-fivefer (#1): Notification Center. Session-accumulating store
   // fed by both notification streams (OSC + RPC/agent); read-state persists
   // per-machine in localStorage (the items themselves are in-memory only, so
@@ -332,7 +338,7 @@ function App() {
   // Phase 14.A: server provisioning wizard. Phase 65.R folded the
   // "Connect to existing server" flow into this wizard's "existing"
   // mode, so there's no separate connect-existing modal anymore.
-  const [showProvision, setShowProvision] = createSignal(false);
+  // Phase 80: showProvision folded into showSetup (target: "server").
   // Monitor's open/drawer/float state now lives in the unified `panels`
   // registry (see panels.ts) under the "monitor" id.
   const [addonsWin, setAddonsWin] = createSignal<{ id: string; name: string } | null>(null);
@@ -453,8 +459,8 @@ function App() {
   // own visibility effect re-calls `workspace_browser_show` with the
   // current rect once `anyModalOpen()` flips back to false.
   const anyModalOpen = () =>
-    showCreate() || showNotes() || showSettings() || showProvision() ||
-    showPalette() || showPortsWindow() || installingUpdate();
+    showSetup() !== false || editingWorkspace() !== null || showNotes() ||
+    showSettings() || showPalette() || showPortsWindow() || installingUpdate();
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -828,8 +834,8 @@ function App() {
     const hasWs = !!ws;
     const hasPane = !!pid;
     return [
-      { id: "workspace.new", label: t("cmd.workspace.new"), handler: () => setShowCreate(true) },
-      { id: "workspace.rename", label: t("cmd.workspace.rename"), enabled: () => hasWs, handler: () => { if (ws) { setEditingWorkspace(ws); setShowCreate(true); } } },
+      { id: "workspace.new", label: t("cmd.workspace.new"), handler: () => setShowSetup({}) },
+      { id: "workspace.rename", label: t("cmd.workspace.rename"), enabled: () => hasWs, handler: () => { if (ws) setEditingWorkspace(ws); } },
       { id: "workspace.disconnect", label: t("cmd.workspace.disconnect"), enabled: () => hasWs, handler: () => { if (ws) void handleDisconnectWorkspace(ws.id); } },
       { id: "workspace.delete", label: t("cmd.workspace.delete"), enabled: () => hasWs, handler: () => { if (ws) void handleDelete(ws.id); } },
       { id: "pane.split.right", label: t("cmd.pane.split.right"), enabled: () => hasPane, handler: () => { if (pid) void splitPane(pid, "horizontal"); } },
@@ -845,7 +851,7 @@ function App() {
       { id: "ssh.connect", label: t("cmd.ssh.connect"), enabled: () => hasPane, handler: () => { if (pid) void connectPane(pid); } },
       { id: "ssh.disconnect", label: t("cmd.ssh.disconnect"), enabled: () => hasPane, handler: () => { if (pid) void disconnectPane(pid); } },
       { id: "pane.reset", label: t("cmd.reset_terminal"), enabled: () => hasPane, handler: () => { if (pid) terms.get(pid)?.resetTerminal(); } },
-      { id: "ssh.provision", label: t("cmd.ssh.provision"), handler: () => setShowProvision(true) },
+      { id: "ssh.provision", label: t("cmd.ssh.provision"), handler: () => setShowSetup({ target: "server" }) },
       { id: "insights.monitor", label: t("cmd.insights.monitor"), enabled: () => hasWs, handler: () => void openPanelConnected("monitor") },
       { id: "settings.open", label: t("cmd.settings.open"), handler: () => setShowSettings(true) },
       { id: "settings.language", label: t("cmd.settings.language"), handler: () => setShowSettings(true) },
@@ -1072,15 +1078,24 @@ function App() {
 
   // ─── workspace mutations ────────────────────────────────────────────────
 
-  const handleCreate = async (input: {
-    name: string;
-    connection: Connection;
-    color?: string;
-    cwd?: string;
-    setup_command?: string;
-    teardown_command?: string;
-    env?: EnvVar[];
-  }) => {
+  // Phase 34 (hoisted in Phase 80): split a Help pane off the currently-
+  // active workspace's focused pane. No-op when no workspace exists
+  // (fresh-launch state). Shared by the edit modal and the setup wizard.
+  const openSshHelp = () => {
+    const ws = activeWs();
+    const pid = activePaneId();
+    if (!ws || !pid) return;
+    void invoke("workspace_split", {
+      workspaceId: ws.id,
+      paneId: pid,
+      direction: "horizontal",
+      paneKind: "help",
+      browserUrl: null,
+      helpTopic: "ssh-key-setup",
+    });
+  };
+
+  const handleCreate = async (input: CreateWorkspaceInput) => {
     try {
       const f = await invoke<WorkspacesFile>("workspace_create", { input });
       updateFile(f);
@@ -1774,7 +1789,7 @@ function App() {
     }
     if (matches(e, sc.new_workspace)) {
       e.preventDefault();
-      setShowCreate(true);
+      setShowSetup({});
       return;
     }
     if (matches(e, sc.copy)) {
@@ -2155,7 +2170,7 @@ function App() {
     // #2: tray menu actions routed from the Rust tray handler.
     unlistens.push(
       await listen<string>("tray:action", (e) => {
-        if (e.payload === "new_workspace") setShowCreate(true);
+        if (e.payload === "new_workspace") setShowSetup({});
         else if (e.payload === "settings") setShowSettings(true);
       }),
     );
@@ -2447,7 +2462,7 @@ function App() {
           <div class="sidebar-error">
             <p>{t("error.sidebarRender")}</p>
             <pre>{String(err)}</pre>
-            <button class="primary" onClick={() => setShowCreate(true)}>
+            <button class="primary" onClick={() => setShowSetup({})}>
               + New workspace
             </button>
           </div>
@@ -2543,18 +2558,14 @@ function App() {
             })();
           }}
           onActivate={handleSetActive}
-          onCreate={() => setShowCreate(true)}
-          onProvision={() => setShowProvision(true)}
+          onCreate={() => setShowSetup({})}
           onOpenSettings={() => setShowSettings(true)}
           onOpenNotes={() => setShowNotes(true)}
           onAction={(id, action) => {
             if (action === "rename") handleRename(id);
             else if (action === "edit") {
               const ws = file().workspaces.find((w) => w.id === id);
-              if (ws) {
-                setEditingWorkspace(ws);
-                setShowCreate(true);
-              }
+              if (ws) setEditingWorkspace(ws);
             } else if (action === "delete") void handleDelete(id);
             else if (action === "disconnect")
               void handleDisconnectWorkspace(id);
@@ -2713,21 +2724,15 @@ function App() {
             Workspaces exist but none active → light "pick one" prompt. */}
         <Show when={file().workspaces.length === 0}>
           <WelcomeScreen
-            onCreate={() => {
-              setCreateInitialType("local");
-              setShowCreate(true);
-            }}
-            onConnectSsh={() => {
-              setCreateInitialType("ssh");
-              setShowCreate(true);
-            }}
-            onProvision={() => setShowProvision(true)}
+            onCreate={() => setShowSetup({ target: "local" })}
+            onConnectSsh={() => setShowSetup({ target: "server" })}
+            onProvision={() => setShowSetup({ target: "server" })}
           />
         </Show>
         <Show when={file().workspaces.length > 0 && !activeWs()}>
           <div class="empty">
             <p>{t("ws.empty.none")}</p>
-            <button class="primary" onClick={() => setShowCreate(true)}>
+            <button class="primary" onClick={() => setShowSetup({})}>
               {t("ws.empty.new")}
             </button>
           </div>
@@ -2968,34 +2973,11 @@ function App() {
       />
 
       <CreateWorkspaceModal
-        open={showCreate()}
+        open={editingWorkspace() !== null}
         editing={editingWorkspace()}
-        initialType={createInitialType()}
-        onClose={() => {
-          setShowCreate(false);
-          setEditingWorkspace(null);
-          setCreateInitialType("local");
-        }}
-        onCreate={handleCreate}
+        onClose={() => setEditingWorkspace(null)}
         onUpdate={handleUpdate}
-        onOpenSshHelp={() => {
-          // Phase 34: split a Help pane off the currently-active
-          // workspace's focused pane. No-op when no workspace exists
-          // (fresh-launch state) — Yossi can extend later if the
-          // common case becomes "from-the-create-modal with nothing
-          // open yet".
-          const ws = activeWs();
-          const pid = activePaneId();
-          if (!ws || !pid) return;
-          void invoke("workspace_split", {
-            workspaceId: ws.id,
-            paneId: pid,
-            direction: "horizontal",
-            paneKind: "help",
-            browserUrl: null,
-            helpTopic: "ssh-key-setup",
-          });
-        }}
+        onOpenSshHelp={openSshHelp}
       />
 
       {/* Phase 47.E: removed the floating Notes (📝 N) and Settings (⚙)
@@ -3003,46 +2985,51 @@ function App() {
           row [📝 Notes][⚙ Settings][🌐 Ports] added in Phase 39 (re-added
           in Phase 40). The Ctrl+Shift+N keyboard shortcut for Notes
           stays wired separately. */}
-      {/* Phase 56-A: keyed Show forces ProvisioningWizard to fully
-          unmount on close + freshly remount on re-open. Without this,
-          the component instance lives across opens and its internal
-          signals (wizStep, host, port, runId, …) stick — so clicking
-          "Provision server" after a completion screen reopens to that
-          completion. The keyed flag is the explicit hint that we're
-          using the component as a transient session, not as a
-          persistent always-mounted modal. */}
-      <Show keyed when={showProvision()}>
-        <ProvisioningWizard
-          open={true}
-          onClose={() => setShowProvision(false)}
-          onOpenWorkspace={async (wsId, mode) => {
-            // Phase 14.A.2: the wizard's backend already emitted
-            // `workspaces:changed` when it created/updated the
-            // workspace, so by the time we land here our local state
-            // already shows the new entry. Switch to it + auto-connect
-            // the first pane.
-            try {
-              await handleSetActive(wsId);
-              const ws = file().workspaces.find((w) => w.id === wsId);
-              const firstPane =
-                ws?.layout ? collectPanes(ws.layout)[0] : null;
-              if (firstPane) {
-                setActivePaneId(firstPane);
-                connectPane(firstPane, {
-                  persistent: true,
-                  ...(mode === "claude" ? { mode: "claude" } : {}),
-                });
-              }
-            } catch (e) {
-              log.error("open created workspace failed", e);
-            }
-          }}
-        />
+      {/* Phase 56-A (extended by Phase 80): keyed Show forces the unified
+          SetupWizard to fully unmount on close + freshly remount on
+          re-open. Without this, the component instance lives across opens
+          and its internal signals (mode tree, flow state, runId, …)
+          stick — so opening the wizard after a completion screen would
+          reopen to that completion. setShowSetup({}) creates a FRESH
+          object per open, so the keyed remount holds. */}
+      <Show keyed when={showSetup()}>
+        {(opts) => (
+          <SetupWizard
+            initialTarget={opts.target}
+            onClose={() => setShowSetup(false)}
+            onCreateWorkspace={handleCreate}
+            onOpenSshHelp={openSshHelp}
+            onOpenWorkspace={(wsId, mode) => {
+              // Phase 14.A.2: the wizard's backend already emitted
+              // `workspaces:changed` when it created/updated the
+              // workspace, so by the time we land here our local state
+              // already shows the new entry. Switch to it + auto-connect
+              // the first pane.
+              void (async () => {
+                try {
+                  await handleSetActive(wsId);
+                  const ws = file().workspaces.find((w) => w.id === wsId);
+                  const firstPane =
+                    ws?.layout ? collectPanes(ws.layout)[0] : null;
+                  if (firstPane) {
+                    setActivePaneId(firstPane);
+                    connectPane(firstPane, {
+                      persistent: true,
+                      ...(mode === "claude" ? { mode: "claude" } : {}),
+                    });
+                  }
+                } catch (e) {
+                  log.error("open created workspace failed", e);
+                }
+              })();
+            }}
+          />
+        )}
       </Show>
 
-      {/* Phase 65.R: the Connect-to-existing-server flow now lives inside
-          the Provisioning wizard's "existing" mode (above); no separate
-          modal mount here. */}
+      {/* Phase 65.R/66: the Connect-to-existing-server flow lives inside
+          the unified SetupWizard (server → existing → password); no
+          separate modal mount here. */}
 
       <Show when={settings()}>
         <SettingsModal

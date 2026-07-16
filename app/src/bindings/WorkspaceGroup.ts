@@ -11,7 +11,7 @@ color: string,
  * workspaces.json (before A2) that grows a group entry via a
  * hand-edit still loads.
  */
-is_collapsed: boolean,
+is_collapsed: boolean, 
 /**
  * beta.3 (ws-dragdrop): 0-based sort key across groups. Absent →
  * hasn't been ordered by the reorder path yet; the sidebar falls

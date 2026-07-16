@@ -607,6 +607,16 @@ pub struct LocalSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Phase 80: WSL panes wrap their shell in `tmux new-session -A`
+    /// exactly like persistent SSH panes; the name enables
+    /// pane_persistence_get/list badges + pane_kill_session. Plain
+    /// local panes (cmd/pwsh) always carry None — tmux can't host them.
+    pub tmux_session: Option<String>,
+    /// Phase 80: the explicit distro a WSL pane runs in. None on plain
+    /// local panes AND on default-distro WSL panes — kill-session only
+    /// fires when `tmux_session` is Some, and omitting `-d` targets the
+    /// default distro, so the two None cases never conflict.
+    pub wsl_distro: Option<String>,
 }
 
 pub struct SshSession {
