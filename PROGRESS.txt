@@ -377,3 +377,22 @@ RESULT: verified-live (dev build, isolated WINMUX_CONFIG_DIR: created
   group via context menu incl. keyboard-only flow, assign/delete/
   re-create exercised; tsc --noEmit clean)
 ==================================================================
+==================================================================
+[2026-07-16 ~19:45 IDT] session=integration (round 5 - two more merges)
+TASK: merge claude/tmux-claude-session-sync-d57bda (Phase 81) +
+  claude/group-state-button-layout-f6340d into claude/integration.
+  Requested third branch "settings-refactor-walkthrough" does NOT exist
+  anywhere (no local/remote branch, no session, no worktree) - reported.
+FILES:
+  M app/src-tauri/src/lib.rs (2 conflicts: tmux spawn kept Phase 80
+    build_tmux_attach_script + appended Phase 81 origin write; meta split
+    moved INTO shared parse_tmux_sessions so WSL degrades cleanly;
+    visibility filter SSH-only; 3 dlog -> log_warn)
+  M app/src-tauri/src/local_setup.rs (auto_title: None on WSL welcome pane)
+  M app/src/App.tsx (onGroupCreate async->WorkspaceGroup|null, log.error)
+  M app/src/Sidebar.tsx (removed BOTH ws-provision btn [Phase 80] and
+    bottom ws-add-group block [moved to context submenu])
+  M app/src-tauri/resources/winmux-cli.exe (rebuilt - session-meta cmd)
+RESULT: cargo check workspace clean, tsc clean, CLI tests 10/10,
+  frontend tests 48/48. Commits a57240a + af33607. Release build running.
+------------------------------------------------------------------
