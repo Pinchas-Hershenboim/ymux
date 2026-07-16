@@ -810,9 +810,24 @@ export class TerminalInstance {
       const rowsHost = el.querySelector(".xterm-rows") as HTMLElement | null;
       if (!rowsHost) return;
       const row = findRow(rowsHost, e.clientY);
+      // rtl-mouse debug (mousedown only, metadata only — Rule #1: coords and
+      // flags, never row text): one line per click so a live log shows
+      // whether the mirror fired and with what numbers.
+      if (e.type === "mousedown") {
+        log.debug(
+          `rtl-mouse: pane=${this.paneId} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} ` +
+            `row=${row ? `${row.dir}[${Math.round(row.left)}..${Math.round(row.right)}]` : "none"} ` +
+            `tui=${this.tuiOwnsBidi} track=${this.term.modes.mouseTrackingMode}`,
+        );
+      }
       if (!row || row.dir !== "rtl") return;
       const newX = transformMouseX(e.clientX, row);
       if (newX === e.clientX) return;
+      if (e.type === "mousedown") {
+        log.debug(
+          `rtl-mouse: pane=${this.paneId} MIRROR ${Math.round(e.clientX)}->${Math.round(newX)}`,
+        );
+      }
 
       // Suppress the original event before it reaches xterm's own handlers
       // (bubble phase on this.element for mousedown, on document for
