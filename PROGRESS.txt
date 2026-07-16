@@ -396,3 +396,19 @@ FILES:
 RESULT: cargo check workspace clean, tsc clean, CLI tests 10/10,
   frontend tests 48/48. Commits a57240a + af33607. Release build running.
 ------------------------------------------------------------------
+==================================================================
+[2026-07-16 ~21:05 IDT] session=integration (round 6 - settings Phase A)
+TASK: apply phase-a-dead-cleanup-d41b290.patch from the
+  settings-refactor-walkthrough session (delivered via local-agent-mode
+  outputs dir, not a git branch). Branch settings-refactor-walkthrough
+  created at d41b290, patch applied clean, committed 30aa284, merged
+  --no-ff into claude/integration (015eefe).
+FILES: settings.rs, settings.ts, SettingsModal.tsx + 5 regenerated
+  ts-rs bindings. 10 dead fields dropped (cursor_style, scrollback_lines,
+  bidi_enabled, allow_proposed_api, hooks.enabled/agents/policy_preset,
+  sound_enabled, auto_download, summary_language).
+RESULT: cargo test 116/116, tsc clean, frontend 48/48, no lingering refs.
+NOTES: README from that session plans Phase D (settings tab merges) -
+  keep Logs tab features (component filter, LTR viewer, level select)
+  when it lands. RTL policy note there matches our DECISIONS entries.
+------------------------------------------------------------------
