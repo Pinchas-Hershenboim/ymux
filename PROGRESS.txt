@@ -314,3 +314,20 @@ RESULT: tsc clean, textDirection 23/23. Rebuilt exe -> user home.
   round: bidi hit-testing + tmux titles + live smoke). NEEDS Yossi
   re-test on the exact screenshot scenario.
 ------------------------------------------------------------------
+
+------------------------------------------------------------------
+[2026-07-16 18:30 IDT] session=integration (worktree) — round 3
+TASK: Yossi overruled the 970ffb9 revert (block-aware + mouse mirror are
+  shipped v0.4.5-beta.1 release-note features). Restored both
+  (revert of f116d44 -> 461f163) AND fixed the real defect: the beta.1
+  midpoint mirror is only correct on all-RTL rows; mixed Hebrew/English
+  rows are laid out bidi-segment-wise, so mirrored clicks land wrong.
+FIX (461f163): per-mousedown regime in installRtlMouseCapture —
+  untracked + left-click on RTL row -> NATIVE browser selection
+  (_selectionService.disable() + user-select:text; browser hit-testing
+  is glyph-accurate on any mix); tracked apps (tmux mouse on) keep the
+  beta.1 mirror. selectionText() feeds all copy paths (native wins).
+RESULT: tsc clean, textDirection+mouseRtl 48/48. Exe rebuilt -> user
+  home. NEEDS Yossi live test: drag on the mixed table lines from the
+  screenshot — highlight must start at the pointer; Ctrl+C copies it.
+------------------------------------------------------------------
