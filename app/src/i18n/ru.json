@@ -956,5 +956,11 @@
   "reconnect.attempt": "Переподключение… (попытка {n}/{max})",
   "reconnect.cancel": "Отмена",
   "reconnect.success": "Переподключено к {host}",
-  "reconnect.failed": "Не удалось переподключиться к {host}. Кликните панель, чтобы повторить."
+  "reconnect.failed": "Не удалось переподключиться к {host}. Кликните панель, чтобы повторить.",
+  "settings.tab.textLocale": "текст и локаль",
+  "settings.tab.appearance": "внешний вид",
+  "settings.tab.agentNotif": "агенты и уведомления",
+  "settings.tab.ai": "Claude и голос",
+  "settings.tab.system": "система",
+  "settings.font.title": "шрифты"
 }

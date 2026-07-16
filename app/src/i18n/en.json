@@ -956,5 +956,11 @@
   "reconnect.attempt": "Reconnecting… (attempt {n}/{max})",
   "reconnect.cancel": "Cancel",
   "reconnect.success": "Reconnected to {host}",
-  "reconnect.failed": "Couldn't reconnect to {host}. Click the pane to retry."
+  "reconnect.failed": "Couldn't reconnect to {host}. Click the pane to retry.",
+  "settings.tab.textLocale": "text & locale",
+  "settings.tab.appearance": "appearance",
+  "settings.tab.agentNotif": "agents & notifications",
+  "settings.tab.ai": "claude & voice",
+  "settings.tab.system": "system",
+  "settings.font.title": "fonts"
 }

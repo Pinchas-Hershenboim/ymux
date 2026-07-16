@@ -956,5 +956,11 @@
   "reconnect.attempt": "מנסה להתחבר מחדש… (ניסיון {n}/{max})",
   "reconnect.cancel": "בטל",
   "reconnect.success": "מחובר מחדש ל-{host}",
-  "reconnect.failed": "לא הצלחתי להתחבר מחדש ל-{host}. לחץ על הפאנל לניסיון נוסף."
+  "reconnect.failed": "לא הצלחתי להתחבר מחדש ל-{host}. לחץ על הפאנל לניסיון נוסף.",
+  "settings.tab.textLocale": "טקסט ושפה",
+  "settings.tab.appearance": "מראה",
+  "settings.tab.agentNotif": "סוכנים והתראות",
+  "settings.tab.ai": "Claude וקול",
+  "settings.tab.system": "מערכת",
+  "settings.font.title": "גופנים"
 }

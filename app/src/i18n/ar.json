@@ -956,5 +956,11 @@
   "reconnect.attempt": "جارٍ إعادة الاتصال… (المحاولة {n}/{max})",
   "reconnect.cancel": "إلغاء",
   "reconnect.success": "تمت إعادة الاتصال بـ {host}",
-  "reconnect.failed": "تعذّرت إعادة الاتصال بـ {host}. انقر على اللوحة للمحاولة مجددًا."
+  "reconnect.failed": "تعذّرت إعادة الاتصال بـ {host}. انقر على اللوحة للمحاولة مجددًا.",
+  "settings.tab.textLocale": "النص واللغة",
+  "settings.tab.appearance": "المظهر",
+  "settings.tab.agentNotif": "الوكلاء والإشعارات",
+  "settings.tab.ai": "Claude والصوت",
+  "settings.tab.system": "النظام",
+  "settings.font.title": "الخطوط"
 }
