@@ -10,6 +10,7 @@
 
 mod hooks;
 mod port_watch;
+mod session_meta;
 
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -769,6 +770,42 @@ enum Cmd {
     /// bundled Linux CLI sha256, recent errors). Calls the `doctor`
     /// RPC method — requires the desktop app to be running.
     Doctor,
+
+    /// Multi-machine sync: read/update `~/.winmux/session-meta.json`,
+    /// the server-side tmux-session → Claude-session/label/origin map.
+    /// Purely local file ops — no RPC, works without the desktop app.
+    SessionMeta {
+        #[command(subcommand)]
+        op: SessionMetaOp,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionMetaOp {
+    /// Create/update one session's entry.
+    Set {
+        /// tmux session name (the map key).
+        #[arg(long)]
+        session: String,
+        /// Creating machine's id.
+        #[arg(long)]
+        origin: Option<String>,
+        /// Only write --origin when the entry has none yet (creator wins;
+        /// a later attach from another machine never steals origin).
+        #[arg(long)]
+        origin_if_absent: bool,
+        /// Manual label as hex-encoded UTF-8 (sidesteps SSH-exec quoting
+        /// for Hebrew/RTL text).
+        #[arg(long)]
+        label_hex: Option<String>,
+        /// Remove the manual label.
+        #[arg(long)]
+        clear_label: bool,
+    },
+    /// Drop entries whose tmux session no longer exists.
+    Prune,
+    /// Print the whole map as JSON (debugging).
+    Get,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1883,6 +1920,67 @@ async fn real_main() -> ExitCode {
                 rpc_call("note-update", params).await
             }
         },
+        Cmd::SessionMeta { op } => {
+            // Local file ops only — no tunnel, no desktop. Called over a
+            // bare SSH exec by the desktop app (origin/label writes) or by
+            // hand for debugging.
+            match op {
+                SessionMetaOp::Set { session, origin, origin_if_absent, label_hex, clear_label } => {
+                    let session = session.trim();
+                    if session.is_empty() {
+                        eprintln!("error: --session is empty");
+                        return ExitCode::from(2);
+                    }
+                    let mut meta = session_meta::load_meta();
+                    let entry = meta.sessions.entry(session.to_string()).or_default();
+                    if let Some(o) = origin {
+                        if !*origin_if_absent || entry.origin.is_none() {
+                            entry.origin = Some(o.clone());
+                        }
+                    }
+                    if *clear_label {
+                        entry.label = None;
+                    } else if let Some(hex) = label_hex {
+                        match session_meta::decode_hex_utf8(hex) {
+                            Ok(label) if label.trim().is_empty() => entry.label = None,
+                            Ok(label) => entry.label = Some(label),
+                            Err(e) => {
+                                eprintln!("error: bad --label-hex: {e}");
+                                return ExitCode::from(2);
+                            }
+                        }
+                    }
+                    entry.updated_at = Some(session_meta::now_rfc3339());
+                    session_meta::prune(&mut meta);
+                    if let Err(e) = session_meta::save_meta_atomic(&meta) {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                    return ExitCode::SUCCESS;
+                }
+                SessionMetaOp::Prune => {
+                    let mut meta = session_meta::load_meta();
+                    if session_meta::prune(&mut meta) {
+                        if let Err(e) = session_meta::save_meta_atomic(&meta) {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    return ExitCode::SUCCESS;
+                }
+                SessionMetaOp::Get => {
+                    let meta = session_meta::load_meta();
+                    match serde_json::to_string_pretty(&meta) {
+                        Ok(s) => println!("{s}"),
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    return ExitCode::SUCCESS;
+                }
+            }
+        }
         Cmd::ClaudeHook { subcommand } => {
             // Phase 66 (wiring fix): load the fallback env file FIRST, before
             // the env-gate / permission-mode checks read WINMUX_PANE_ID.
@@ -2035,6 +2133,28 @@ async fn real_main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
 
+            // Multi-machine sync: on every `stop` (fires each turn) record
+            // this pane's tmux-session → Claude-session mapping + title in
+            // the server-side `~/.winmux/session-meta.json`; `session-end`
+            // prunes dead sessions. Best-effort — a failure never blocks
+            // the hook. Runs only for winmux panes (env-gate above).
+            // Rule #1: log the error KIND only, never the title text.
+            let (meta_claude_title, meta_tmux_session) =
+                if matches!(subcommand.as_str(), "stop" | "session-end") {
+                    match session_meta::handle_hook(subcommand, &payload) {
+                        Ok(v) => v,
+                        Err(kind) => {
+                            hook_vlog(&format!(
+                                "claude-hook session-meta skipped kind={kind} \
+                                 subcommand={subcommand}"
+                            ));
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
+
             let blocking = matches!(subcommand.as_str(), "tool-permission" | "pre-tool-use");
             let kind = if blocking { "permission_request" } else { "passive" };
 
@@ -2082,7 +2202,7 @@ async fn real_main() -> ExitCode {
                  timeout_secs={timeout_secs}"
             ));
 
-            let push_params = json!({
+            let mut push_params = json!({
                 "request_id": request_id,
                 "kind": kind,
                 "subkind": subcommand,
@@ -2092,6 +2212,15 @@ async fn real_main() -> ExitCode {
                 "payload": payload,
                 "wait_timeout_seconds": timeout_secs,
             });
+            // Multi-machine sync: piggyback the Claude session title on the
+            // stop push so the desktop can set the pane's auto_title without
+            // another roundtrip. Old desktops ignore unknown params.
+            if let Some(t) = &meta_claude_title {
+                push_params["claude_title"] = json!(t);
+            }
+            if let Some(s) = &meta_tmux_session {
+                push_params["tmux_session"] = json!(s);
+            }
 
             // Phase 66 (66.D.2): for pre-tool-use, probe the tunnel first.
             // If the desktop is unreachable, use the static policy NOW
