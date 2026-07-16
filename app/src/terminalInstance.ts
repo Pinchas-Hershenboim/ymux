@@ -34,8 +34,7 @@ const g_oscClipboardProvider: IClipboardProvider = {
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { reorderRtlForDisplay } from "./bidi";
-import { detectDirection, detectRowDirections } from "./textDirection";
-import { transformMouseX, findRow } from "./mouseRtl";
+import { detectDirection } from "./textDirection";
 import { t } from "./i18n";
 
 // Phase 62.B (item J): parse a `file://` URI (as emitted in Claude Code's
@@ -451,6 +450,8 @@ export class TerminalInstance {
   // "click path is broken".
   private fileLinkProvider: IDisposable | null = null;
   private fileLinkMatchLogged = false;
+  /** rtl-mouse debug listener teardown (see installRtlMouseCapture). */
+  private rtlMouseTeardown: (() => void) | null = null;
   private ro: ResizeObserver | null = null;
   private dirObserver: MutationObserver | null = null;
   // v0.4.4 (RTL Approach C): rAF handle + per-row text cache for the
@@ -486,11 +487,6 @@ export class TerminalInstance {
   // and flush a single merged write per animation frame.
   private pendingChunks: string[] = [];
   private flushRafId: number | null = null;
-  // v0.4.4-beta.4 (RTL mouse fix): capture-phase mouse listener disposer.
-  // The listener runs before xterm.js's own bubble-phase handlers and, for
-  // events over an RTL row, dispatches a synthetic MouseEvent with clientX
-  // mirrored around the row midpoint. See mouseRtl.ts for the rationale.
-  private rtlMouseTeardown: (() => void) | null = null;
 
   constructor(paneId: string) {
     this.paneId = paneId;
@@ -753,7 +749,6 @@ export class TerminalInstance {
     g_terminals.add(this);
 
     this.ensureDirObserver();
-    this.installRtlMouseCapture();
 
     // Font-init fix: a fresh pane rendered "compressed" until the user
     // swapped the terminal font and back (notably with Courier). Root
@@ -765,116 +760,43 @@ export class TerminalInstance {
     // the bad metrics. Schedule a one-shot re-measure once the container
     // is actually in the DOM and fonts are ready.
     this.scheduleInitialFontMeasure();
+
+    // rtl-mouse debug listener (metadata-only click telemetry).
+    this.installRtlMouseCapture();
   }
 
   /**
-   * v0.4.4-beta.4 (RTL mouse fix): capture-phase listeners on the terminal
-   * element that mirror `clientX` for events landing over an RTL row. See
-   * mouseRtl.ts for the math and the docs on why we intercept in capture
-   * phase (xterm.js binds its own mousedown to `this.element` in bubble
-   * phase, and its drag lifecycle attaches mousemove/mouseup to `document`
-   * -- also bubble). Capture on `this.container` fires before either.
-   *
-   * The listener is a no-op when the pointer is over an LTR row, over no
-   * row (whitespace / outside `.xterm-rows`), or when the DOM renderer
-   * isn't being used (the `dir` attributes only get set in `auto_per_line`
-   * mode with the DOM renderer -- the WebGL renderer has no per-row DOM).
-   *
-   * Re-entry: `dispatchEvent` re-enters the capture phase, so we gate on
-   * `event.isTrusted` to skip synthetic events we ourselves fired.
+ * rtl-mouse debug (temporary): one [DEBUG] line per mousedown with the
+   * pointer coords and the row's dir attribute (metadata only — Rule #1:
+   * never row text). The beta.4 coordinate-mirror (mouseRtl.ts) was
+   * reverted (DECISIONS 2026-07-16) — clicks use xterm's native mapping;
+   * this logger stays so a live log shows which rows render RTL when a
+   * selection lands wrong.
    */
   private installRtlMouseCapture(): void {
     if (this.rtlModeAtConstruct !== "auto_per_line") return;
     const el = this.container;
-
-    const forward = (e: MouseEvent): void => {
-      // Skip synthetic events we dispatched (re-entry guard). Only real
-      // OS-generated events are trusted.
+    const onDown = (e: MouseEvent): void => {
       if (!e.isTrusted) return;
-      const rowsHost = el.querySelector(".xterm-rows") as HTMLElement | null;
-      if (!rowsHost) return;
-      const row = findRow(rowsHost, e.clientY);
-      // rtl-mouse debug (mousedown only, metadata only — Rule #1: coords and
-      // flags, never row text): one line per click so a live log shows
-      // whether the mirror fired and with what numbers.
-      if (e.type === "mousedown") {
-        log.debug(
-          `rtl-mouse: pane=${this.paneId} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} ` +
-            `row=${row ? `${row.dir}[${Math.round(row.left)}..${Math.round(row.right)}]` : "none"} ` +
-            `track=${this.term.modes.mouseTrackingMode}`,
-        );
+      const rowsHost = el.querySelector(".xterm-rows");
+      let dir = "none";
+      if (rowsHost) {
+        for (const child of rowsHost.children) {
+          const r = (child as HTMLElement).getBoundingClientRect();
+          if (e.clientY >= r.top && e.clientY < r.bottom) {
+            dir = (child as HTMLElement).getAttribute("dir") ?? "unset";
+            break;
+          }
+        }
       }
-      if (!row || row.dir !== "rtl") return;
-      const newX = transformMouseX(e.clientX, row);
-      if (newX === e.clientX) return;
-      if (e.type === "mousedown") {
-        log.debug(
-          `rtl-mouse: pane=${this.paneId} MIRROR ${Math.round(e.clientX)}->${Math.round(newX)}`,
-        );
-      }
-
-      // Suppress the original event before it reaches xterm's own handlers
-      // (bubble phase on this.element for mousedown, on document for
-      // mousemove/mouseup during a drag). stopPropagation is enough --
-      // stopImmediatePropagation would also block any OTHER capture
-      // listener on the way down, which we don't need to do.
-      e.stopPropagation();
-      // preventDefault so the browser doesn't also start a native text
-      // selection over the mirrored coord (which would clash with xterm's).
-      e.preventDefault();
-
-      const target = (e.target as EventTarget | null) ?? el;
-      const clone = new MouseEvent(e.type, {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        button: e.button,
-        buttons: e.buttons,
-        clientX: newX,
-        clientY: e.clientY,
-        screenX: e.screenX + (newX - e.clientX),
-        screenY: e.screenY,
-        ctrlKey: e.ctrlKey,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        metaKey: e.metaKey,
-        detail: e.detail,
-        view: window,
-      });
-      target.dispatchEvent(clone);
+      log.debug(
+        `rtl-mouse: pane=${this.paneId} x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} ` +
+          `row=${dir} track=${this.term.modes.mouseTrackingMode} native`,
+      );
     };
-
-    // Deliberately NOT included:
-    //  - `contextmenu`: the existing handler in the constructor positions
-    //    the custom Copy/Paste menu at the raw clientX. Mirroring would put
-    //    the menu on the "wrong" (visual-opposite) side of the click.
-    //  - `wheel`: no per-column meaning; xterm's wheel handling is scroll-
-    //    based, not cell-based.
-    const events: Array<keyof HTMLElementEventMap> = [
-      "mousedown",
-      "mousemove",
-      "mouseup",
-      "click",
-      "dblclick",
-    ];
-    for (const ev of events) {
-      el.addEventListener(ev, forward as EventListener, true);
-    }
-    // Drag past the terminal edge: xterm's SelectionService binds mousemove
-    // and mouseup on `document` for the drag lifecycle. When the pointer
-    // stays inside the terminal those events also propagate through
-    // `this.container`, so the listeners above catch them. But if the
-    // pointer LEAVES the terminal (drag out, release outside), the target
-    // is no longer under `this.container` and only the document-level
-    // listener would need mirroring. We accept the minor drop-off there --
-    // most drags start and end inside the pane, and mirroring outside-row
-    // coords would require guessing which row the pointer "would have"
-    // hit. Documented as a known limitation.
-
+    el.addEventListener("mousedown", onDown, true);
     this.rtlMouseTeardown = () => {
-      for (const ev of events) {
-        el.removeEventListener(ev, forward as EventListener, true);
-      }
+      el.removeEventListener("mousedown", onDown, true);
     };
   }
 
@@ -930,47 +852,21 @@ export class TerminalInstance {
   }
 
   /**
-   * Set `dir` on each visible row from its text.
-   *
-   * `force` recomputes every row (used on first attach and when the setting
-   * toggles); otherwise the per-row cache skips rows whose text is unchanged
-   * AND whose *neighbors* haven't shifted the block classification. When any
-   * row's text changes we run the full block-aware pass ({@link
-   * detectRowDirections}) — so a Hebrew cell landing in a table drags the
-   * whole block RTL, and adding a border row that groups earlier content rows
-   * into a new block re-flows their direction too.
-   *
-   * `detectDirection` (single-row) is retained above only as a fallback for
-   * `auto_direction=false` (see below).
+   * Set `dir` on each visible row from its text. `force` recomputes every
+   * row (used on first attach and when the setting toggles); otherwise the
+   * per-row cache skips rows whose text is unchanged since the last pass.
    */
   applyRowDirections(force: boolean): void {
     if (this.rtlModeAtConstruct !== "auto_per_line") return;
     const rowsHost = this.container.querySelector(".xterm-rows") as HTMLElement | null;
     if (!rowsHost) return;
     const auto = g_autoDirection;
-    const children = Array.from(rowsHost.children) as HTMLElement[];
-    const texts = children.map((el) => el.textContent ?? "");
-
-    // Fast path: if not forced AND every row text is unchanged since last
-    // pass, we can skip the whole recompute. Block classification depends on
-    // ALL rows, so a per-row cache with per-row skip (as before) would race
-    // with block-boundary shifts. Cheap array-equality check instead.
-    if (!force) {
-      let allSame = children.length > 0;
-      for (let i = 0; i < children.length; i++) {
-        if (this.dirCache.get(children[i]) !== texts[i]) { allSame = false; break; }
-      }
-      if (allSame) return;
-    }
-
-    const dirs = auto
-      ? detectRowDirections(texts)
-      : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
-
-    for (let i = 0; i < children.length; i++) {
-      const el = children[i];
-      this.dirCache.set(el, texts[i]);
-      const dir = dirs[i];
+    for (const child of rowsHost.children) {
+      const el = child as HTMLElement;
+      const text = el.textContent ?? "";
+      if (!force && this.dirCache.get(el) === text) continue;
+      this.dirCache.set(el, text);
+      const dir = auto ? detectDirection(text) : "ltr";
       if (el.getAttribute("dir") !== dir) el.setAttribute("dir", dir);
     }
   }
@@ -1256,7 +1152,7 @@ export class TerminalInstance {
 
   writeData(data: string) {
     // Phase 35: queue and coalesce. Merging chunks before the reorder
-    // pipeline is also more correct than per-chunk - a chunk boundary
+    // pipeline is also more correct than per-chunk — a chunk boundary
     // that splits a line or escape sequence now gets reassembled before
     // reorderRtlForDisplay sees it.
     this.pendingChunks.push(data);
@@ -1270,17 +1166,17 @@ export class TerminalInstance {
     if (this.pendingChunks.length === 0) return;
     const merged = this.pendingChunks.join("");
     this.pendingChunks = [];
-    // Phase 62.C (J.1): record (once, metadata only - Rule #1) whether
+    // Phase 62.C (J.1): record (once, metadata only — Rule #1) whether
     // OSC 8 hyperlink sequences (ESC ] 8 ;) actually reach this pane. If
     // the debug.log never shows this line while Claude prints file links,
     // the sequences are being stripped upstream (or Claude isn't emitting
-    // them) - not a linkHandler bug.
-    if (!this.oscHyperlinkLogged && merged.includes("]8;")) {
+    // them) — not a linkHandler bug.
+    if (!this.oscHyperlinkLogged && merged.includes("]8;")) {
       this.oscHyperlinkLogged = true;
       log.info(`OSC8 hyperlink sequence detected in pane ${this.paneId}`);
     }
     // The reorder pipeline keys off the LIVE rtl mode (g_rtlMode), so
-    // a settings change takes effect on the very next flush - no
+    // a settings change takes effect on the very next flush — no
     // need to wait for a new pane.
     if (g_rtlMode === "bidi_reorder") {
       this.term.write(reorderRtlForDisplay(merged));
@@ -1299,7 +1195,7 @@ export class TerminalInstance {
 
   dispose() {
     // Phase 62.A (item E): close the right-click menu if it's open over
-    // this terminal - its actions reference this.term.
+    // this terminal — its actions reference this.term.
     dismissTerminalMenu();
     // Phase 35: flush any queued PTY chunks synchronously before the
     // rAF can fire, so the last bytes aren't lost when a pane closes
@@ -1325,13 +1221,10 @@ export class TerminalInstance {
     this.ro = null;
     this.fileLinkProvider?.dispose();
     this.fileLinkProvider = null;
-    this.dirObserver?.disconnect();
-    this.dirObserver = null;
-    // v0.4.4-beta.4 (RTL mouse fix): tear down the capture-phase listener
-    // so a disposed pane doesn't keep intercepting document/element mouse
-    // events for the rest of the app's lifetime.
     this.rtlMouseTeardown?.();
     this.rtlMouseTeardown = null;
+    this.dirObserver?.disconnect();
+    this.dirObserver = null;
     // v0.4.4: cancel a pending per-line direction pass so a freed terminal
     // doesn't touch detached DOM after disposal.
     if (this.dirRafId != null) {
