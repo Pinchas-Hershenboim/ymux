@@ -449,3 +449,23 @@ FIX: git checkout e3ec47f -- app/src/terminalInstance.ts (single-file;
   freeze gate. Recoverable from history: 461f163, 6f26f9f.
 RESULT: tsc clean, 48/48 tests. DECISIONS saga entry updated (round 5).
 ------------------------------------------------------------------
+==================================================================
+[2026-07-17 ~03:30 IDT] session=integration (round 10 - THE DIAGNOSIS)
+TASK: Yossi: display catastrophically broken (letters reversed, left
+  aligned, clipped font) on Claude/SSH panes; wanted commits rolled back
+  to before the mouse rounds.
+EVIDENCE: 519 xterm parser errors (FSI U+2068 inside ESC() + 30-60s UI
+  stalls, all from 01:02 (rollback build attach). LIVE A/B via
+  computer-use on the SAME tmux session (boost, wa-dev Claude):
+  diag build @9b87860 (TUI-owns-bidi IN) renders perfectly, zero parser
+  errors. Current build scrambles.
+ROOT CAUSE: modern Claude emits visual-order Hebrew + bidi isolates.
+  ad40fbf (TUI-owns-bidi) suppressed our re-bidi for Claude panes; its
+  revert (1626ce4) re-enabled double-bidi. The mouse rounds + display
+  regression were the two sides of one trade-off.
+FIX: terminalInstance.ts + textDirection.ts(+tests) restored to 9b87860
+  state on the full branch. tsc clean, 58/58. KNOWN COST: caret gap on
+  Claude panes + mixed-line selection imprecision (the original round-1
+  complaints) - proper fix = DECISIONS return-conditions round.
+NOTE: winmux-pre-mouse-diag.exe (02:09) = standalone diag build @9b87860.
+------------------------------------------------------------------
