@@ -1,4 +1,4 @@
-import { createSignal, For, Show, onMount, onCleanup, createMemo } from "solid-js";
+import { createSignal, createEffect, For, Show, onMount, onCleanup, createMemo } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -6,6 +6,7 @@ import { t } from "./i18n";
 import { FileEditor } from "./FileEditor";
 import { TechText } from "./TechText";
 import { saveRemoteFileAs } from "./download";
+import { loadFmPaths, saveFmPaths } from "./fmPaths";
 import { openMarkdown, isMarkdownFile } from "./mdViewerStore";
 import {
   IconArrowUp,
@@ -218,6 +219,32 @@ export function FileManagerPane(p: Props) {
       setErr(`local list: ${String(e)}`);
     }
   };
+  // Probe variants of the two refreshers: they return the listing instead of
+  // painting it, and swallow the error instead of showing a banner. Used only
+  // by the restore path on mount, to answer "does this remembered directory
+  // still exist?" without flashing a red error for a stale bookmark.
+  const probeLocal = async (path: string): Promise<FileEntry[] | null> => {
+    try {
+      return await invoke<FileEntry[]>("file_list_local", {
+        path,
+        showHidden: showHidden(),
+      });
+    } catch {
+      return null;
+    }
+  };
+  const probeRemote = async (path: string): Promise<FileEntry[] | null> => {
+    try {
+      return await invoke<FileEntry[]>("file_list_remote", {
+        workspaceId: p.workspaceId,
+        path,
+        showHidden: showHidden(),
+      });
+    } catch {
+      return null;
+    }
+  };
+
   const refreshRemote = async () => {
     if (!p.hasSsh) return;
     try {
@@ -253,25 +280,61 @@ export function FileManagerPane(p: Props) {
   });
   onCleanup(() => unlistenProgress?.());
 
+  // Phase 80.1: re-open where the user left off (per workspace, see fmPaths.ts). Writing
+  // on every path change rather than on unmount: a pane can vanish with the
+  // window (app close, crash) without ever running cleanup, and the last
+  // directory the user actually looked at is exactly what we want to keep.
+  createEffect(() => {
+    const local = localPath();
+    const remote = remotePath();
+    if (!local && !remote) return; // pre-mount, before the paths resolve
+    saveFmPaths(p.workspaceId, { local, remote });
+  });
+
   onMount(async () => {
-    try {
-      const home = await invoke<string>("file_home_local");
-      setLocalPath(home);
-    } catch (e) {
-      setLocalPath("C:\\");
-    }
-    if (p.hasSsh) {
+    const saved = loadFmPaths(p.workspaceId);
+
+    // Local: only honor the remembered directory if it still lists — a folder
+    // that was deleted (or a disconnected drive) must not strand the pane on
+    // an error every time it opens.
+    const savedLocal = saved.local ? await probeLocal(saved.local) : null;
+    if (saved.local && savedLocal) {
+      setLocalPath(saved.local);
+      setLocalEntries(savedLocal);
+    } else {
       try {
-        const home = await invoke<string>("file_home_remote", {
-          workspaceId: p.workspaceId,
-        });
-        setRemotePath(home || "/");
-      } catch {
-        setRemotePath("/");
+        const home = await invoke<string>("file_home_local");
+        setLocalPath(home);
+      } catch (e) {
+        setLocalPath("C:\\");
+      }
+      await refreshLocal();
+    }
+
+    if (p.hasSsh) {
+      // Remote: a failed listing is ambiguous — usually it just means no live
+      // SSH session yet, not a missing directory. So we ask for $HOME as the
+      // tie-breaker: if that answers, the session is up and the saved path is
+      // genuinely the problem, so we move. If it doesn't, we stay on the saved
+      // path and let refreshRemote surface the usual "connect first" banner —
+      // the user's directory is then already in place for the next refresh.
+      const savedRemote = saved.remote ? await probeRemote(saved.remote) : null;
+      if (saved.remote && savedRemote) {
+        setRemotePath(saved.remote);
+        setRemoteEntries(savedRemote);
+      } else {
+        let home: string | null = null;
+        try {
+          home = await invoke<string>("file_home_remote", {
+            workspaceId: p.workspaceId,
+          });
+        } catch {
+          home = null;
+        }
+        setRemotePath(home || saved.remote || "/");
+        await refreshRemote();
       }
     }
-    await refreshLocal();
-    await refreshRemote();
 
     // Phase 23: register OS drag-drop. Tauri 2 emits 'enter' / 'over'
     // / 'drop' / 'leave' phases. We use 'over' to drive the
