@@ -54,3 +54,39 @@ NOTES: frontend-only by design — no Rust touched, no new Tauri command, no sch
   to the same session at the right size; (2) kill the session on the server, reopen → pane falls
   back to [Connect], no error banner; (3) FM: navigate somewhere, close/reopen → same directory.
 ==================================================================
+
+==================================================================
+[2026-07-28 18:05 IDT] session=restore-sessions-and-fm-path (review pass)
+TASK: Phase 80 / 80.1 — fix the code-review + security-review findings on the branch
+FILES:
+  M app/src/App.tsx (connectPane ConnectOpts.restoring; killSession keeps the hint on a failed kill;
+    restoreSessions re-checks workspace + pane liveness per iteration and prunes fm paths)
+  M app/src/fmPaths.ts (saveFmPaths MERGES instead of replacing; shape gates on read; pruneFmPaths)
+  M app/src/FileManagerPane.tsx (persist effect gated on pathsReady — no half-resolved writes)
+  A app/src/sessionRestore.test.ts (15 tests)
+  A app/src/fmPaths.test.ts (17 tests)
+RESULT: compiles-untested for the app (tsc green) / 32 unit tests PASS for the two new modules
+  (run under node 22.6+ with --experimental-strip-types; on this box they were transpiled with
+  the repo's own esbuild and run with `node --test` — same source, all 32 green)
+NOTES: three P1s came out of the review, all in the new code:
+  (1) the "pane already connected" check ran once up front, so a pane the user connected MANUALLY
+      while restore was still working through the queue got killed and replaced (pane_connect kills
+      any prior session for the pane). Now re-checked immediately before each connect.
+  (2) connectPane resolves its workspace from activeWs(), but restore holds a snapshot across a
+      multi-second loop — switching workspace mid-restore sent pane ids of A with workspace B
+      (guaranteed "no pane" error, and ti.workspaceId left mistagged, which decides which host an
+      OSC-8 file:// link downloads from). Now the loop bails when the active workspace changes.
+  (3) FM: the persist effect fired after setLocalPath but BEFORE the remote path resolved (SSH
+      round-trip), writing {local, remote:""} and wiping the remembered remote directory — exactly
+      the case 80.1 exists for. Fixed twice over: the effect waits for both columns (pathsReady),
+      and saveFmPaths now merges, so an empty field means "no opinion", never "forget it".
+  Security pass: no injection (tmux name goes through shell_quote at lib.rs:2708; FM paths reach
+  SFTP/fs::read_dir, no shell), no host-key auto-accept, no PTY content logged. Two accepted:
+  a UNC local path from tampered localStorage would have opened an outbound SMB handshake at mount
+  → now rejected on read (drive-absolute only; UNC still reachable by clicking); and restore can no
+  longer raise a modal — a failed restore connect shows on the pane, never as a password/fingerprint
+  prompt at boot (ConnectOpts.restoring).
+  BEHAVIOR WORTH KNOWING: restore does one SSH handshake PER restored pane and re-runs the
+  workspace setup_command on each — a fail2ban-fronted host sees a burst of auths at app start.
+  STILL NEEDS LIVE TEST (Windows) — the 3-point checklist in the previous entry is unchanged.
+==================================================================

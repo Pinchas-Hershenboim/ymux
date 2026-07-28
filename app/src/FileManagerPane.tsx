@@ -284,10 +284,18 @@ export function FileManagerPane(p: Props) {
   // on every path change rather than on unmount: a pane can vanish with the
   // window (app close, crash) without ever running cleanup, and the last
   // directory the user actually looked at is exactly what we want to keep.
+  //
+  // Gated on `pathsReady`: onMount resolves the two columns at very different
+  // speeds (local is a syscall, remote is an SSH round-trip), and an effect
+  // that fires in that gap would persist a half-resolved pair. saveFmPaths
+  // merges rather than replaces for the same reason — belt and braces, since
+  // this is state the user can only lose silently.
+  const [pathsReady, setPathsReady] = createSignal(false);
   createEffect(() => {
+    if (!pathsReady()) return;
     const local = localPath();
     const remote = remotePath();
-    if (!local && !remote) return; // pre-mount, before the paths resolve
+    if (!local && !remote) return;
     saveFmPaths(p.workspaceId, { local, remote });
   });
 
@@ -335,6 +343,9 @@ export function FileManagerPane(p: Props) {
         await refreshRemote();
       }
     }
+    // Both columns have settled — from here on, every navigation is the user's
+    // and worth remembering.
+    setPathsReady(true);
 
     // Phase 23: register OS drag-drop. Tauri 2 emits 'enter' / 'over'
     // / 'drop' / 'leave' phases. We use 'over' to drive the

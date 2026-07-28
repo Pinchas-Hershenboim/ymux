@@ -15,6 +15,7 @@ import {
   prunePaneSessions,
   rememberPaneSession,
 } from "./sessionRestore";
+import { pruneFmPaths } from "./fmPaths";
 import { FeedPanel } from "./FeedPanel";
 import { NotesModal } from "./NotesModal";
 import { ProvisioningWizard } from "./ProvisioningWizard";
@@ -1388,6 +1389,9 @@ function App() {
     claudeArgs?: string;
     // Phase 23.F: override tmux session name (picker path).
     tmuxSession?: string;
+    // Phase 80: this connect was started by session restore, not by a click.
+    // Failures must stay on the pane — never as a modal (see the catch below).
+    restoring?: boolean;
   };
 
   const connectPane = async (paneId: string, opts: ConnectOpts = {}) => {
@@ -1439,6 +1443,15 @@ function App() {
       }, 100);
     } catch (e) {
       const msg = String(e);
+      // Phase 80: a restore-driven connect nobody asked for must not open a
+      // modal. A password box or a "confirm this fingerprint" dialog thrown at
+      // the user the instant the app opens is exactly the prompt they'd learn
+      // to click through. Show the error on the pane and stop — the [Connect]
+      // button is right there when they actually want it.
+      if (opts.restoring) {
+        setStatus(paneId, msg, true);
+        return;
+      }
       // KEY_PASSPHRASE_REQUIRED:<key_path>
       const pasReq = msg.match(/KEY_PASSPHRASE_REQUIRED:(.+)$/);
       if (pasReq) {
@@ -1570,15 +1583,19 @@ function App() {
 
   // Phase 11.A: hard-kill the remote tmux session (if any) and disconnect.
   const killSession = async (paneId: string) => {
+    let killed = true;
     try {
       await invoke("pane_kill_session", { paneId });
     } catch (e) {
+      killed = false;
       console.warn("kill_session failed", e);
     }
     // The session is gone from the server — drop the restore hint so the next
     // start doesn't probe for a name that can never come back. (disconnectPane
-    // deliberately keeps its hint: that path DETACHES, and the session lives.)
-    forgetPaneSession(paneId);
+    // deliberately keeps its hint: that path DETACHES, and the session lives.
+    // A FAILED kill keeps its hint too — the session may well still be alive,
+    // and forgetting it would cost the user their work on the next start.)
+    if (killed) forgetPaneSession(paneId);
     const sid = paneToSession.get(paneId);
     if (sid) {
       sessionToPane.delete(sid);
@@ -1629,16 +1646,25 @@ function App() {
     if (sessionRestoreRan) return;
     const ws = activeWs();
     const s = settings();
-    if (!ws || !s) return; // not ready yet — the caller retries after load
+    // Called once, from the end of onMount. No `settings()` means the load
+    // above threw (corrupt settings.json) — the app is already degraded, and
+    // reaching for the network on its own without knowing the user's
+    // auto-connect preference is the wrong move. Skip for this run.
+    if (!ws || !s) return;
     sessionRestoreRan = true;
+    const wsId = ws.id;
 
-    // Housekeeping first, so it happens even when nothing is restorable:
-    // drop hints for panes that no longer exist in any workspace.
+    // Housekeeping first, so it happens even when nothing is restorable: drop
+    // hints for panes, and file-manager directories for workspaces, that no
+    // longer exist.
     const livePanes = new Set<string>();
+    const liveWorkspaces = new Set<string>();
     for (const w of file().workspaces) {
+      liveWorkspaces.add(w.id);
       if (w.layout) for (const p of collectPanes(w.layout)) livePanes.add(p);
     }
     prunePaneSessions(livePanes);
+    pruneFmPaths(liveWorkspaces);
 
     // Same opt-out as the headless workspace connect: a user who turned off
     // auto-connect doesn't want the app reaching for the network on its own.
@@ -1686,7 +1712,24 @@ function App() {
         continue;
       }
       await waitForPaneMount(c.paneId);
-      await connectPane(c.paneId, { persistent: true, tmuxSession: c.tmux });
+      // Both guards are re-checked HERE, not once up front: the loop spans
+      // seconds, and the user is free to act during them.
+      //  - a different active workspace means connectPane (which resolves the
+      //    workspace itself, from activeWs()) would send our pane id with the
+      //    wrong workspace — a guaranteed "no pane" error, plus a terminal
+      //    mistagged with a host it doesn't belong to. Give up; the user is
+      //    somewhere else now.
+      //  - a pane that came alive while we waited was connected by the user
+      //    clicking [Connect]. pane_connect kills any prior session for the
+      //    pane, so restoring on top of it would throw away what they just
+      //    started.
+      if (activeWs()?.id !== wsId) return;
+      if (paneToSession.has(c.paneId)) continue;
+      await connectPane(c.paneId, {
+        persistent: true,
+        tmuxSession: c.tmux,
+        restoring: true,
+      });
     }
   };
 
