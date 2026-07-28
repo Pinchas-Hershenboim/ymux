@@ -90,3 +90,32 @@ NOTES: three P1s came out of the review, all in the new code:
   workspace setup_command on each — a fail2ban-fronted host sees a burst of auths at app start.
   STILL NEEDS LIVE TEST (Windows) — the 3-point checklist in the previous entry is unchanged.
 ==================================================================
+
+==================================================================
+[2026-07-28 21:40 IDT] session=restore-sessions-and-fm-path (live-test round 1)
+TASK: Phase 80 — Yossi's first live run: panes still showed [Connect]; restore only appeared to
+  work when he clicked Connect himself (which is the PRE-EXISTING `new-session -A` behavior)
+FILES: M app/src/App.tsx
+RESULT: compiles-untested (tsc green, 32 unit tests green) — needs a second live run
+NOTES: two changes.
+  (1) DIAGNOSTICS: every exit path in restoreSessions now says WHY it took it, via diag_log
+      ("[restore] ..." in %APPDATA%\winmux\debug.log, dlog = user-visible) AND console.log.
+      Counts candidates vs skipped-local / already-connected / no-remembered-session, logs the
+      live tmux session count, per-pane re-attach or hint-drop, and a final N/M summary.
+      Restore is invisible when it works and looks exactly like "feature not built" when it
+      doesn't — on a Windows-only app that meant a full CI round-trip per guess.
+  (2) REAL GAP FOUND while wiring it: the gate was `if (!isRemoteWorkspace(ws)) return;`, and
+      isRemoteWorkspace only looks at the WORKSPACE-level connection. A workspace whose PANES
+      each carry their own SSH connection (exactly what isRemoteEffective exists for) has no
+      workspace connection, so restore bailed before looking at a single pane. That setup could
+      never restore. Now: candidates are collected first; the workspace-level pre-flight
+      (workspace_ensure_connected + pane_list_tmux_sessions, both workspace-scoped —
+      ensure_connected reads workspace.connection and no-ops without one) runs ONLY when the
+      workspace declares its own connection; otherwise panes re-attach directly and their own
+      connection authenticates. Trade-off logged in the code: without the pre-flight list, a
+      session that died on the server gets recreated empty by `new-session -A` under the same
+      name instead of falling back to [Connect] — recoverable, and better than not working.
+  Still to confirm from Yossi's debug.log which path his setup takes; if the line says
+  "server reported 0 tmux sessions", the cause is password-auth (the headless gate can't open
+  it) and the fix is a deliberate decision about prompting at boot, not a bug.
+==================================================================

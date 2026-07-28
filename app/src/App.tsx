@@ -1642,6 +1642,20 @@ function App() {
     }
   };
 
+  // Every exit path below says why it took it. Restore is invisible when it
+  // works and indistinguishable from "feature not built" when it doesn't, and
+  // the app only runs on Windows — so without this line, diagnosing a silent
+  // no-op means a full build round-trip per guess. Goes to debug.log (dlog,
+  // user-visible) AND the console. Pane ids and tmux session names are
+  // metadata, the same class the backend already logs on connect — no PTY
+  // content (Rule #1).
+  const restoreLog = (msg: string): void => {
+    console.log("session restore:", msg);
+    void invoke("diag_log", { level: "info", msg: `[restore] ${msg}` }).catch(
+      () => {},
+    );
+  };
+
   const restoreSessions = async (): Promise<void> => {
     if (sessionRestoreRan) return;
     const ws = activeWs();
@@ -1650,7 +1664,10 @@ function App() {
     // above threw (corrupt settings.json) — the app is already degraded, and
     // reaching for the network on its own without knowing the user's
     // auto-connect preference is the wrong move. Skip for this run.
-    if (!ws || !s) return;
+    if (!ws || !s) {
+      restoreLog(`skip: not ready (workspace=${!!ws} settings=${!!s})`);
+      return;
+    }
     sessionRestoreRan = true;
     const wsId = ws.id;
 
@@ -1668,46 +1685,104 @@ function App() {
 
     // Same opt-out as the headless workspace connect: a user who turned off
     // auto-connect doesn't want the app reaching for the network on its own.
-    if (s.auto_connect_on_workspace_select === false) return;
-    if (!isRemoteWorkspace(ws) || !ws.layout) return;
+    if (s.auto_connect_on_workspace_select === false) {
+      restoreLog("skip: auto_connect_on_workspace_select is off");
+      return;
+    }
+    if (!ws.layout) {
+      restoreLog(`skip: workspace ${wsId} has no layout`);
+      return;
+    }
 
     const candidates: { paneId: string; tmux: string }[] = [];
+    let seenTerminals = 0;
+    let skippedLocal = 0;
+    let skippedLive = 0;
+    let skippedNoHint = 0;
     for (const paneId of collectPanes(ws.layout)) {
       const pane = findPane(ws.layout, paneId);
       if (!pane || pane.pane_kind !== "terminal") continue;
-      if (!isRemoteEffective(pane, ws.connection)) continue;
-      if (paneToSession.has(paneId)) continue; // already live
+      seenTerminals++;
+      if (!isRemoteEffective(pane, ws.connection)) {
+        skippedLocal++;
+        continue;
+      }
+      if (paneToSession.has(paneId)) {
+        skippedLive++; // already live
+        continue;
+      }
       const tmux = getPaneSession(paneId);
       if (tmux) candidates.push({ paneId, tmux });
+      else skippedNoHint++;
     }
+    restoreLog(
+      `workspace=${wsId} terminals=${seenTerminals} candidates=${candidates.length} ` +
+        `(skipped: local=${skippedLocal} already-connected=${skippedLive} no-remembered-session=${skippedNoHint})`,
+    );
+    // no-remembered-session on a FIRST run with this build is expected: the
+    // hint is only written after a successful connect, so there is nothing to
+    // come back to until the app has been closed once with a session attached.
     if (candidates.length === 0) return;
 
-    try {
-      await invoke("workspace_ensure_connected", { workspaceId: ws.id });
-    } catch (e) {
-      console.warn("session restore: ensure_connected failed", e);
-      return;
+    // The liveness check runs only for a workspace that declares its OWN SSH
+    // connection. Both commands below are workspace-scoped:
+    // `workspace_ensure_connected` reads `workspace.connection` and no-ops
+    // without one, and `pane_list_tmux_sessions` needs a live workspace-level
+    // handle. A workspace whose PANES each carry their own connection (what
+    // `isRemoteEffective` exists for) has neither at boot — so gating on it
+    // meant that whole setup silently never restored. Now it re-attaches
+    // directly and the pane's own connection does the authenticating.
+    let alive: Set<string> | null = null;
+    if (isRemoteWorkspace(ws)) {
+      try {
+        await invoke("workspace_ensure_connected", { workspaceId: ws.id });
+      } catch (e) {
+        restoreLog(`abort: ensure_connected failed — ${String(e)}`);
+        return;
+      }
+      let sessions: TmuxSessionInfo[] = [];
+      try {
+        sessions = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", {
+          workspaceId: ws.id,
+        });
+      } catch (e) {
+        restoreLog(`abort: list_tmux_sessions failed — ${String(e)}`);
+        return;
+      }
+      // An EMPTY list is ambiguous: it also means "no live SSH handle" (the
+      // command returns Ok([]) rather than erroring — password-auth workspaces
+      // land here). Treat it as "can't tell" and keep every hint, so a
+      // workspace that merely needs a prompt today still restores tomorrow.
+      if (sessions.length === 0) {
+        restoreLog(
+          "abort: server reported 0 tmux sessions — ambiguous (this is also what " +
+            "'no live SSH handle' looks like, e.g. a password-auth workspace the " +
+            "headless connect can't open). Hints kept, nothing restored.",
+        );
+        return;
+      }
+      alive = new Set(sessions.map((x) => x.name));
+      restoreLog(`server has ${sessions.length} live tmux session(s)`);
+    } else {
+      // No pre-flight list here, so a session that died on the server can't be
+      // detected up front: `tmux new-session -A` will create an empty one
+      // under the same name instead of leaving the pane on [Connect]. That's
+      // recoverable (kill it, or just close the pane) and strictly better than
+      // the feature not working at all for per-pane connections.
+      restoreLog(
+        "workspace has no connection of its own — its panes carry theirs; " +
+          "re-attaching directly, without the tmux liveness pre-check",
+      );
     }
-    let sessions: TmuxSessionInfo[] = [];
-    try {
-      sessions = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", {
-        workspaceId: ws.id,
-      });
-    } catch (e) {
-      console.warn("session restore: list_tmux_sessions failed", e);
-      return;
-    }
-    // An EMPTY list is ambiguous: it also means "no live SSH handle" (the
-    // command returns Ok([]) rather than erroring — password-auth workspaces
-    // land here). Treat it as "can't tell" and keep every hint, so a workspace
-    // that merely needs a prompt today still restores tomorrow.
-    if (sessions.length === 0) return;
-    const alive = new Set(sessions.map((x) => x.name));
 
     // Sequential on purpose: N parallel connects would open N SSH channels
     // and N tmux attaches in the same instant on a freshly-armed connection.
+    let restored = 0;
     for (const c of candidates) {
-      if (!alive.has(c.tmux)) {
+      if (alive && !alive.has(c.tmux)) {
+        restoreLog(
+          `pane ${c.paneId}: remembered session "${c.tmux}" is gone from the server — hint dropped`,
+        );
         forgetPaneSession(c.paneId); // session died on the server — stop trying
         continue;
       }
@@ -1723,14 +1798,25 @@ function App() {
       //    clicking [Connect]. pane_connect kills any prior session for the
       //    pane, so restoring on top of it would throw away what they just
       //    started.
-      if (activeWs()?.id !== wsId) return;
-      if (paneToSession.has(c.paneId)) continue;
+      if (activeWs()?.id !== wsId) {
+        restoreLog(
+          `stop: active workspace changed mid-restore (${restored}/${candidates.length} done)`,
+        );
+        return;
+      }
+      if (paneToSession.has(c.paneId)) {
+        restoreLog(`pane ${c.paneId}: connected manually while waiting — left alone`);
+        continue;
+      }
+      restoreLog(`pane ${c.paneId}: re-attaching to "${c.tmux}"`);
       await connectPane(c.paneId, {
         persistent: true,
         tmuxSession: c.tmux,
         restoring: true,
       });
+      restored++;
     }
+    restoreLog(`done: ${restored}/${candidates.length} pane(s) re-attached`);
   };
 
   const findPaneInActiveWs = (paneId: string) => {
