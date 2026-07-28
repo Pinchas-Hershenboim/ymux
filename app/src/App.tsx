@@ -9,6 +9,12 @@ import { NotificationCenter, NotifHeaderActions, type NotifItem } from "./Notifi
 import { WelcomeScreen } from "./WelcomeScreen";
 import { LayoutView } from "./LayoutView";
 import { setPaneSwapHandler } from "./paneDrag";
+import {
+  forgetPaneSession,
+  getPaneSession,
+  prunePaneSessions,
+  rememberPaneSession,
+} from "./sessionRestore";
 import { FeedPanel } from "./FeedPanel";
 import { NotesModal } from "./NotesModal";
 import { ProvisioningWizard } from "./ProvisioningWizard";
@@ -63,6 +69,7 @@ import {
   findPane,
   hasSftp,
   isRemoteConn,
+  isRemoteEffective,
   isRemoteWorkspace,
   pruneLayout,
   type Connection,
@@ -76,6 +83,7 @@ import {
   type PtyDataEvent,
   type PtyExitEvent,
   type SplitDirection,
+  type TmuxSessionInfo,
   type Workspace,
   type WorkspaceGroup,
   type WorkspacesFile,
@@ -1334,6 +1342,8 @@ function App() {
         workspaceId: ws.id,
         paneId,
       });
+      // The pane_id is retired; its restore hint can never match again.
+      forgetPaneSession(paneId);
       updateFile(f);
     } catch (e) {
       console.error("close failed", e);
@@ -1415,7 +1425,18 @@ function App() {
       // Phase 11.A: persistence map refresh (the SshSession was just inserted
       // with its tmux_session field set or unset). Tiny delay so the handler
       // has finished registering.
-      setTimeout(() => void refreshPersistence(), 100);
+      setTimeout(() => {
+        void refreshPersistence().then(() => {
+          // Session restore: the refreshed map is the backend's own answer to
+          // "what tmux session is this pane on?", so we store the real name
+          // rather than re-deriving sanitize_tmux_session_name here. A pane
+          // that connected WITHOUT tmux has no entry — forget any stale hint
+          // so the next start doesn't try to re-attach a session it left.
+          const name = panePersistence()[paneId];
+          if (name) rememberPaneSession(paneId, name);
+          else forgetPaneSession(paneId);
+        });
+      }, 100);
     } catch (e) {
       const msg = String(e);
       // KEY_PASSPHRASE_REQUIRED:<key_path>
@@ -1554,6 +1575,10 @@ function App() {
     } catch (e) {
       console.warn("kill_session failed", e);
     }
+    // The session is gone from the server — drop the restore hint so the next
+    // start doesn't probe for a name that can never come back. (disconnectPane
+    // deliberately keeps its hint: that path DETACHES, and the session lives.)
+    forgetPaneSession(paneId);
     const sid = paneToSession.get(paneId);
     if (sid) {
       sessionToPane.delete(sid);
@@ -1562,6 +1587,107 @@ function App() {
     terms.get(paneId)?.detach();
     bump();
     void refreshPersistence();
+  };
+
+  // Phase 80: session restore (SSH only, for now) — on app start, re-attach the ACTIVE
+  // workspace's terminal panes to the tmux sessions they were on when the app
+  // last closed, so the user lands back in their conversations instead of a
+  // grid of [Connect] buttons.
+  //
+  // Why this works at all: closing a pane/app DETACHES tmux, never kills it
+  // (DECISIONS "DD"), so the remote sessions are still alive. All we're
+  // missing on the next start is WHICH session belonged to which pane —
+  // that's the localStorage hint written by connectPane (sessionRestore.ts).
+  //
+  // Deliberate scope limits:
+  //  - Active workspace only, once per app run. Restoring every workspace at
+  //    boot would open an SSH channel per host before the user asked for one.
+  //  - Panes with no remembered tmux session are left alone — a plain SSH
+  //    shell leaves nothing on the server to come back to, so reconnecting it
+  //    would just show an empty prompt where the user expected their work.
+  //  - `workspace_ensure_connected` is the auth gate: it's headless and
+  //    agent/key-only, and it never auto-accepts an unknown host key. A
+  //    workspace needing a password / passphrase / host-key decision simply
+  //    doesn't restore — boot never throws a prompt at the user.
+  let sessionRestoreRan = false;
+
+  // Wait until the pane's terminal is actually in the DOM. `attach()` fits and
+  // pushes the real cols/rows to the remote, so connecting before PaneView has
+  // mounted its container would hand tmux the 80×24 fallback and force a
+  // visible redraw a moment later.
+  const waitForPaneMount = async (paneId: string): Promise<void> => {
+    const deadline = performance.now() + 3000;
+    for (;;) {
+      const ti = terms.get(paneId);
+      if (ti?.container.isConnected) return;
+      if (performance.now() >= deadline) return; // connect anyway; fit follows
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  const restoreSessions = async (): Promise<void> => {
+    if (sessionRestoreRan) return;
+    const ws = activeWs();
+    const s = settings();
+    if (!ws || !s) return; // not ready yet — the caller retries after load
+    sessionRestoreRan = true;
+
+    // Housekeeping first, so it happens even when nothing is restorable:
+    // drop hints for panes that no longer exist in any workspace.
+    const livePanes = new Set<string>();
+    for (const w of file().workspaces) {
+      if (w.layout) for (const p of collectPanes(w.layout)) livePanes.add(p);
+    }
+    prunePaneSessions(livePanes);
+
+    // Same opt-out as the headless workspace connect: a user who turned off
+    // auto-connect doesn't want the app reaching for the network on its own.
+    if (s.auto_connect_on_workspace_select === false) return;
+    if (!isRemoteWorkspace(ws) || !ws.layout) return;
+
+    const candidates: { paneId: string; tmux: string }[] = [];
+    for (const paneId of collectPanes(ws.layout)) {
+      const pane = findPane(ws.layout, paneId);
+      if (!pane || pane.pane_kind !== "terminal") continue;
+      if (!isRemoteEffective(pane, ws.connection)) continue;
+      if (paneToSession.has(paneId)) continue; // already live
+      const tmux = getPaneSession(paneId);
+      if (tmux) candidates.push({ paneId, tmux });
+    }
+    if (candidates.length === 0) return;
+
+    try {
+      await invoke("workspace_ensure_connected", { workspaceId: ws.id });
+    } catch (e) {
+      console.warn("session restore: ensure_connected failed", e);
+      return;
+    }
+    let sessions: TmuxSessionInfo[] = [];
+    try {
+      sessions = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", {
+        workspaceId: ws.id,
+      });
+    } catch (e) {
+      console.warn("session restore: list_tmux_sessions failed", e);
+      return;
+    }
+    // An EMPTY list is ambiguous: it also means "no live SSH handle" (the
+    // command returns Ok([]) rather than erroring — password-auth workspaces
+    // land here). Treat it as "can't tell" and keep every hint, so a workspace
+    // that merely needs a prompt today still restores tomorrow.
+    if (sessions.length === 0) return;
+    const alive = new Set(sessions.map((x) => x.name));
+
+    // Sequential on purpose: N parallel connects would open N SSH channels
+    // and N tmux attaches in the same instant on a freshly-armed connection.
+    for (const c of candidates) {
+      if (!alive.has(c.tmux)) {
+        forgetPaneSession(c.paneId); // session died on the server — stop trying
+        continue;
+      }
+      await waitForPaneMount(c.paneId);
+      await connectPane(c.paneId, { persistent: true, tmuxSession: c.tmux });
+    }
   };
 
   const findPaneInActiveWs = (paneId: string) => {
@@ -2397,6 +2523,12 @@ function App() {
       );
     };
     window.addEventListener("winmux:file-link-relative", handleFileLinkRelative);
+
+    // Session restore runs LAST in onMount: the `pty:data` listener above has
+    // to be live before any pane attaches, or the first screenful tmux paints
+    // on re-attach would be dropped. Fire-and-forget — a failure here only
+    // means the user clicks [Connect] themselves.
+    void restoreSessions();
 
     onCleanup(() => {
       for (const u of unlistens) u();
