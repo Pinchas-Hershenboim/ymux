@@ -136,3 +136,17 @@ test("prune with an empty live set clears every hint", () => {
   assert.equal(getPaneSession("p1"), null);
   assert.equal(getPaneSession("p2"), null);
 });
+
+// --- allPaneSessions (diagnostics) ---------------------------------------
+
+test("allPaneSessions returns every remembered mapping", async () => {
+  const { allPaneSessions } = await import("./sessionRestore.ts");
+  rememberPaneSession("p1", "a");
+  rememberPaneSession("p2", "b");
+  assert.deepEqual(allPaneSessions(), { p1: "a", p2: "b" });
+});
+
+test("allPaneSessions is empty when nothing is remembered", async () => {
+  const { allPaneSessions } = await import("./sessionRestore.ts");
+  assert.deepEqual(allPaneSessions(), {});
+});

@@ -81,6 +81,13 @@ export function getPaneSession(paneId: string): string | null {
   return read()[paneId]?.tmux ?? null;
 }
 
+/** Every remembered pane → tmux mapping. Diagnostics only. */
+export function allPaneSessions(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [paneId, e] of Object.entries(read())) out[paneId] = e.tmux;
+  return out;
+}
+
 /** Drop every hint whose pane no longer exists in any workspace layout. */
 export function prunePaneSessions(livePaneIds: Set<string>): void {
   const s = read();

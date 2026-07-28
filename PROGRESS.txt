@@ -171,3 +171,28 @@ NOTES: answer to "was existing behavior overridden": yes, in one place — the f
   behavior change, pane_probe_tmux_sessions is new. Manual [Connect] is untouched.
   Two separate toggles (Yossi's choice) rather than one, so remembering a directory — which costs
   nothing and touches no network — doesn't have to be bought together with SSH activity at boot.
+
+==================================================================
+[2026-07-29 00:40 IDT] session=restore-sessions-and-fm-path (live-test round 2)
+TASK: Yossi turned both flags on, connected a terminal, closed + reopened — pane still did not
+  re-attach. Flags themselves persisted correctly.
+FILES: M app/src/App.tsx, M app/src/sessionRestore.ts, M app/src/sessionRestore.test.ts
+RESULT: tsc green, 34 unit tests green. Rust untouched this round. Needs another live run.
+NOTES: found a real bug by reading, not by guessing — and made the write path stop depending on
+  one timer.
+  (1) THE BUG: the candidate filter used `pane.pane_kind !== "terminal"` directly. types.ts:85-91
+      says pane_kind is only non-optional in the GENERATED BINDING and ships `paneKindOf()` with a
+      `?? "terminal"` fallback precisely because a layout written before Phase 35 has no such
+      field. On those layouts every terminal pane looked like "not a terminal", so the candidate
+      list came out empty and restore did nothing — on exactly the installs old enough to have
+      sessions worth restoring. Now uses paneKindOf(), and the log counts not-a-terminal skips.
+  (2) HARDENING: the hint used to be written in ONE place — a 100ms setTimeout after a successful
+      connectPane. refreshPersistence() now records every mapping the backend reports, on every
+      refresh. That covers the picker, the reconnect driver and CLI-triggered connects too, and a
+      single missed write no longer costs the session. ADD-ONLY: the map lists LIVE sessions, so a
+      merely-detached pane is absent from it while its tmux session is alive — removal stays with
+      the explicit forget calls (kill / close / "server says it's gone").
+  (3) DIAGNOSTIC: restore now logs the whole remembered map (count + paneId→session) right after
+      pruning, so "the map is empty" and "the map is fine but nothing matched" can never be
+      confused again. New allPaneSessions() export, 2 tests.
+==================================================================

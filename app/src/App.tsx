@@ -10,6 +10,7 @@ import { WelcomeScreen } from "./WelcomeScreen";
 import { LayoutView } from "./LayoutView";
 import { setPaneSwapHandler } from "./paneDrag";
 import {
+  allPaneSessions,
   forgetPaneSession,
   getPaneSession,
   prunePaneSessions,
@@ -72,6 +73,7 @@ import {
   isRemoteConn,
   isRemoteEffective,
   isRemoteWorkspace,
+  paneKindOf,
   pruneLayout,
   type Connection,
   type EnvVar,
@@ -654,6 +656,21 @@ function App() {
     try {
       const m = await invoke<Record<string, string>>("pane_persistence_list");
       setPanePersistence(m ?? {});
+      // Phase 80: every refresh is a fresh, authoritative "pane → tmux session"
+      // answer from the backend, so record it here rather than only in the
+      // post-connect callback. That callback fires on one 100ms timer down one
+      // code path; this covers every path that reaches a live tmux session —
+      // the picker, the reconnect driver, a CLI-triggered connect — and it
+      // re-writes the hint on every refresh, so a single missed write can't
+      // cost the user their session.
+      //
+      // ADD ONLY, never remove: this map lists LIVE sessions, and a pane that
+      // is merely detached (app closed, pane closed) is absent from it while
+      // its tmux session is very much alive. Dropping hints is the job of the
+      // explicit forget calls — kill, close, and "the server says it's gone".
+      for (const [paneId, tmuxName] of Object.entries(m ?? {})) {
+        if (tmuxName) rememberPaneSession(paneId, tmuxName);
+      }
     } catch (e) {
       console.warn("pane_persistence_list failed", e);
     }
@@ -1682,6 +1699,13 @@ function App() {
     }
     prunePaneSessions(livePanes);
     pruneFmPaths(liveWorkspaces);
+    // What survived pruning, before any filtering — so "the map is empty" and
+    // "the map is fine but no pane matched" are never confused for each other.
+    const hints = allPaneSessions();
+    restoreLog(
+      `remembered sessions: ${Object.keys(hints).length} ` +
+        `[${Object.entries(hints).map(([k, v]) => `${k}→${v}`).join(", ")}]`,
+    );
 
     // Opt-in (Settings → General). Off by default: restore makes startup reach
     // for the network on its own, and that should be the user's decision, not
@@ -1706,9 +1730,19 @@ function App() {
     let skippedLocal = 0;
     let skippedLive = 0;
     let skippedNoHint = 0;
+    let skippedNotTerminal = 0;
     for (const paneId of collectPanes(ws.layout)) {
       const pane = findPane(ws.layout, paneId);
-      if (!pane || pane.pane_kind !== "terminal") continue;
+      if (!pane) continue;
+      // paneKindOf, NOT `pane.pane_kind`: the field is only non-optional in
+      // the generated binding. A layout written before Phase 35 has no
+      // `pane_kind` at all, and reading it directly makes every legacy
+      // terminal pane look like "not a terminal" — which silently emptied the
+      // candidate list on exactly the installs that have sessions to restore.
+      if (paneKindOf(pane) !== "terminal") {
+        skippedNotTerminal++;
+        continue;
+      }
       seenTerminals++;
       if (!isRemoteEffective(pane, ws.connection)) {
         skippedLocal++;
@@ -1724,7 +1758,8 @@ function App() {
     }
     restoreLog(
       `workspace=${wsId} terminals=${seenTerminals} candidates=${candidates.length} ` +
-        `(skipped: local=${skippedLocal} already-connected=${skippedLive} no-remembered-session=${skippedNoHint})`,
+        `(skipped: not-a-terminal=${skippedNotTerminal} local=${skippedLocal} ` +
+        `already-connected=${skippedLive} no-remembered-session=${skippedNoHint})`,
     );
     // no-remembered-session on a FIRST run with this build is expected: the
     // hint is only written after a successful connect, so there is nothing to
