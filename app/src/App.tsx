@@ -1764,24 +1764,65 @@ function App() {
       alive = new Set(sessions.map((x) => x.name));
       restoreLog(`server has ${sessions.length} live tmux session(s)`);
     } else {
-      // No pre-flight list here, so a session that died on the server can't be
-      // detected up front: `tmux new-session -A` will create an empty one
-      // under the same name instead of leaving the pane on [Connect]. That's
-      // recoverable (kill it, or just close the pane) and strictly better than
-      // the feature not working at all for per-pane connections.
+      // Per-pane connections: ask over the PANE's own connection instead
+      // (pane_probe_tmux_sessions). A null answer means "couldn't ask" — the
+      // pane is then left alone. Nothing gets attached on a guess: `tmux
+      // new-session -A` would CREATE an empty session under the remembered
+      // name, which is the opposite of what's wanted when the session is gone.
       restoreLog(
         "workspace has no connection of its own — its panes carry theirs; " +
-          "re-attaching directly, without the tmux liveness pre-check",
+          "probing tmux over each pane's connection",
       );
     }
+
+    // One probe per host, not per pane: several panes usually share a
+    // connection, and each probe is a full SSH handshake.
+    const probes = new Map<string, Set<string> | null>();
+    const aliveFor = async (paneId: string): Promise<Set<string> | null> => {
+      if (alive) return alive; // workspace-level list already covers every pane
+      const pane = ws.layout ? findPane(ws.layout, paneId) : null;
+      const key = JSON.stringify(pane?.connection ?? ws.connection ?? null);
+      const cached = probes.get(key);
+      if (cached !== undefined) return cached;
+      let result: Set<string> | null = null;
+      try {
+        const list = await invoke<TmuxSessionInfo[] | null>(
+          "pane_probe_tmux_sessions",
+          { workspaceId: wsId, paneId },
+        );
+        // null = "couldn't ask" (not SSH, or the headless connect failed:
+        // password-only, passphrase-locked, unknown host key, host down).
+        // Distinct from [] = "asked, the host has no sessions".
+        result = list ? new Set(list.map((x) => x.name)) : null;
+        restoreLog(
+          result
+            ? `probe: host has ${result.size} live tmux session(s)`
+            : "probe: could not reach the host headlessly — those panes stay on [Connect]",
+        );
+      } catch (e) {
+        restoreLog(`probe failed — ${String(e)}`);
+      }
+      probes.set(key, result);
+      return result;
+    };
 
     // Sequential on purpose: N parallel connects would open N SSH channels
     // and N tmux attaches in the same instant on a freshly-armed connection.
     let restored = 0;
     for (const c of candidates) {
-      if (alive && !alive.has(c.tmux)) {
+      const liveNames = await aliveFor(c.paneId);
+      // Nothing is attached on a guess. `tmux new-session -A` CREATES the
+      // session when it's missing, so attaching without a confirmed answer
+      // would hand the user a blank shell wearing their old session's name.
+      if (liveNames === null) {
         restoreLog(
-          `pane ${c.paneId}: remembered session "${c.tmux}" is gone from the server — hint dropped`,
+          `pane ${c.paneId}: liveness unknown — left on [Connect], hint kept for next time`,
+        );
+        continue;
+      }
+      if (!liveNames.has(c.tmux)) {
+        restoreLog(
+          `pane ${c.paneId}: remembered session "${c.tmux}" is gone from the server — left on [Connect], hint dropped`,
         );
         forgetPaneSession(c.paneId); // session died on the server — stop trying
         continue;

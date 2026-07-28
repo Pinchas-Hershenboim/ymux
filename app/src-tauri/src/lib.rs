@@ -5204,6 +5204,15 @@ async fn pane_list_tmux_sessions(
             return Ok(vec![]);
         }
     };
+    list_tmux_sessions_via_handle(&handle).await
+}
+
+/// The `tmux list-sessions` half of `pane_list_tmux_sessions`, split out so the
+/// Phase 80 restore probe can reuse it over a handle it opened itself instead
+/// of one belonging to a live pane.
+async fn list_tmux_sessions_via_handle(
+    handle: &client::Handle<SshClient>,
+) -> Result<Vec<TmuxSessionInfo>, String> {
     let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
     use russh::ChannelMsg;
     let mut ch = handle
@@ -5242,6 +5251,100 @@ async fn pane_list_tmux_sessions(
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
     Ok(out)
+}
+
+/// Phase 80 (session restore): "is the session this pane was on still alive?",
+/// answered over the PANE's own connection.
+///
+/// `pane_list_tmux_sessions` can only answer for a workspace that has a live
+/// SSH handle, which at app start it doesn't — and `workspace_ensure_connected`
+/// can't open one for a workspace whose panes each carry their own connection
+/// (it reads `workspace.connection` and no-ops without it). That left restore
+/// with no way to check liveness for those workspaces, and attaching blind
+/// would make `tmux new-session -A` CREATE an empty session under the
+/// remembered name — the opposite of what a user wants when their session is
+/// gone. This gives it a real answer.
+///
+/// Three-way return, and the distinction is the whole point:
+///   `Some(list)` — we asked the host: these sessions exist (possibly none).
+///   `None`       — we could NOT ask (not SSH, or the headless connect failed:
+///                  password-only, passphrase-locked, unknown host key, host
+///                  down). The caller must leave the pane on [Connect] rather
+///                  than guess.
+/// Never `Err` for an unreachable host: "couldn't ask" is an answer here, not
+/// a failure to report to the user.
+///
+/// Same auth posture as `workspace_ensure_connected`: agent/key only, no
+/// password, and never auto-accepts an unknown host key — a restore probe must
+/// not be able to raise a prompt or trust a new key on the user's behalf.
+#[tauri::command]
+async fn pane_probe_tmux_sessions(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<Option<Vec<TmuxSessionInfo>>, String> {
+    // A pane that's already connected (or a sibling on the same workspace)
+    // gives us a handle for free — no second handshake.
+    let live = {
+        let sessions = state.core.sessions.lock().unwrap();
+        sessions.iter().find_map(|(_sid, sess)| match sess {
+            Session::Ssh(s) if s.workspace_id == workspace_id => Some(s.handle.clone()),
+            _ => None,
+        })
+    };
+    if let Some(h) = live {
+        return list_tmux_sessions_via_handle(&h).await.map(Some);
+    }
+
+    // Resolve the pane's effective connection: its own first, then the
+    // workspace's — the same precedence `pane_connect` uses.
+    let conn = {
+        let file = state.workspaces.lock().unwrap();
+        let ws = match file.workspaces.iter().find(|w| w.id == workspace_id) {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+        let layout = match ws.layout.as_ref() {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+        find_pane_connection(layout, &pane_id).or_else(|| {
+            if pane_id_exists_in(layout, &pane_id) {
+                ws.connection.clone()
+            } else {
+                None
+            }
+        })
+    };
+    let (host, user, port, key_path) = match conn {
+        Some(Connection::Ssh {
+            host,
+            user,
+            port,
+            key_path,
+        }) => (host, user, port, key_path),
+        _ => return Ok(None),
+    };
+
+    match connect_and_authenticate(&host, &user, port, key_path.as_deref(), None, None, false).await
+    {
+        Ok(SshHandshake { handle, .. }) => {
+            let out = list_tmux_sessions_via_handle(&handle).await;
+            // The probe's handle is disposable — one exec and gone. The real
+            // pane connect opens its own; keeping this one alive would leave a
+            // second authenticated session per host with nothing reading it.
+            let _ = handle
+                .disconnect(russh::Disconnect::ByApplication, "", "en")
+                .await;
+            out.map(Some)
+        }
+        Err(e) => {
+            dlog(&format!(
+                "pane_probe_tmux_sessions: cannot reach {user}@{host}:{port} headlessly ({e}) — pane {pane_id} stays on Connect"
+            ));
+            Ok(None)
+        }
+    }
 }
 
 // ─── Phase 23.K: local tmux session labels ─────────────────────────────────
@@ -6515,6 +6618,7 @@ pub fn run() {
             pane_list_claude_sessions,
             claude_usage::claude_usage_fetch,
             pane_list_tmux_sessions,
+            pane_probe_tmux_sessions,
             tmux_rename_session,
             tmux_labels_get,
             tmux_label_set,

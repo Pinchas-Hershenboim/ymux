@@ -119,3 +119,31 @@ NOTES: two changes.
   "server reported 0 tmux sessions", the cause is password-auth (the headless gate can't open
   it) and the fix is a deliberate decision about prompting at boot, not a bug.
 ==================================================================
+
+==================================================================
+[2026-07-28 22:35 IDT] session=restore-sessions-and-fm-path (dead-session rule)
+TASK: Yossi: "if the session is dead, don't open anything — show the Connect buttons"
+FILES:
+  M app/src-tauri/src/lib.rs (NEW command pane_probe_tmux_sessions + list_tmux_sessions_via_handle
+    extracted from pane_list_tmux_sessions; registered in the invoke_handler)
+  M app/src/App.tsx (restore attaches ONLY against a confirmed-live session list)
+RESULT: tsc green; NOT COMPILED LOCALLY — no Rust toolchain on this box. The CI windows job runs
+  the full `tauri build`, so cargo errors surface there (~10 min), not here. First Rust change of
+  this branch; everything before it was frontend-only.
+NOTES: the previous commit's per-pane-connection path had no liveness pre-check, so a dead session
+  would have been RECREATED empty by `tmux new-session -A` under the remembered name. That is
+  exactly what Yossi doesn't want. pane_probe_tmux_sessions answers "is it still there?" over the
+  PANE's own connection: reuses a live workspace handle if one exists, else does a headless
+  agent/key-only connect (no password, never auto-accepts an unknown host key — same posture as
+  workspace_ensure_connected), runs tmux list-sessions, disconnects.
+  THREE-WAY return, and the distinction is the whole point:
+    Some(list) = we asked, these exist (possibly none) -> a missing name means the session died:
+                 drop the hint, leave [Connect].
+    None       = we could NOT ask (not SSH / password-only / passphrase-locked / unknown host key
+                 / host down) -> leave [Connect], KEEP the hint for next time.
+    Never Err for an unreachable host — "couldn't ask" is an answer, not a user-facing failure.
+  Frontend probes once per distinct connection (JSON of pane.connection ?? ws.connection), not per
+  pane — each probe is a full handshake.
+  NET EFFECT: nothing is ever attached on a guess. A pane is re-attached only when the server has
+  just confirmed the session name is live.
+==================================================================
