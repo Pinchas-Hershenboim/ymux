@@ -67,6 +67,22 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Decided
 
+### 2026-07-28 — Phase 80 / 80.1 — session restore on app start + file-manager last directory
+- **Context:** Yossi asked for two things: (1) every terminal should come back to the conversation it was in when the app closed; (2) the file manager should open where it was last, not at `$HOME`. He also asked for pane drag-swap — **already shipped** (`paneDrag.ts` + `workspace_swap_panes`, merged in `fb43e71`/`2ded9c4`); only drag-to-*split* ("Intent Zones", COMPETITIVE-SCAN #4.1) is still unbuilt. Scope agreed: **SSH only, for now.**
+- **Why it was cheap:** the persistence was already there — closing a pane/app DETACHES tmux, never kills it (decision "DD", `001b69a`), layout + `pane_id`s live in `workspaces.json`, and the session name is deterministic. The only missing piece was WHICH session belonged to WHICH pane on the next start.
+- **Options considered:** (A) new fields on the Rust `LayoutNode`/`Workspace` structs; (B) a localStorage hint map, frontend-only.
+- **Decision: (B).** Same class as the floating-window rects and the sidebar width — per-machine, high-churn, disposable state; keeps Rule #7's atomic-write surface small; losing it costs one click, never data. It also kept the change frontend-only, which mattered practically: the work was done on Linux with no Rust toolchain, where `cargo check` on a Windows-targeted crate would prove nothing anyway.
+- **Design points worth keeping:**
+  - The stored name is the one `pane_persistence_list` reports after a successful connect — **not** a TS re-derivation of `sanitize_tmux_session_name`. Picker-chosen and title-derived names (Phase 23.I) stay correct and the naming rule stays in one place (Rust).
+  - `workspace_ensure_connected` is the auth gate: headless, idempotent, agent/key-only, never auto-accepts an unknown host key. A workspace needing a password / passphrase / host-key decision simply doesn't restore — **boot never throws a prompt at the user.**
+  - `pane_list_tmux_sessions` returns `Ok([])` when there's no live SSH handle (Phase 23.H), so an empty list is ambiguous and must NOT be read as "the sessions died" — hints are kept in that case, and only a name missing from a *non-empty* list is forgotten.
+  - Restore waits for the pane's terminal container to be in the DOM, so `attach()`'s fit pushes real cols/rows instead of the 80×24 fallback; connects run sequentially, not N-at-once on a freshly-armed connection.
+  - Panes with no remembered tmux session are deliberately left with their `[Connect]` button — a plain SSH shell leaves nothing on the server to come back to (Yossi's call).
+  - Honors `auto_connect_on_workspace_select === false`: a user who turned off background SSH doesn't get network activity at boot either.
+  - **80.1:** a remembered directory is only honored if it still lists; on the remote side `$HOME` answering is the tie-breaker that separates "directory gone" (move to home) from "no SSH session yet" (stay put, show the usual banner).
+- **Deferred deliberately:** restoring non-active workspaces (would open an SSH channel per host at boot), restoring scrollback/screen content beyond what tmux itself replays, and local (non-SSH) panes.
+- **Status:** implemented on branch `feat/restore-sessions-and-fm-path`; tsc green, **not run live** (Windows-only app, built on Linux). Needs Yossi's live test before merge.
+
 ### 2026-07-15 — Phase 64 J — CLOSED: [file] links live-verified (Track B shipped)
 - **Yossi live test (2026-07-15): WORKS.** Hover underline + tooltip, click → Save-As download / relative-path copy toast, all confirmed in the debug build. Thread open since 2026-06-18 — closed. Original entry (with the full Track A/B history) preserved below.
 - Same test round also confirmed: theme_mode switcher (Design Pass 01), 66.F custom policy lists (gate card fires on a custom pattern), 66.G notification→pane jump. The Welcome screen is conditional-state UI (only shows with zero workspaces / an empty workspace) — nothing to see on a populated install; left as shipped.

@@ -27,3 +27,30 @@ NOTES: local WIP stash "wip: terminal/textDirection changes during sync-commit"
   kept in stash@{0} — appears to be a stale copy of font/RTL work already
   committed remotely (7956c30, a20f375). Safe to drop after Yossi confirms.
 ==================================================================
+
+==================================================================
+[2026-07-28 16:19 IDT] session=restore-sessions-and-fm-path
+TASK: Phase 80 — restore SSH tmux sessions on app start; Phase 80.1 — file manager reopens at its last directory
+FILES:
+  A app/src/sessionRestore.ts
+  A app/src/fmPaths.ts
+  M app/src/App.tsx (restore driver + remember/forget bookkeeping in connectPane/killSession/closePane)
+  M app/src/FileManagerPane.tsx (onMount restores saved paths; createEffect persists them)
+RESULT: compiles-untested (tsc green; NO cargo/Rust toolchain on this Linux box and the app is Windows-only — nothing was run live)
+NOTES: frontend-only by design — no Rust touched, no new Tauri command, no schema change.
+  Restore hints live in localStorage ("winmux.paneSessions.v1", 14-day TTL) and store the
+  session name the BACKEND reports via pane_persistence_list, not a TS re-derivation of
+  sanitize_tmux_session_name (keeps title-derived / picker-chosen names correct).
+  Scope per Yossi: active workspace only, at app open, SSH only; SSH panes with no remembered
+  tmux session are left alone with their [Connect] button.
+  Auth gate = workspace_ensure_connected (headless, agent/key-only, never auto-accepts an
+  unknown host key) → boot never raises a password/passphrase/host-key prompt.
+  Gotcha encoded in the code: pane_list_tmux_sessions returns Ok([]) when there is NO live SSH
+  handle, so an empty list must NOT be read as "the sessions are gone" — hints are kept.
+  FM paths: "winmux.fm.paths.v1" keyed by workspace_id; a remembered dir is only honored if it
+  still lists, and on the remote side $HOME answering is the tie-breaker that distinguishes
+  "directory gone" from "no SSH session yet".
+  NEEDS LIVE TEST (Windows): (1) attach a pane to tmux, close the app, reopen → pane re-attaches
+  to the same session at the right size; (2) kill the session on the server, reopen → pane falls
+  back to [Connect], no error banner; (3) FM: navigate somewhere, close/reopen → same directory.
+==================================================================
