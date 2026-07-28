@@ -604,6 +604,20 @@ pub(crate) struct Settings {
     /// backwards-compatible (missing field → true).
     #[serde(default = "default_true")]
     pub auto_connect_on_workspace_select: bool,
+    /// Phase 80. When true, app start re-attaches the active workspace's SSH
+    /// panes to the tmux sessions they were on when it closed. OFF by default
+    /// and deliberately opt-in: it makes startup do network work — one SSH
+    /// handshake per restored pane, each re-running the workspace's
+    /// `setup_command` — which a rate-limited or fail2ban-fronted host will
+    /// notice. `#[serde(default)]` → missing field is false, so an existing
+    /// settings.json keeps the old startup behavior until the user asks.
+    #[serde(default)]
+    pub restore_sessions_on_start: bool,
+    /// Phase 80.1. When true, the file manager reopens at the last directory
+    /// each column was showing (per workspace) instead of `$HOME`. OFF by
+    /// default so the pre-80.1 behavior is what an untouched install gets.
+    #[serde(default)]
+    pub file_manager_remember_path: bool,
     /// Phase 49-C: optional auto-delete of empty + stale workspaces at
     /// startup. `None` (default) = disabled. Range 1-90 days enforced
     /// by the UI; the backend sweep treats any non-zero positive value
@@ -963,6 +977,8 @@ impl Default for Settings {
             hooks_updates: HooksUpdates::default(),
             ssh_key_offer_disabled: false,
             auto_connect_on_workspace_select: true,
+            restore_sessions_on_start: false,
+            file_manager_remember_path: false,
             auto_destroy_empty_workspaces_days: None,
             migrations: MigrationFlags::default(),
             stt: SttSettings::default(),
@@ -1514,6 +1530,24 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert!(!back.auto_connect_on_workspace_select);
+    }
+
+    #[test]
+    fn phase80_restore_flags_default_off_and_round_trip() {
+        // Both are opt-in: an install that never opens Settings must keep the
+        // pre-80 startup behavior, and an existing settings.json (no such
+        // keys) must not start restoring sessions because of an update.
+        let d = Settings::default();
+        assert!(!d.restore_sessions_on_start);
+        assert!(!d.file_manager_remember_path);
+
+        let mut s = Settings::default();
+        s.restore_sessions_on_start = true;
+        s.file_manager_remember_path = true;
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert!(back.restore_sessions_on_start);
+        assert!(back.file_manager_remember_path);
     }
 
     #[test]

@@ -56,6 +56,11 @@ interface Props {
    *  terminal connected yet) the remote column shows a friendly
    *  "connect a terminal first" placeholder instead of an error. */
   hasActiveSession?: boolean;
+  /** Phase 80.1: reopen each column at the directory it was last showing
+   *  (per workspace) instead of $HOME. Opt-in — Settings → General →
+   *  `file_manager_remember_path`. Absent/false keeps the pre-80.1
+   *  behavior, which is what an untouched install gets. */
+  rememberPath?: boolean;
 }
 
 type Side = "local" | "remote";
@@ -292,6 +297,7 @@ export function FileManagerPane(p: Props) {
   // this is state the user can only lose silently.
   const [pathsReady, setPathsReady] = createSignal(false);
   createEffect(() => {
+    if (!p.rememberPath) return; // opt-in; nothing is written when it's off
     if (!pathsReady()) return;
     const local = localPath();
     const remote = remotePath();
@@ -300,7 +306,9 @@ export function FileManagerPane(p: Props) {
   });
 
   onMount(async () => {
-    const saved = loadFmPaths(p.workspaceId);
+    // `{}` when the setting is off → every branch below falls through to the
+    // $HOME path, i.e. exactly the pre-80.1 behavior.
+    const saved = p.rememberPath ? loadFmPaths(p.workspaceId) : {};
 
     // Local: only honor the remembered directory if it still lists — a folder
     // that was deleted (or a disconnected drive) must not strand the pane on

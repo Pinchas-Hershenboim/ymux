@@ -147,3 +147,27 @@ NOTES: the previous commit's per-pane-connection path had no liveness pre-check,
   NET EFFECT: nothing is ever attached on a guess. A pane is re-attached only when the server has
   just confirmed the session name is live.
 ==================================================================
+
+==================================================================
+[2026-07-28 23:55 IDT] session=restore-sessions-and-fm-path (opt-in settings)
+TASK: Yossi: "did this override existing behavior? I want it to work only if the user turns it on"
+FILES:
+  M app/src-tauri/src/settings.rs (restore_sessions_on_start + file_manager_remember_path,
+    both #[serde(default)] = false; new test phase80_restore_flags_default_off_and_round_trip)
+  M app/src/settings.ts + app/src/bindings/Settings.ts (mirrors; bindings hand-edited to match
+    what ts-rs would emit — no cargo here to regenerate)
+  M app/src/SettingsModal.tsx (two checkboxes in General, under auto-connect)
+  M app/src/i18n/{en,he,ar,ru}.json (4 keys x 4 locales; parity 906)
+  M app/src/App.tsx (restore gated on the flag; rememberPath threaded to FileManagerPane)
+  M app/src/FileManagerPane.tsx (rememberPath prop gates BOTH the load and the save)
+  M .github/workflows/build-windows.yml (cargo test -p app --lib on the Windows job — the app
+    crate is Windows-only, so no other job can run its tests)
+RESULT: tsc green, i18n parity green, YAML valid. Rust NOT compiled locally (no cargo) — CI.
+NOTES: answer to "was existing behavior overridden": yes, in one place — the file manager used to
+  ALWAYS open at $HOME and now opens at the last directory. That is now behind a flag, off by
+  default, so an untouched install behaves exactly as before. Startup network activity (the
+  restore) is likewise off by default. Everything else was additive: connectPane gained a
+  `restoring` flag that only its own caller sets, pane_list_tmux_sessions was refactored without
+  behavior change, pane_probe_tmux_sessions is new. Manual [Connect] is untouched.
+  Two separate toggles (Yossi's choice) rather than one, so remembering a directory — which costs
+  nothing and touches no network — doesn't have to be bought together with SSH activity at boot.

@@ -1683,6 +1683,13 @@ function App() {
     prunePaneSessions(livePanes);
     pruneFmPaths(liveWorkspaces);
 
+    // Opt-in (Settings → General). Off by default: restore makes startup reach
+    // for the network on its own, and that should be the user's decision, not
+    // something an update quietly starts doing to their servers.
+    if (s.restore_sessions_on_start !== true) {
+      restoreLog("skip: disabled in settings (restore_sessions_on_start)");
+      return;
+    }
     // Same opt-out as the headless workspace connect: a user who turned off
     // auto-connect doesn't want the app reaching for the network on its own.
     if (s.auto_connect_on_workspace_select === false) {
@@ -3262,6 +3269,7 @@ function App() {
               workspaceId={ws.id}
               hasSsh={isRemoteWorkspace(ws)}
               hasActiveSession={liveWorkspaceIds().has(ws.id)}
+              rememberPath={settings()?.file_manager_remember_path === true}
             />
           ) : (
             <></>
