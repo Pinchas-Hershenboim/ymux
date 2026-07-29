@@ -211,3 +211,16 @@ NOTES: so the root cause was the `pane_kind` read (previous entry): his workspac
    - dead session → pane stays on [Connect], no empty session created
    - both flags off → startup identical to pre-80 behavior
 ==================================================================
+
+==================================================================
+[2026-07-29 09:05 IDT] session=restore-sessions-and-fm-path (80.1 LIVE VERIFIED)
+TASK: Yossi's live check of the second flag
+RESULT: verified-live — the file manager reopens at the last directory (file_manager_remember_path
+  on). Phase 80 was confirmed in the previous entry; both features are now live-verified.
+NOTES: remaining unverified cases, both cheap and both about NOT doing something:
+   - dead session (tmux kill-session on the server) → pane must stay on [Connect] and NO empty
+     session may be created in its place. This is the whole point of pane_probe_tmux_sessions,
+     and it is the one behavior a user only notices when it's wrong.
+   - both flags off → startup identical to pre-80.
+  PR #5 body + the @yyhezkel comment both updated to say two verified, these two open.
+==================================================================
