@@ -196,3 +196,18 @@ NOTES: found a real bug by reading, not by guessing — and made the write path 
       pruning, so "the map is empty" and "the map is fine but nothing matched" can never be
       confused again. New allPaneSessions() export, 2 tests.
 ==================================================================
+
+==================================================================
+[2026-07-29 01:20 IDT] session=restore-sessions-and-fm-path (LIVE VERIFIED)
+TASK: Yossi's live run of the CI build (run 30401647836)
+RESULT: verified-live — "הורדתי והתקנתי, עכשיו זה נפתח אוטומטית". Session restore re-attaches
+  the SSH pane on app start, with both flags on.
+NOTES: so the root cause was the `pane_kind` read (previous entry): his workspaces.json predates
+  Phase 35 and carries no pane_kind, which made every terminal pane fail the "is this a terminal"
+  test. Everything before that commit — the review fixes, the probe command, the settings — was
+  correct but unreachable behind that filter.
+  STILL UNVERIFIED LIVE (worth a minute each, all in the same build):
+   - 80.1 file manager reopening at the last directory (the second flag)
+   - dead session → pane stays on [Connect], no empty session created
+   - both flags off → startup identical to pre-80 behavior
+==================================================================
