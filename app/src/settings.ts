@@ -277,6 +277,13 @@ export interface Settings {
   // Phase 41: auto-connect a background SSH session on workspace select.
   // Backend defaults to true; always serialized.
   auto_connect_on_workspace_select?: boolean;
+  // Phase 80: re-attach the active workspace's SSH panes to their tmux
+  // sessions at app start. Backend defaults to FALSE — opt-in, because it
+  // makes startup do network work (one handshake per restored pane).
+  restore_sessions_on_start?: boolean;
+  // Phase 80.1: file manager reopens at the last directory each column was
+  // showing, per workspace, instead of $HOME. Backend defaults to FALSE.
+  file_manager_remember_path?: boolean;
   // Phase 49-C: optional auto-delete of empty workspaces older than N
   // days. null/undefined = disabled. Range 1-90 enforced by the UI.
   auto_destroy_empty_workspaces_days?: number | null;

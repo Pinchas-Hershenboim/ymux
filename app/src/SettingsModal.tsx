@@ -263,6 +263,31 @@ export function SettingsModal(p: Props) {
                   <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
                     {t("settings.autoConnect.hint")}
                   </p>
+                  {/* Phase 80: opt-in session restore. Off by default — it
+                      makes startup reach for the network on its own. */}
+                  <label class="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.restore_sessions_on_start === true}
+                      onChange={(e) => update("restore_sessions_on_start", e.currentTarget.checked)}
+                    />
+                    <span>{t("settings.restoreSessions.label")}</span>
+                  </label>
+                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
+                    {t("settings.restoreSessions.hint")}
+                  </p>
+                  {/* Phase 80.1: file manager reopens where it was left. */}
+                  <label class="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.file_manager_remember_path === true}
+                      onChange={(e) => update("file_manager_remember_path", e.currentTarget.checked)}
+                    />
+                    <span>{t("settings.fmRememberPath.label")}</span>
+                  </label>
+                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
+                    {t("settings.fmRememberPath.hint")}
+                  </p>
                   {/* Unshipped-fivefer (#3): browser session persistence. */}
                   <label class="settings-checkbox">
                     <input

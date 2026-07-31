@@ -27,3 +27,200 @@ NOTES: local WIP stash "wip: terminal/textDirection changes during sync-commit"
   kept in stash@{0} — appears to be a stale copy of font/RTL work already
   committed remotely (7956c30, a20f375). Safe to drop after Yossi confirms.
 ==================================================================
+
+==================================================================
+[2026-07-28 16:19 IDT] session=restore-sessions-and-fm-path
+TASK: Phase 80 — restore SSH tmux sessions on app start; Phase 80.1 — file manager reopens at its last directory
+FILES:
+  A app/src/sessionRestore.ts
+  A app/src/fmPaths.ts
+  M app/src/App.tsx (restore driver + remember/forget bookkeeping in connectPane/killSession/closePane)
+  M app/src/FileManagerPane.tsx (onMount restores saved paths; createEffect persists them)
+RESULT: compiles-untested (tsc green; NO cargo/Rust toolchain on this Linux box and the app is Windows-only — nothing was run live)
+NOTES: frontend-only by design — no Rust touched, no new Tauri command, no schema change.
+  Restore hints live in localStorage ("winmux.paneSessions.v1", 14-day TTL) and store the
+  session name the BACKEND reports via pane_persistence_list, not a TS re-derivation of
+  sanitize_tmux_session_name (keeps title-derived / picker-chosen names correct).
+  Scope per Yossi: active workspace only, at app open, SSH only; SSH panes with no remembered
+  tmux session are left alone with their [Connect] button.
+  Auth gate = workspace_ensure_connected (headless, agent/key-only, never auto-accepts an
+  unknown host key) → boot never raises a password/passphrase/host-key prompt.
+  Gotcha encoded in the code: pane_list_tmux_sessions returns Ok([]) when there is NO live SSH
+  handle, so an empty list must NOT be read as "the sessions are gone" — hints are kept.
+  FM paths: "winmux.fm.paths.v1" keyed by workspace_id; a remembered dir is only honored if it
+  still lists, and on the remote side $HOME answering is the tie-breaker that distinguishes
+  "directory gone" from "no SSH session yet".
+  NEEDS LIVE TEST (Windows): (1) attach a pane to tmux, close the app, reopen → pane re-attaches
+  to the same session at the right size; (2) kill the session on the server, reopen → pane falls
+  back to [Connect], no error banner; (3) FM: navigate somewhere, close/reopen → same directory.
+==================================================================
+
+==================================================================
+[2026-07-28 18:05 IDT] session=restore-sessions-and-fm-path (review pass)
+TASK: Phase 80 / 80.1 — fix the code-review + security-review findings on the branch
+FILES:
+  M app/src/App.tsx (connectPane ConnectOpts.restoring; killSession keeps the hint on a failed kill;
+    restoreSessions re-checks workspace + pane liveness per iteration and prunes fm paths)
+  M app/src/fmPaths.ts (saveFmPaths MERGES instead of replacing; shape gates on read; pruneFmPaths)
+  M app/src/FileManagerPane.tsx (persist effect gated on pathsReady — no half-resolved writes)
+  A app/src/sessionRestore.test.ts (15 tests)
+  A app/src/fmPaths.test.ts (17 tests)
+RESULT: compiles-untested for the app (tsc green) / 32 unit tests PASS for the two new modules
+  (run under node 22.6+ with --experimental-strip-types; on this box they were transpiled with
+  the repo's own esbuild and run with `node --test` — same source, all 32 green)
+NOTES: three P1s came out of the review, all in the new code:
+  (1) the "pane already connected" check ran once up front, so a pane the user connected MANUALLY
+      while restore was still working through the queue got killed and replaced (pane_connect kills
+      any prior session for the pane). Now re-checked immediately before each connect.
+  (2) connectPane resolves its workspace from activeWs(), but restore holds a snapshot across a
+      multi-second loop — switching workspace mid-restore sent pane ids of A with workspace B
+      (guaranteed "no pane" error, and ti.workspaceId left mistagged, which decides which host an
+      OSC-8 file:// link downloads from). Now the loop bails when the active workspace changes.
+  (3) FM: the persist effect fired after setLocalPath but BEFORE the remote path resolved (SSH
+      round-trip), writing {local, remote:""} and wiping the remembered remote directory — exactly
+      the case 80.1 exists for. Fixed twice over: the effect waits for both columns (pathsReady),
+      and saveFmPaths now merges, so an empty field means "no opinion", never "forget it".
+  Security pass: no injection (tmux name goes through shell_quote at lib.rs:2708; FM paths reach
+  SFTP/fs::read_dir, no shell), no host-key auto-accept, no PTY content logged. Two accepted:
+  a UNC local path from tampered localStorage would have opened an outbound SMB handshake at mount
+  → now rejected on read (drive-absolute only; UNC still reachable by clicking); and restore can no
+  longer raise a modal — a failed restore connect shows on the pane, never as a password/fingerprint
+  prompt at boot (ConnectOpts.restoring).
+  BEHAVIOR WORTH KNOWING: restore does one SSH handshake PER restored pane and re-runs the
+  workspace setup_command on each — a fail2ban-fronted host sees a burst of auths at app start.
+  STILL NEEDS LIVE TEST (Windows) — the 3-point checklist in the previous entry is unchanged.
+==================================================================
+
+==================================================================
+[2026-07-28 21:40 IDT] session=restore-sessions-and-fm-path (live-test round 1)
+TASK: Phase 80 — Yossi's first live run: panes still showed [Connect]; restore only appeared to
+  work when he clicked Connect himself (which is the PRE-EXISTING `new-session -A` behavior)
+FILES: M app/src/App.tsx
+RESULT: compiles-untested (tsc green, 32 unit tests green) — needs a second live run
+NOTES: two changes.
+  (1) DIAGNOSTICS: every exit path in restoreSessions now says WHY it took it, via diag_log
+      ("[restore] ..." in %APPDATA%\winmux\debug.log, dlog = user-visible) AND console.log.
+      Counts candidates vs skipped-local / already-connected / no-remembered-session, logs the
+      live tmux session count, per-pane re-attach or hint-drop, and a final N/M summary.
+      Restore is invisible when it works and looks exactly like "feature not built" when it
+      doesn't — on a Windows-only app that meant a full CI round-trip per guess.
+  (2) REAL GAP FOUND while wiring it: the gate was `if (!isRemoteWorkspace(ws)) return;`, and
+      isRemoteWorkspace only looks at the WORKSPACE-level connection. A workspace whose PANES
+      each carry their own SSH connection (exactly what isRemoteEffective exists for) has no
+      workspace connection, so restore bailed before looking at a single pane. That setup could
+      never restore. Now: candidates are collected first; the workspace-level pre-flight
+      (workspace_ensure_connected + pane_list_tmux_sessions, both workspace-scoped —
+      ensure_connected reads workspace.connection and no-ops without one) runs ONLY when the
+      workspace declares its own connection; otherwise panes re-attach directly and their own
+      connection authenticates. Trade-off logged in the code: without the pre-flight list, a
+      session that died on the server gets recreated empty by `new-session -A` under the same
+      name instead of falling back to [Connect] — recoverable, and better than not working.
+  Still to confirm from Yossi's debug.log which path his setup takes; if the line says
+  "server reported 0 tmux sessions", the cause is password-auth (the headless gate can't open
+  it) and the fix is a deliberate decision about prompting at boot, not a bug.
+==================================================================
+
+==================================================================
+[2026-07-28 22:35 IDT] session=restore-sessions-and-fm-path (dead-session rule)
+TASK: Yossi: "if the session is dead, don't open anything — show the Connect buttons"
+FILES:
+  M app/src-tauri/src/lib.rs (NEW command pane_probe_tmux_sessions + list_tmux_sessions_via_handle
+    extracted from pane_list_tmux_sessions; registered in the invoke_handler)
+  M app/src/App.tsx (restore attaches ONLY against a confirmed-live session list)
+RESULT: tsc green; NOT COMPILED LOCALLY — no Rust toolchain on this box. The CI windows job runs
+  the full `tauri build`, so cargo errors surface there (~10 min), not here. First Rust change of
+  this branch; everything before it was frontend-only.
+NOTES: the previous commit's per-pane-connection path had no liveness pre-check, so a dead session
+  would have been RECREATED empty by `tmux new-session -A` under the remembered name. That is
+  exactly what Yossi doesn't want. pane_probe_tmux_sessions answers "is it still there?" over the
+  PANE's own connection: reuses a live workspace handle if one exists, else does a headless
+  agent/key-only connect (no password, never auto-accepts an unknown host key — same posture as
+  workspace_ensure_connected), runs tmux list-sessions, disconnects.
+  THREE-WAY return, and the distinction is the whole point:
+    Some(list) = we asked, these exist (possibly none) -> a missing name means the session died:
+                 drop the hint, leave [Connect].
+    None       = we could NOT ask (not SSH / password-only / passphrase-locked / unknown host key
+                 / host down) -> leave [Connect], KEEP the hint for next time.
+    Never Err for an unreachable host — "couldn't ask" is an answer, not a user-facing failure.
+  Frontend probes once per distinct connection (JSON of pane.connection ?? ws.connection), not per
+  pane — each probe is a full handshake.
+  NET EFFECT: nothing is ever attached on a guess. A pane is re-attached only when the server has
+  just confirmed the session name is live.
+==================================================================
+
+==================================================================
+[2026-07-28 23:55 IDT] session=restore-sessions-and-fm-path (opt-in settings)
+TASK: Yossi: "did this override existing behavior? I want it to work only if the user turns it on"
+FILES:
+  M app/src-tauri/src/settings.rs (restore_sessions_on_start + file_manager_remember_path,
+    both #[serde(default)] = false; new test phase80_restore_flags_default_off_and_round_trip)
+  M app/src/settings.ts + app/src/bindings/Settings.ts (mirrors; bindings hand-edited to match
+    what ts-rs would emit — no cargo here to regenerate)
+  M app/src/SettingsModal.tsx (two checkboxes in General, under auto-connect)
+  M app/src/i18n/{en,he,ar,ru}.json (4 keys x 4 locales; parity 906)
+  M app/src/App.tsx (restore gated on the flag; rememberPath threaded to FileManagerPane)
+  M app/src/FileManagerPane.tsx (rememberPath prop gates BOTH the load and the save)
+  M .github/workflows/build-windows.yml (cargo test -p app --lib on the Windows job — the app
+    crate is Windows-only, so no other job can run its tests)
+RESULT: tsc green, i18n parity green, YAML valid. Rust NOT compiled locally (no cargo) — CI.
+NOTES: answer to "was existing behavior overridden": yes, in one place — the file manager used to
+  ALWAYS open at $HOME and now opens at the last directory. That is now behind a flag, off by
+  default, so an untouched install behaves exactly as before. Startup network activity (the
+  restore) is likewise off by default. Everything else was additive: connectPane gained a
+  `restoring` flag that only its own caller sets, pane_list_tmux_sessions was refactored without
+  behavior change, pane_probe_tmux_sessions is new. Manual [Connect] is untouched.
+  Two separate toggles (Yossi's choice) rather than one, so remembering a directory — which costs
+  nothing and touches no network — doesn't have to be bought together with SSH activity at boot.
+
+==================================================================
+[2026-07-29 00:40 IDT] session=restore-sessions-and-fm-path (live-test round 2)
+TASK: Yossi turned both flags on, connected a terminal, closed + reopened — pane still did not
+  re-attach. Flags themselves persisted correctly.
+FILES: M app/src/App.tsx, M app/src/sessionRestore.ts, M app/src/sessionRestore.test.ts
+RESULT: tsc green, 34 unit tests green. Rust untouched this round. Needs another live run.
+NOTES: found a real bug by reading, not by guessing — and made the write path stop depending on
+  one timer.
+  (1) THE BUG: the candidate filter used `pane.pane_kind !== "terminal"` directly. types.ts:85-91
+      says pane_kind is only non-optional in the GENERATED BINDING and ships `paneKindOf()` with a
+      `?? "terminal"` fallback precisely because a layout written before Phase 35 has no such
+      field. On those layouts every terminal pane looked like "not a terminal", so the candidate
+      list came out empty and restore did nothing — on exactly the installs old enough to have
+      sessions worth restoring. Now uses paneKindOf(), and the log counts not-a-terminal skips.
+  (2) HARDENING: the hint used to be written in ONE place — a 100ms setTimeout after a successful
+      connectPane. refreshPersistence() now records every mapping the backend reports, on every
+      refresh. That covers the picker, the reconnect driver and CLI-triggered connects too, and a
+      single missed write no longer costs the session. ADD-ONLY: the map lists LIVE sessions, so a
+      merely-detached pane is absent from it while its tmux session is alive — removal stays with
+      the explicit forget calls (kill / close / "server says it's gone").
+  (3) DIAGNOSTIC: restore now logs the whole remembered map (count + paneId→session) right after
+      pruning, so "the map is empty" and "the map is fine but nothing matched" can never be
+      confused again. New allPaneSessions() export, 2 tests.
+==================================================================
+
+==================================================================
+[2026-07-29 01:20 IDT] session=restore-sessions-and-fm-path (LIVE VERIFIED)
+TASK: Yossi's live run of the CI build (run 30401647836)
+RESULT: verified-live — "הורדתי והתקנתי, עכשיו זה נפתח אוטומטית". Session restore re-attaches
+  the SSH pane on app start, with both flags on.
+NOTES: so the root cause was the `pane_kind` read (previous entry): his workspaces.json predates
+  Phase 35 and carries no pane_kind, which made every terminal pane fail the "is this a terminal"
+  test. Everything before that commit — the review fixes, the probe command, the settings — was
+  correct but unreachable behind that filter.
+  STILL UNVERIFIED LIVE (worth a minute each, all in the same build):
+   - 80.1 file manager reopening at the last directory (the second flag)
+   - dead session → pane stays on [Connect], no empty session created
+   - both flags off → startup identical to pre-80 behavior
+==================================================================
+
+==================================================================
+[2026-07-29 09:05 IDT] session=restore-sessions-and-fm-path (80.1 LIVE VERIFIED)
+TASK: Yossi's live check of the second flag
+RESULT: verified-live — the file manager reopens at the last directory (file_manager_remember_path
+  on). Phase 80 was confirmed in the previous entry; both features are now live-verified.
+NOTES: remaining unverified cases, both cheap and both about NOT doing something:
+   - dead session (tmux kill-session on the server) → pane must stay on [Connect] and NO empty
+     session may be created in its place. This is the whole point of pane_probe_tmux_sessions,
+     and it is the one behavior a user only notices when it's wrong.
+   - both flags off → startup identical to pre-80.
+  PR #5 body + the @yyhezkel comment both updated to say two verified, these two open.
+==================================================================
