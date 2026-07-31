@@ -19,6 +19,7 @@ import {
   DEFAULT_CLAUDE_SETTINGS,
   DEFAULT_CLAUDE_USAGE_SETTINGS,
   DEFAULT_HOOK_NOTIFICATIONS,
+  DEFAULT_LOGS_SETTINGS,
   HookType,
   HookNotificationSettings,
   INTERACTIVE_HOOKS,
@@ -29,6 +30,9 @@ import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
+import { createLogger } from "./logger";
+
+const log = createLogger("SETTINGS");
 
 interface Props {
   open: boolean;
@@ -39,13 +43,13 @@ interface Props {
   activeWorkspaceId?: string;
 }
 
-type Tab = "general" | "theme" | "font" | "terminal" | "shortcuts" | "claude" | "hooks" | "notifications" | "hooksNotif" | "addons" | "updates" | "logs" | "language" | "stt";
+type Tab = "general" | "textLocale" | "appearance" | "shortcuts" | "agentNotif" | "ai" | "system";
 
 // beta.3: sub-tab within the "Hooks & Notifications" card.
 type HooksNotifSubTab = "hooks" | "sound";
 
 export function SettingsModal(p: Props) {
-  const [tab, setTab] = createSignal<Tab>("theme");
+  const [tab, setTab] = createSignal<Tab>("general");
   // beta.3: sub-tab inside the "Hooks & Notifications" card.
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
   const [presets, setPresets] = createSignal<PresetEntry[]>([]);
@@ -59,20 +63,46 @@ export function SettingsModal(p: Props) {
   const [logPath, setLogPath] = createSignal<string>("");
   const [logCopied, setLogCopied] = createSignal(false);
   const [logTail, setLogTail] = createSignal<string>("");
+  // Unified logging: component filter ([HOOK] / [SRV:METRICS] / [SSH] / …).
+  // "" = all. Filtering fetches a deeper tail so a sparse tag still shows
+  // meaningful history.
+  const [logFilter, setLogFilter] = createSignal<string>("");
   const refreshLogTail = async () => {
     try {
-      setLogTail(await invoke<string>("read_log_tail", { n: 200 }));
+      setLogTail(
+        await invoke<string>("read_log_tail", { n: logFilter() ? 2000 : 200 }),
+      );
     } catch (e) {
-      console.warn("read_log_tail failed", e);
+      log.warn("read_log_tail failed", e);
     }
   };
+  // Distinct component tags discovered in the fetched tail. Line shape:
+  // `[ts] [LEVEL] [TAG] msg` — the tag is the third bracket group.
+  const LOG_TAG_RE = /^\[[^\]]+\] \[[A-Z ]{5}\] \[([^\]]+)\]/;
+  const logTags = createMemo<string[]>(() => {
+    const tags = new Set<string>();
+    for (const line of logTail().split("\n")) {
+      const m = LOG_TAG_RE.exec(line);
+      if (m) tags.add(m[1]);
+    }
+    return [...tags].sort();
+  });
+  const filteredLogTail = createMemo<string>(() => {
+    const tag = logFilter();
+    if (!tag) return logTail();
+    const needle = `] [${tag}] `;
+    return logTail()
+      .split("\n")
+      .filter((l) => l.includes(needle))
+      .join("\n");
+  });
   // Phase 75: clear the debug log now, then refresh the viewer.
   const clearLogs = async () => {
     try {
       await invoke("clear_debug_log_cmd");
       await refreshLogTail();
     } catch (e) {
-      console.warn("clear_debug_log_cmd failed", e);
+      log.warn("clear_debug_log_cmd failed", e);
     }
   };
   // Phase 48-C: /doctor snapshot — paste-friendly JSON for bug reports.
@@ -100,7 +130,7 @@ export function SettingsModal(p: Props) {
         await saveSettings(next);
         setLastSaved(Date.now());
       } catch (e) {
-        console.error("settings_save failed", e);
+        log.error("settings_save failed", e);
       } finally {
         setSaving(false);
       }
@@ -119,16 +149,16 @@ export function SettingsModal(p: Props) {
     setTheme({ ansi: { ...p.settings.theme.ansi, ...patch } });
 
   onMount(async () => {
-    try { setPresets(await getPresets()); } catch (e) { console.warn(e); }
-    try { setFonts(await listSystemFonts()); } catch (e) { console.warn(e); }
+    try { setPresets(await getPresets()); } catch (e) { log.warn("getPresets failed", e); }
+    try { setFonts(await listSystemFonts()); } catch (e) { log.warn("listSystemFonts failed", e); }
     // Phase 38: resolve the debug.log path for the Logs section.
-    try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { console.warn(e); }
+    try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { log.warn("log_dir_path failed", e); }
   });
 
   // Phase 38: Logs section actions.
   const onOpenLogFolder = () => {
     if (!logPath()) return;
-    void revealItemInDir(logPath()).catch((e) => console.warn("revealItemInDir failed", e));
+    void revealItemInDir(logPath()).catch((e) => log.warn("revealItemInDir failed", e));
   };
   const onCopyLogPath = async () => {
     if (!logPath()) return;
@@ -137,14 +167,14 @@ export function SettingsModal(p: Props) {
       setLogCopied(true);
       setTimeout(() => setLogCopied(false), 1500);
     } catch (e) {
-      console.warn("clipboard write failed", e);
+      log.warn("clipboard write failed", e);
     }
   };
 
   // Phase 39: poll the log tail every 5s while the Logs tab is open;
   // stop when the user navigates away or closes the modal.
   createEffect(() => {
-    if (!p.open || tab() !== "logs") return;
+    if (!p.open || tab() !== "system") return;
     void refreshLogTail();
     const id = setInterval(() => void refreshLogTail(), 5000);
     onCleanup(() => clearInterval(id));
@@ -183,7 +213,7 @@ export function SettingsModal(p: Props) {
       applyTheme(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("apply preset failed", e);
+      log.error("apply preset failed", e);
     }
   };
 
@@ -198,7 +228,7 @@ export function SettingsModal(p: Props) {
       await saveSettings(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("settings_save failed", e);
+      log.error("settings_save failed", e);
       return;
     }
     const base = redesignBase(next.theme.preset);
@@ -216,7 +246,7 @@ export function SettingsModal(p: Props) {
       applyTheme(next);
       setLastSaved(Date.now());
     } catch (e) {
-      console.error("reset failed", e);
+      log.error("reset failed", e);
     }
   };
 
@@ -232,24 +262,13 @@ export function SettingsModal(p: Props) {
         const fresh = await loadSettings();
         p.onChange(fresh);
       } catch (e) {
-        console.warn("refresh settings after check failed", e);
+        log.warn("refresh settings after check failed", e);
       }
     } catch (e) {
-      console.error("check updates failed", e);
+      log.error("check updates failed", e);
     } finally {
       setChecking(false);
     }
-  };
-
-  const fmtAge = (iso?: string | null) => {
-    if (!iso) return "never";
-    const t = Date.parse(iso);
-    if (Number.isNaN(t)) return iso ?? "—";
-    const sec = Math.max(1, Math.floor((Date.now() - t) / 1000));
-    if (sec < 60) return `${sec}s ago`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-    return `${Math.floor(sec / 86400)}d ago`;
   };
 
   const savedAge = createMemo(() => {
@@ -276,7 +295,7 @@ export function SettingsModal(p: Props) {
 
           <div class="settings-body">
             <nav class="settings-tabs">
-              <For each={["general", "theme", "font", "terminal", "shortcuts", "claude", "hooks", "notifications", "hooksNotif", "addons", "updates", "logs", "language", "stt"] as Tab[]}>
+              <For each={["general", "textLocale", "appearance", "shortcuts", "agentNotif", "ai", "system"] as Tab[]}>
                 {(name) => (
                   <button
                     class={`settings-tab ${tab() === name ? "active" : ""}`}
@@ -308,11 +327,10 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.autoConnect.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.autoConnect.hint")}
-                  </p>
                   {/* Phase 80: opt-in session restore. Off by default — it
-                      makes startup reach for the network on its own. */}
+                      makes startup reach for the network on its own. Hint text
+                      lives in i18n (settings.restoreSessions.hint); inline hint
+                      paragraphs were purged in the Phase F settings refactor. */}
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -321,9 +339,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.restoreSessions.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.restoreSessions.hint")}
-                  </p>
                   {/* Phase 80.1: file manager reopens where it was left. */}
                   <label class="settings-checkbox">
                     <input
@@ -333,9 +348,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.fmRememberPath.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.fmRememberPath.hint")}
-                  </p>
                   {/* Unshipped-fivefer (#3): browser session persistence. */}
                   <label class="settings-checkbox">
                     <input
@@ -345,9 +357,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.persistBrowser.label")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.persistBrowser.hint")}
-                  </p>
                   <label>
                     <span>{t("settings.autoDestroy.label")}</span>
                     <input
@@ -363,13 +372,196 @@ export function SettingsModal(p: Props) {
                       }}
                     />
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.autoDestroy.hint")}
-                  </p>
+                </section>
+                <section>
+                  <label class="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.terminal.use_winmux_tmux_config ?? true}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, use_winmux_tmux_config: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.terminal.use_winmux_tmux_config.label")}</span>
+                  </label>
+                </section>
+                {/* Phase 81: tmux session picker scope — shared (all
+                    sessions on the server, the multi-machine default) vs
+                    local (only sessions this machine created). */}
+                <section>
+                  <h4>{t("settings.sessions.visibility.label")}</h4>
+                  <For each={[
+                    ["shared", "settings.sessions.visibility.shared"],
+                    ["local", "settings.sessions.visibility.local"],
+                  ] as const}>
+                    {([id, labelKey]) => (
+                      <label class="settings-radio" style="grid-template-columns: none !important; display: flex !important; align-items: flex-start; gap: 8px;">
+                        <input
+                          type="radio"
+                          name="session-visibility"
+                          value={id}
+                          checked={(p.settings.session_visibility ?? "shared") === id}
+                          onChange={() => update("session_visibility", id)}
+                        />
+                        <span style="flex:1">{t(labelKey)}</span>
+                      </label>
+                    )}
+                  </For>
+                </section>
+                <section>
+                  <label class="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.terminal.auto_reset_on_connect ?? true}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, auto_reset_on_connect: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.terminal.auto_reset_on_connect.label")}</span>
+                  </label>
                 </section>
               </Show>
 
-              <Show when={tab() === "theme"}>
+              <Show when={tab() === "textLocale"}>
+                <section>
+                  <h4>{t("settings.language.title")}</h4>
+                  <label>
+                    <span>{t("settings.language.label")}</span>
+                    <select
+                      value={p.settings.i18n.language}
+                      onChange={(e) =>
+                        update("i18n", { ...p.settings.i18n, language: e.currentTarget.value })
+                      }
+                    >
+                      <For each={LANGUAGES}>
+                        {(l) => <option value={l.id}>{l.label}</option>}
+                      </For>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t("settings.language.direction")}</span>
+                    <div class="settings-radio-row">
+                      <For each={["auto", "ltr", "rtl"] as const}>
+                        {(d) => (
+                          <label class="settings-radio">
+                            <input
+                              type="radio"
+                              name="dir"
+                              value={d}
+                              checked={p.settings.i18n.direction === d}
+                              onChange={() =>
+                                update("i18n", { ...p.settings.i18n, direction: d })
+                              }
+                            />
+                            <span>{t(`settings.language.dir.${d}`)}</span>
+                          </label>
+                        )}
+                      </For>
+                    </div>
+                  </label>
+                </section>
+                <section>
+                  <h4>{t("settings.font.title")}</h4>
+                  <label>
+                    <span>{t("settings.font.ui")}</span>
+                    <div style="display:flex; gap:8px; flex:1">
+                      <select
+                        style="flex:1"
+                        value={p.settings.font.ui_family}
+                        onChange={(e) => update("font", { ...p.settings.font, ui_family: e.currentTarget.value })}
+                      >
+                        <For each={fonts().ui}>{(f) => <option value={f}>{f}</option>}</For>
+                      </select>
+                      <input
+                        type="number"
+                        style="width:70px"
+                        min="8"
+                        max="32"
+                        value={p.settings.font.ui_size_pt}
+                        onInput={(e) => {
+                          const n = parseInt(e.currentTarget.value);
+                          if (!Number.isNaN(n) && n >= 8 && n <= 32) {
+                            update("font", { ...p.settings.font, ui_size_pt: n });
+                          }
+                        }}
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    <span>{t("settings.font.terminal")}</span>
+                    <div style="display:flex; gap:8px; flex:1">
+                      <select
+                        style="flex:1"
+                        value={p.settings.font.terminal_family}
+                        onChange={(e) => update("font", { ...p.settings.font, terminal_family: e.currentTarget.value })}
+                      >
+                        <For each={fonts().mono}>{(f) => <option value={f}>{f}</option>}</For>
+                      </select>
+                      <input
+                        type="number"
+                        style="width:70px"
+                        min="8"
+                        max="32"
+                        value={p.settings.font.terminal_size_pt}
+                        onInput={(e) => {
+                          const n = parseInt(e.currentTarget.value);
+                          if (!Number.isNaN(n) && n >= 8 && n <= 32) {
+                            update("font", { ...p.settings.font, terminal_size_pt: n });
+                          }
+                        }}
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    <span>{t("settings.font.web.url")}</span>
+                    <input
+                      type="text"
+                      placeholder="https://fonts.googleapis.com/css2?family=Iosevka&display=swap"
+                      value={p.settings.font.web_font_url ?? ""}
+                      onChange={(e) =>
+                        update("font", { ...p.settings.font, web_font_url: e.currentTarget.value || null })
+                      }
+                    />
+                  </label>
+                </section>
+                <section>
+                  <h4>{t("settings.terminal.rtl.title")}</h4>
+                  <For each={[
+                    ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
+                    ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
+                    ["off", "settings.terminal.rtl.off.label", "settings.terminal.rtl.off.desc"],
+                  ] as const}>
+                    {([id, labelKey, descKey]) => (
+                      <label class="settings-radio" style="grid-template-columns: none !important; display: flex !important; align-items: flex-start; gap: 8px;">
+                        <input
+                          type="radio"
+                          name="rtl-mode"
+                          value={id}
+                          checked={(p.settings.terminal.rtl_mode ?? "auto_per_line") === id}
+                          onChange={() => update("terminal", { ...p.settings.terminal, rtl_mode: id })}
+                        />
+                        <span style="flex:1" title={t(descKey)}>
+                          <strong>{t(labelKey)}</strong>
+                        </span>
+                      </label>
+                    )}
+                  </For>
+                  <label class="settings-checkbox" style="margin-top:8px">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.terminal.auto_direction ?? true}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, auto_direction: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.terminal.auto_direction.label")}</span>
+                  </label>
+                  <label class="settings-checkbox" style="margin-top:8px">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.terminal.mirror_arrows_rtl ?? true}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, mirror_arrows_rtl: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
+                  </label>
+                </section>
+              </Show>
+
+              <Show when={tab() === "appearance"}>
                 {/* Design Pass 01 (#2): dark/light/system appearance axis,
                     above the presets. Presets set colours; this sets polarity. */}
                 <section>
@@ -458,218 +650,9 @@ export function SettingsModal(p: Props) {
                 </section>
               </Show>
 
-              {/* ── Font ─────────────────────────────────────────────── */}
-              {/* Phase font-bug-fix: family is now <input list=""> + <datalist>
-                  so the user can pick from the detected list OR type any
-                  custom name (CSS will fall back if it's not installed —
-                  the "Web font URL" field below can fetch one at runtime). */}
-              <Show when={tab() === "font"}>
-                <section>
-                  <h4>{t("settings.font.ui")}</h4>
-                  <label>
-                    <span>{t("settings.font.family")}</span>
-                    <input
-                      type="text"
-                      list="winmux-ui-fonts"
-                      placeholder={t("settings.font.ui.placeholder")}
-                      value={p.settings.font.ui_family}
-                      onChange={(e) => update("font", { ...p.settings.font, ui_family: e.currentTarget.value })}
-                      onBlur={(e) => update("font", { ...p.settings.font, ui_family: e.currentTarget.value })}
-                    />
-                  </label>
-                  <datalist id="winmux-ui-fonts">
-                    <For each={fonts().ui}>{(f) => <option value={f} />}</For>
-                  </datalist>
-                  <label>
-                    <span>Size (pt)</span>
-                    <input
-                      type="number"
-                      min="8"
-                      max="32"
-                      value={p.settings.font.ui_size_pt}
-                      onInput={(e) => {
-                        const n = parseInt(e.currentTarget.value);
-                        if (!Number.isNaN(n) && n >= 8 && n <= 32) {
-                          update("font", { ...p.settings.font, ui_size_pt: n });
-                        }
-                      }}
-                    />
-                  </label>
-                </section>
-                <section>
-                  <h4>{t("settings.font.terminal")}</h4>
-                  <label>
-                    <span>{t("settings.font.family")}</span>
-                    <input
-                      type="text"
-                      list="winmux-mono-fonts"
-                      placeholder={t("settings.font.terminal.placeholder")}
-                      value={p.settings.font.terminal_family}
-                      onChange={(e) => update("font", { ...p.settings.font, terminal_family: e.currentTarget.value })}
-                      onBlur={(e) => update("font", { ...p.settings.font, terminal_family: e.currentTarget.value })}
-                    />
-                  </label>
-                  <datalist id="winmux-mono-fonts">
-                    <For each={fonts().mono}>{(f) => <option value={f} />}</For>
-                  </datalist>
-                  <label>
-                    <span>Size (pt)</span>
-                    <input
-                      type="number"
-                      min="8"
-                      max="32"
-                      value={p.settings.font.terminal_size_pt}
-                      onInput={(e) => {
-                        const n = parseInt(e.currentTarget.value);
-                        if (!Number.isNaN(n) && n >= 8 && n <= 32) {
-                          update("font", { ...p.settings.font, terminal_size_pt: n });
-                        }
-                      }}
-                    />
-                  </label>
-                </section>
-                <section>
-                  <h4>{t("settings.font.web.title")}</h4>
-                  <label>
-                    <span>{t("settings.font.web.url")}</span>
-                    <input
-                      type="text"
-                      placeholder="https://fonts.googleapis.com/css2?family=Iosevka&display=swap"
-                      value={p.settings.font.web_font_url ?? ""}
-                      onChange={(e) =>
-                        update("font", { ...p.settings.font, web_font_url: e.currentTarget.value || null })
-                      }
-                    />
-                  </label>
-                  <p class="settings-hint">
-                    {t("settings.font.web.hint", { example: "Iosevka" })}
-                  </p>
-                </section>
-              </Show>
-
-              {/* ── Terminal ─────────────────────────────────────────── */}
-              <Show when={tab() === "terminal"}>
-                <section>
-                  <h4>{t("settings.terminal.cursor")}</h4>
-                  <div class="settings-radio-row">
-                    <For each={["block", "bar", "underline"] as const}>
-                      {(c) => (
-                        <label class="settings-radio">
-                          <input
-                            type="radio"
-                            name="cursor"
-                            value={c}
-                            checked={p.settings.terminal.cursor_style === c}
-                            onChange={() => update("terminal", { ...p.settings.terminal, cursor_style: c })}
-                          />
-                          <span>{c}</span>
-                        </label>
-                      )}
-                    </For>
-                  </div>
-                </section>
-                <section>
-                  <h4>{t("settings.terminal.buffer.title")}</h4>
-                  <label>
-                    <span>{t("settings.terminal.scrollback")}</span>
-                    <input
-                      type="number"
-                      min="100"
-                      max="100000"
-                      step="500"
-                      value={p.settings.terminal.scrollback_lines}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, scrollback_lines: parseInt(e.currentTarget.value) || 10000 })}
-                    />
-                  </label>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.terminal.allow_proposed_api}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, allow_proposed_api: e.currentTarget.checked })}
-                    />
-                    <span>Allow xterm.js proposed API (needed for WebGL)</span>
-                  </label>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.terminal.use_winmux_tmux_config ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, use_winmux_tmux_config: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.terminal.use_winmux_tmux_config.label")}</span>
-                  </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.use_winmux_tmux_config.hint")}
-                  </p>
-                </section>
-                <section>
-                  <h4>{t("settings.terminal.rtl.title")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.terminal.rtl.hint")}
-                  </p>
-                  <For each={[
-                    ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
-                    ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
-                    ["off", "settings.terminal.rtl.off.label", "settings.terminal.rtl.off.desc"],
-                  ] as const}>
-                    {([id, labelKey, descKey]) => (
-                      <label class="settings-radio" style="grid-template-columns: none !important; display: flex !important; align-items: flex-start; gap: 8px;">
-                        <input
-                          type="radio"
-                          name="rtl-mode"
-                          value={id}
-                          checked={(p.settings.terminal.rtl_mode ?? "auto_per_line") === id}
-                          onChange={() => update("terminal", { ...p.settings.terminal, rtl_mode: id })}
-                        />
-                        <span style="flex:1">
-                          <strong>{t(labelKey)}</strong>
-                          <div style="color: var(--w-text-dim); font-size: var(--w-fs-sm); margin-top: 2px;">{t(descKey)}</div>
-                        </span>
-                      </label>
-                    )}
-                  </For>
-                  <label class="settings-checkbox" style="margin-top:8px">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.terminal.auto_direction ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, auto_direction: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.terminal.auto_direction.label")}</span>
-                  </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.auto_direction.hint")}
-                  </p>
-                  <label class="settings-checkbox" style="margin-top:8px">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.terminal.mirror_arrows_rtl ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, mirror_arrows_rtl: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
-                  </label>
-                  <label class="settings-checkbox" style="margin-top:8px">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.terminal.auto_reset_on_connect ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, auto_reset_on_connect: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.terminal.auto_reset_on_connect.label")}</span>
-                  </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.auto_reset_on_connect.hint")}
-                  </p>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.terminal.mirror_arrows_rtl.hint")}
-                  </p>
-                </section>
-              </Show>
-
-              {/* ── Shortcuts ────────────────────────────────────────── */}
               <Show when={tab() === "shortcuts"}>
                 <section>
                   <h4>{t("settings.shortcuts.title")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.shortcuts.hint")}
-                  </p>
                   <For each={[
                     ["copy", "settings.shortcuts.copy"],
                     ["paste", "settings.shortcuts.paste"],
@@ -710,119 +693,9 @@ export function SettingsModal(p: Props) {
                 </section>
               </Show>
 
-              {/* ── Claude (Phase 17) ────────────────────────────────── */}
-              <Show when={tab() === "claude"}>
-                <section>
-                  <h4>{t("settings.claude.title")}</h4>
-                  <p class="settings-hint" style="margin-top:0">
-                    {t("settings.claude.hint")}
-                  </p>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS).auto_summarize_on_stop}
-                      onChange={(e) =>
-                        update("claude", {
-                          ...(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS),
-                          auto_summarize_on_stop: e.currentTarget.checked,
-                        } as Settings["claude"])
-                      }
-                    />
-                    <span>{t("settings.claude.auto_on_stop")}</span>
-                  </label>
-                  <label>
-                    <span>{t("settings.claude.history_count")}</span>
-                    <input
-                      type="number"
-                      min="5"
-                      max="50"
-                      value={(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS).summary_history_count}
-                      onChange={(e) =>
-                        update("claude", {
-                          ...(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS),
-                          summary_history_count:
-                            Math.max(5, Math.min(50, parseInt(e.currentTarget.value) || 10)),
-                        } as Settings["claude"])
-                      }
-                    />
-                  </label>
-                  <label class="modal-textarea-label">
-                    <span>{t("settings.claude.summary_prompt")}</span>
-                    <textarea
-                      rows="3"
-                      value={(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS).summary_prompt}
-                      onChange={(e) =>
-                        update("claude", {
-                          ...(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS),
-                          summary_prompt: e.currentTarget.value,
-                        } as Settings["claude"])
-                      }
-                    />
-                  </label>
-                  <p class="settings-hint">
-                    {t("settings.claude.prompt_hint")}
-                  </p>
-
-                  {/* Phase 78: usage-indicator display + auto-refresh (one row). */}
-                  <h4 style="margin-top:18px">{t("claudeUsage.settings.title")}</h4>
-                  <div class="claude-usage-settings-row">
-                    <label class="settings-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS).show_top_indicator}
-                        onChange={(e) =>
-                          update("claude_usage", {
-                            ...(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS),
-                            show_top_indicator: e.currentTarget.checked,
-                          } as Settings["claude_usage"])
-                        }
-                      />
-                      <span>{t("claudeUsage.settings.show")}</span>
-                    </label>
-                    <select
-                      value={(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS).display_mode}
-                      onChange={(e) =>
-                        update("claude_usage", {
-                          ...(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS),
-                          display_mode: e.currentTarget.value,
-                        } as Settings["claude_usage"])
-                      }
-                    >
-                      <option value="percent">{t("claudeUsage.settings.modePercent")}</option>
-                      <option value="bar">{t("claudeUsage.settings.modeBar")}</option>
-                    </select>
-                    <label class="claude-usage-refresh">
-                      <span>{t("claudeUsage.settings.autoRefresh")}</span>
-                      <input
-                        type="number"
-                        min="0"
-                        max="120"
-                        value={(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS).auto_refresh_minutes}
-                        onChange={(e) =>
-                          update("claude_usage", {
-                            ...(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS),
-                            auto_refresh_minutes: Math.max(0, Math.min(120, parseInt(e.currentTarget.value) || 0)),
-                          } as Settings["claude_usage"])
-                        }
-                      />
-                    </label>
-                  </div>
-                  <p class="settings-hint">{t("claudeUsage.settings.hint")}</p>
-                </section>
-              </Show>
-
-              {/* ── Hooks ────────────────────────────────────────────── */}
-              <Show when={tab() === "hooks"}>
+              <Show when={tab() === "agentNotif"}>
                 <section>
                   <h4>{t("settings.hooks.title")}</h4>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.hooks.enabled}
-                      onChange={(e) => update("hooks", { ...p.settings.hooks, enabled: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.hooks.enabled")}</span>
-                  </label>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -831,9 +704,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.hooks.policy_enabled")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.hooks.policy_enabled.hint")}
-                  </p>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -842,9 +712,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.hooks.auto_install")}</span>
                   </label>
-                  <p class="settings-hint" style="margin-top:-4px;margin-inline-start:24px">
-                    {t("settings.hooks.auto_install.hint")}
-                  </p>
                   {/* Phase 66.F: user-editable policy lists. One pattern per
                       line; blanks dropped on blur. Enforced desktop-side by
                       the feed.push engine (the CLI static fallback keeps the
@@ -867,7 +734,6 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </label>
-                  <p class="settings-hint">{t("settings.hooks.custom_block.hint")}</p>
                   <label class="modal-textarea-label">
                     <span>{t("settings.hooks.custom_gate")}</span>
                     <textarea
@@ -886,29 +752,7 @@ export function SettingsModal(p: Props) {
                       }
                     />
                   </label>
-                  <p class="settings-hint">{t("settings.hooks.custom_gate.hint")}</p>
-                  <label>
-                    <span>{t("settings.hooks.policy_preset")}</span>
-                    <select
-                      value={p.settings.hooks.policy_preset}
-                      onChange={(e) => update("hooks", { ...p.settings.hooks, policy_preset: e.currentTarget.value })}
-                    >
-                      <option value="paranoid">paranoid — every tool prompts</option>
-                      <option value="default">default — risky tools only</option>
-                      <option value="relaxed">relaxed — auto-allow trusted tools</option>
-                      <option value="auto">auto — never prompt (deprecated)</option>
-                    </select>
-                  </label>
-                  <p class="settings-hint">
-                    To install/refresh the OS-level hook entries, run{" "}
-                    <code>winmux setup-hooks --agent claude --force</code>{" "}
-                    in any terminal.
-                  </p>
                 </section>
-              </Show>
-
-              {/* ── Notifications ────────────────────────────────────── */}
-              <Show when={tab() === "notifications"}>
                 <section>
                   <h4>{t("settings.notifications.toasts.title")}</h4>
                   <label class="settings-checkbox">
@@ -919,14 +763,6 @@ export function SettingsModal(p: Props) {
                     />
                     <span>Show OS toast notifications (workspace events, updates)</span>
                   </label>
-                  <label class="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={p.settings.notifications.sound_enabled}
-                      onChange={(e) => update("notifications", { ...p.settings.notifications, sound_enabled: e.currentTarget.checked })}
-                    />
-                    <span>{t("settings.notifications.sound_enabled")}</span>
-                  </label>
                   {/* cmux-A A1: pane pulse on OSC 9/99/777 activity. */}
                   <label class="settings-checkbox">
                     <input
@@ -936,42 +772,7 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("notifications.pane_pulse_label")}</span>
                   </label>
-                  <p class="settings-hint">{t("notifications.pane_pulse_help")}</p>
-                  {/* Phase 66 (KK): per-event toast toggles. */}
-                  <h4 style="margin-top:14px">{t("settings.notifications.perEvent.title")}</h4>
-                  <For each={[
-                    ["toast_session_start", "settings.notifications.ev.session_start"],
-                    ["toast_session_end", "settings.notifications.ev.session_end"],
-                    ["toast_stop", "settings.notifications.ev.stop"],
-                    ["toast_notification", "settings.notifications.ev.notification"],
-                    ["toast_gate", "settings.notifications.ev.gate"],
-                    ["toast_block", "settings.notifications.ev.block"],
-                  ] as const}>
-                    {([key, labelKey]) => (
-                      <label class="settings-checkbox">
-                        <input
-                          type="checkbox"
-                          disabled={!p.settings.notifications.toast_enabled}
-                          checked={p.settings.notifications[key] ?? false}
-                          onChange={(e) => update("notifications", { ...p.settings.notifications, [key]: e.currentTarget.checked })}
-                        />
-                        <span>{t(labelKey)}</span>
-                      </label>
-                    )}
-                  </For>
                 </section>
-              </Show>
-
-              {/* ── beta.3: Hooks & Notifications card ─────────────────
-                    Two-tabbed card that layers on top of the existing legacy
-                    "hooks" and "notifications" tabs. The old tabs cover CLI-
-                    install (policy engine / matcher_mode) + per-event toast
-                    toggles. This one is coarser:
-                      Tab 1 (Hooks) = which hook types the backend PROCESSES
-                      Tab 2 (Sound) = which of those play a sound on the toast
-                    Storage lives on `settings.hook_notifications` (kept
-                    separate from `settings.hooks` to avoid a schema break). */}
-              <Show when={tab() === "hooksNotif"}>
                 {(() => {
                   const getHN = (): HookNotificationSettings =>
                     p.settings.hook_notifications ?? DEFAULT_HOOK_NOTIFICATIONS;
@@ -1101,9 +902,6 @@ export function SettingsModal(p: Props) {
                           />
                           <span>{t("hooksNotif.sound_master")}</span>
                         </label>
-                        <p class="settings-hint">
-                          {t("hooksNotif.sound_master.hint")}
-                        </p>
                         <div class="hooksNotif-group">
                           <h5 class="hooksNotif-group-head">
                             {t("hooksNotif.group.interactive")}
@@ -1126,175 +924,99 @@ export function SettingsModal(p: Props) {
                 })()}
               </Show>
 
-              {/* ── Updates ──────────────────────────────────────────── */}
-              <Show when={tab() === "updates"}>
+              <Show when={tab() === "ai"}>
                 <section>
-                  <h4>{t("settings.updates.title")}</h4>
+                  <h4>{t("settings.claude.title")}</h4>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
-                      checked={p.settings.updates.check_on_startup}
-                      onChange={(e) => update("updates", { ...p.settings.updates, check_on_startup: e.currentTarget.checked })}
+                      checked={(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS).auto_summarize_on_stop}
+                      onChange={(e) =>
+                        update("claude", {
+                          ...(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS),
+                          auto_summarize_on_stop: e.currentTarget.checked,
+                        } as Settings["claude"])
+                      }
                     />
-                    <span>{t("settings.updates.check_on_startup")}</span>
+                    <span>{t("settings.claude.auto_on_stop")}</span>
                   </label>
                   <label>
-                    <span>{t("settings.updates.manifest_url")}</span>
-                    <input
-                      type="text"
-                      value={p.settings.updates.manifest_url ?? ""}
-                      onChange={(e) => update("updates", { ...p.settings.updates, manifest_url: e.currentTarget.value || null })}
-                    />
-                  </label>
-                  <p class="settings-hint">
-                    Last check: {fmtAge(p.settings.updates.last_check_iso)}
-                    <Show when={p.settings.updates.last_seen_version}>
-                      {" "}· latest seen: {p.settings.updates.last_seen_version}
-                    </Show>
-                  </p>
-                  <button class="primary" disabled={checking()} onClick={onCheckUpdates}>
-                    {checking() ? "Checking…" : "Check now"}
-                  </button>
-                  <Show when={updateInfo()}>
-                    <div class="settings-update-result">
-                      <p>
-                        {t("settings.updates.current")} <code>{updateInfo()!.current_version}</code>
-                        {" · "}{t("settings.updates.latest")} <code>{updateInfo()!.latest_version ?? "—"}</code>
-                      </p>
-                      <Show when={updateInfo()!.error}>
-                        <p class="settings-update-err">{t("settings.updates.error", { msg: updateInfo()!.error ?? "" })}</p>
-                      </Show>
-                      <Show when={updateInfo()!.available}>
-                        <p class="settings-update-ok">{t("settings.updates.available")}</p>
-                      </Show>
-                    </div>
-                  </Show>
-
-                  {/* Phase 71: version history + install/downgrade + channel. */}
-                  <hr class="modal-sep" />
-                  <h4>{t("vm.history")}</h4>
-                  <VersionManager
-                    channel={p.settings.updates.channel}
-                    onSetChannel={(c) => update("updates", { ...p.settings.updates, channel: c })}
-                    skipped={p.settings.updates.skipped_versions}
-                    onUnskip={(v) =>
-                      update("updates", {
-                        ...p.settings.updates,
-                        skipped_versions: p.settings.updates.skipped_versions.filter((x) => x !== v),
-                      })
-                    }
-                  />
-                </section>
-              </Show>
-
-              {/* Phase 39: Logs tab — live tail viewer + path + open/copy. */}
-              <Show when={tab() === "logs"}>
-                <section>
-                  <h4>{t("settings.logs.recent")}</h4>
-                  <pre class="settings-logs-viewer">{logTail()}</pre>
-                  <div class="settings-logs-actions">
-                    <button onClick={() => void refreshLogTail()}>
-                      {t("settings.logs.refresh")}
-                    </button>
-                  </div>
-                  <hr class="modal-sep" />
-                  <div class="settings-logs-row">
-                    <span class="settings-logs-label">{t("settings.updates.logs.path")}</span>
-                    <code class="settings-logs-path">{logPath()}</code>
-                  </div>
-                  <div class="settings-logs-actions">
-                    <button onClick={onOpenLogFolder} disabled={!logPath()}>
-                      {t("settings.updates.logs.openFolder")}
-                    </button>
-                    <button onClick={() => void onCopyLogPath()} disabled={!logPath()}>
-                      {logCopied() ? t("settings.updates.logs.copied") : t("settings.updates.logs.copyPath")}
-                    </button>
-                  </div>
-                  {/* Phase 75: retention + clear. */}
-                  <hr class="modal-sep" />
-                  <div class="settings-logs-row">
-                    <span class="settings-logs-label">{t("settings.logs.retention")}</span>
+                    <span>{t("settings.claude.history_count")}</span>
                     <input
                       type="number"
-                      min="0"
-                      max="365"
-                      class="settings-logs-retention"
-                      value={p.settings.logs?.retention_days ?? 7}
+                      min="5"
+                      max="50"
+                      value={(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS).summary_history_count}
                       onChange={(e) =>
-                        update("logs", {
-                          retention_days: Math.max(0, Math.min(365, parseInt(e.currentTarget.value || "0", 10) || 0)),
-                        })
+                        update("claude", {
+                          ...(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS),
+                          summary_history_count:
+                            Math.max(5, Math.min(50, parseInt(e.currentTarget.value) || 10)),
+                        } as Settings["claude"])
                       }
                     />
-                  </div>
-                  <div class="settings-hint">{t("settings.logs.retention_hint")}</div>
-                  <div class="settings-logs-actions">
-                    <button onClick={() => void clearLogs()}>{t("settings.logs.clear")}</button>
-                  </div>
-                  {/* Phase 48-C: /doctor diagnostic snapshot for bug reports. */}
-                  <hr class="modal-sep" />
-                  <div class="settings-logs-actions">
-                    <button onClick={() => void runDoctor()}>Run Doctor</button>
-                  </div>
-                  <Show when={doctorJson()}>
-                    <pre class="settings-logs-viewer">{doctorJson()}</pre>
-                  </Show>
-                </section>
-              </Show>
-
-              {/* ── Add-ons (Phase 68.E) ─────────────────────────────── */}
-              <Show when={tab() === "addons"}>
-                <AddonsTab workspaceId={p.activeWorkspaceId} />
-              </Show>
-
-              {/* ── Language ──────────────────────────────────────────── */}
-              <Show when={tab() === "language"}>
-                <section>
-                  <h4>{t("settings.language.title")}</h4>
-                  <label>
-                    <span>{t("settings.language.label")}</span>
-                    <select
-                      value={p.settings.i18n.language}
+                  </label>
+                  <label class="modal-textarea-label">
+                    <span>{t("settings.claude.summary_prompt")}</span>
+                    <textarea
+                      rows="3"
+                      value={(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS).summary_prompt}
                       onChange={(e) =>
-                        update("i18n", { ...p.settings.i18n, language: e.currentTarget.value })
+                        update("claude", {
+                          ...(p.settings.claude ?? DEFAULT_CLAUDE_SETTINGS),
+                          summary_prompt: e.currentTarget.value,
+                        } as Settings["claude"])
+                      }
+                    />
+                  </label>
+
+                  {/* Phase 78: usage-indicator display + auto-refresh (one row). */}
+                  <h4 style="margin-top:18px">{t("claudeUsage.settings.title")}</h4>
+                  <div class="claude-usage-settings-row">
+                    <label class="settings-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS).show_top_indicator}
+                        onChange={(e) =>
+                          update("claude_usage", {
+                            ...(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS),
+                            show_top_indicator: e.currentTarget.checked,
+                          } as Settings["claude_usage"])
+                        }
+                      />
+                      <span>{t("claudeUsage.settings.show")}</span>
+                    </label>
+                    <select
+                      value={(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS).display_mode}
+                      onChange={(e) =>
+                        update("claude_usage", {
+                          ...(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS),
+                          display_mode: e.currentTarget.value,
+                        } as Settings["claude_usage"])
                       }
                     >
-                      <For each={LANGUAGES}>
-                        {(l) => <option value={l.id}>{l.label}</option>}
-                      </For>
+                      <option value="percent">{t("claudeUsage.settings.modePercent")}</option>
+                      <option value="bar">{t("claudeUsage.settings.modeBar")}</option>
                     </select>
-                  </label>
-                  <label>
-                    <span>{t("settings.language.direction")}</span>
-                    <div class="settings-radio-row">
-                      <For each={["auto", "ltr", "rtl"] as const}>
-                        {(d) => (
-                          <label class="settings-radio">
-                            <input
-                              type="radio"
-                              name="dir"
-                              value={d}
-                              checked={p.settings.i18n.direction === d}
-                              onChange={() =>
-                                update("i18n", { ...p.settings.i18n, direction: d })
-                              }
-                            />
-                            <span>{t(`settings.language.dir.${d}`)}</span>
-                          </label>
-                        )}
-                      </For>
-                    </div>
-                  </label>
+                    <label class="claude-usage-refresh">
+                      <span>{t("claudeUsage.settings.autoRefresh")}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="120"
+                        value={(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS).auto_refresh_minutes}
+                        onChange={(e) =>
+                          update("claude_usage", {
+                            ...(p.settings.claude_usage ?? DEFAULT_CLAUDE_USAGE_SETTINGS),
+                            auto_refresh_minutes: Math.max(0, Math.min(120, parseInt(e.currentTarget.value) || 0)),
+                          } as Settings["claude_usage"])
+                        }
+                      />
+                    </label>
+                  </div>
                 </section>
-              </Show>
-
-              {/* Phase 58: voice input (speech-to-text). Opt-in;
-                  hidden behind its own tab so the existing Settings
-                  surface stays calm for users who don't care. */}
-              <Show when={tab() === "stt"}>
                 <section>
                   <h4>{t("settings.stt.title")}</h4>
-                  <p class="settings-hint">{t("settings.stt.hint")}</p>
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
@@ -1405,6 +1127,160 @@ export function SettingsModal(p: Props) {
                     />
                   </label>
                 </section>
+              </Show>
+
+              <Show when={tab() === "system"}>
+                <section>
+                  <h4>{t("settings.updates.title")}</h4>
+                  <label class="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.updates.check_on_startup}
+                      onChange={(e) => update("updates", { ...p.settings.updates, check_on_startup: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.updates.check_on_startup")}</span>
+                  </label>
+                  <label>
+                    <span>{t("settings.updates.manifest_url")}</span>
+                    <input
+                      type="text"
+                      value={p.settings.updates.manifest_url ?? ""}
+                      onChange={(e) => update("updates", { ...p.settings.updates, manifest_url: e.currentTarget.value || null })}
+                    />
+                  </label>
+                  <button class="primary" disabled={checking()} onClick={onCheckUpdates}>
+                    {checking() ? "Checking…" : "Check now"}
+                  </button>
+                  <Show when={updateInfo()}>
+                    <div class="settings-update-result">
+                      <p>
+                        {t("settings.updates.current")} <code>{updateInfo()!.current_version}</code>
+                        {" · "}{t("settings.updates.latest")} <code>{updateInfo()!.latest_version ?? "—"}</code>
+                      </p>
+                      <Show when={updateInfo()!.error}>
+                        <p class="settings-update-err">{t("settings.updates.error", { msg: updateInfo()!.error ?? "" })}</p>
+                      </Show>
+                      <Show when={updateInfo()!.available}>
+                        <p class="settings-update-ok">{t("settings.updates.available")}</p>
+                      </Show>
+                    </div>
+                  </Show>
+
+                  {/* Phase 71: version history + install/downgrade + channel. */}
+                  <hr class="modal-sep" />
+                  <h4>{t("vm.history")}</h4>
+                  <VersionManager
+                    channel={p.settings.updates.channel}
+                    onSetChannel={(c) => update("updates", { ...p.settings.updates, channel: c })}
+                    skipped={p.settings.updates.skipped_versions}
+                    onUnskip={(v) =>
+                      update("updates", {
+                        ...p.settings.updates,
+                        skipped_versions: p.settings.updates.skipped_versions.filter((x) => x !== v),
+                      })
+                    }
+                  />
+                </section>
+                <section>
+                  <h4>{t("settings.logs.recent")}</h4>
+                  {/* Component filter — tags discovered from the tail itself. */}
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.filter")}</span>
+                    <select
+                      value={logFilter()}
+                      onChange={(e) => {
+                        setLogFilter(e.currentTarget.value);
+                        void refreshLogTail();
+                      }}
+                    >
+                      <option value="">{t("settings.logs.filterAll")}</option>
+                      <For each={logTags()}>
+                        {(tag) => <option value={tag}>{tag}</option>}
+                      </For>
+                    </select>
+                  </div>
+                  <pre class="settings-logs-viewer">{filteredLogTail()}</pre>
+                  <div class="settings-logs-actions">
+                    <button onClick={() => void refreshLogTail()}>
+                      {t("settings.logs.refresh")}
+                    </button>
+                  </div>
+                  <hr class="modal-sep" />
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.updates.logs.path")}</span>
+                    <code class="settings-logs-path">{logPath()}</code>
+                  </div>
+                  <div class="settings-logs-actions">
+                    <button onClick={onOpenLogFolder} disabled={!logPath()}>
+                      {t("settings.updates.logs.openFolder")}
+                    </button>
+                    <button onClick={() => void onCopyLogPath()} disabled={!logPath()}>
+                      {logCopied() ? t("settings.updates.logs.copied") : t("settings.updates.logs.copyPath")}
+                    </button>
+                  </div>
+                  {/* Unified logging: level threshold + remote sync. */}
+                  <hr class="modal-sep" />
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.level")}</span>
+                    <select
+                      value={p.settings.logs?.level ?? "info"}
+                      onChange={(e) =>
+                        update("logs", {
+                          ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                          level: e.currentTarget.value === "debug" ? "debug" : "info",
+                        })
+                      }
+                    >
+                      <option value="info">{t("settings.logs.levelInfo")}</option>
+                      <option value="debug">{t("settings.logs.levelDebug")}</option>
+                    </select>
+                  </div>
+                  <div class="settings-logs-row">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={p.settings.logs?.remote_sync ?? true}
+                        onChange={(e) =>
+                          update("logs", {
+                            ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                            remote_sync: e.currentTarget.checked,
+                          })
+                        }
+                      />{" "}
+                      {t("settings.logs.remoteSync")}
+                    </label>
+                  </div>
+                  {/* Phase 75: retention + clear. */}
+                  <hr class="modal-sep" />
+                  <div class="settings-logs-row">
+                    <span class="settings-logs-label">{t("settings.logs.retention")}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="365"
+                      class="settings-logs-retention"
+                      value={p.settings.logs?.retention_days ?? 7}
+                      onChange={(e) =>
+                        update("logs", {
+                          ...(p.settings.logs ?? DEFAULT_LOGS_SETTINGS),
+                          retention_days: Math.max(0, Math.min(365, parseInt(e.currentTarget.value || "0", 10) || 0)),
+                        })
+                      }
+                    />
+                  </div>
+                  <div class="settings-logs-actions">
+                    <button onClick={() => void clearLogs()}>{t("settings.logs.clear")}</button>
+                  </div>
+                  {/* Phase 48-C: /doctor diagnostic snapshot for bug reports. */}
+                  <hr class="modal-sep" />
+                  <div class="settings-logs-actions">
+                    <button onClick={() => void runDoctor()}>Run Doctor</button>
+                  </div>
+                  <Show when={doctorJson()}>
+                    <pre class="settings-logs-viewer">{doctorJson()}</pre>
+                  </Show>
+                </section>
+                <AddonsTab workspaceId={p.activeWorkspaceId} />
               </Show>
             </div>
           </div>

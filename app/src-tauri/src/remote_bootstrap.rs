@@ -7,7 +7,7 @@
 
 use tauri::AppHandle;
 
-use crate::dlog;
+use crate::log_debug;
 use crate::SshClient;
 
 // Re-export the public surface so existing crate::remote_bootstrap::*
@@ -32,6 +32,18 @@ const WINMUX_TMUX_CONF: &[u8] = include_bytes!("../resources/winmux-tmux.conf");
 /// the manifest. Embedded — never touches the filesystem. An unknown
 /// name means the manifest and this match arm drifted apart (caught in
 /// dev, not silently at a user's connect).
+// Phase 80: pub(crate) — local_setup's WSL deploy pipes the same
+// embedded payloads over wsl.exe stdin instead of SFTP.
+pub(crate) fn embedded_manifest(
+) -> Result<std::collections::HashMap<String, winmux_bootstrap::ManifestEntry>, String> {
+    winmux_bootstrap::parse_manifest(REMOTE_MANIFEST)
+}
+
+/// Phase 80: alias with a clearer name for out-of-module callers.
+pub(crate) fn embedded_payload(rel: &str) -> Result<Vec<u8>, String> {
+    read_resource_bytes(rel)
+}
+
 fn read_resource_bytes(rel: &str) -> Result<Vec<u8>, String> {
     let bytes: &[u8] = match rel {
         "winmux-linux-x64" => WINMUX_LINUX_X64,
@@ -42,7 +54,7 @@ fn read_resource_bytes(rel: &str) -> Result<Vec<u8>, String> {
             ))
         }
     };
-    dlog(&format!("bootstrap: embedded resource {rel:?} → {} bytes", bytes.len()));
+    log_debug("BOOT", &format!("bootstrap: embedded resource {rel:?} → {} bytes", bytes.len()));
     Ok(bytes.to_vec())
 }
 
@@ -55,7 +67,7 @@ pub async fn bootstrap(
     _app: &AppHandle,
     force: bool,
 ) -> Result<BootstrapStatus, String> {
-    dlog(&format!(
+    log_debug("BOOT", &format!(
         "bootstrap: using embedded manifest ({} bytes)",
         REMOTE_MANIFEST.len()
     ));

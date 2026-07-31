@@ -28,7 +28,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"time"
@@ -176,7 +175,7 @@ func (m *SessionManager) dispatchHook(sess *Session, method string, rawParams js
 	}
 	// Defense in depth: the pane_id must match the HMAC-identified session.
 	if p.PaneID != "" && p.PaneID != "mob_"+sess.id {
-		log.Printf("chat: hook pane_id %q != session mob_%s — denying", p.PaneID, sess.id)
+		logger.Warn("hook pane_id mismatch — denying", "pane_id", p.PaneID, "session", sess.id)
 		return map[string]any{"request_id": p.RequestID, "decision": "deny"}
 	}
 

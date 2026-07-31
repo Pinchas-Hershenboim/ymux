@@ -276,18 +276,33 @@ impl HookAdapter for Claude {
     }
 
     fn run(&self, dry: bool, force: bool, source: &str, matcher_mode: &str) -> AgentStatus {
-        let home = match std::env::var_os("HOME") {
+        // Phase 80: USERPROFILE fallback — `winmux setup-hooks` now also
+        // runs on native Windows (the app's local smart-install step),
+        // where only USERPROFILE is set.
+        let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             Some(h) => h,
-            None => return AgentStatus::Error("$HOME not set".into()),
+            None => return AgentStatus::Error("$HOME / %USERPROFILE% not set".into()),
         };
         let claude_dir = PathBuf::from(&home).join(".claude");
         if !claude_dir.is_dir() {
             return AgentStatus::NotDetected;
         }
 
-        let exe_path = match home.to_str() {
-            Some(s) => format!("{}/.winmux/bin/winmux", s),
-            None => return AgentStatus::Error("non-UTF-8 $HOME".into()),
+        // Phase 80: on Windows the hook command must point at THIS
+        // winmux-cli.exe (there is no ~/.winmux/bin/winmux — the CLI
+        // ships next to the app). Double-quote it inside the command
+        // string: it typically lives under "C:\Program Files\winmux\…"
+        // and Claude Code executes hook commands through a shell.
+        let exe_path = if cfg!(windows) {
+            match std::env::current_exe() {
+                Ok(p) => format!("\"{}\"", p.to_string_lossy()),
+                Err(e) => return AgentStatus::Error(format!("current_exe: {e}")),
+            }
+        } else {
+            match home.to_str() {
+                Some(s) => format!("{}/.winmux/bin/winmux", s),
+                None => return AgentStatus::Error("non-UTF-8 $HOME".into()),
+            }
         };
 
         let mut spec = match load_spec(source, "claude-code") {

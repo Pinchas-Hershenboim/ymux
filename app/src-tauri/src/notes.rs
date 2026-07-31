@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_debug, AppState};
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -95,7 +95,7 @@ fn save_notes_to_disk(file: &NotesFile) -> Result<(), String> {
         f.sync_all().map_err(|e| format!("fsync: {e}"))?;
     }
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    dlog(&format!(
+    log_debug("NOTES", &format!(
         "notes save: {} bytes ({} notes) -> {:?}",
         text.len(),
         file.notes.len(),

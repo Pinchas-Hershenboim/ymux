@@ -7,6 +7,9 @@ import { FileEditor } from "./FileEditor";
 import { TechText } from "./TechText";
 import { saveRemoteFileAs } from "./download";
 import { loadFmPaths, saveFmPaths } from "./fmPaths";
+import { createLogger } from "./logger";
+
+const log = createLogger("FM");
 import { openMarkdown, isMarkdownFile } from "./mdViewerStore";
 import {
   IconArrowUp,
@@ -411,7 +414,7 @@ export function FileManagerPane(p: Props) {
     } catch (e) {
       // Drag-drop hookup failure is non-fatal — file manager still
       // works without it.
-      console.warn("fm: onDragDropEvent failed:", e);
+      log.warn("onDragDropEvent failed", e);
     }
     onCleanup(() => {
       try {
@@ -772,7 +775,7 @@ export function FileManagerPane(p: Props) {
     } catch (e) {
       // Check failure shouldn't block the user — log + proceed (the
       // unzip itself surfaces real errors through wrap()).
-      console.warn("unzip pre-flight check failed", e);
+      log.warn("unzip pre-flight check failed", e);
     }
     if (conflict) {
       askConfirm({

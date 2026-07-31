@@ -1,7 +1,6 @@
 package insights
 
 import (
-	"log"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -183,9 +182,10 @@ func (s *Sampler) Sample(includeTop bool) *Snapshot {
 	// budget so insights.log (served by /logs) pinpoints it. Metadata only.
 	tEnd := time.Now()
 	if d := tEnd.Sub(t0); d > 2*time.Second {
-		log.Printf("sample slow: total=%dms cpu+mem+disk=%dms docker=%dms top=%dms includeTop=%v",
-			d.Milliseconds(), tDisk.Sub(t0).Milliseconds(),
-			tDocker.Sub(tDisk).Milliseconds(), tEnd.Sub(tDocker).Milliseconds(), includeTop)
+		logger.Warn("sample slow",
+			"total_ms", d.Milliseconds(), "cpu_mem_disk_ms", tDisk.Sub(t0).Milliseconds(),
+			"docker_ms", tDocker.Sub(tDisk).Milliseconds(), "top_ms", tEnd.Sub(tDocker).Milliseconds(),
+			"include_top", includeTop)
 	}
 
 	s.last.Store(snap) // publish for /current (Phase 72.3)

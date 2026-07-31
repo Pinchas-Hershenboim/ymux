@@ -19,7 +19,7 @@ import {
 import { pruneFmPaths } from "./fmPaths";
 import { FeedPanel } from "./FeedPanel";
 import { NotesModal } from "./NotesModal";
-import { ProvisioningWizard } from "./ProvisioningWizard";
+import { SetupWizard } from "./SetupWizard";
 import { InsightsWindow } from "./InsightsWindow";
 import { ClaudeUsageIndicator } from "./ClaudeUsageIndicator";
 import {
@@ -76,6 +76,7 @@ import {
   paneKindOf,
   pruneLayout,
   type Connection,
+  type CreateWorkspaceInput,
   type EnvVar,
   type FeedItem,
   type ForwardRow,
@@ -91,10 +92,13 @@ import {
   type WorkspaceGroup,
   type WorkspacesFile,
 } from "./types";
+import { createLogger, setLoggerLevel } from "./logger";
 import "@xterm/xterm/css/xterm.css";
 import "./App.css";
 import "./tokens.css"; // Design Pass 01 (#2): --wmx-* tokens + dark/light mode (must load after App.css)
 import "./themes-redesign.css"; // Claude Design handoff: 4 direction themes (must load after tokens.css)
+
+const log = createLogger("APP");
 
 type PaneStatus = { msg: string; err: boolean };
 
@@ -124,11 +128,16 @@ function App() {
     active_workspace_id: null,
     workspaces: [],
   });
-  const [showCreate, setShowCreate] = createSignal(false);
-  // Design Pass 01 (#1): lets the Welcome "Connect via SSH" CTA open the
-  // create modal pre-set to SSH. Reset to "local" on close so the plain
-  // "+ New workspace" entry points still default to a local shell.
-  const [createInitialType, setCreateInitialType] = createSignal<"local" | "ssh">("local");
+  // Phase 80 (unified setup wizard): one entry point for every create
+  // flow. `false` = closed; an object = open (a FRESH object per open, so
+  // the keyed <Show> fully remounts the wizard each time — Phase 56-A
+  // semantics). `target` deep-links the level-1 pick (palette "SSH:
+  // Provision a server" pre-selects server; the Welcome CTAs deep-link
+  // too). Editing an existing workspace is a separate modal driven by
+  // `editingWorkspace` below.
+  const [showSetup, setShowSetup] = createSignal<
+    false | { target?: "server" | "local" }
+  >(false);
   // Unshipped-fivefer (#1): Notification Center. Session-accumulating store
   // fed by both notification streams (OSC + RPC/agent); read-state persists
   // per-machine in localStorage (the items themselves are in-memory only, so
@@ -164,7 +173,7 @@ function App() {
     try {
       await invoke("workspace_ensure_connected", { workspaceId: ws.id });
     } catch (e) {
-      console.warn("armWorkspaceConnection failed", e);
+      log.warn("armWorkspaceConnection failed", e);
     } finally {
       setConnectingWs(null);
     }
@@ -320,7 +329,7 @@ function App() {
     try {
       await invoke("updater_remind_later", { hours: 24 });
     } catch (e) {
-      console.warn("updater_remind_later failed", e);
+      log.warn("updater_remind_later failed", e);
     }
     setUpdateBanner(null);
   };
@@ -332,7 +341,7 @@ function App() {
       try {
         await invoke("updater_skip_version", { version: v });
       } catch (e) {
-        console.warn("updater_skip_version failed", e);
+        log.warn("updater_skip_version failed", e);
       }
     }
     setUpdateBanner(null);
@@ -340,7 +349,7 @@ function App() {
   // Phase 14.A: server provisioning wizard. Phase 65.R folded the
   // "Connect to existing server" flow into this wizard's "existing"
   // mode, so there's no separate connect-existing modal anymore.
-  const [showProvision, setShowProvision] = createSignal(false);
+  // Phase 80: showProvision folded into showSetup (target: "server").
   // Monitor's open/drawer/float state now lives in the unified `panels`
   // registry (see panels.ts) under the "monitor" id.
   const [addonsWin, setAddonsWin] = createSignal<{ id: string; name: string } | null>(null);
@@ -389,7 +398,7 @@ function App() {
     const next: Settings = { ...s, sidebar_mode: mode };
     setSettings(next);
     void saveSettings(next).catch((e) =>
-      console.warn("saveSettings (sidebar_mode) failed", e),
+      log.warn("saveSettings (sidebar_mode) failed", e),
     );
   };
   // Phase 65.P: Ctrl+B toggles full ↔ icons (two modes only); the
@@ -445,7 +454,7 @@ function App() {
   const applyZoom = (f: number) => {
     const clamped = Math.max(0.3, Math.min(3, f));
     setZoomFactor(clamped);
-    void getCurrentWebview().setZoom(clamped).catch((e) => console.warn("setZoom failed", e));
+    void getCurrentWebview().setZoom(clamped).catch((e) => log.warn("setZoom failed", e));
   };
   // Phase 18: hooks-outdated banners — at most one banner per agent
   // at a time; the user dismisses (skip-this-version persists), defers
@@ -461,8 +470,8 @@ function App() {
   // own visibility effect re-calls `workspace_browser_show` with the
   // current rect once `anyModalOpen()` flips back to false.
   const anyModalOpen = () =>
-    showCreate() || showNotes() || showSettings() || showProvision() ||
-    showPalette() || showPortsWindow() || installingUpdate();
+    showSetup() !== false || editingWorkspace() !== null || showNotes() ||
+    showSettings() || showPalette() || showPortsWindow() || installingUpdate();
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -576,7 +585,7 @@ function App() {
       }).catch(async () => {
         // Older builds without ssh_exec_in_workspace — fall back to a
         // pane.send: ask the user to run the command themselves.
-        console.warn("ssh_exec_in_workspace not available; user must run manually");
+        log.warn("ssh_exec_in_workspace not available; user must run manually");
       });
       flashSummaryToast("ok", t("hooks_update.toast_done", { version: b.latest }));
       setHooksBanner(null);
@@ -615,7 +624,7 @@ function App() {
     try {
       await saveSettings(next);
     } catch (e) {
-      console.warn("saveSettings failed (skipHooksVersion)", e);
+      log.warn("saveSettings failed (skipHooksVersion)", e);
     }
     setHooksBanner(null);
   };
@@ -673,7 +682,7 @@ function App() {
         if (tmuxName) rememberPaneSession(paneId, tmuxName);
       }
     } catch (e) {
-      console.warn("pane_persistence_list failed", e);
+      log.warn("pane_persistence_list failed", e);
     }
   };
   const refreshNotes = async () => {
@@ -681,7 +690,7 @@ function App() {
       const f = await invoke<NotesFile>("notes_load");
       setNotes(f.notes ?? []);
     } catch (e) {
-      console.warn("notes_load failed", e);
+      log.warn("notes_load failed", e);
     }
   };
   const FEED_AUTO_DISMISS_MS = 3000;
@@ -749,7 +758,7 @@ function App() {
         }
       }
     } catch (e) {
-      console.error("popout_pane failed", e);
+      log.error("popout_pane failed", e);
     }
   };
 
@@ -851,8 +860,8 @@ function App() {
     const hasWs = !!ws;
     const hasPane = !!pid;
     return [
-      { id: "workspace.new", label: t("cmd.workspace.new"), handler: () => setShowCreate(true) },
-      { id: "workspace.rename", label: t("cmd.workspace.rename"), enabled: () => hasWs, handler: () => { if (ws) { setEditingWorkspace(ws); setShowCreate(true); } } },
+      { id: "workspace.new", label: t("cmd.workspace.new"), handler: () => setShowSetup({}) },
+      { id: "workspace.rename", label: t("cmd.workspace.rename"), enabled: () => hasWs, handler: () => { if (ws) setEditingWorkspace(ws); } },
       { id: "workspace.disconnect", label: t("cmd.workspace.disconnect"), enabled: () => hasWs, handler: () => { if (ws) void handleDisconnectWorkspace(ws.id); } },
       { id: "workspace.delete", label: t("cmd.workspace.delete"), enabled: () => hasWs, handler: () => { if (ws) void handleDelete(ws.id); } },
       { id: "pane.split.right", label: t("cmd.pane.split.right"), enabled: () => hasPane, handler: () => { if (pid) void splitPane(pid, "horizontal"); } },
@@ -868,7 +877,7 @@ function App() {
       { id: "ssh.connect", label: t("cmd.ssh.connect"), enabled: () => hasPane, handler: () => { if (pid) void connectPane(pid); } },
       { id: "ssh.disconnect", label: t("cmd.ssh.disconnect"), enabled: () => hasPane, handler: () => { if (pid) void disconnectPane(pid); } },
       { id: "pane.reset", label: t("cmd.reset_terminal"), enabled: () => hasPane, handler: () => { if (pid) terms.get(pid)?.resetTerminal(); } },
-      { id: "ssh.provision", label: t("cmd.ssh.provision"), handler: () => setShowProvision(true) },
+      { id: "ssh.provision", label: t("cmd.ssh.provision"), handler: () => setShowSetup({ target: "server" }) },
       { id: "insights.monitor", label: t("cmd.insights.monitor"), enabled: () => hasWs, handler: () => void openPanelConnected("monitor") },
       { id: "settings.open", label: t("cmd.settings.open"), handler: () => setShowSettings(true) },
       { id: "settings.language", label: t("cmd.settings.language"), handler: () => setShowSettings(true) },
@@ -1013,7 +1022,7 @@ function App() {
     if (s.auto_connect_on_workspace_select === false) return;
     if (!isRemoteWorkspace(ws)) return;
     void invoke("workspace_ensure_connected", { workspaceId: ws.id }).catch((e) =>
-      console.warn("workspace_ensure_connected failed", e),
+      log.warn("workspace_ensure_connected failed", e),
     );
   });
 
@@ -1030,7 +1039,7 @@ function App() {
   // when auto_port_forward is off (it forwards on demand per chosen port).
   const ensurePortsSnapshot = (wsId: string) => {
     void invoke("workspace_ensure_port_watcher", { workspaceId: wsId }).catch((e) =>
-      console.warn("workspace_ensure_port_watcher failed", e),
+      log.warn("workspace_ensure_port_watcher failed", e),
     );
     void invoke<{ remote_port: number; addr: string; family: string }[]>(
       "list_detected_ports",
@@ -1049,7 +1058,7 @@ function App() {
           return [...other, ...mine];
         });
       })
-      .catch((e) => console.warn("list_detected_ports failed", e));
+      .catch((e) => log.warn("list_detected_ports failed", e));
   };
 
   let lastPortsEnsuredWs: string | null = null;
@@ -1095,20 +1104,29 @@ function App() {
 
   // ─── workspace mutations ────────────────────────────────────────────────
 
-  const handleCreate = async (input: {
-    name: string;
-    connection: Connection;
-    color?: string;
-    cwd?: string;
-    setup_command?: string;
-    teardown_command?: string;
-    env?: EnvVar[];
-  }) => {
+  // Phase 34 (hoisted in Phase 80): split a Help pane off the currently-
+  // active workspace's focused pane. No-op when no workspace exists
+  // (fresh-launch state). Shared by the edit modal and the setup wizard.
+  const openSshHelp = () => {
+    const ws = activeWs();
+    const pid = activePaneId();
+    if (!ws || !pid) return;
+    void invoke("workspace_split", {
+      workspaceId: ws.id,
+      paneId: pid,
+      direction: "horizontal",
+      paneKind: "help",
+      browserUrl: null,
+      helpTopic: "ssh-key-setup",
+    });
+  };
+
+  const handleCreate = async (input: CreateWorkspaceInput) => {
     try {
       const f = await invoke<WorkspacesFile>("workspace_create", { input });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_create failed", e);
+      log.error("workspace_create failed", e);
     }
   };
 
@@ -1137,7 +1155,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_update failed", e);
+      log.error("workspace_update failed", e);
     }
   };
 
@@ -1153,7 +1171,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error(e);
+      log.error("workspace_rename failed", e);
     }
   };
 
@@ -1174,7 +1192,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error(e);
+      log.error("workspace_delete failed", e);
     }
   };
 
@@ -1190,7 +1208,7 @@ function App() {
         if (firstPane) setActivePaneId(firstPane);
       }
     } catch (e) {
-      console.error(e);
+      log.error("workspace_set_active failed", e);
     }
   };
 
@@ -1208,7 +1226,7 @@ function App() {
         workspaces: f.workspaces.map((w) => (w.id === updated.id ? updated : w)),
       });
     } catch (e) {
-      console.error("workspace_set_auto_port_forward failed", e);
+      log.error("workspace_set_auto_port_forward failed", e);
     }
   };
 
@@ -1240,7 +1258,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("split failed", e);
+      log.error("split failed", e);
     }
   };
 
@@ -1264,7 +1282,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_swap_panes failed", e);
+      log.error("workspace_swap_panes failed", e);
     }
   };
 
@@ -1287,7 +1305,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser navigate failed", e);
+      log.error("browser navigate failed", e);
     }
   };
 
@@ -1301,7 +1319,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser go-back failed", e);
+      log.error("browser go-back failed", e);
     }
   };
 
@@ -1315,7 +1333,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser go-home failed", e);
+      log.error("browser go-home failed", e);
     }
   };
 
@@ -1334,7 +1352,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_reset_layout failed", e);
+      log.error("workspace_reset_layout failed", e);
     }
   };
 
@@ -1349,7 +1367,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("browser set-forward failed", e);
+      log.error("browser set-forward failed", e);
     }
   };
 
@@ -1365,7 +1383,7 @@ function App() {
       forgetPaneSession(paneId);
       updateFile(f);
     } catch (e) {
-      console.error("close failed", e);
+      log.error("close failed", e);
     }
   };
 
@@ -1587,7 +1605,7 @@ function App() {
     try {
       await invoke("pane_disconnect", { paneId });
     } catch (e) {
-      console.warn("disconnect failed", e);
+      log.warn("disconnect failed", e);
     }
     const sid = paneToSession.get(paneId);
     if (sid) {
@@ -1606,7 +1624,7 @@ function App() {
       await invoke("pane_kill_session", { paneId });
     } catch (e) {
       killed = false;
-      console.warn("kill_session failed", e);
+      log.warn("kill_session failed", e);
     }
     // The session is gone from the server — drop the restore hint so the next
     // start doesn't probe for a name that can never come back. (disconnectPane
@@ -1946,7 +1964,7 @@ function App() {
     try {
       sttRecorder.stop();
     } catch (e) {
-      console.warn("stt stop failed", e);
+      log.warn("stt stop failed", e);
     }
   };
 
@@ -1984,7 +2002,7 @@ function App() {
       });
       updateFile(f);
     } catch (e) {
-      console.error("workspace_distribute_evenly failed", e);
+      log.error("workspace_distribute_evenly failed", e);
     }
   };
 
@@ -2109,7 +2127,7 @@ function App() {
     }
     if (matches(e, sc.new_workspace)) {
       e.preventDefault();
-      setShowCreate(true);
+      setShowSetup({});
       return;
     }
     if (matches(e, sc.copy)) {
@@ -2125,7 +2143,7 @@ function App() {
       e.preventDefault();
       navigator.clipboard.readText().then((text) => {
         if (text) pasteIntoActiveTerminal(text);
-      }).catch((err) => console.warn("paste failed", err));
+      }).catch((err) => log.warn("paste failed", err));
       return;
     }
     // Phase 17: Claude session summary.
@@ -2243,7 +2261,7 @@ function App() {
         }
       }
     } catch (e) {
-      console.error("refreshFromBackend failed", e);
+      log.error("refreshFromBackend failed", e);
     }
   };
 
@@ -2251,7 +2269,7 @@ function App() {
     // Phase 48-D: lightweight UI-stall instrumentation. A 100ms heartbeat
     // measures actual elapsed vs expected and reports gaps >300ms; a
     // PerformanceObserver on `longtask` reports any single task >200ms.
-    // Both go to debug.log via the `diag_log` tauri command so future
+    // Both go to debug.log via the unified logger so future
     // support tickets can correlate UI jank with backend activity.
     // No cleanup: these run for the app's lifetime.
     {
@@ -2264,20 +2282,14 @@ function App() {
         const gap = now - lastTick;
         lastTick = now;
         if (gap > STALL_THRESHOLD_MS) {
-          void invoke("diag_log", {
-            level: "warn",
-            msg: `UI stall: ${Math.round(gap)}ms (expected ~${HEARTBEAT_MS}ms)`,
-          }).catch(() => {});
+          log.warn(`UI stall: ${Math.round(gap)}ms (expected ~${HEARTBEAT_MS}ms)`);
         }
       }, HEARTBEAT_MS);
       try {
         const obs = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
             if (entry.duration > LONGTASK_THRESHOLD_MS) {
-              void invoke("diag_log", {
-                level: "warn",
-                msg: `longtask ${entry.name || "(anon)"} ${Math.round(entry.duration)}ms`,
-              }).catch(() => {});
+              log.warn(`longtask ${entry.name || "(anon)"} ${Math.round(entry.duration)}ms`);
             }
           }
         });
@@ -2292,6 +2304,7 @@ function App() {
     try {
       const s = await loadSettings();
       setSettings(s);
+      setLoggerLevel(s.logs?.level ?? "info");
       applyTheme(s);
       // Design Pass 01 (#2): re-tint if the OS scheme flips while on "system".
       watchSystemTheme(() => settings() ?? s);
@@ -2302,7 +2315,7 @@ function App() {
         const seed = await invoke<NotifItem[]>("notifications_list");
         setNotifications(seed.map((n) => ({ ...n, kind: n.kind || "agent" })).reverse());
       } catch (e) {
-        console.warn("notifications_list failed", e);
+        log.warn("notifications_list failed", e);
       }
       setShortcutTable(buildShortcutTable(s.shortcuts ?? DEFAULT_SHORTCUTS));
       setCtrlCCopyOnSelect(
@@ -2310,7 +2323,7 @@ function App() {
       );
       setMirrorArrowsRtl(s.terminal?.mirror_arrows_rtl ?? true);
     } catch (e) {
-      console.warn("settings_load failed", e);
+      log.warn("settings_load failed", e);
     }
     await refreshFromBackend();
     const ws0 = file().workspaces.find((w) => w.id === file().active_workspace_id);
@@ -2406,7 +2419,7 @@ function App() {
         if (it.state !== "pending") scheduleFeedDismiss(it.request_id);
       }
     } catch (e) {
-      console.warn("feed_list failed", e);
+      log.warn("feed_list failed", e);
     }
     // Phase 6.5 feed events.
     unlistens.push(
@@ -2495,7 +2508,7 @@ function App() {
     // #2: tray menu actions routed from the Rust tray handler.
     unlistens.push(
       await listen<string>("tray:action", (e) => {
-        if (e.payload === "new_workspace") setShowCreate(true);
+        if (e.payload === "new_workspace") setShowSetup({});
         else if (e.payload === "settings") setShowSettings(true);
       }),
     );
@@ -2616,6 +2629,7 @@ function App() {
     unlistens.push(
       await listen<Settings>("settings:changed", (e) => {
         setSettings(e.payload);
+        setLoggerLevel(e.payload.logs?.level ?? "info");
         applyTheme(e.payload);
         applyI18nSettings(e.payload.i18n);
         setShortcutTable(
@@ -2792,7 +2806,7 @@ function App() {
           <div class="sidebar-error">
             <p>{t("error.sidebarRender")}</p>
             <pre>{String(err)}</pre>
-            <button class="primary" onClick={() => setShowCreate(true)}>
+            <button class="primary" onClick={() => setShowSetup({})}>
               + New workspace
             </button>
           </div>
@@ -2806,14 +2820,16 @@ function App() {
           hookPulseWorkspaceIds={activeHookWorkspaceIdsReactive()}
           pendingNotifCount={paneNotified().size}
           groups={file().groups ?? []}
-          onGroupCreate={(name, color) => {
-            void (async () => {
-              try {
-                await invoke<WorkspaceGroup>("workspace_group_create", { name, color });
-                const f = await invoke<WorkspacesFile>("workspaces_load");
-                updateFile(f);
-              } catch (e) { console.error("workspace_group_create failed", e); }
-            })();
+          onGroupCreate={async (name, color) => {
+            try {
+              const g = await invoke<WorkspaceGroup>("workspace_group_create", { name, color });
+              const f = await invoke<WorkspacesFile>("workspaces_load");
+              updateFile(f);
+              return g;
+            } catch (e) {
+              log.error("workspace_group_create failed", e);
+              return null;
+            }
           }}
           onGroupRename={(id, name) => {
             void (async () => {
@@ -2821,7 +2837,7 @@ function App() {
                 await invoke("workspace_group_update", { id, name, color: null, isCollapsed: null });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_update rename failed", e); }
+              } catch (e) { log.error("workspace_group_update rename failed", e); }
             })();
           }}
           onGroupSetColor={(id, color) => {
@@ -2830,7 +2846,7 @@ function App() {
                 await invoke("workspace_group_update", { id, name: null, color, isCollapsed: null });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_update color failed", e); }
+              } catch (e) { log.error("workspace_group_update color failed", e); }
             })();
           }}
           onGroupToggleCollapse={(id, isCollapsed) => {
@@ -2839,7 +2855,7 @@ function App() {
                 await invoke("workspace_group_update", { id, name: null, color: null, isCollapsed });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_update collapse failed", e); }
+              } catch (e) { log.error("workspace_group_update collapse failed", e); }
             })();
           }}
           onGroupDelete={(id) => {
@@ -2848,7 +2864,7 @@ function App() {
                 await invoke("workspace_group_delete", { id });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_delete failed", e); }
+              } catch (e) { log.error("workspace_group_delete failed", e); }
             })();
           }}
           onWorkspaceSetGroup={(workspaceId, groupId) => {
@@ -2857,7 +2873,7 @@ function App() {
                 await invoke("workspace_set_group", { workspaceId, groupId });
                 const f = await invoke<WorkspacesFile>("workspaces_load");
                 updateFile(f);
-              } catch (e) { console.error("workspace_set_group failed", e); }
+              } catch (e) { log.error("workspace_set_group failed", e); }
             })();
           }}
           // beta.3 (ws-dragdrop): direct drag reorder. Both commands
@@ -2873,7 +2889,7 @@ function App() {
                   newIndex,
                 });
                 updateFile(f);
-              } catch (e) { console.error("workspace_reorder failed", e); }
+              } catch (e) { log.error("workspace_reorder failed", e); }
             })();
           }}
           onGroupReorder={(groupId, newIndex) => {
@@ -2884,22 +2900,18 @@ function App() {
                   newIndex,
                 });
                 updateFile(f);
-              } catch (e) { console.error("workspace_group_reorder failed", e); }
+              } catch (e) { log.error("workspace_group_reorder failed", e); }
             })();
           }}
           onActivate={handleSetActive}
-          onCreate={() => setShowCreate(true)}
-          onProvision={() => setShowProvision(true)}
+          onCreate={() => setShowSetup({})}
           onOpenSettings={() => setShowSettings(true)}
           onOpenNotes={() => setShowNotes(true)}
           onAction={(id, action) => {
             if (action === "rename") handleRename(id);
             else if (action === "edit") {
               const ws = file().workspaces.find((w) => w.id === id);
-              if (ws) {
-                setEditingWorkspace(ws);
-                setShowCreate(true);
-              }
+              if (ws) setEditingWorkspace(ws);
             } else if (action === "delete") void handleDelete(id);
             else if (action === "disconnect")
               void handleDisconnectWorkspace(id);
@@ -3058,21 +3070,15 @@ function App() {
             Workspaces exist but none active → light "pick one" prompt. */}
         <Show when={file().workspaces.length === 0}>
           <WelcomeScreen
-            onCreate={() => {
-              setCreateInitialType("local");
-              setShowCreate(true);
-            }}
-            onConnectSsh={() => {
-              setCreateInitialType("ssh");
-              setShowCreate(true);
-            }}
-            onProvision={() => setShowProvision(true)}
+            onCreate={() => setShowSetup({ target: "local" })}
+            onConnectSsh={() => setShowSetup({ target: "server" })}
+            onProvision={() => setShowSetup({ target: "server" })}
           />
         </Show>
         <Show when={file().workspaces.length > 0 && !activeWs()}>
           <div class="empty">
             <p>{t("ws.empty.none")}</p>
-            <button class="primary" onClick={() => setShowCreate(true)}>
+            <button class="primary" onClick={() => setShowSetup({})}>
               {t("ws.empty.new")}
             </button>
           </div>
@@ -3197,7 +3203,7 @@ function App() {
                         title: title.trim() === "" ? null : title,
                       })
                         .then((f) => updateFile(f))
-                        .catch((e) => console.error("pane_set_title failed", e));
+                        .catch((e) => log.error("pane_set_title failed", e));
                     }}
                     onSetAnnotation={(pid, annotation) => {
                       const ws = activeWs();
@@ -3210,7 +3216,7 @@ function App() {
                       })
                         .then((f) => updateFile(f))
                         .catch((e) =>
-                          console.error("pane_set_annotation failed", e)
+                          log.error("pane_set_annotation failed", e)
                         );
                     }}
                     onRatioDrag={(sid, r) => setRatio(sid, r, false)}
@@ -3314,34 +3320,11 @@ function App() {
       />
 
       <CreateWorkspaceModal
-        open={showCreate()}
+        open={editingWorkspace() !== null}
         editing={editingWorkspace()}
-        initialType={createInitialType()}
-        onClose={() => {
-          setShowCreate(false);
-          setEditingWorkspace(null);
-          setCreateInitialType("local");
-        }}
-        onCreate={handleCreate}
+        onClose={() => setEditingWorkspace(null)}
         onUpdate={handleUpdate}
-        onOpenSshHelp={() => {
-          // Phase 34: split a Help pane off the currently-active
-          // workspace's focused pane. No-op when no workspace exists
-          // (fresh-launch state) — Yossi can extend later if the
-          // common case becomes "from-the-create-modal with nothing
-          // open yet".
-          const ws = activeWs();
-          const pid = activePaneId();
-          if (!ws || !pid) return;
-          void invoke("workspace_split", {
-            workspaceId: ws.id,
-            paneId: pid,
-            direction: "horizontal",
-            paneKind: "help",
-            browserUrl: null,
-            helpTopic: "ssh-key-setup",
-          });
-        }}
+        onOpenSshHelp={openSshHelp}
       />
 
       {/* Phase 47.E: removed the floating Notes (📝 N) and Settings (⚙)
@@ -3349,46 +3332,51 @@ function App() {
           row [📝 Notes][⚙ Settings][🌐 Ports] added in Phase 39 (re-added
           in Phase 40). The Ctrl+Shift+N keyboard shortcut for Notes
           stays wired separately. */}
-      {/* Phase 56-A: keyed Show forces ProvisioningWizard to fully
-          unmount on close + freshly remount on re-open. Without this,
-          the component instance lives across opens and its internal
-          signals (wizStep, host, port, runId, …) stick — so clicking
-          "Provision server" after a completion screen reopens to that
-          completion. The keyed flag is the explicit hint that we're
-          using the component as a transient session, not as a
-          persistent always-mounted modal. */}
-      <Show keyed when={showProvision()}>
-        <ProvisioningWizard
-          open={true}
-          onClose={() => setShowProvision(false)}
-          onOpenWorkspace={async (wsId, mode) => {
-            // Phase 14.A.2: the wizard's backend already emitted
-            // `workspaces:changed` when it created/updated the
-            // workspace, so by the time we land here our local state
-            // already shows the new entry. Switch to it + auto-connect
-            // the first pane.
-            try {
-              await handleSetActive(wsId);
-              const ws = file().workspaces.find((w) => w.id === wsId);
-              const firstPane =
-                ws?.layout ? collectPanes(ws.layout)[0] : null;
-              if (firstPane) {
-                setActivePaneId(firstPane);
-                connectPane(firstPane, {
-                  persistent: true,
-                  ...(mode === "claude" ? { mode: "claude" } : {}),
-                });
-              }
-            } catch (e) {
-              console.error("open created workspace failed", e);
-            }
-          }}
-        />
+      {/* Phase 56-A (extended by Phase 80): keyed Show forces the unified
+          SetupWizard to fully unmount on close + freshly remount on
+          re-open. Without this, the component instance lives across opens
+          and its internal signals (mode tree, flow state, runId, …)
+          stick — so opening the wizard after a completion screen would
+          reopen to that completion. setShowSetup({}) creates a FRESH
+          object per open, so the keyed remount holds. */}
+      <Show keyed when={showSetup()}>
+        {(opts) => (
+          <SetupWizard
+            initialTarget={opts.target}
+            onClose={() => setShowSetup(false)}
+            onCreateWorkspace={handleCreate}
+            onOpenSshHelp={openSshHelp}
+            onOpenWorkspace={(wsId, mode) => {
+              // Phase 14.A.2: the wizard's backend already emitted
+              // `workspaces:changed` when it created/updated the
+              // workspace, so by the time we land here our local state
+              // already shows the new entry. Switch to it + auto-connect
+              // the first pane.
+              void (async () => {
+                try {
+                  await handleSetActive(wsId);
+                  const ws = file().workspaces.find((w) => w.id === wsId);
+                  const firstPane =
+                    ws?.layout ? collectPanes(ws.layout)[0] : null;
+                  if (firstPane) {
+                    setActivePaneId(firstPane);
+                    connectPane(firstPane, {
+                      persistent: true,
+                      ...(mode === "claude" ? { mode: "claude" } : {}),
+                    });
+                  }
+                } catch (e) {
+                  log.error("open created workspace failed", e);
+                }
+              })();
+            }}
+          />
+        )}
       </Show>
 
-      {/* Phase 65.R: the Connect-to-existing-server flow now lives inside
-          the Provisioning wizard's "existing" mode (above); no separate
-          modal mount here. */}
+      {/* Phase 65.R/66: the Connect-to-existing-server flow lives inside
+          the unified SetupWizard (server → existing → password); no
+          separate modal mount here. */}
 
       <Show when={settings()}>
         <SettingsModal
@@ -3432,7 +3420,7 @@ function App() {
             workspaceId: id,
             enabled: v,
           }).catch((e) =>
-            console.error("workspace_set_claude_separate_account failed", e),
+            log.error("workspace_set_claude_separate_account failed", e),
           );
         }}
         onClose={() => setAddonsWin(null)}
@@ -3666,22 +3654,22 @@ function App() {
             paneId: null,
           })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_add failed", e));
+            .catch((e) => log.error("notes_add failed", e));
         }}
         onDone={(id) =>
           invoke("notes_update", { id, status: "done" })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_update done failed", e))
+            .catch((e) => log.error("notes_update done failed", e))
         }
         onReopen={(id) =>
           invoke("notes_update", { id, status: "open" })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_update reopen failed", e))
+            .catch((e) => log.error("notes_update reopen failed", e))
         }
         onDelete={(id) =>
           invoke("notes_delete", { id })
             .then(() => refreshNotes())
-            .catch((e) => console.error("notes_delete failed", e))
+            .catch((e) => log.error("notes_delete failed", e))
         }
       />
 
@@ -3699,7 +3687,7 @@ function App() {
             )
           );
           invoke("feed_decide", { requestId: rid, decision: dec }).catch(
-            (err) => console.error("feed_decide failed", err)
+            (err) => log.error("feed_decide failed", err)
           );
         }}
         onDismiss={(rid) =>

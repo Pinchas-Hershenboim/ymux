@@ -33,7 +33,7 @@ use serde::Serialize;
 use tauri::State;
 use tokio::io::AsyncReadExt;
 
-use crate::{config_dir_pub, dlog, AppState, Session, SshClient};
+use crate::{config_dir_pub, log_debug, AppState, Session, SshClient};
 
 // ─── public schemas ────────────────────────────────────────────────────────
 
@@ -303,7 +303,7 @@ pub(crate) async fn claude_log_sync(
         }
     }
     let _ = sftp.close().await;
-    dlog(&format!(
+    log_debug("CLAUDE", &format!(
         "claude_log_sync ws={workspace_id} sid={:?} synced={} skipped={} errors={}",
         session_id, result.synced, result.skipped, result.errors.len()
     ));

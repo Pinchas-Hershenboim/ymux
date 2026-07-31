@@ -11,7 +11,6 @@ package push
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,7 +18,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"winmux-server/internal/logging"
 )
+
+// logger is the push subsystem's component logger (Phase 79.D).
+var logger = logging.New("SRV:PUSH")
 
 const (
 	envelopeVersion = 1
@@ -111,11 +115,11 @@ func (s *Server) Notify(deviceID string, payload map[string]any) error {
 	}
 	seq, err := s.deps.Enqueue(deviceID, string(eventJSON), queueCap)
 	if err != nil {
-		log.Printf("push: enqueue device=%s FAILED: %v", deviceID, err)
+		logger.Error("enqueue failed", "device", deviceID, "err", err)
 		return err
 	}
 	live := s.get(deviceID) != nil
-	log.Printf("push: notify device=%s seq=%d type=%v live=%v", deviceID, seq, payload["type"], live)
+	logger.Debug("notify", "device", deviceID, "seq", seq, "type", payload["type"], "live", live)
 	if c := s.get(deviceID); c != nil {
 		_ = c.writeJSON(envelope(deviceID, seq, payload))
 	}
@@ -155,17 +159,17 @@ func envelope(deviceID string, seq int64, event any) map[string]any {
 func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 	deviceID, _, ok := s.deps.ResolveToken(bearer(r))
 	if !ok || deviceID == "" {
-		log.Printf("push: subscribe REJECTED (bad/missing token) from %s", r.RemoteAddr)
+		logger.Warn("subscribe rejected (bad/missing token)", "remote", r.RemoteAddr)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	cursor := parseCursor(r.URL.Query().Get("cursor"))
 	conn, err := s.up.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("push: subscribe upgrade FAILED device=%s: %v", deviceID, err)
+		logger.Warn("subscribe upgrade failed", "device", deviceID, "err", err)
 		return // Upgrade already wrote the error
 	}
-	log.Printf("push: device=%s SUBSCRIBED (cursor=%d)", deviceID, cursor)
+	logger.Info("device subscribed", "device", deviceID, "cursor", cursor)
 	c := &client{deviceID: deviceID, conn: conn}
 	s.register(c)
 	defer func() {
@@ -178,7 +182,7 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 	})
 	pending := s.deps.PendingAfter(deviceID, cursor)
 	if len(pending) > 0 {
-		log.Printf("push: replaying %d queued event(s) to device=%s (cursor=%d)", len(pending), deviceID, cursor)
+		logger.Info("replaying queued events", "count", len(pending), "device", deviceID, "cursor", cursor)
 	}
 	for _, pe := range pending {
 		var ev any

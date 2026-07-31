@@ -8,7 +8,6 @@ import {
   IconGlobe,
   IconGitBranch,
   IconPlus,
-  IconCloud,
   IconChevronDown,
 } from "./icons";
 import type { SidebarMode } from "./settings";
@@ -43,6 +42,7 @@ const GROUP_PICKER_COLORS = [
 function workspaceBadge(w: Workspace): { label: string; cls: string; title: string } {
   if (!w.layout) {
     if (isRemoteConn(w.connection)) return { label: "S", cls: "ssh", title: "SSH" };
+    if (w.connection?.type === "wsl") return { label: "W", cls: "wsl", title: "WSL" };
     return { label: "L", cls: "local", title: "Local" };
   }
   const panes = collectPanes(w.layout);
@@ -51,6 +51,7 @@ function workspaceBadge(w: Workspace): { label: string; cls: string; title: stri
   if (first?.pane_kind === "browser") return { label: "B", cls: "browser", title: "Browser" };
   if (first?.pane_kind === "filemanager") return { label: "F", cls: "filemanager", title: "File manager" };
   if (isRemoteConn(first?.connection)) return { label: "S", cls: "ssh", title: "SSH" };
+  if (first?.connection?.type === "wsl") return { label: "W", cls: "wsl", title: "WSL" };
   return { label: "L", cls: "local", title: "Local" };
 }
 
@@ -68,10 +69,10 @@ interface Props {
   // but not blocking (`waitingWorkspaceIds` is the blocking red dot).
   hookPulseWorkspaceIds?: Set<string>;
   onActivate: (id: string) => void;
+  /** Phase 80 — opens the unified SetupWizard (server new/existing +
+   *  local existing/smart-install all live behind this one button; the
+   *  old separate "provision server" button/prop is gone). */
   onCreate: () => void;
-  /** Phase 14.A — open the server provisioning wizard (Phase 65.R: its
-   *  "existing" mode now hosts the connect-to-existing-server flow). */
-  onProvision: () => void;
   /** Phase 38 — open the settings modal from the sidebar gear. */
   onOpenSettings: () => void;
   /** Phase 39 — open the notes window from the sidebar. */
@@ -101,7 +102,11 @@ interface Props {
   // parent App owns the list — Sidebar renders it + delegates the
   // create/rename/color/delete/collapse actions back up.
   groups: WorkspaceGroup[];
-  onGroupCreate: (name: string, color: string) => void;
+  // Returns the created group (or null on failure) so the caller can
+  // chain a workspace assignment — creation lives in the workspace
+  // context menu ("Move to group ▸" → "New group…") and always
+  // creates + assigns in one step.
+  onGroupCreate: (name: string, color: string) => Promise<WorkspaceGroup | null>;
   onGroupRename: (id: string, name: string) => void;
   onGroupSetColor: (id: string, color: string) => void;
   onGroupToggleCollapse: (id: string, isCollapsed: boolean) => void;
@@ -396,13 +401,18 @@ export function Sidebar(p: Props) {
     });
   };
 
-  const startNewGroup = () => { setNewGroupName(""); };
-  const commitNewGroup = () => {
+  // Create a group from the "Move to group ▸" submenu and put the
+  // workspace straight into it. Color rotates through the picker
+  // palette so consecutive groups don't all come out amber.
+  const commitNewGroupFor = async (workspaceId: string) => {
     const name = (newGroupName() ?? "").trim();
-    if (name.length > 0) {
-      p.onGroupCreate(name, GROUP_PICKER_COLORS[0]);
-    }
     setNewGroupName(null);
+    if (name.length === 0) return;
+    const color = GROUP_PICKER_COLORS[p.groups.length % GROUP_PICKER_COLORS.length];
+    const g = await p.onGroupCreate(name, color);
+    if (g) p.onWorkspaceSetGroup(workspaceId, g.id);
+    setMenuFor(null);
+    setMoveMenuFor(null);
   };
 
   return (
@@ -635,35 +645,6 @@ export function Sidebar(p: Props) {
         <span class="ws-action-emoji"><IconPlus /></span>
         <span class="ws-action-label">{t("sidebar.new_workspace")}</span>
       </button>
-      <Show
-        when={newGroupName() === null}
-        fallback={
-          <input
-            class="group-inline-input"
-            placeholder={t("sidebar.group_name_prompt")}
-            value={newGroupName() ?? ""}
-            autofocus
-            onInput={(e) => setNewGroupName(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitNewGroup();
-              else if (e.key === "Escape") setNewGroupName(null);
-            }}
-            onBlur={() => commitNewGroup()}
-          />
-        }
-      >
-        <button
-          class="ws-add-group"
-          onClick={startNewGroup}
-          title={t("sidebar.new_group")}
-        >
-          {t("sidebar.new_group")}
-        </button>
-      </Show>
-      <button class="ws-provision" onClick={p.onProvision} title={t("sidebar.provision_server_tooltip")}>
-        <span class="ws-action-emoji"><IconCloud /></span>
-        <span class="ws-action-label">{t("sidebar.provision_server")}</span>
-      </button>
       <Show when={dragKind() !== null && ghostPos() !== null}>
         <div
           class="ws-ghost"
@@ -779,6 +760,7 @@ export function Sidebar(p: Props) {
             <button
               onClick={() => {
                 setMoveMenuFor(moveMenuFor() === w.id ? null : w.id);
+                setNewGroupName(null);
               }}
             >
               {t("sidebar.move_to_group")}▸
@@ -824,6 +806,30 @@ export function Sidebar(p: Props) {
                     </button>
                   )}
                 </For>
+                <Show
+                  when={newGroupName() === null}
+                  fallback={
+                    <input
+                      class="group-inline-input"
+                      placeholder={t("sidebar.group_name_prompt")}
+                      value={newGroupName() ?? ""}
+                      // `autofocus` doesn't fire on elements inserted into an
+                      // already-loaded document — focus explicitly on mount.
+                      ref={(el) => queueMicrotask(() => el.focus())}
+                      onClick={(e) => e.stopPropagation()}
+                      onInput={(e) => setNewGroupName(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void commitNewGroupFor(w.id);
+                        else if (e.key === "Escape") setNewGroupName(null);
+                      }}
+                      onBlur={() => setNewGroupName(null)}
+                    />
+                  }
+                >
+                  <button onClick={() => setNewGroupName("")}>
+                    {t("sidebar.new_group")}…
+                  </button>
+                </Show>
               </div>
             </Show>
             <Show when={p.connectedIds.has(w.id)}>

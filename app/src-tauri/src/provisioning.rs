@@ -26,7 +26,7 @@ use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_debug, log_error, log_info, log_warn, AppState};
 
 // ─── profile + step model ──────────────────────────────────────────────────
 
@@ -470,6 +470,13 @@ pub(crate) enum ProvisioningError {
         exit_code: i32,
         stderr: String,
     },
+    /// Phase 80: a LOCAL install step (local_setup.rs engine) needs
+    /// administrator elevation and/or a reboot (WSL feature enable).
+    /// The wizard renders an instruction card; the run stays retryable.
+    ElevationRequired {
+        step: String,
+        hint: String,
+    },
     /// Fallback for failures that don't fit the structured cases
     /// (SSH connect, local key generation, etc.).
     Generic(String),
@@ -483,6 +490,9 @@ impl ProvisioningError {
             ),
             ProvisioningError::StepFailed { step, exit_code, .. } => {
                 format!("Step '{step}' failed (exit {exit_code})")
+            }
+            ProvisioningError::ElevationRequired { step, hint } => {
+                format!("Step '{step}' needs administrator elevation. {hint}")
             }
             ProvisioningError::Generic(s) => s.clone(),
         }
@@ -521,7 +531,9 @@ fn new_run_id() -> String {
     format!("prov_{t:x}_{n:x}")
 }
 
-fn iso_now() -> String {
+// Phase 80: pub(crate) — the local_setup engine stamps the same
+// StepProgress payloads.
+pub(crate) fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
@@ -547,7 +559,7 @@ pub(crate) async fn provisioning_start(
     };
     if let Some(pw) = input.initial_password.as_ref() {
         if let Err(e) = save_workspace_secret(&input.workspace_id, pw) {
-            dlog(&format!("provisioning: save secret failed: {e}"));
+            log_warn("PROVISION", &format!("provisioning: save secret failed: {e}"));
         }
     }
 
@@ -894,7 +906,7 @@ async fn run_provisioning(
                 _ => {}
             }
         } else {
-            dlog(&format!(
+            log_warn("PROVISION", &format!(
                 "provisioning {run_id}: step {idx} {kind:?} failed — leaving run paused for retry"
             ));
             // Don't auto-abort; the wizard surfaces a retry button.
@@ -913,13 +925,13 @@ async fn run_provisioning(
                 created_workspace_name = Some(name);
             }
             Err(e) => {
-                dlog(&format!(
+                log_error("PROVISION", &format!(
                     "provisioning {run_id}: workspace creation failed: {e}"
                 ));
             }
         }
     } else {
-        dlog(&format!(
+        log_warn("PROVISION", &format!(
             "provisioning {run_id}: skipping workspace creation (keypair_ok={keypair_ok} deploy_ok={deploy_ok} test_ok={test_ok})"
         ));
     }
@@ -1026,6 +1038,7 @@ fn finalize_workspace(
         connection: Some(new_conn.clone()),
         browser: None,
         title: None,
+        auto_title: None,
         annotation: None,
         color: None,
         emoji: None,
@@ -1101,7 +1114,8 @@ fn derive_workspace_name(host: &str) -> String {
     }
 }
 
-fn workspace_color_for_host(host: &str) -> String {
+// Phase 80: pub(crate) — local_setup's WSL-workspace finalize reuses it.
+pub(crate) fn workspace_color_for_host(host: &str) -> String {
     const PALETTE: &[&str] = &[
         "#7aa2f7", // accent blue
         "#4ec9b0", // success teal
@@ -1352,7 +1366,7 @@ async fn preflight_sudo(
     // Already root? sudo is irrelevant.
     if let Ok((code, out)) = exec_status(handle, "id -u").await {
         if code == 0 && out.trim() == "0" {
-            dlog("provisioning: preflight — user is root, skipping sudo check");
+            log_debug("PROVISION", "provisioning: preflight — user is root, skipping sudo check");
             return Ok(());
         }
     }
@@ -1360,7 +1374,7 @@ async fn preflight_sudo(
     // diagnostic) on the same stream we capture.
     match exec_status(handle, "sudo -n true 2>&1").await {
         Ok((0, _)) => {
-            dlog("provisioning: preflight — passwordless sudo works");
+            log_debug("PROVISION", "provisioning: preflight — passwordless sudo works");
             Ok(())
         }
         Ok((_, stderr)) => Err(ProvisioningError::SudoRequired {
@@ -1450,7 +1464,7 @@ async fn connect_existing_discover_inner(
     users.sort();
     users.dedup();
 
-    dlog(&format!(
+    log_debug("PROVISION", &format!(
         "connect_existing_discover: host={host} user={user} is_root={is_root} can_sudo={can_sudo} group={sudo_group} accounts={}",
         users.len()
     ));
@@ -1623,7 +1637,7 @@ async fn connect_existing_execute_inner(
         exec_capture(&mut handle, &cmd)
             .await
             .map_err(|e| format!("create user '{target}': {e}"))?;
-        dlog(&format!(
+        log_info("PROVISION", &format!(
             "connect_existing: ensured user '{target}' (grant_sudo={}) on {host}",
             input.grant_sudo
         ));
@@ -1671,7 +1685,7 @@ async fn connect_existing_execute_inner(
         })?;
     let _ = exec_capture(&mut h2, "true").await;
     drop(h2);
-    dlog(&format!(
+    log_info("PROVISION", &format!(
         "connect_existing: key-only validation OK for '{target}'@{host}"
     ));
 
@@ -1692,7 +1706,7 @@ async fn connect_existing_execute_inner(
     };
     let (workspace_id, workspace_name) =
         finalize_workspace(state, app, &prov_input, &local_key_path)?;
-    dlog(&format!(
+    log_info("PROVISION", &format!(
         "connect_existing: workspace '{workspace_name}' ({workspace_id}) ready for '{target}'@{host}"
     ));
     Ok(ConnectExistingResult {

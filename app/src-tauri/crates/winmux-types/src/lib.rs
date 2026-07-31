@@ -39,6 +39,18 @@ pub enum Connection {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key_path: Option<String>,
     },
+    /// Phase 80: a local workspace whose panes run inside a WSL distro,
+    /// wrapped in tmux for persistence across app restarts (same attach
+    /// mechanism as SSH panes, transported over wsl.exe instead of SSH).
+    /// Old workspaces.json files never contain `"type":"wsl"`, so their
+    /// round-trip is untouched; an OLDER app build cannot read a file
+    /// containing a wsl workspace (serde unknown-variant) — release-note
+    /// caveat, same posture as every prior variant addition.
+    Wsl {
+        /// None = the machine's default distro.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        distro: Option<String>,
+    },
 }
 
 // ─── SplitDirection ─────────────────────────────────────────────────
@@ -216,6 +228,12 @@ pub enum LayoutNode {
         // unchanged until the user edits one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        // Phase 81: Claude-derived title, set automatically from the stop
+        // hook's transcript summary. Display fallback only — the manual
+        // `title` above always wins when present. Kept separate so a hook
+        // update never clobbers something the user typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         annotation: Option<String>,
         // Phase 31: per-pane identity. None = inherit from the parent
@@ -441,6 +459,31 @@ mod tests {
     }
 
     #[test]
+    fn connection_wsl_round_trip_elides_none_distro() {
+        // Phase 80: default-distro WSL workspace serializes to just the
+        // tag, mirroring Local's elided shell.
+        let c = Connection::Wsl { distro: None };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v, json!({ "type": "wsl" }));
+        let back: Connection = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, Connection::Wsl { distro: None }));
+    }
+
+    #[test]
+    fn connection_wsl_round_trip_preserves_distro() {
+        let c = Connection::Wsl {
+            distro: Some("Ubuntu".into()),
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v, json!({ "type": "wsl", "distro": "Ubuntu" }));
+        let back: Connection = serde_json::from_value(v).unwrap();
+        match back {
+            Connection::Wsl { distro } => assert_eq!(distro.as_deref(), Some("Ubuntu")),
+            _ => panic!("expected Wsl"),
+        }
+    }
+
+    #[test]
     fn connection_ssh_without_key_path_round_trip() {
         // Pre-key SSH workspaces (password auth, no key on disk).
         // key_path omitted on serialize via skip_serializing_if; on
@@ -563,6 +606,7 @@ mod tests {
             connection: conn,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -588,6 +632,7 @@ mod tests {
         for f in [
             "browser",
             "title",
+            "auto_title",
             "annotation",
             "color",
             "emoji",
@@ -607,6 +652,7 @@ mod tests {
             connection: None,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,

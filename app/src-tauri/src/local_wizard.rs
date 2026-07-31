@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{config_dir_pub, dlog, AppState};
+use crate::{config_dir_pub, log_warn, AppState};
 
 // ─── shell detection ──────────────────────────────────────────────────────
 
@@ -32,8 +32,10 @@ pub(crate) struct ShellInfo {
     pub available: bool,
 }
 
+// Phase 80: pub(crate) — local_setup's tool detection reuses the same
+// PATHEXT-aware lookup.
 #[cfg(target_os = "windows")]
-fn which(exe: &str) -> Option<PathBuf> {
+pub(crate) fn which(exe: &str) -> Option<PathBuf> {
     // Cheap PATH lookup — no need for the `which` crate.
     let path_env = std::env::var("PATH").ok()?;
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into());
@@ -61,7 +63,7 @@ fn which(exe: &str) -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn which(_exe: &str) -> Option<PathBuf> {
+pub(crate) fn which(_exe: &str) -> Option<PathBuf> {
     None
 }
 
@@ -335,7 +337,7 @@ pub(crate) fn record_recent_path(
     }
     let snapshot = state.recent_paths.lock().unwrap().clone();
     if let Err(e) = save_recent_to_disk(&snapshot) {
-        dlog(&format!("recent_paths save failed: {e}"));
+        log_warn("WIZARD", &format!("recent_paths save failed: {e}"));
     }
     Ok(())
 }

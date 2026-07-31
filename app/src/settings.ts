@@ -49,10 +49,6 @@ export interface FontSettings {
 }
 
 export interface TerminalSettings {
-  cursor_style: "block" | "bar" | "underline";
-  scrollback_lines: number;
-  bidi_enabled: boolean;
-  allow_proposed_api: boolean;
   /** Phase 15.A: how to render Hebrew / Arabic. */
   rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
   /** Phase tmux-conf: when true (default), winmux launches tmux with
@@ -73,9 +69,6 @@ export interface TerminalSettings {
 }
 
 export interface HooksSettings {
-  enabled: boolean;
-  agents: string[];
-  policy_preset: string;
   /** Phase 18.1: which PreToolUse matcher to install when setup-hooks
    *  runs. "restrictive" (default) only catches risky tools; "all"
    *  matches `.*` (every tool surfaces a winmux card); "custom" leaves
@@ -143,7 +136,6 @@ export const DEFAULT_HOOK_NOTIFICATIONS: HookNotificationSettings = {
 
 export interface NotificationSettings {
   toast_enabled: boolean;
-  sound_enabled: boolean;
   /** Phase 66 (KK): per-event toast toggles. Defaults: session start/end
    *  OFF; stop / notification / gate / block ON. */
   toast_session_start?: boolean;
@@ -158,7 +150,6 @@ export interface NotificationSettings {
 
 export interface UpdatesSettings {
   check_on_startup: boolean;
-  auto_download: boolean;
   manifest_url?: string | null;
   last_check_iso?: string | null;
   last_seen_version?: string | null;
@@ -196,7 +187,6 @@ export interface ClaudeSettings {
   auto_summarize_on_stop: boolean;
   summary_history_count: number;
   summary_prompt: string;
-  summary_language: string;
 }
 
 export interface HooksUpdatesSettings {
@@ -223,7 +213,6 @@ export const DEFAULT_CLAUDE_SETTINGS: ClaudeSettings = {
   summary_history_count: 10,
   summary_prompt:
     "Summarize the last {N} exchanges in 2-3 sentences in the same language the conversation used.",
-  summary_language: "auto",
 };
 
 // Phase 78: Claude subscription-usage indicator (mirrors the Rust
@@ -306,15 +295,33 @@ export interface Settings {
   // Design Pass 01 (#2): dark/light appearance axis. Backend defaults to
   // "system" via serde(default); older settings.json load unchanged.
   theme_mode?: ThemeMode;
+  // Phase 81: tmux session picker scope. "shared" (backend default) =
+  // every session on the server; "local" = only sessions this machine
+  // created (origin-less sessions stay visible — fail-open).
+  session_visibility?: SessionVisibility;
 }
+
+// Phase 81: multi-machine session picker scope.
+export type SessionVisibility = "shared" | "local";
 
 // Design Pass 01 (#2): appearance polarity. "system" follows the OS.
 export type ThemeMode = "dark" | "light" | "system";
 
-// Phase 75: debug.log hygiene.
+// Phase 75: debug.log hygiene. Unified logging: level threshold + remote
+// log sync into the single local debug.log.
+export type LogLevelSetting = "debug" | "info";
 export interface LogsSettings {
   retention_days: number;
+  level: LogLevelSetting;
+  remote_sync: boolean;
 }
+
+// Mirrors LogsSettings::default() in settings.rs.
+export const DEFAULT_LOGS_SETTINGS: LogsSettings = {
+  retention_days: 7,
+  level: "info",
+  remote_sync: true,
+};
 
 // Phase 65.P: dropped "hidden" — only full / icons. Old persisted
 // "hidden" values are migrated to "icons" at read time (App.tsx).

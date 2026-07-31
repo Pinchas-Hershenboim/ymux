@@ -6,7 +6,6 @@ package insights
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -15,7 +14,11 @@ import (
 
 	"winmux-server/internal/config"
 	"winmux-server/internal/core"
+	"winmux-server/internal/logging"
 )
+
+// logger is the insights/metrics subsystem's component logger (Phase 79.D).
+var logger = logging.New("SRV:METRICS")
 
 // splitDockerPath extracts {id}/action from either the legacy `/docker/…` path
 // or the `/api/v2/insights/docker/…` path (both register handleDockerAction).
@@ -100,7 +103,7 @@ func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleDocker(w http.ResponseWriter, _ *http.Request) {
 	conts, err := dockerList()
 	if err == nil {
-		log.Printf("docker: ok — %d container(s)", len(conts))
+		logger.Debug("docker ok", "containers", len(conts))
 		writeJSON(w, map[string]any{
 			"available":      true,
 			"containers":     conts,
@@ -167,7 +170,7 @@ func (s *Service) handleHygieneKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	killed := killPids(body.Pids)
-	log.Printf("hygiene: kill requested=%d killed=%d", len(body.Pids), len(killed))
+	logger.Info("hygiene kill", "requested", len(body.Pids), "killed", len(killed))
 	writeJSON(w, map[string]any{"killed": killed})
 }
 

@@ -27,7 +27,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::notes;
-use crate::{dlog, AppState, Session, SshClient};
+use crate::{log_debug, log_info, log_warn, AppState, Session, SshClient};
 
 /// Output of one summarize call. Mirrored to the frontend.
 #[derive(Clone, Serialize)]
@@ -154,7 +154,7 @@ async fn resolve_claude_path(
         .map(|l| l.trim().to_string());
     match path {
         Some(p) if !p.is_empty() && !p.starts_with("ERROR") => {
-            dlog(&format!(
+            log_debug("CLAUDE", &format!(
                 "claude_summary: detected claude at {p} (ws={workspace_id})"
             ));
             if let Ok(mut map) = state.claude_paths.lock() {
@@ -163,7 +163,7 @@ async fn resolve_claude_path(
             p
         }
         _ => {
-            dlog(&format!(
+            log_warn("CLAUDE", &format!(
                 "claude_summary: claude path detection failed for ws={workspace_id} — falling back to bare `claude`"
             ));
             "claude".to_string()
@@ -303,7 +303,7 @@ pub(crate) async fn summarize_session_inner(
     ) {
         Ok(n) => Some(n.id),
         Err(e) => {
-            dlog(&format!("claude_summary: notes::rpc_add failed: {e}"));
+            log_warn("CLAUDE", &format!("claude_summary: notes::rpc_add failed: {e}"));
             None
         }
     };
@@ -364,11 +364,11 @@ pub(crate) async fn auto_summarize_on_stop(
         return;
     }
     match summarize_session_inner(state, app, workspace_id, pane_id, None, None, None).await {
-        Ok(r) => dlog(&format!(
+        Ok(r) => log_info("CLAUDE", &format!(
             "claude_summary: auto-saved note {} for workspace {workspace_id}",
             r.note_id.unwrap_or_default()
         )),
-        Err(e) => dlog(&format!(
+        Err(e) => log_warn("CLAUDE", &format!(
             "claude_summary: auto-summarize failed for workspace {workspace_id}: {e}"
         )),
     }

@@ -8,7 +8,6 @@ package insights
 // for `go test` on the dev box.
 
 import (
-	"log"
 	"sort"
 	"strings"
 	"time"
@@ -153,7 +152,7 @@ func autoReapDuplicates() int {
 	}
 	killed := killPids(pids)
 	if len(killed) > 0 {
-		log.Printf("hygiene: auto-reaped %d duplicate port-watcher(s): %v", len(killed), killed)
+		logger.Info("hygiene auto-reaped duplicate port-watchers", "count", len(killed), "pids", killed)
 	}
 	return len(killed)
 }

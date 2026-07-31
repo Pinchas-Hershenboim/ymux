@@ -10,6 +10,7 @@
 
 mod hooks;
 mod port_watch;
+mod session_meta;
 
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -35,7 +36,66 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 /// leaks in here becomes a prompt-injection payload for whichever
 /// LLM reads the log next.
 fn hook_dlog(msg: &str) {
+    hook_log(HookLevel::Info, msg);
+}
+
+/// Severity for hook log lines. Mirrors `winmux_core::LogLevel` (the CLI
+/// stays dependency-light, so it carries its own copy) and renders in the
+/// system-wide unified format: `[ts] [LEVEL] [HOOK] msg`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum HookLevel {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+}
+
+impl HookLevel {
+    /// Fixed-width column so merged logs align (`[DEBUG]`, `[INFO ]`, …).
+    fn column(self) -> &'static str {
+        match self {
+            HookLevel::Debug => "DEBUG",
+            HookLevel::Info => "INFO ",
+            HookLevel::Warn => "WARN ",
+            HookLevel::Error => "ERROR",
+        }
+    }
+}
+
+/// Write threshold, resolved once per process (each hook is a fresh
+/// process, so "once" is effectively "per hook invocation"):
+/// `WINMUX_HOOK_VERBOSE` → Debug (back-compat), else the desktop-pushed
+/// `~/.winmux/log-level` file, else Info.
+fn hook_level_threshold() -> HookLevel {
+    static THRESHOLD: std::sync::OnceLock<HookLevel> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        if hook_verbose() {
+            return HookLevel::Debug;
+        }
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let Some(home) = home else {
+            return HookLevel::Info;
+        };
+        let path = std::path::PathBuf::from(home).join(".winmux").join("log-level");
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "debug" => HookLevel::Debug,
+                "warn" | "warning" => HookLevel::Warn,
+                "error" => HookLevel::Error,
+                _ => HookLevel::Info,
+            },
+            Err(_) => HookLevel::Info,
+        }
+    })
+}
+
+/// Leveled hook logger. Same content rules as the doc comment above
+/// (`hook_dlog`): metadata only, never prompt/PTY content.
+fn hook_log(level: HookLevel, msg: &str) {
     use std::io::Write as _;
+    if level < hook_level_threshold() {
+        return;
+    }
     // v0.4.5 (security): one-shot migration of any pre-v0.4.4
     // hook-debug.log before we touch the file. See
     // `migrate_hook_log_if_legacy` for the full rationale.
@@ -48,16 +108,13 @@ fn hook_dlog(msg: &str) {
         return;
     }
     let path = dir.join("hook-debug.log");
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "{} {}", ts, msg);
+        let _ = writeln!(f, "[{ts}] [{}] [HOOK] {msg}", level.column());
     }
 }
 
@@ -160,14 +217,13 @@ fn hook_verbose() -> bool {
     )
 }
 
-/// Verbose-only variant of [`hook_dlog`]: writes the full trace line ONLY when
-/// `WINMUX_HOOK_VERBOSE` is set. Interesting/rare events (denials, timeouts,
-/// static fallbacks, RPC errors) stay on `hook_dlog` so they always land.
+/// Debug-level trace line: lands only when the threshold is Debug (via
+/// `WINMUX_HOOK_VERBOSE` or a desktop-pushed `~/.winmux/log-level` of
+/// "debug"). Interesting/rare events (denials, timeouts, static fallbacks,
+/// RPC errors) use `hook_log(Warn/Error, ..)` so they always land.
 /// Like `hook_dlog`, callers pass metadata only — never PTY / prompt content.
 fn hook_vlog(msg: &str) {
-    if hook_verbose() {
-        hook_dlog(msg);
-    }
+    hook_log(HookLevel::Debug, msg);
 }
 
 /// Phase 66 (66.D.1): the CLI's own copy of the permission policy, used
@@ -229,8 +285,14 @@ async fn tunnel_healthy() -> bool {
         .await;
         match r {
             Ok(Ok(_)) => return true,
-            Ok(Err(e)) => hook_dlog(&format!("claude-hook ping attempt={attempt} err={e}")),
-            Err(_) => hook_dlog(&format!("claude-hook ping attempt={attempt} timed out")),
+            Ok(Err(e)) => hook_log(
+                HookLevel::Warn,
+                &format!("claude-hook ping attempt={attempt} err={e}"),
+            ),
+            Err(_) => hook_log(
+                HookLevel::Warn,
+                &format!("claude-hook ping attempt={attempt} timed out"),
+            ),
         }
         if attempt == 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -249,9 +311,10 @@ async fn feed_push_with_retry(params: &Value, max_attempts: u32) -> Result<Value
         match rpc_call("feed.push", params.clone()).await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                hook_dlog(&format!(
-                    "claude-hook feed.push attempt={attempt} err={e}"
-                ));
+                hook_log(
+                    HookLevel::Warn,
+                    &format!("claude-hook feed.push attempt={attempt} err={e}"),
+                );
                 last = e;
                 if attempt + 1 < max_attempts {
                     let ms = if attempt == 0 { 200 } else { 500 };
@@ -769,6 +832,42 @@ enum Cmd {
     /// bundled Linux CLI sha256, recent errors). Calls the `doctor`
     /// RPC method — requires the desktop app to be running.
     Doctor,
+
+    /// Multi-machine sync: read/update `~/.winmux/session-meta.json`,
+    /// the server-side tmux-session → Claude-session/label/origin map.
+    /// Purely local file ops — no RPC, works without the desktop app.
+    SessionMeta {
+        #[command(subcommand)]
+        op: SessionMetaOp,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionMetaOp {
+    /// Create/update one session's entry.
+    Set {
+        /// tmux session name (the map key).
+        #[arg(long)]
+        session: String,
+        /// Creating machine's id.
+        #[arg(long)]
+        origin: Option<String>,
+        /// Only write --origin when the entry has none yet (creator wins;
+        /// a later attach from another machine never steals origin).
+        #[arg(long)]
+        origin_if_absent: bool,
+        /// Manual label as hex-encoded UTF-8 (sidesteps SSH-exec quoting
+        /// for Hebrew/RTL text).
+        #[arg(long)]
+        label_hex: Option<String>,
+        /// Remove the manual label.
+        #[arg(long)]
+        clear_label: bool,
+    },
+    /// Drop entries whose tmux session no longer exists.
+    Prune,
+    /// Print the whole map as JSON (debugging).
+    Get,
 }
 
 #[derive(Subcommand, Debug)]
@@ -916,7 +1015,8 @@ fn load_fallback_env_file() {
     if std::env::var("WINMUX_SOCKET_ADDR").is_ok() {
         return;
     }
-    let home = match std::env::var_os("HOME") {
+    // Phase 80: USERPROFILE fallback for native-Windows runs.
+    let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         Some(h) => h,
         None => return,
     };
@@ -1883,6 +1983,67 @@ async fn real_main() -> ExitCode {
                 rpc_call("note-update", params).await
             }
         },
+        Cmd::SessionMeta { op } => {
+            // Local file ops only — no tunnel, no desktop. Called over a
+            // bare SSH exec by the desktop app (origin/label writes) or by
+            // hand for debugging.
+            match op {
+                SessionMetaOp::Set { session, origin, origin_if_absent, label_hex, clear_label } => {
+                    let session = session.trim();
+                    if session.is_empty() {
+                        eprintln!("error: --session is empty");
+                        return ExitCode::from(2);
+                    }
+                    let mut meta = session_meta::load_meta();
+                    let entry = meta.sessions.entry(session.to_string()).or_default();
+                    if let Some(o) = origin {
+                        if !*origin_if_absent || entry.origin.is_none() {
+                            entry.origin = Some(o.clone());
+                        }
+                    }
+                    if *clear_label {
+                        entry.label = None;
+                    } else if let Some(hex) = label_hex {
+                        match session_meta::decode_hex_utf8(hex) {
+                            Ok(label) if label.trim().is_empty() => entry.label = None,
+                            Ok(label) => entry.label = Some(label),
+                            Err(e) => {
+                                eprintln!("error: bad --label-hex: {e}");
+                                return ExitCode::from(2);
+                            }
+                        }
+                    }
+                    entry.updated_at = Some(session_meta::now_rfc3339());
+                    session_meta::prune(&mut meta);
+                    if let Err(e) = session_meta::save_meta_atomic(&meta) {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                    return ExitCode::SUCCESS;
+                }
+                SessionMetaOp::Prune => {
+                    let mut meta = session_meta::load_meta();
+                    if session_meta::prune(&mut meta) {
+                        if let Err(e) = session_meta::save_meta_atomic(&meta) {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    return ExitCode::SUCCESS;
+                }
+                SessionMetaOp::Get => {
+                    let meta = session_meta::load_meta();
+                    match serde_json::to_string_pretty(&meta) {
+                        Ok(s) => println!("{s}"),
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    return ExitCode::SUCCESS;
+                }
+            }
+        }
         Cmd::ClaudeHook { subcommand } => {
             // Phase 66 (wiring fix): load the fallback env file FIRST, before
             // the env-gate / permission-mode checks read WINMUX_PANE_ID.
@@ -2035,6 +2196,28 @@ async fn real_main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
 
+            // Multi-machine sync: on every `stop` (fires each turn) record
+            // this pane's tmux-session → Claude-session mapping + title in
+            // the server-side `~/.winmux/session-meta.json`; `session-end`
+            // prunes dead sessions. Best-effort — a failure never blocks
+            // the hook. Runs only for winmux panes (env-gate above).
+            // Rule #1: log the error KIND only, never the title text.
+            let (meta_claude_title, meta_tmux_session) =
+                if matches!(subcommand.as_str(), "stop" | "session-end") {
+                    match session_meta::handle_hook(subcommand, &payload) {
+                        Ok(v) => v,
+                        Err(kind) => {
+                            hook_vlog(&format!(
+                                "claude-hook session-meta skipped kind={kind} \
+                                 subcommand={subcommand}"
+                            ));
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
+
             let blocking = matches!(subcommand.as_str(), "tool-permission" | "pre-tool-use");
             let kind = if blocking { "permission_request" } else { "passive" };
 
@@ -2082,7 +2265,7 @@ async fn real_main() -> ExitCode {
                  timeout_secs={timeout_secs}"
             ));
 
-            let push_params = json!({
+            let mut push_params = json!({
                 "request_id": request_id,
                 "kind": kind,
                 "subkind": subcommand,
@@ -2092,6 +2275,15 @@ async fn real_main() -> ExitCode {
                 "payload": payload,
                 "wait_timeout_seconds": timeout_secs,
             });
+            // Multi-machine sync: piggyback the Claude session title on the
+            // stop push so the desktop can set the pane's auto_title without
+            // another roundtrip. Old desktops ignore unknown params.
+            if let Some(t) = &meta_claude_title {
+                push_params["claude_title"] = json!(t);
+            }
+            if let Some(s) = &meta_tmux_session {
+                push_params["tmux_session"] = json!(s);
+            }
 
             // Phase 66 (66.D.2): for pre-tool-use, probe the tunnel first.
             // If the desktop is unreachable, use the static policy NOW
@@ -2102,10 +2294,13 @@ async fn real_main() -> ExitCode {
                 // Rule #1: `reason` can embed a truncated segment of the tool
                 // command (winmux_policy) — never write it to the log file.
                 // Metadata only. (It still goes to Claude via print below.)
-                hook_dlog(&format!(
-                    "static-fallback decision={decision} req_id={request_id} \
-                     (desktop unreachable)"
-                ));
+                hook_log(
+                    HookLevel::Warn,
+                    &format!(
+                        "static-fallback decision={decision} req_id={request_id} \
+                         (desktop unreachable)"
+                    ),
+                );
                 print_pre_tool_use(decision, Some(&reason));
                 return ExitCode::SUCCESS;
             }
@@ -2227,11 +2422,14 @@ async fn real_main() -> ExitCode {
                     // (better than a hard error). Lifecycle hooks stay
                     // silent (they don't need a response anyway). Legacy
                     // subcommands keep the old exit-code shape.
-                    hook_dlog(&format!(
-                        "claude-hook BRANCH=rpc-error-fallback error={e} \
-                         subcommand={subcommand} request_id={request_id} \
-                         (Claude Code's built-in UI will be shown)"
-                    ));
+                    hook_log(
+                        HookLevel::Warn,
+                        &format!(
+                            "claude-hook BRANCH=rpc-error-fallback error={e} \
+                             subcommand={subcommand} request_id={request_id} \
+                             (Claude Code's built-in UI will be shown)"
+                        ),
+                    );
                     eprintln!(
                         "winmux claude-hook: pipe error: {} (using static fallback policy)",
                         e
@@ -2245,10 +2443,13 @@ async fn real_main() -> ExitCode {
                             let (decision, reason) = static_fallback_decision(&payload);
                             // Rule #1: never log `reason` (can embed command
                             // text). Metadata only — the error kind is safe.
-                            hook_dlog(&format!(
-                                "static-fallback decision={decision} req_id={request_id} \
-                                 error={e}"
-                            ));
+                            hook_log(
+                                HookLevel::Warn,
+                                &format!(
+                                    "static-fallback decision={decision} req_id={request_id} \
+                                     error={e}"
+                                ),
+                            );
                             print_pre_tool_use(decision, Some(&reason));
                             return ExitCode::SUCCESS;
                         }

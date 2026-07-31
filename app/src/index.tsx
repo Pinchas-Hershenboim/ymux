@@ -1,4 +1,7 @@
 /* @refresh reload */
+// logger.ts must load BEFORE the console monkeypatch below — it captures the
+// original console fns so logger output is never forwarded twice.
+import "./logger";
 import { render } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -11,10 +14,12 @@ import "./App.css";
 import App from "./App";
 import { PopoutTerminal } from "./components/PopoutTerminal";
 
-// Phase 8.E: capture console.error / console.warn so `winmux dev console-tail`
-// can surface frontend issues. We forward to a fire-and-forget Tauri command
-// that pushes into a 200-entry ring buffer in the backend. Original console
-// output is preserved.
+// Phase 8.E → unified logging: capture console.error / console.warn as a
+// safety net for un-swept or third-party output. Forwarded fire-and-forget
+// to `ui_log`, which writes debug.log AND the dev ring buffer (`winmux dev
+// console-tail`). Swept code logs through createLogger() instead — it uses
+// the original console fns captured in logger.ts, so nothing loops through
+// here twice. Original console output is preserved.
 {
   const origErr = console.error;
   const origWarn = console.warn;
@@ -32,32 +37,32 @@ import { PopoutTerminal } from "./components/PopoutTerminal";
       .join(" ");
   console.error = (...args: unknown[]) => {
     origErr(...(args as []));
-    invoke("dev_console_log", {
+    invoke("ui_log", {
       level: "error",
+      tag: "CONSOLE",
       message: fmt(args),
-      ts: Date.now(),
     }).catch(() => {});
   };
   console.warn = (...args: unknown[]) => {
     origWarn(...(args as []));
-    invoke("dev_console_log", {
+    invoke("ui_log", {
       level: "warn",
+      tag: "CONSOLE",
       message: fmt(args),
-      ts: Date.now(),
     }).catch(() => {});
   };
   window.addEventListener("error", (e) => {
-    invoke("dev_console_log", {
+    invoke("ui_log", {
       level: "error",
+      tag: "CONSOLE",
       message: `unhandled: ${e.message} @ ${e.filename}:${e.lineno}`,
-      ts: Date.now(),
     }).catch(() => {});
   });
   window.addEventListener("unhandledrejection", (e) => {
-    invoke("dev_console_log", {
+    invoke("ui_log", {
       level: "error",
+      tag: "CONSOLE",
       message: `unhandled rejection: ${String(e.reason)}`,
-      ts: Date.now(),
     }).catch(() => {});
   });
 }

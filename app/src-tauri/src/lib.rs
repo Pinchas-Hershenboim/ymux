@@ -15,7 +15,9 @@ mod file_manager;
 // Monitor panel on Local workspaces. Commands mirror the remote daemon's
 // JSON shape so `insights_fetch` can route local vs. SSH transparently.
 mod insights_local;
+mod local_setup;
 mod local_wizard;
+mod log_sync;
 mod notes;
 mod osc_notify;
 mod pairing;
@@ -281,8 +283,8 @@ pub(crate) fn new_workspace_id() -> String {
 // callsite resolves unchanged.
 pub(crate) use winmux_core::{
     backfill_terminal_connections, clear_debug_log, collect_panes, collect_panes_with_kind,
-    config_dir, config_dir_pub, dlog, dlog_tag, first_terminal_connection,
-    first_terminal_connection_pub, prune_logs, shell_quote,
+    config_dir, config_dir_pub, first_terminal_connection, first_terminal_connection_pub,
+    log_debug, log_error, log_info, log_warn, prune_logs, shell_quote,
 };
 
 /// Phase 38: absolute path to the debug log, for the Settings → Logs
@@ -332,7 +334,7 @@ fn read_log_tail(n: usize) -> Result<String, String> {
 #[tauri::command]
 fn clear_debug_log_cmd() -> Result<(), String> {
     clear_debug_log()?;
-    dlog_tag("LOGS", "debug.log cleared by user");
+    log_info("LOGS", "debug.log cleared by user");
     Ok(())
 }
 
@@ -340,11 +342,65 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("workspaces.json"))
 }
 
+/// Phase 81: stable per-install machine id — the `origin` value written
+/// into the server-side session-meta map so the picker can tell which
+/// machine created each tmux session. Lives in its own file
+/// (%APPDATA%/winmux/machine-id), NOT settings.json, so "Reset all
+/// settings" never changes this machine's identity. Generated once as
+/// `<sanitized COMPUTERNAME>-<4 hex>`; read back forever after.
+pub(crate) fn machine_id() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = match config_dir() {
+                Ok(d) => d.join("machine-id"),
+                Err(_) => return "winmux-unknown".to_string(),
+            };
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                let existing = existing.trim().to_string();
+                if !existing.is_empty() {
+                    return existing;
+                }
+            }
+            let host = std::env::var("COMPUTERNAME")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "winmux".to_string());
+            let host: String = host
+                .trim()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+                .collect();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let id = format!("{}-{:04x}", host, (nanos & 0xffff) as u16);
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            // Atomic (Rule #7): tmp + rename, like every other config write.
+            let tmp = path.with_file_name(format!("machine-id.{}.tmp", std::process::id()));
+            if std::fs::write(&tmp, &id).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+            id
+        })
+        .clone()
+}
+
+/// Phase 81: hex-encoded UTF-8 for `session-meta set --label-hex` — the
+/// label crosses an SSH exec as plain hex so Hebrew/RTL text never meets
+/// shell quoting.
+pub(crate) fn hex_utf8(s: &str) -> String {
+    s.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     use std::io::Write as _;
 
     if file.workspaces.is_empty() && file.active_workspace_id.is_none() {
-        dlog(&format!(
+        log_warn("WORKSPACE", &format!(
             "save_to_disk: writing empty state (workspaces=0). version={}",
             file.version
         ));
@@ -371,7 +427,7 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     }
 
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "save_to_disk: wrote {} bytes ({} workspaces) → {:?}",
         text.len(),
         file.workspaces.len(),
@@ -382,9 +438,9 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
 
 fn load_from_disk() -> Result<WorkspacesFile, String> {
     let path = config_path()?;
-    dlog(&format!("load_from_disk: path={:?} exists={}", path, path.exists()));
+    log_debug("WORKSPACE", &format!("load_from_disk: path={:?} exists={}", path, path.exists()));
     if !path.exists() {
-        dlog("load_from_disk: file absent → fresh empty state (LoadState=Loaded)");
+        log_info("WORKSPACE", "load_from_disk: file absent → fresh empty state (LoadState=Loaded)");
         return Ok(WorkspacesFile {
             version: 1,
             active_workspace_id: None,
@@ -393,10 +449,10 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         });
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
-    dlog(&format!("load_from_disk: read {} bytes", text.len()));
+    log_debug("WORKSPACE", &format!("load_from_disk: read {} bytes", text.len()));
     let mut file: WorkspacesFile = serde_json::from_str(&text)
         .map_err(|e| format!("parse {:?}: {e}", path))?;
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "load_from_disk: parsed OK, version={}, {} workspaces, active={:?}",
         file.version,
         file.workspaces.len(),
@@ -422,6 +478,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
                 connection: Some(conn),
                 browser: None,
                 title: None,
+                auto_title: None,
                 annotation: None,
                 color: None,
                 emoji: None,
@@ -459,7 +516,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
             ws.layout = Some(new_layout);
             if changed {
                 migrated = true;
-                dlog(&format!(
+                log_info("WORKSPACE", &format!(
                     "load_from_disk: ws={} backfilled Terminal pane connections \
                      (claudechat/claudelog → Terminal migration)",
                     ws.id
@@ -477,10 +534,10 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         migrated = true;
     }
     if migrated {
-        dlog("load_from_disk: migration ran — saving migrated layout");
+        log_info("WORKSPACE", "load_from_disk: migration ran — saving migrated layout");
         match save_to_disk(&file) {
-            Ok(()) => dlog("load_from_disk: migration save OK"),
-            Err(e) => dlog(&format!("load_from_disk: migration save FAILED: {e}")),
+            Ok(()) => log_info("WORKSPACE", "load_from_disk: migration save OK"),
+            Err(e) => log_warn("WORKSPACE", &format!("load_from_disk: migration save FAILED: {e}")),
         }
     }
     Ok(file)
@@ -654,7 +711,7 @@ pub(crate) fn persist(state: &AppState) -> Result<(), String> {
     match load_state {
         Some(LoadState::Loaded) => {}
         Some(LoadState::Failed) => {
-            dlog("persist: REFUSING — load_state=Failed, would clobber existing data");
+            log_error("WORKSPACE", "persist: REFUSING — load_state=Failed, would clobber existing data");
             return Err(
                 "persistence disabled: workspaces.json failed to load earlier; \
                  fix the file and restart"
@@ -662,7 +719,7 @@ pub(crate) fn persist(state: &AppState) -> Result<(), String> {
             );
         }
         None => {
-            dlog("persist: REFUSING — load_state=None (setup hasn't completed)");
+            log_warn("WORKSPACE", "persist: REFUSING — load_state=None (setup hasn't completed)");
             return Err("persistence not yet initialized".into());
         }
     }
@@ -750,6 +807,7 @@ pub(crate) fn split_pane_in(
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -818,6 +876,7 @@ pub(crate) fn split_pane_in(
                     connection: new_conn,
                     browser: new_browser,
                     title: None,
+                    auto_title: None,
                     annotation: None,
                     // Phase 31: new pane from a split inherits from the
                     // workspace by default (None = inherit). User can
@@ -834,6 +893,7 @@ pub(crate) fn split_pane_in(
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     // Phase 31: preserve the original pane's identity
                     // across the split — it's the same logical pane,
@@ -862,6 +922,7 @@ pub(crate) fn split_pane_in(
                         connection,
                         browser,
                         title,
+                        auto_title,
                         annotation,
                         color,
                         emoji,
@@ -935,6 +996,7 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -951,6 +1013,7 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     color,
                     emoji,
@@ -1015,11 +1078,14 @@ fn close_pane_in(node: LayoutNode, target: &str) -> (Option<LayoutNode>, Option<
 /// Phase 7.A: update title and/or annotation on a pane leaf. Each `Option<Option<…>>`
 /// arg has three states: `None` = leave unchanged, `Some(None)` = clear,
 /// `Some(Some(value))` = set.
+/// Phase 81: same tri-state for `new_auto_title` (the Claude-derived
+/// fallback title set from the stop hook).
 pub(crate) fn update_pane_in(
     node: LayoutNode,
     target: &str,
     new_title: Option<Option<String>>,
     new_annotation: Option<Option<String>>,
+    new_auto_title: Option<Option<String>>,
 ) -> LayoutNode {
     match node {
         LayoutNode::Pane {
@@ -1028,6 +1094,7 @@ pub(crate) fn update_pane_in(
             connection,
             browser,
             title,
+            auto_title,
             annotation,
             color,
             emoji,
@@ -1042,6 +1109,7 @@ pub(crate) fn update_pane_in(
                     connection,
                     browser,
                     title: new_title.unwrap_or(title),
+                    auto_title: new_auto_title.unwrap_or(auto_title),
                     annotation: new_annotation.unwrap_or(annotation),
                     color,
                     emoji,
@@ -1056,6 +1124,7 @@ pub(crate) fn update_pane_in(
                     connection,
                     browser,
                     title,
+                    auto_title,
                     annotation,
                     color,
                     emoji,
@@ -1079,15 +1148,77 @@ pub(crate) fn update_pane_in(
                 target,
                 new_title.clone(),
                 new_annotation.clone(),
+                new_auto_title.clone(),
             )),
             second: Box::new(update_pane_in(
                 *second,
                 target,
                 new_title,
                 new_annotation,
+                new_auto_title,
             )),
             ratio,
         },
+    }
+}
+
+/// Phase 81: current auto_title of a pane leaf (None when the pane isn't
+/// in this subtree or has no auto_title).
+fn pane_auto_title_in(node: &LayoutNode, target: &str) -> Option<String> {
+    match node {
+        LayoutNode::Pane { pane_id, auto_title, .. } => {
+            if pane_id == target { auto_title.clone() } else { None }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            pane_auto_title_in(first, target).or_else(|| pane_auto_title_in(second, target))
+        }
+    }
+}
+
+/// Phase 81: persist a Claude-derived title on a pane (stop-hook path,
+/// rpc_server feed.push). Touches ONLY `auto_title` — the user's manual
+/// `title` always wins in the UI. No-ops when the pane is gone or the
+/// value is unchanged (a stop fires every turn; skip the disk churn).
+pub(crate) fn update_pane_auto_title(
+    state: &AppState,
+    app: &AppHandle,
+    pane_id: &str,
+    new_title: &str,
+) {
+    let changed = {
+        let mut file = state.workspaces.lock().unwrap();
+        let Some(ws_id) = find_workspace_for_pane(&file, pane_id) else {
+            return;
+        };
+        let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+            return;
+        };
+        let unchanged = ws
+            .layout
+            .as_ref()
+            .and_then(|l| pane_auto_title_in(l, pane_id))
+            .as_deref()
+            == Some(new_title);
+        if unchanged {
+            false
+        } else {
+            if let Some(layout) = ws.layout.take() {
+                ws.layout = Some(update_pane_in(
+                    layout,
+                    pane_id,
+                    None,
+                    None,
+                    Some(Some(new_title.to_string())),
+                ));
+            }
+            true
+        }
+    };
+    if changed {
+        if let Err(e) = persist(state) {
+            log_warn("WORKSPACE", &format!("auto_title: persist failed: {e}"));
+        }
+        let _ = app.emit("workspaces:changed", ());
     }
 }
 
@@ -1474,7 +1605,7 @@ fn emit_exit(app: &AppHandle, session_id: &str, reason: Option<String>) {
     // disconnect (e.g. "Claude quit closed the connection") is traceable
     // in debug.log — pair this with the ssh-disconnect Eof/Close/transport
     // lines to see WHY the channel ended (bash exit vs network vs RPC).
-    dlog(&format!(
+    log_info("PTY", &format!(
         "pty:exit session={session_id} reason={}",
         reason.as_deref().unwrap_or("(none)")
     ));
@@ -1597,8 +1728,260 @@ fn spawn_local_pty(
             writer,
             master: pair.master,
             killer,
+            tmux_session: None,
+            wsl_distro: None,
         }),
     );
+    Ok(id)
+}
+
+/// Phase 80: the tmux attach-or-create script typed into a fresh shell
+/// ~900ms after spawn (after env exports + setup_command have settled).
+/// Shared by persistent SSH panes (sent over the SSH channel) and WSL
+/// panes (written straight to the local PTY). An empty `socket_addr`
+/// skips the WINMUX_* env injection into tmux's global environment
+/// (WSL panes pass empty until the WSL RPC bridge hands them a real
+/// address). `fallback_msg` must not contain single quotes.
+fn build_tmux_attach_script(
+    name: &str,
+    socket_addr: &str,
+    token: &str,
+    pane_id: &str,
+    use_winmux_tmux_conf: bool,
+    fallback_msg: &str,
+) -> String {
+    let mut script = String::new();
+    // Push the env vars into tmux's global environment so a re-attach to
+    // a long-lived session sees the *current* WINMUX_SOCKET_ADDR/
+    // TUNNEL_TOKEN/PANE_ID rather than the stale ones from the original
+    // creation. The `2>/dev/null` swallows the harmless "no server
+    // running" message when this is the first attach.
+    if !socket_addr.is_empty() {
+        script.push_str(&format!(
+            "tmux set-environment -g WINMUX_SOCKET_ADDR {} 2>/dev/null; ",
+            shell_quote(socket_addr)
+        ));
+        script.push_str(&format!(
+            "tmux set-environment -g WINMUX_TUNNEL_TOKEN {} 2>/dev/null; ",
+            shell_quote(token)
+        ));
+        script.push_str(&format!(
+            "tmux set-environment -g WINMUX_PANE_ID {} 2>/dev/null; ",
+            shell_quote(pane_id)
+        ));
+    }
+    // Phase tmux-conf: when enabled, point tmux at our bundled conf via
+    // `-f ~/.winmux/tmux.conf`. Falls through to the user's own
+    // ~/.tmux.conf if the file is absent (tmux logs a warning and uses
+    // defaults — non-fatal). When the setting is off, omit -f so the
+    // user's conf alone applies.
+    let tmux_flags = if use_winmux_tmux_conf {
+        "-f $HOME/.winmux/tmux.conf "
+    } else {
+        ""
+    };
+    // Phase 65 (bug EE): the bundled conf ships `mouse off` (the
+    // known-good display config — `mouse on` in the conf garbled Claude
+    // Code's live output). We still want tmux-native wheel scrollback,
+    // so turn mouse on via the new-session command chain (`\; set -g
+    // mouse on`) instead of in the conf.
+    script.push_str(&format!(
+        "command -v tmux >/dev/null 2>&1 && exec tmux {flags}new-session -A -s {name} \\; set -g mouse on || echo '{msg}'\r\n",
+        flags = tmux_flags,
+        name = shell_quote(name),
+        msg = fallback_msg
+    ));
+    script
+}
+
+// ─── Phase 80: WSL PTY spawn ─────────────────────────────────────────────────
+
+/// Spawn a pane inside a WSL distro via `wsl.exe`, optionally wrapped in
+/// tmux for persistence — the exact mechanism persistent SSH panes use,
+/// transported over wsl.exe instead of an SSH channel. The distro's
+/// default (login) shell is used; `--cd` accepts a Windows path and
+/// translates it to /mnt/... inside.
+fn spawn_wsl_pty(
+    state: &AppState,
+    pane_id: String,
+    app: &AppHandle,
+    distro: Option<String>,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    tmux_name: Option<String>,
+) -> Result<String, String> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("openpty failed: {e}"))?;
+
+    // Rule #3: argv arrays only — no string-built command lines.
+    let mut cmd = CommandBuilder::new("wsl.exe");
+    if let Some(d) = distro.as_deref() {
+        if !d.is_empty() {
+            cmd.arg("-d");
+            cmd.arg(d);
+        }
+    }
+    if let Some(d) = cwd.as_deref() {
+        if Path::new(d).is_dir() {
+            cmd.arg("--cd");
+            cmd.arg(d);
+        }
+    }
+    // Same hyperlink/TERM nudges as spawn_local_pty — WSLENV is not
+    // needed for these: wsl.exe forwards the env of the PTY child it
+    // spawns only for WSLENV-listed vars, but TERM/COLORTERM are set by
+    // the login shell inside anyway and the FORCE_HYPERLINK* vars ride
+    // through WSLENV below.
+    cmd.env("FORCE_HYPERLINK", "1");
+    cmd.env("FORCE_HYPERLINKS", "1");
+    cmd.env("CLAUDE_CODE_FORCE_HYPERLINKS", "1");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env(
+        "WSLENV",
+        "FORCE_HYPERLINK:FORCE_HYPERLINKS:CLAUDE_CODE_FORCE_HYPERLINKS:COLORTERM",
+    );
+    tracing::debug!("spawn_wsl_pty[{pane_id}]: distro={distro:?} tmux={tmux_name:?}");
+    let mut child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("spawn wsl.exe failed: {e}"))?;
+    drop(pair.slave);
+
+    let killer = child.clone_killer();
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("clone_reader failed: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("take_writer failed: {e}"))?;
+
+    let id = next_session_id();
+    let id_for_thread = id.clone();
+    let pane_for_thread = pane_id.clone();
+    let app_for_thread = app.clone();
+    let sessions_for_thread = state.core.sessions.clone();
+    let pane_sessions_for_thread = state.core.pane_sessions.clone();
+    let bidi_for_thread = state.bidi_filters.clone();
+    thread::spawn(move || {
+        let mut leftover: Vec<u8> = Vec::new();
+        let mut osc = osc_notify::OscNotifyParser::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => emit_data(
+                    &app_for_thread,
+                    &id_for_thread,
+                    &buf[..n],
+                    &mut leftover,
+                    &pane_for_thread,
+                    &mut osc,
+                    &bidi_for_thread,
+                ),
+                Err(_) => break,
+            }
+        }
+        let _ = child.wait();
+        cleanup_session_maps(
+            &sessions_for_thread,
+            &pane_sessions_for_thread,
+            &pane_for_thread,
+            &id_for_thread,
+        );
+        emit_exit(&app_for_thread, &id_for_thread, None);
+    });
+
+    state.core.sessions.lock().unwrap().insert(
+        id.clone(),
+        Session::Local(LocalSession {
+            writer,
+            master: pair.master,
+            killer,
+            tmux_session: tmux_name.clone(),
+            wsl_distro: distro.clone(),
+        }),
+    );
+
+    // Phase 80: persistent mode — type the tmux attach-or-create script
+    // into the shell 900ms after spawn, exactly like the SSH path (after
+    // env exports + setup_command). If tmux isn't installed in the
+    // distro the fallback echo leaves a plain shell. The WSL RPC bridge
+    // (TCP → named pipe, HMAC-gated) supplies the WINMUX_* env the CLI
+    // needs for hooks — the local twin of the SSH reverse tunnel.
+    if let Some(name) = tmux_name {
+        let use_winmux_tmux_conf = state
+            .settings
+            .lock()
+            .ok()
+            .map(|s| s.terminal.use_winmux_tmux_config)
+            .unwrap_or(true);
+        let sessions_clone = state.core.sessions.clone();
+        let id_clone = id.clone();
+        let pane_for_exec = pane_id.clone();
+        let distro_for_task = distro.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            // Best-effort bridge + env-file wiring; a failure just means
+            // hooks stay silent for this pane (same posture as a remote
+            // whose tunnel failed) — the terminal itself is unaffected.
+            let mut socket_addr = String::new();
+            let mut token = String::new();
+            match local_setup::ensure_wsl_bridge().await {
+                Ok((port, tok)) => {
+                    if let Some(addr) =
+                        local_setup::resolve_wsl_host_addr(distro_for_task.as_deref(), port).await
+                    {
+                        if let Err(e) = local_setup::write_wsl_env_file(
+                            distro_for_task.as_deref(),
+                            &addr,
+                            &tok,
+                            &pane_for_exec,
+                        )
+                        .await
+                        {
+                            crate::log_warn("RPC", &format!("wsl-bridge: env file write failed: {e}"));
+                        }
+                        socket_addr = addr;
+                        token = tok.as_str().to_string();
+                    } else {
+                        crate::log_warn("RPC", "wsl-bridge: host address resolution failed — hooks disabled for this pane");
+                    }
+                }
+                Err(e) => crate::log_warn("RPC", &format!("wsl-bridge: start failed: {e}")),
+            }
+            crate::log_info("PTY", &format!(
+                "tmux(wsl): new-session -A -s '{}' (pane {}, {} winmux conf)",
+                name,
+                pane_for_exec,
+                if use_winmux_tmux_conf { "with" } else { "without" }
+            ));
+            let script = build_tmux_attach_script(
+                &name,
+                &socket_addr,
+                &token,
+                &pane_for_exec,
+                use_winmux_tmux_conf,
+                "[winmux] tmux not installed in WSL — falling back to plain shell",
+            );
+            let mut sessions = sessions_clone.lock().unwrap();
+            if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
+                use std::io::Write as _;
+                let _ = l.writer.write_all(script.as_bytes());
+                let _ = l.writer.flush();
+            }
+        });
+    }
     Ok(id)
 }
 
@@ -1662,7 +2045,7 @@ async fn ssh_key_offer_dismiss(
         // the dismiss itself — worst case the offer pops once more).
         if let Ok(snapshot) = state.settings.lock().map(|s| s.clone()) {
             if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                dlog(&format!("ssh_key_offer_dismiss: settings save failed: {e}"));
+                log_warn("SSH", &format!("ssh_key_offer_dismiss: settings save failed: {e}"));
             }
         }
         let _ = app.emit("settings:changed", ());
@@ -1687,7 +2070,7 @@ async fn ssh_cancel_reconnect(
     if let Some(sid) = pane_sessions.get(&pane_id) {
         if let Some(Session::Ssh(ssh)) = sessions.get(sid) {
             ssh.reconnecting.store(false, std::sync::atomic::Ordering::Relaxed);
-            dlog(&format!("ssh_cancel_reconnect: pane={pane_id} flag cleared"));
+            log_info("SSH", &format!("ssh_cancel_reconnect: pane={pane_id} flag cleared"));
         }
     }
     Ok(())
@@ -1846,7 +2229,7 @@ async fn ssh_key_generate_and_install(
         // offer may pop once more.
         if let Ok(snapshot) = state.settings.lock().map(|s| s.clone()) {
             if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                dlog(&format!(
+                log_warn("SSH", &format!(
                     "ssh_key_generate_and_install: settings save failed: {e}"
                 ));
             }
@@ -1854,7 +2237,7 @@ async fn ssh_key_generate_and_install(
         let _ = app.emit("settings:changed", ());
     }
 
-    dlog(&format!(
+    log_info("SSH", &format!(
         "ssh_key_generate_and_install: installed key for ws={workspace_id} user={ssh_user} host={ssh_host}"
     ));
     Ok(priv_str)
@@ -2049,6 +2432,7 @@ async fn provision_existing_install_key(
             connection: Some(conn),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -2075,7 +2459,7 @@ async fn provision_existing_install_key(
     persist(&state)?;
     let _ = app.emit("workspaces:changed", ());
 
-    dlog(&format!(
+    log_info("WORKSPACE", &format!(
         "provision_existing_install_key: created ws={workspace_id} host={host} user={ssh_user}"
     ));
     Ok(workspace_id)
@@ -2150,9 +2534,9 @@ async fn connect_and_authenticate(
         bridge_spawner: Some(std::sync::Arc::new(tunnel::spawn_bridge)),
     };
 
-    dlog(&format!("ssh.connect: client::connect to {} starting", target));
+    log_debug("SSH", &format!("ssh.connect: client::connect to {} starting", target));
     let connect_res = client::connect(config, (host, port), sh).await;
-    dlog(&format!(
+    log_debug("SSH", &format!(
         "ssh.connect: client::connect to {} returned (ok={})",
         target,
         connect_res.is_ok()
@@ -2211,13 +2595,13 @@ async fn spawn_ssh(
     // a specific orphan session to attach to.
     tmux_session_name: Option<String>,
 ) -> Result<String, String> {
-    dlog(&format!(
+    log_debug("SSH", &format!(
         "spawn_ssh: entry ws={} pane={} target={}@{}:{}",
         workspace_id, pane_id, user, host, port
     ));
     // Phase 41: connect + host-key + auth now live in the shared
     // `connect_and_authenticate` helper (includes the Phase 38 keepalive).
-    dlog("spawn_ssh: connect_and_authenticate begin");
+    log_debug("SSH", "spawn_ssh: connect_and_authenticate begin");
     let SshHandshake {
         mut handle,
         auth_method,
@@ -2232,7 +2616,7 @@ async fn spawn_ssh(
         accept_unknown_host,
     )
     .await?;
-    dlog(&format!("spawn_ssh: authenticated method={auth_method:?}"));
+    log_info("SSH", &format!("spawn_ssh: authenticated method={auth_method:?}"));
 
     // Phase 32.B: offer to convert a password-auth connection to key
     // auth. Skipped when the user previously ticked "don't show again",
@@ -2261,7 +2645,7 @@ async fn spawn_ssh(
 
     // Phase 6.2: best-effort bootstrap of the winmux Linux binary on the remote.
     // We never block the user's shell on this — failures are surfaced via pane:status.
-    dlog("spawn_ssh: bootstrap starting");
+    log_debug("SSH", "spawn_ssh: bootstrap starting");
     emit_pane_status_event(app, &pane_id, "bootstrapping winmux…");
     match remote_bootstrap::bootstrap(&mut handle, app, false).await {
         Ok(remote_bootstrap::BootstrapStatus::AlreadyOk) => {
@@ -2290,6 +2674,16 @@ async fn spawn_ssh(
         }
     }
 
+    // Unified logging: converge this host on the desktop's log level
+    // (`~/.winmux/log-level`, read by the Go server watcher + CLI hooks).
+    // Best-effort — a failure never blocks the shell.
+    {
+        let level = state.settings.lock().unwrap().logs.level.clone();
+        if let Err(e) = log_sync::push_log_level(&handle, &level).await {
+            log_warn("LOGS", &format!("log-level push on connect failed: {e}"));
+        }
+    }
+
     // Phase 6.3 → 47.A: ask server to forward a port back to us. With
     // port=0 the server picks a free one and returns it. Forwarded
     // channels arrive in our Handler's `server_channel_open_forwarded_tcpip`
@@ -2305,7 +2699,7 @@ async fn spawn_ssh(
         let (home_out, _) = match remote_get_home(&mut handle).await {
             Ok(v) => v,
             Err(e) => {
-                dlog(&format!("tunnel: skip env-file write — couldn't read $HOME: {e}"));
+                log_warn("TUNNEL", &format!("tunnel: skip env-file write — couldn't read $HOME: {e}"));
                 (String::new(), 1)
             }
         };
@@ -2316,7 +2710,7 @@ async fn spawn_ssh(
                 tunnel::write_remote_env_file(&mut handle, home, &socket_addr, &token, &pane_id)
                     .await
             {
-                dlog(&format!("tunnel: env-file write failed: {e}"));
+                log_warn("TUNNEL", &format!("tunnel: env-file write failed: {e}"));
             }
         }
     }
@@ -2468,21 +2862,21 @@ async fn spawn_ssh(
                             exit_reason = Some(format!("exit {exit_status}"));
                         }
                         Some(ChannelMsg::Eof) => {
-                            dlog(&format!(
+                            log_info("SSH", &format!(
                                 "ssh-disconnect: clean Eof, workspace={} pane={} channel={:?} last_activity_ms={}",
                                 workspace_for_task, pane_for_task, ch_id, last_data_at.elapsed().as_millis()
                             ));
                             break;
                         }
                         Some(ChannelMsg::Close) => {
-                            dlog(&format!(
+                            log_info("SSH", &format!(
                                 "ssh-disconnect: clean Close, workspace={} pane={} channel={:?} last_activity_ms={}",
                                 workspace_for_task, pane_for_task, ch_id, last_data_at.elapsed().as_millis()
                             ));
                             break;
                         }
                         None => {
-                            dlog(&format!(
+                            log_warn("SSH", &format!(
                                 "ssh-disconnect: transport dropped (likely network/keepalive timeout), workspace={} pane={} channel={:?} last_activity_ms={}",
                                 workspace_for_task, pane_for_task, ch_id, last_data_at.elapsed().as_millis()
                             ));
@@ -2500,7 +2894,7 @@ async fn spawn_ssh(
                             let was_already =
                                 reconnecting_for_task.swap(true, std::sync::atomic::Ordering::Relaxed);
                             if was_already {
-                                dlog(&format!(
+                                log_debug("SSH", &format!(
                                     "ssh-disconnect: reconnect already announced for pane={}, skipping duplicate emit",
                                     pane_for_task
                                 ));
@@ -2583,7 +2977,7 @@ async fn spawn_ssh(
                 .unwrap()
                 .remove(&workspace_for_task);
             if aborted {
-                dlog(&format!(
+                log_info("TUNNEL", &format!(
                     "port-watch[{workspace_for_task}]: workspace disconnected, watcher stopped"
                 ));
             }
@@ -2659,57 +3053,57 @@ async fn spawn_ssh(
             // Wait a touch longer than schedule_setup_injection (which fires
             // at 500ms) so our exec lands AFTER the env exports + setup_command.
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-            let mut script = String::new();
-            if !socket_addr.is_empty() {
-                script.push_str(&format!(
-                    "tmux set-environment -g WINMUX_SOCKET_ADDR {} 2>/dev/null; ",
-                    shell_quote(&socket_addr)
-                ));
-                script.push_str(&format!(
-                    "tmux set-environment -g WINMUX_TUNNEL_TOKEN {} 2>/dev/null; ",
-                    shell_quote(&token_clone)
-                ));
-                script.push_str(&format!(
-                    "tmux set-environment -g WINMUX_PANE_ID {} 2>/dev/null; ",
-                    shell_quote(&pane_for_exec)
-                ));
-            }
-            // Phase tmux-conf: when enabled, point tmux at our bundled
-            // conf via `-f ~/.winmux/tmux.conf`. Falls through to the
-            // user's own ~/.tmux.conf if the file is absent (tmux
-            // logs a warning and uses defaults — non-fatal). When the
-            // setting is off, omit -f so the user's conf alone applies.
-            let tmux_flags = if use_winmux_tmux_conf {
-                "-f $HOME/.winmux/tmux.conf "
-            } else {
-                ""
-            };
             // Phase 65: log the exact session name + conf mode so tmux
             // persistence is debuggable. `new-session -A -s <name>`
             // attaches to <name> if it exists (reconnect resumes), else
             // creates it. <name> is deterministic per winmux pane unless
             // the picker supplied an explicit one.
-            crate::dlog(&format!(
+            crate::log_debug("SSH", &format!(
                 "tmux: new-session -A -s '{}' (pane {}, {} winmux conf)",
                 name_clone,
                 pane_for_exec,
                 if use_winmux_tmux_conf { "with" } else { "without" }
             ));
-            // Phase 65 (bug EE): the bundled conf ships `mouse off` (the
-            // known-good display config — `mouse on` in the conf garbled
-            // Claude Code's live output). We still want tmux-native wheel
-            // scrollback, so turn mouse on via the new-session command
-            // chain (`\; set -g mouse on`) instead of in the conf. This
-            // applies it to the session at attach time, separate from the
-            // -f conf, exactly as Yossi asked.
-            script.push_str(&format!(
-                "command -v tmux >/dev/null 2>&1 && exec tmux {flags}new-session -A -s {name} \\; set -g mouse on || echo '[winmux] tmux not installed on remote — falling back to plain shell'\r\n",
-                flags = tmux_flags,
-                name = shell_quote(&name_clone)
-            ));
-            let mut sessions = sessions_clone.lock().unwrap();
-            if let Some(Session::Ssh(ssh)) = sessions.get_mut(&id_clone) {
-                let _ = ssh.try_send(SshCmd::Data(script.into_bytes()));
+            // Phase 80: script construction shared with WSL panes — see
+            // build_tmux_attach_script for the env-injection + -f conf +
+            // mouse-on rationale comments.
+            let script = build_tmux_attach_script(
+                &name_clone,
+                &socket_addr,
+                &token_clone,
+                &pane_for_exec,
+                use_winmux_tmux_conf,
+                "[winmux] tmux not installed on remote — falling back to plain shell",
+            );
+            {
+                let mut sessions = sessions_clone.lock().unwrap();
+                if let Some(Session::Ssh(ssh)) = sessions.get_mut(&id_clone) {
+                    let _ = ssh.try_send(SshCmd::Data(script.into_bytes()));
+                }
+            }
+            // Phase 81: record this machine as the session's origin in the
+            // server-side session-meta map (multi-machine sync). Separate
+            // exec channel — NOT typed into the PTY — after the session has
+            // had time to exist. `--origin-if-absent` means attaching to
+            // another machine's session never steals its origin. Fire-and-
+            // forget: an old/missing server CLI just errors quietly.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let origin_cmd = format!(
+                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --origin {} --origin-if-absent 2>/dev/null || true",
+                shell_quote(&name_clone),
+                shell_quote(&machine_id()),
+            );
+            let handle = {
+                let sessions = sessions_clone.lock().unwrap();
+                match sessions.get(&id_clone) {
+                    Some(Session::Ssh(ssh)) => Some(ssh.handle.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(h) = handle {
+                if let Err(e) = crate::updater::ssh_exec_simple(&h, &origin_cmd).await {
+                    log_warn("SSH", &format!("session-meta: origin write failed: {e}"));
+                }
             }
         });
     }
@@ -2737,7 +3131,8 @@ pub(crate) fn kill_session_inner(s: &mut Session) {
             let _ = l.killer.kill();
         }
         Session::Ssh(ssh) => {
-            dlog(
+            log_info(
+                "SSH",
                 "session detach: closing SSH channel (tmux session stays alive on the server for reconnect)",
             );
             let _ = ssh.try_send(SshCmd::Kill);
@@ -2773,13 +3168,13 @@ async fn setup_workspace_reverse_tunnel(
 ) -> u16 {
     let remote_port = match handle.tcpip_forward("127.0.0.1", 0).await {
         Ok(p) => {
-            dlog(&format!(
+            log_info("TUNNEL", &format!(
                 "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward got remote port {p}"
             ));
             p as u16
         }
         Err(e) => {
-            dlog(&format!(
+            log_warn("TUNNEL", &format!(
                 "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward failed: {e}"
             ));
             tracing::warn!("tcpip_forward[{workspace_id}] failed: {e}");
@@ -2873,7 +3268,7 @@ async fn spawn_port_watcher(
                 h.abort();
             }
             state.core.port_watchers.lock().unwrap().remove(workspace_id);
-            dlog(&format!(
+            log_debug("TUNNEL", &format!(
                 "port-watch[{workspace_id}]: stale slot, replacing with fresh watcher"
             ));
         }
@@ -2909,7 +3304,7 @@ async fn spawn_port_watcher(
     let mut wchan = match handle.channel_open_session().await {
         Ok(c) => c,
         Err(e) => {
-            dlog(&format!("port-watch[{workspace_id}]: channel_open_session failed: {e}"));
+            log_warn("TUNNEL", &format!("port-watch[{workspace_id}]: channel_open_session failed: {e}"));
             state.core.port_watchers.lock().unwrap().remove(workspace_id);
             return Err(format!("channel_open: {e}"));
         }
@@ -2926,7 +3321,7 @@ async fn spawn_port_watcher(
         shell_quote(workspace_id)
     );
     if let Err(e) = wchan.exec(true, cmd.as_str()).await {
-        dlog(&format!("port-watch[{workspace_id}]: exec failed: {e}"));
+        log_warn("TUNNEL", &format!("port-watch[{workspace_id}]: exec failed: {e}"));
         state.core.port_watchers.lock().unwrap().remove(workspace_id);
         return Err(format!("exec failed: {e}"));
     }
@@ -2942,7 +3337,7 @@ async fn spawn_port_watcher(
         }
         watchers.lock().unwrap().remove(&ws_guard);
         tasks.lock().unwrap().remove(&ws_guard);
-        dlog(&format!(
+        log_debug("TUNNEL", &format!(
             "port-watch[{ws_guard}]: channel closed, watcher slot freed"
         ));
     });
@@ -2951,7 +3346,7 @@ async fn spawn_port_watcher(
         .lock()
         .unwrap()
         .insert(workspace_id.to_string(), task);
-    dlog(&format!(
+    log_info("TUNNEL", &format!(
         "port-watch[{workspace_id}]: launched (remote_port={remote_port})"
     ));
     Ok(())
@@ -2980,7 +3375,7 @@ fn clear_workspace_detection(state: &AppState, app: &AppHandle, workspace_id: &s
         "port-detection-cleared",
         serde_json::json!({ "workspace_id": workspace_id }),
     );
-    dlog(&format!(
+    log_debug("TUNNEL", &format!(
         "port-watch[{workspace_id}]: detection cleared (was_running={})",
         aborted.is_some()
     ));
@@ -3082,7 +3477,7 @@ pub(crate) async fn open_auto_forward(
     // (127.0.0.1) — services are reachable from this machine, never the
     // LAN/external IP. Logged explicitly so a future "it's going through
     // my external IP" report can be ruled out from the debug.log.
-    dlog(&format!(
+    log_info("TUNNEL", &format!(
         "open_auto_forward[{}:{}]: bound 127.0.0.1:{} (loopback only, kernel-assigned)",
         workspace_id, remote_port, local_port
     ));
@@ -3104,7 +3499,7 @@ pub(crate) async fn open_auto_forward(
             Err(_) => "200ms timeout".to_string(),
             Ok(Ok(_)) => unreachable!(),
         };
-        dlog(&format!(
+        log_warn("TUNNEL", &format!(
             "open_auto_forward[{}:{}]: sanity probe to {} FAILED ({why}) — tearing down",
             workspace_id, remote_port, probe_target
         ));
@@ -3113,7 +3508,7 @@ pub(crate) async fn open_auto_forward(
             "forward bound but localhost:{local_port} unreachable ({why})"
         ));
     }
-    dlog(&format!(
+    log_debug("TUNNEL", &format!(
         "open_auto_forward[{}:{}]: sanity probe to {} OK",
         workspace_id, remote_port, probe_target
     ));
@@ -3194,7 +3589,7 @@ fn layout_has_ssh_consumer_pane(node: &LayoutNode) -> bool {
 #[tauri::command]
 fn workspaces_load(state: State<'_, AppState>) -> Result<WorkspacesFile, String> {
     let file = state.workspaces.lock().unwrap().clone();
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "workspaces_load: returning {} workspaces, active={:?}",
         file.workspaces.len(),
         file.active_workspace_id
@@ -3226,6 +3621,7 @@ fn workspace_create(
             connection: Some(conn),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -3368,6 +3764,7 @@ fn workspace_reset_layout(
             connection: Some(inferred),
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -3767,6 +4164,7 @@ fn make_swap_placeholder_pane(pane_id: String) -> LayoutNode {
         connection: None,
         browser: None,
         title: None,
+        auto_title: None,
         annotation: None,
         color: None,
         emoji: None,
@@ -3988,7 +4386,7 @@ async fn try_ensure_port_watcher(state: &AppState, workspace_id: &str) {
     let handle = match find_ssh_handle_for_workspace(state, workspace_id) {
         Some(h) => h,
         None => {
-            dlog(&format!(
+            log_debug("TUNNEL", &format!(
                 "ensure_port_watcher[{workspace_id}]: no live SSH session — skip"
             ));
             return;
@@ -4007,7 +4405,7 @@ async fn try_ensure_port_watcher(state: &AppState, workspace_id: &str) {
             let _ = spawn_port_watcher(state, &handle, workspace_id, rp, &tok).await;
         }
         _ => {
-            dlog(&format!(
+            log_debug("TUNNEL", &format!(
                 "ensure_port_watcher[{workspace_id}]: session has no reverse tunnel yet — open a terminal pane to bootstrap"
             ));
         }
@@ -4368,7 +4766,7 @@ fn workspace_create_worktree(
         }
     }
     persist(&state)?;
-    dlog(&format!(
+    log_info("WORKSPACE", &format!(
         "[worktree] created {} for ws={} branch={}",
         target.display(),
         workspace_id,
@@ -4450,20 +4848,26 @@ fn workspace_split(
 
 // ─── Phase 8.A: browser-pane commands ───────────────────────────────────────
 
-/// ring buffer; the CLI surfaces them via `winmux dev console-tail`.
+/// Unified frontend log sink: writes a `[UI:TAG]` line to debug.log through
+/// the leveled logger AND pushes into the dev ring buffer so `winmux dev
+/// console-tail` keeps working. The frontend logger filters client-side too,
+/// but this gate is authoritative (popouts that never load settings still
+/// behave). Replaces the old `diag_log` + `dev_console_log` pair.
 #[tauri::command]
-fn dev_console_log(
+fn ui_log(
     state: State<'_, AppState>,
     level: String,
+    tag: String,
     message: String,
-    ts: i64,
 ) -> Result<(), String> {
+    let lvl = winmux_core::LogLevel::from_str(&level);
+    winmux_core::log_at(lvl, &format!("UI:{tag}"), &message);
     dev::push_console(
         &state.console_buffer,
         dev::ConsoleEntry {
-            level,
-            message,
-            ts,
+            level: lvl.as_str().to_string(),
+            message: format!("[{}] {message}", tag.to_uppercase()),
+            ts: chrono::Utc::now().timestamp_millis(),
         },
     );
     Ok(())
@@ -4602,7 +5006,7 @@ fn workspace_distribute_evenly(
     }
     persist(&state)?;
     let _ = app.emit("workspaces:changed", ());
-    dlog(&format!(
+    log_debug("WORKSPACE", &format!(
         "workspace_distribute_evenly: ws={workspace_id} reset {count} split(s)"
     ));
     Ok(state.workspaces.lock().unwrap().clone())
@@ -4660,7 +5064,7 @@ fn pane_set_smart_bidi(
     // chunk takes the new state.
     bidi_filter::set_pane_enabled(&state.bidi_filters, &pane_id, enabled);
     let _ = app.emit("workspaces:changed", ());
-    dlog(&format!(
+    log_debug("PTY", &format!(
         "[bidi] pane_set_smart_bidi: ws={} pane={} enabled={}",
         workspace_id, pane_id, enabled
     ));
@@ -4680,7 +5084,7 @@ fn pane_set_title(
         let mut file = state.workspaces.lock().unwrap();
         if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
             if let Some(layout) = ws.layout.take() {
-                ws.layout = Some(update_pane_in(layout, &pane_id, Some(normalized.clone()), None));
+                ws.layout = Some(update_pane_in(layout, &pane_id, Some(normalized.clone()), None, None));
             }
         }
     }
@@ -4695,25 +5099,34 @@ fn pane_set_title(
     // The Phase 23.J disabled remote-tmux-rename side-effect stays
     // disabled — labels give us the user-friendly Hebrew title
     // experience without crossing the FFI panic boundary.
-    if let Some(label_text) = normalized.as_deref() {
-        let tmux_target = {
-            let pane_sessions = state.core.pane_sessions.lock().ok();
-            let sid = pane_sessions
-                .as_ref()
-                .and_then(|m| m.get(&pane_id).cloned());
-            drop(pane_sessions);
-            sid.and_then(|sid| {
-                state.core.sessions.lock().ok().and_then(|sessions| {
-                    match sessions.get(&sid) {
-                        Some(Session::Ssh(s)) => s.tmux_session.clone(),
-                        _ => None,
-                    }
-                })
-            })
+    let tmux_target = lookup_tmux_for_pane(&state, &pane_id);
+    if let (Some(label_text), Some((_, _, tmux_name))) = (normalized.as_deref(), tmux_target.as_ref())
+    {
+        set_tmux_label_internal(&workspace_id, tmux_name, label_text);
+    }
+
+    // Phase 81: mirror the label into the server-side session-meta map so
+    // EVERY machine's picker shows it (the local tmux-labels.json above is
+    // per-machine). Label travels as hex-UTF8 — no shell quoting for
+    // Hebrew, and no tmux rename (the Phase 23.J constraint stands).
+    // Fire-and-forget over a separate exec channel.
+    if let Some((_sid, handle, tmux_name)) = tmux_target {
+        let cmd = match normalized.as_deref() {
+            Some(label) => format!(
+                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --label-hex {} 2>/dev/null || true",
+                shell_quote(&tmux_name),
+                hex_utf8(label),
+            ),
+            None => format!(
+                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --clear-label 2>/dev/null || true",
+                shell_quote(&tmux_name),
+            ),
         };
-        if let Some(tmux_name) = tmux_target {
-            set_tmux_label_internal(&workspace_id, &tmux_name, label_text);
-        }
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = crate::updater::ssh_exec_simple(&handle, &cmd).await {
+                log_warn("SSH", &format!("session-meta: label write failed: {e}"));
+            }
+        });
     }
 
     let _ = app.emit("workspaces:changed", ());
@@ -4724,11 +5137,8 @@ fn pane_set_title(
 /// return (session_id, ssh handle clone, current tmux session name).
 /// Returns None if the pane has no session, the session is not SSH,
 /// or it has no tmux wrapper.
-/// Phase 23.J: orphaned for now — the only caller (the spawned
-/// rename task in pane_set_title) was disabled pending root-cause
-/// of the Hebrew-title crash. Kept in place so Phase 23.K can
-/// re-enable without re-writing it.
-#[allow(dead_code)]
+/// Phase 81: re-enabled — pane_set_title uses it to mirror labels
+/// into the server-side session-meta map (no tmux rename involved).
 fn lookup_tmux_for_pane(
     state: &AppState,
     pane_id: &str,
@@ -4814,7 +5224,7 @@ fn pane_set_annotation(
         let mut file = state.workspaces.lock().unwrap();
         if let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == workspace_id) {
             if let Some(layout) = ws.layout.take() {
-                ws.layout = Some(update_pane_in(layout, &pane_id, None, Some(normalized)));
+                ws.layout = Some(update_pane_in(layout, &pane_id, None, Some(normalized), None));
             }
         }
     }
@@ -4885,7 +5295,7 @@ async fn workspace_ensure_connected(
                     .values()
                     .any(|s| matches!(s, Session::Ssh(ssh) if ssh.workspace_id == workspace_id));
                 if already {
-                    dlog(&format!(
+                    log_debug("SSH", &format!(
                         "workspace_ensure_connected: {workspace_id} connected by a pane mid-auth — dropping spare headless handle"
                     ));
                     return Ok(());
@@ -4910,7 +5320,7 @@ async fn workspace_ensure_connected(
                 .values()
                 .any(|s| matches!(s, Session::Ssh(ssh) if ssh.workspace_id == workspace_id));
             if already {
-                dlog(&format!(
+                log_debug("SSH", &format!(
                     "workspace_ensure_connected: {workspace_id} connected by a pane mid-tunnel-setup — dropping spare headless handle"
                 ));
                 return Ok(());
@@ -4932,7 +5342,7 @@ async fn workspace_ensure_connected(
                 }),
             );
             drop(sessions);
-            dlog(&format!(
+            log_info("SSH", &format!(
                 "workspace_ensure_connected: headless session up for {workspace_id} (method={auth_method:?})"
             ));
             Ok(())
@@ -4940,7 +5350,7 @@ async fn workspace_ensure_connected(
         Err(e) => {
             // Most commonly: no key/agent → password-only, which we can't
             // prompt for here. Skip silently; the terminal-pane path handles it.
-            dlog(&format!(
+            log_debug("SSH", &format!(
                 "workspace_ensure_connected: skipped for {workspace_id}: {e}"
             ));
             Ok(())
@@ -5047,6 +5457,9 @@ async fn pane_connect(
     let shell_kind = match &conn {
         Connection::Local { shell } => detect_shell_kind(&pick_default_shell(shell.clone())),
         Connection::Ssh { .. } => ShellKind::Posix,
+        // Phase 80: WSL panes run the distro's login shell — POSIX, so
+        // env-line formatting + smart-connect scripts come out right.
+        Connection::Wsl { .. } => ShellKind::Posix,
     };
 
     // Kill any prior session for this pane.
@@ -5059,6 +5472,36 @@ async fn pane_connect(
     let session_id = match conn {
         Connection::Local { shell } => {
             spawn_local_pty(&state, pane_id.clone(), &app, shell, cwd, cols, rows)?
+        }
+        // Phase 80: WSL panes default to PERSISTENT (tmux) — persistence
+        // is the point of the smart local setup. mode="plain" still
+        // forces a bare shell, mirroring the SSH mode override.
+        Connection::Wsl { distro } => {
+            let effective_persistent = match mode.as_deref() {
+                Some("tmux") => true,
+                Some("plain") => false,
+                _ => persistent.unwrap_or(true),
+            };
+            let tmux_name = if effective_persistent {
+                Some(
+                    effective_tmux_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| sanitize_tmux_session_name(&pane_id)),
+                )
+            } else {
+                None
+            };
+            spawn_wsl_pty(
+                &state,
+                pane_id.clone(),
+                &app,
+                distro,
+                cwd,
+                cols,
+                rows,
+                tmux_name,
+            )?
         }
         Connection::Ssh {
             host,
@@ -5164,6 +5607,38 @@ pub(crate) struct TmuxSessionInfo {
     pub attached: bool,
     pub windows: u32,
     pub last_attached: i64,
+    /// Phase 81: joined from the server-side `~/.winmux/session-meta.json`.
+    /// Picker display precedence: label > claude_title > name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
+    /// Machine id that created the session (see `machine_id()`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+/// Phase 81: deserialization mirror of the Linux CLI's session-meta file
+/// (cli/src/session_meta.rs — keep the shapes in sync). Unknown fields
+/// are ignored so CLI-side schema additions never break the desktop.
+#[derive(Deserialize, Default)]
+struct SessionMetaFileMirror {
+    #[serde(default)]
+    sessions: HashMap<String, SessionMetaEntryMirror>,
+}
+
+#[derive(Deserialize, Default)]
+struct SessionMetaEntryMirror {
+    #[serde(default)]
+    claude_session_id: Option<String>,
+    #[serde(default)]
+    claude_title: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 /// Phase 23.F: enumerate the tmux sessions live on a workspace's
@@ -5176,6 +5651,27 @@ async fn pane_list_tmux_sessions(
     state: State<'_, AppState>,
     workspace_id: String,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
+    // Phase 80: WSL workspaces list their sessions via wsl.exe — no SSH
+    // handle involved, and it works before any pane has connected (the
+    // tmux server inside the distro is reachable whenever wsl.exe is).
+    let wsl_distro: Option<Option<String>> = {
+        let file = state.workspaces.lock().unwrap();
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .and_then(|w| match &w.connection {
+                Some(Connection::Wsl { distro }) => Some(distro.clone()),
+                _ => None,
+            })
+    };
+    if let Some(distro) = wsl_distro {
+        let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
+        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, script)
+            .await
+            .unwrap_or((-1, String::new()));
+        return Ok(parse_tmux_sessions(&text));
+    }
+
     // Phase 23.H: silent Ok([]) fallback when no live SSH handle.
     // Previously we errored ("no active SSH session for this workspace"),
     // but the user typically clicks Connect (tmux) BEFORE any pane has
@@ -5198,13 +5694,28 @@ async fn pane_list_tmux_sessions(
     let handle = match handle {
         Some(h) => h,
         None => {
-            dlog(&format!(
+            log_debug("SSH", &format!(
                 "pane_list_tmux_sessions: no live SSH handle for ws={workspace_id}, returning empty list"
             ));
             return Ok(vec![]);
         }
     };
-    list_tmux_sessions_via_handle(&handle).await
+    let mut out = list_tmux_sessions_via_handle(&handle).await?;
+    // Phase 81: visibility scope (picker-only). "shared" (default) = every
+    // session on the server; "local" = only sessions this machine created.
+    // Origin-less sessions (pre-81, or an old CLI) stay visible — fail-open so
+    // the filter can never hide something the user can't get back.
+    let visibility = state
+        .settings
+        .lock()
+        .ok()
+        .map(|s| s.session_visibility.clone())
+        .unwrap_or_else(|| "shared".to_string());
+    if visibility == "local" {
+        let my_id = machine_id();
+        out.retain(|s| s.origin.as_deref().map_or(true, |o| o.is_empty() || o == my_id));
+    }
+    Ok(out)
 }
 
 /// The `tmux list-sessions` half of `pane_list_tmux_sessions`, split out so the
@@ -5213,7 +5724,12 @@ async fn pane_list_tmux_sessions(
 async fn list_tmux_sessions_via_handle(
     handle: &client::Handle<SshClient>,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
-    let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
+    // Phase 81: same roundtrip also fetches the server-side session-meta
+    // map (Claude titles / labels / origins written by the Linux CLI).
+    // Missing file → empty segment after the marker → no metadata, which
+    // is exactly the pre-81 behaviour. The Phase 80 restore probe reuses this
+    // helper and simply ignores the extra meta segment.
+    let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
     use russh::ChannelMsg;
     let mut ch = handle
         .channel_open_session()
@@ -5234,23 +5750,47 @@ async fn list_tmux_sessions_via_handle(
     })
     .await;
     let _ = ch.close().await;
-    let text = String::from_utf8_lossy(&stdout);
+    // Pure list (with Phase 81 meta joined by parse_tmux_sessions). Visibility
+    // filtering is a picker concern applied by the caller that owns `state`
+    // (pane_list_tmux_sessions); the Phase 80 restore probe deliberately keeps
+    // the full list so it can re-attach a pane regardless of session origin.
+    Ok(parse_tmux_sessions(&String::from_utf8_lossy(&stdout)))
+}
+
+/// Phase 80: parse `tmux list-sessions -F '<name>|<created>|<attached>|
+/// <windows>|<last_attached>'` output — shared by the SSH and WSL list
+/// paths. Phase 81: the SSH script appends the server-side session-meta
+/// JSON after a `<<<WINMUX_META>>>` marker; when present, label /
+/// claude_title / origin are joined onto the sessions. Garbled or absent
+/// JSON degrades to no metadata, never to an error.
+fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
+    let (list_text, meta_text) = match text.split_once("<<<WINMUX_META>>>") {
+        Some((a, b)) => (a, b),
+        None => (text, ""),
+    };
+    let meta: SessionMetaFileMirror =
+        serde_json::from_str(meta_text.trim()).unwrap_or_default();
     let mut out = Vec::new();
-    for line in text.lines() {
+    for line in list_text.lines() {
         let line = line.trim();
         if line.is_empty() { continue; }
         let parts: Vec<&str> = line.split('|').collect();
         if parts.len() < 5 { continue; }
+        let m = meta.sessions.get(parts[0]);
         out.push(TmuxSessionInfo {
             name: parts[0].to_string(),
             created: parts[1].parse().unwrap_or(0),
             attached: parts[2] == "1",
             windows: parts[3].parse().unwrap_or(0),
             last_attached: parts[4].parse().unwrap_or(0),
+            label: m.and_then(|m| m.label.clone()),
+            claude_title: m.and_then(|m| m.claude_title.clone()),
+            claude_session_id: m.and_then(|m| m.claude_session_id.clone()),
+            origin: m.and_then(|m| m.origin.clone()),
         });
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
-    Ok(out)
+    out
 }
 
 /// Phase 80 (session restore): "is the session this pane was on still alive?",
@@ -5339,7 +5879,7 @@ async fn pane_probe_tmux_sessions(
             out.map(Some)
         }
         Err(e) => {
-            dlog(&format!(
+            log_debug("SSH", &format!(
                 "pane_probe_tmux_sessions: cannot reach {user}@{host}:{port} headlessly ({e}) — pane {pane_id} stays on Connect"
             ));
             Ok(None)
@@ -5382,12 +5922,12 @@ fn load_tmux_labels() -> TmuxLabelsFile {
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
-            dlog(&format!("tmux-labels: read failed: {e}"));
+            log_warn("WORKSPACE", &format!("tmux-labels: read failed: {e}"));
             return TmuxLabelsFile::default();
         }
     };
     serde_json::from_str(&text).unwrap_or_else(|e| {
-        dlog(&format!("tmux-labels: parse failed: {e}"));
+        log_warn("WORKSPACE", &format!("tmux-labels: parse failed: {e}"));
         TmuxLabelsFile::default()
     })
 }
@@ -5436,7 +5976,7 @@ fn set_tmux_label_internal(workspace_id: &str, session_name: &str, label: &str) 
             .insert(session_name.to_string(), trimmed.to_string());
     }
     if let Err(e) = save_tmux_labels(&file) {
-        dlog(&format!("tmux-labels: save failed: {e}"));
+        log_warn("WORKSPACE", &format!("tmux-labels: save failed: {e}"));
     }
 }
 
@@ -5746,10 +6286,12 @@ fn pane_persistence_get(
     let sid = sessions_map.get(&pane_id)?.clone();
     drop(sessions_map);
     let sessions = state.core.sessions.lock().unwrap();
-    if let Some(Session::Ssh(s)) = sessions.get(&sid) {
-        return s.tmux_session.clone();
+    match sessions.get(&sid) {
+        Some(Session::Ssh(s)) => s.tmux_session.clone(),
+        // Phase 80: WSL panes carry their tmux name on LocalSession.
+        Some(Session::Local(l)) => l.tmux_session.clone(),
+        None => None,
     }
-    None
 }
 
 /// Phase 11.A: list every (pane_id → tmux_session_name) currently active.
@@ -5763,10 +6305,14 @@ fn pane_persistence_list(
     let pane_sessions = state.core.pane_sessions.lock().unwrap().clone();
     let sessions = state.core.sessions.lock().unwrap();
     for (pane, sid) in pane_sessions {
-        if let Some(Session::Ssh(s)) = sessions.get(&sid) {
-            if let Some(name) = &s.tmux_session {
-                out.insert(pane, name.clone());
-            }
+        // Phase 80: Local sessions carry a tmux name too (WSL panes).
+        let name = match sessions.get(&sid) {
+            Some(Session::Ssh(s)) => s.tmux_session.clone(),
+            Some(Session::Local(l)) => l.tmux_session.clone(),
+            None => None,
+        };
+        if let Some(name) = name {
+            out.insert(pane, name);
         }
     }
     out
@@ -5786,40 +6332,76 @@ async fn pane_kill_session(
     let Some(sid) = sid_opt else {
         return Ok(());
     };
-    // Snapshot the SSH handle + tmux name without holding the lock across the
+    // Snapshot the kill target without holding the lock across the
     // .await — russh's Handle is shared as Arc<> so this is cheap.
-    let (handle_arc, tmux_name) = {
+    // Phase 80: WSL panes (Session::Local with a tmux name) kill their
+    // session via wsl.exe instead of an SSH exec channel.
+    enum KillTarget {
+        Ssh(Arc<client::Handle<SshClient>>, String),
+        Wsl(Option<String>, String),
+        None,
+    }
+    let target = {
         let sessions = state.core.sessions.lock().unwrap();
         match sessions.get(&sid) {
-            Some(Session::Ssh(s)) => (Some(s.handle.clone()), s.tmux_session.clone()),
-            _ => (None, None),
+            Some(Session::Ssh(s)) => match &s.tmux_session {
+                Some(name) => KillTarget::Ssh(s.handle.clone(), name.clone()),
+                None => KillTarget::None,
+            },
+            Some(Session::Local(l)) => match &l.tmux_session {
+                Some(name) => KillTarget::Wsl(l.wsl_distro.clone(), name.clone()),
+                None => KillTarget::None,
+            },
+            None => KillTarget::None,
         }
     };
-    if let (Some(handle), Some(name)) = (handle_arc, tmux_name) {
-        let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
-        match handle.channel_open_session().await {
-            Ok(mut ch) => {
-                if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
-                    dlog(&format!("pane_kill_session: exec failed: {e}"));
-                }
-                // Drain the channel briefly so the server completes the exec.
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(800),
-                    async {
-                        while let Some(msg) = ch.wait().await {
-                            if matches!(msg, ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close) {
-                                break;
+    match target {
+        KillTarget::Ssh(handle, name) => {
+            let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
+            match handle.channel_open_session().await {
+                Ok(mut ch) => {
+                    if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
+                        log_warn("SSH", &format!("pane_kill_session: exec failed: {e}"));
+                    }
+                    // Drain the channel briefly so the server completes the exec.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(800),
+                        async {
+                            while let Some(msg) = ch.wait().await {
+                                if matches!(msg, ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close) {
+                                    break;
+                                }
                             }
-                        }
-                    },
-                )
-                .await;
-                let _ = ch.close().await;
-            }
-            Err(e) => {
-                dlog(&format!("pane_kill_session: channel_open failed: {e}"));
+                        },
+                    )
+                    .await;
+                    let _ = ch.close().await;
+                }
+                Err(e) => {
+                    log_warn("SSH", &format!("pane_kill_session: channel_open failed: {e}"));
+                }
             }
         }
+        KillTarget::Wsl(distro, name) => {
+            // Pure argv — tmux receives the name verbatim, no shell in
+            // between, so no quoting is needed at all here (Rule #3).
+            let mut c = local_setup::wsl_cmd();
+            if let Some(d) = distro.as_deref() {
+                if !d.is_empty() {
+                    c.arg("-d").arg(d);
+                }
+            }
+            c.arg("--").arg("tmux").arg("kill-session").arg("-t").arg(&name);
+            match c.output().await {
+                Ok(out) if !out.status.success() => log_warn("PTY", &format!(
+                    "pane_kill_session(wsl): tmux kill-session exited {:?}",
+                    out.status.code()
+                )),
+                Ok(_) => {}
+                Err(e) => log_warn("PTY", &format!("pane_kill_session(wsl): spawn failed: {e}")),
+            }
+        }
+        KillTarget::None => {}
     }
     // Now close the shell + remove session bookkeeping. This re-uses the
     // existing pane_disconnect logic by removing from pane_sessions and
@@ -6020,12 +6602,13 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
         let mut out: Vec<String> = s
             .lines()
             .rev()
-            // dlog writes "[<ts>] <msg>" — require that prefix so we only
-            // surface real log entries. Multi-line logged commands put their
-            // continuation lines (e.g. a shell snippet's own `echo "ERROR …"`)
-            // on un-prefixed lines; those are NOT errors and were polluting
-            // the doctor report.
-            .filter(|l| l.starts_with('[') && (l.contains("ERROR") || l.contains("WARN")))
+            // The unified logger writes "[<ts>] [LEVEL] [TAG] <msg>" — match
+            // the level column exactly so a message merely *containing* the
+            // word ERROR (e.g. a logged shell snippet's own `echo "ERROR …"`)
+            // can't pollute the doctor report.
+            .filter(|l| {
+                l.starts_with('[') && (l.contains("] [ERROR] [") || l.contains("] [WARN ] ["))
+            })
             .take(10)
             .map(|s| s.to_string())
             .collect();
@@ -6055,22 +6638,6 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
 #[tauri::command]
 fn doctor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(build_doctor_snapshot(&state))
-}
-
-// Phase 48-D: frontend stall instrumentation. The FE drives a 100ms
-// heartbeat and a longtask PerformanceObserver; when either spots
-// >threshold gaps, it calls this to record them in debug.log with a
-// `[ui]` prefix so post-hoc support tickets can correlate UI jank
-// with backend activity.
-#[tauri::command]
-fn diag_log(level: String, msg: String) -> Result<(), String> {
-    let lvl = match level.to_ascii_lowercase().as_str() {
-        "error" => "ERROR",
-        "warn" | "warning" => "WARN",
-        _ => "INFO",
-    };
-    dlog(&format!("[ui] {lvl}: {msg}"));
-    Ok(())
 }
 
 #[tauri::command]
@@ -6164,7 +6731,7 @@ async fn popout_pane(
     let mut last_err = String::new();
     let mut built = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        dlog(&format!(
+        log_debug("APP", &format!(
             "popout_pane: building window label={label} size={win_w}x{win_h} (attempt {attempt}/{MAX_ATTEMPTS})"
         ));
         match tauri::WebviewWindowBuilder::new(
@@ -6183,7 +6750,7 @@ async fn popout_pane(
             }
             Err(e) => {
                 last_err = e.to_string();
-                dlog(&format!(
+                log_warn("APP", &format!(
                     "popout_pane: build attempt {attempt}/{MAX_ATTEMPTS} FAILED: {last_err}"
                 ));
                 if attempt < MAX_ATTEMPTS {
@@ -6194,7 +6761,7 @@ async fn popout_pane(
     }
     let win = built
         .ok_or_else(|| format!("popout window failed after {MAX_ATTEMPTS} attempts: {last_err}"))?;
-    dlog(&format!("popout_pane: window {label} built ok"));
+    log_info("APP", &format!("popout_pane: window {label} built ok"));
 
     // Tell the app when the popout closes (user X, or the frontend closing
     // itself on pty:exit) so the origin pane can re-attach input + resize.
@@ -6248,7 +6815,7 @@ pub fn run() {
             .name()
             .unwrap_or("<unnamed>")
             .to_string();
-        dlog(&format!(
+        log_error("APP", &format!(
             "PANIC at {location}: {msg}\n  thread: {thread_name}\n  backtrace:\n{bt}"
         ));
         // Re-emit to stderr so any wrapping process (cargo run, tauri
@@ -6273,7 +6840,7 @@ pub fn run() {
         }
         let _ = std::fs::create_dir_all(&profile);
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &profile);
-        dlog(&format!("webview2 profile folder: {}", profile.display()));
+        log_debug("APP", &format!("webview2 profile folder: {}", profile.display()));
     }
 
     tauri::Builder::default()
@@ -6282,12 +6849,12 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let state: State<AppState> = app.state();
-            dlog("─── setup() starting ───");
+            log_debug("APP", "─── setup() starting ───");
             // Phase 8.E hotfix: log the exact config dir up front so we can
             // tell whether the binary is resolving the right path. Honors
             // `WINMUX_CONFIG_DIR` env var override if set.
             let cfg_dir = config_dir().ok();
-            dlog(&format!(
+            log_info("APP", &format!(
                 "setup: config_dir = {:?} (override env WINMUX_CONFIG_DIR = {:?})",
                 cfg_dir,
                 std::env::var("WINMUX_CONFIG_DIR").ok()
@@ -6311,22 +6878,22 @@ pub fn run() {
             .inner_size(1100.0, 700.0)
             .build()
             .map_err(|e| Box::<dyn std::error::Error>::from(format!("main window: {e}")))?;
-            dlog("setup: main webview created");
+            log_debug("APP", "setup: main webview created");
             // Unshipped-fivefer (#2): system tray. Best-effort — a failure
             // just means no tray + no close-to-tray (see on_window_event).
             match tray::init(app.handle()) {
-                Ok(()) => dlog("setup: system tray created"),
-                Err(e) => dlog(&format!("setup: tray init failed (continuing): {e}")),
+                Ok(()) => log_debug("APP", "setup: system tray created"),
+                Err(e) => log_warn("APP", &format!("setup: tray init failed (continuing): {e}")),
             }
             match load_from_disk() {
                 Ok(file) => {
                     *state.workspaces.lock().unwrap() = file;
                     *state.load_state.lock().unwrap() = Some(LoadState::Loaded);
-                    dlog("setup: load_state = Loaded");
+                    log_info("APP", "setup: load_state = Loaded");
                 }
                 Err(e) => {
                     *state.load_state.lock().unwrap() = Some(LoadState::Failed);
-                    dlog(&format!(
+                    log_error("APP", &format!(
                         "setup: load FAILED: {e} — load_state = Failed (persists will refuse)"
                     ));
                     tracing::warn!("workspaces load failed: {e}");
@@ -6337,10 +6904,10 @@ pub fn run() {
                 Ok(nf) => {
                     let count = nf.notes.len();
                     *state.notes.lock().unwrap() = nf;
-                    dlog(&format!("setup: notes loaded ({count} notes)"));
+                    log_info("APP", &format!("setup: notes loaded ({count} notes)"));
                 }
                 Err(e) => {
-                    dlog(&format!("setup: notes load failed: {e} (starting empty)"));
+                    log_warn("APP", &format!("setup: notes load failed: {e} (starting empty)"));
                 }
             }
             // Phase 12.C: load recent paths history (or empty on first run).
@@ -6348,27 +6915,33 @@ pub fn run() {
                 Ok(rf) => {
                     let count = rf.entries.len();
                     *state.recent_paths.lock().unwrap() = rf;
-                    dlog(&format!("setup: recent_paths loaded ({count} entries)"));
+                    log_info("APP", &format!("setup: recent_paths loaded ({count} entries)"));
                 }
                 Err(e) => {
-                    dlog(&format!("setup: recent_paths load failed: {e} (starting empty)"));
+                    log_warn("APP", &format!("setup: recent_paths load failed: {e} (starting empty)"));
                 }
             }
             // Phase 9.A: load settings (or write defaults on first run).
             match settings::load_from_disk() {
                 Ok(s) => {
-                    dlog(&format!("setup: settings loaded (theme.preset={})", s.theme.preset));
+                    log_info("APP", &format!("setup: settings loaded (theme.preset={})", s.theme.preset));
                     *state.settings.lock().unwrap() = s;
                 }
                 Err(e) => {
-                    dlog(&format!("setup: settings load failed: {e} (using defaults)"));
+                    log_warn("APP", &format!("setup: settings load failed: {e} (using defaults)"));
                 }
             }
             // Phase 75: prune stale debug logs so they can't accumulate.
+            // Unified logging: apply the persisted threshold before anything
+            // else logs (save_to_disk keeps it in sync from here on), then
+            // start the remote-log sync loop (pulls server/hooks/install
+            // logs into the local debug.log every 60s).
             {
-                let days = state.settings.lock().unwrap().logs.retention_days;
-                prune_logs(days);
+                let logs = state.settings.lock().unwrap().logs.clone();
+                winmux_core::set_log_level(winmux_core::LogLevel::from_str(&logs.level));
+                prune_logs(logs.retention_days);
             }
+            log_sync::spawn_log_sync(app.handle().clone());
             // Phase 39.B: one-time migration. Workspaces created before
             // Phase 39 flipped the auto_port_forward default still have
             // `true` saved and keep auto-forwarding on every connect
@@ -6393,13 +6966,13 @@ pub fn run() {
                     };
                     if changed > 0 {
                         match persist(&state) {
-                            Ok(()) => dlog(&format!(
+                            Ok(()) => log_info("APP", &format!(
                                 "migration phase_39: flipped {changed} workspace(s) auto_port_forward to false"
                             )),
-                            Err(e) => dlog(&format!("migration phase_39: save failed: {e}")),
+                            Err(e) => log_warn("APP", &format!("migration phase_39: save failed: {e}")),
                         }
                     } else {
-                        dlog("migration phase_39: no workspaces needed flipping");
+                        log_debug("APP", "migration phase_39: no workspaces needed flipping");
                     }
                     // Mark done + persist settings (do this regardless of
                     // `changed` so the migration never re-runs).
@@ -6409,7 +6982,7 @@ pub fn run() {
                         s.clone()
                     };
                     if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                        dlog(&format!("migration phase_39: settings save failed: {e}"));
+                        log_warn("APP", &format!("migration phase_39: settings save failed: {e}"));
                     }
                 }
             }
@@ -6437,13 +7010,13 @@ pub fn run() {
                     };
                     if changed > 0 {
                         match persist(&state) {
-                            Ok(()) => dlog(&format!(
+                            Ok(()) => log_info("APP", &format!(
                                 "migration phase_53: rewrote {changed} Browser/FileManager pane(s) to Terminal"
                             )),
-                            Err(e) => dlog(&format!("migration phase_53: save failed: {e}")),
+                            Err(e) => log_warn("APP", &format!("migration phase_53: save failed: {e}")),
                         }
                     } else {
-                        dlog("migration phase_53: no legacy Browser/FileManager panes found");
+                        log_debug("APP", "migration phase_53: no legacy Browser/FileManager panes found");
                     }
                     let snapshot = {
                         let mut s = state.settings.lock().unwrap();
@@ -6451,7 +7024,7 @@ pub fn run() {
                         s.clone()
                     };
                     if let Err(e) = settings::save_to_disk_pub(&snapshot) {
-                        dlog(&format!("migration phase_53: settings save failed: {e}"));
+                        log_warn("APP", &format!("migration phase_53: settings save failed: {e}"));
                     }
                 }
             }
@@ -6488,7 +7061,7 @@ pub fn run() {
                                         && now.saturating_sub(w.last_active_at) > ttl_secs;
                                     let empty = w.layout.is_none();
                                     if stale && empty {
-                                        dlog(&format!(
+                                        log_info("WORKSPACE", &format!(
                                             "auto-destroy: removing workspace {} ({}) — empty + last_active {} days ago",
                                             w.id,
                                             w.name,
@@ -6503,7 +7076,7 @@ pub fn run() {
                             };
                             if removed > 0 {
                                 if let Err(e) = persist(&state) {
-                                    dlog(&format!("auto-destroy: save failed: {e}"));
+                                    log_warn("WORKSPACE", &format!("auto-destroy: save failed: {e}"));
                                 }
                             }
                         }
@@ -6531,8 +7104,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 rpc_server::run(state_clone, app_handle).await;
             });
-            dlog(&format!("setup: rpc server spawned on {}", rpc_server::pipe_name()));
-            dlog("─── setup() done ───");
+            log_info("APP", &format!("setup: rpc server spawned on {}", rpc_server::pipe_name()));
+            log_debug("APP", "─── setup() done ───");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -6625,10 +7198,9 @@ pub fn run() {
             pane_set_title,
             pane_set_annotation,
             workspace_reset_layout,
-            dev_console_log,
+            ui_log,
             pty_write,
             pty_resize,
-            diag_log,
             doctor,
             notifications_list,
             notifications_clear,
@@ -6666,6 +7238,9 @@ pub fn run() {
             provisioning::provisioning_profile_save,
             provisioning::provisioning_profile_delete,
             provisioning::provisioning_step_catalog,
+            // Phase 80: local smart setup (wizard "local → new").
+            local_setup::local_setup_inspect,
+            local_setup::local_setup_start,
             file_manager::file_list_local,
             file_manager::file_list_remote,
             file_manager::file_home_local,
@@ -6836,6 +7411,7 @@ mod pane_swap_tests {
             connection: None,
             browser: None,
             title: Some(format!("title-{id}")),
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,
@@ -7055,6 +7631,7 @@ mod migration_tests {
             connection: None,
             browser: None,
             title: None,
+            auto_title: None,
             annotation: None,
             color: None,
             emoji: None,

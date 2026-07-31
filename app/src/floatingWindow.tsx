@@ -1,4 +1,7 @@
 import { For, type Accessor, type Setter } from "solid-js";
+import { createLogger } from "./logger";
+
+const log = createLogger("FLOAT");
 
 // Phase 62 (item 2): shared drag + 8-way resize for the floating
 // Browser / File-Manager windows. Both windows previously duplicated
@@ -152,10 +155,7 @@ export function makeWindowControls(opts: {
     }
     // Phase 65 (bug 2.2): diagnostic — confirm the header mousedown
     // reaches us (visible in the debug build's devtools).
-    console.log(
-      "[winmux drag] onDragStart",
-      (e.target as HTMLElement)?.className,
-    );
+    log.debug(`drag: onDragStart on ${(e.target as HTMLElement)?.className}`);
     e.preventDefault();
     // Phase 65 (bug 2.2): stopPropagation to match onResizeStart (which
     // works). The only code difference between resize (works) and drag

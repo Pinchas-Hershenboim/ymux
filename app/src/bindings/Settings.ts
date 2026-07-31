@@ -141,4 +141,12 @@ hook_notifications: HookSettings,
  * binding a plain union. `default = "system"` keeps older settings.json
  * loading unchanged.
  */
-theme_mode: string, };
+theme_mode: string, 
+/**
+ * Phase 81: tmux session picker scope — "shared" (default) shows every
+ * session on the server (multi-machine: home sees office sessions and
+ * vice versa); "local" hides sessions whose recorded origin is another
+ * machine (origin-less legacy sessions stay visible — fail-open). A
+ * String (not an enum) per the sidebar_mode / theme_mode pattern.
+ */
+session_visibility: string, };

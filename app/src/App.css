@@ -201,8 +201,7 @@ body {
   border-top: none;
 }
 .sidebar.icons .ws-action-half,
-.sidebar.icons .ws-add,
-.sidebar.icons .ws-provision {
+.sidebar.icons .ws-add {
   flex: none;
   width: 32px;
   height: 32px;
@@ -218,8 +217,7 @@ body {
   box-shadow: none;
 }
 .sidebar.icons .ws-action-half:hover,
-.sidebar.icons .ws-add:hover,
-.sidebar.icons .ws-provision:hover {
+.sidebar.icons .ws-add:hover {
   background: var(--w-surface-hi);
   color: var(--w-text);
   border-color: var(--w-border);
@@ -356,6 +354,8 @@ body {
 }
 .ws-badge.local { background: #1f2530; color: var(--w-text-dim); }
 .ws-badge.ssh { background: rgba(122, 162, 247, 0.15); color: var(--w-accent); }
+/* Phase 80: WSL-tmux workspaces. */
+.ws-badge.wsl { background: rgba(158, 206, 106, 0.15); color: var(--w-success); }
 .ws-badge.browser { background: rgba(187, 154, 247, 0.15); color: var(--w-purple); }
 .ws-badge.split { background: rgba(78, 201, 176, 0.15); color: var(--w-success); }
 
@@ -2294,13 +2294,12 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 
 
 .settings-modal {
-  /* Phase 49.A: widened from 720→900 so Hebrew/Arabic text in tab
-     content (hints, labels) stops wrapping awkwardly. Height stays
-     capped to a viewport fraction with a hard ceiling so a tall
-     window doesn't stretch the modal beyond what fits a 13" laptop. */
-  width: 900px;
-  max-width: 92vw;
-  max-height: min(92vh, 760px);
+  /* Bigger canvas: fit-a-tab-on-a-screen sizing. Height fixed so all
+     tabs feel the same regardless of content; anything longer scrolls
+     inside .settings-pane. */
+  width: 1100px;
+  max-width: 96vw;
+  height: min(90vh, 820px);
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -2327,10 +2326,10 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 }
 .settings-body {
   display: grid;
-  grid-template-columns: 160px 1fr;
+  grid-template-columns: 180px 1fr;
   flex: 1;
-  min-height: 380px;
-  max-height: calc(86vh - 56px);
+  min-height: 0;   /* let flex control the height */
+  overflow: hidden;
 }
 .settings-tabs {
   display: flex;
@@ -2364,11 +2363,13 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .settings-tabs-spacer { flex: 1; }
 
 .settings-pane {
-  padding: 16px 22px;
+  padding: 18px 24px;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 .settings-pane section {
-  margin-bottom: 22px;
+  margin-bottom: 14px;
 }
 .settings-pane section:last-child { margin-bottom: 0; }
 .settings-pane h4 {
@@ -3243,21 +3244,29 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   color: var(--w-error);
 }
 
-/* ─── Phase 14.A: provisioning wizard ─── */
+/* ─── Phase 14.A: provisioning wizard (Phase 80: the standalone
+       .ws-provision sidebar button was folded into .ws-add — the
+       unified SetupWizard is the single entry point) ─── */
 
-.ws-provision {
-  margin: 8px 8px 0 8px;
-  background: rgba(122, 162, 247, 0.08);
-  color: var(--w-accent);
+/* Phase 80: breadcrumb + back button in the SetupWizard header.
+   Logical properties only — the wizard renders in RTL locales too. */
+.setup-breadcrumb {
+  margin-inline-start: 8px;
+}
+.setup-back-btn {
+  margin-inline-start: auto;
+  margin-inline-end: 6px;
+  background: transparent;
+  color: var(--w-text-dim);
   border: 1px solid var(--w-border-hi);
   border-radius: var(--w-r-sm);
-  padding: 7px;
+  padding: 4px 10px;
   font-size: var(--w-fs-md);
   cursor: pointer;
   transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
   font-family: inherit;
 }
-.ws-provision:hover {
+.setup-back-btn:hover {
   background: rgba(122, 162, 247, 0.18);
   border-color: var(--w-accent);
   color: var(--w-text);
@@ -4144,6 +4153,17 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Phase 81: raw tmux session name under a friendly (label / Claude
+   title) primary line in the tmux picker. */
+.nc-resume-raw {
+  margin-top: 3px;
+  color: var(--w-text-faint);
+  font-size: var(--w-fs-xs);
+  font-family: var(--w-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .nc-browse-path {
   font-family: var(--w-font-mono);
   font-size: var(--w-fs-sm);
@@ -4972,6 +4992,10 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   white-space: pre-wrap;
   word-break: break-word;
   margin: 6px 0;
+  /* Log lines are always English ([ts] [LEVEL] [TAG] …) — pin the viewer
+     LTR so an RTL UI language (he/ar) doesn't mirror it. */
+  direction: ltr;
+  text-align: left;
 }
 
 /* Phase 39: sidebar paired action row (Notes + Settings). */
@@ -5062,6 +5086,9 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .ports-row-actions button:hover { color: var(--w-text, #e6edf3); }
 .ports-row-label { cursor: pointer; }
 .settings-logs-path {
+  /* Filesystem path — always LTR, even in an RTL UI. */
+  direction: ltr;
+  text-align: left;
   font-family: var(--w-font-mono, "Cascadia Mono", monospace);
   font-size: 12px;
   background: var(--w-surface, #161b22);
@@ -6138,21 +6165,6 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .group-swatch-picker button.selected {
   border-color: var(--w-text, #e6edf3);
 }
-.ws-add-group {
-  width: 100%;
-  padding: 6px 8px;
-  background: transparent;
-  border: 1px dashed var(--w-border, #21262d);
-  border-radius: var(--w-r-sm, 4px);
-  color: var(--w-text-dim, #999);
-  cursor: pointer;
-  font-size: 12px;
-  margin-top: 4px;
-}
-.ws-add-group:hover {
-  color: var(--w-text, #e6edf3);
-  border-color: var(--w-border-hi, #333);
-}
 .group-inline-input {
   width: 100%;
   padding: 4px 6px;
@@ -6169,10 +6181,6 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .sidebar.icons .group-header-name,
 .sidebar.icons .group-header-count {
   display: none;
-}
-.sidebar.icons .ws-add-group {
-  padding: 6px 4px;
-  font-size: 14px;
 }
 
 /* ─── beta.3 (ws-dragdrop): drag-and-drop reordering ─────────────────

@@ -19,6 +19,9 @@ import { t } from "./i18n";
 import { keyEq } from "./shortcuts";
 import { TechText } from "./TechText";
 import { IconGitCompare, IconChevronDown, IconClose } from "./icons";
+import { createLogger } from "./logger";
+
+const log = createLogger("DIFF");
 
 interface Props {
   workspaceId: string;
@@ -154,7 +157,7 @@ export function DiffPane(p: Props) {
         source: next,
       });
     } catch (e) {
-      console.error("diff_pane_set_source failed", e);
+      log.error("diff_pane_set_source failed", e);
     } finally {
       setBusy(false);
     }
@@ -215,7 +218,7 @@ export function DiffPane(p: Props) {
           if (hunkIdx() >= total) setHunkIdx(0);
         });
       } catch (e) {
-        console.warn("diff_pane: listen failed", e);
+        log.warn("listen failed", e);
       }
     })();
     onCleanup(() => {

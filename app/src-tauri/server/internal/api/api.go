@@ -7,7 +7,6 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -16,10 +15,14 @@ import (
 	"winmux-server/internal/chat"
 	"winmux-server/internal/files"
 	"winmux-server/internal/insights"
+	"winmux-server/internal/logging"
 	"winmux-server/internal/logs"
 	"winmux-server/internal/push"
 	"winmux-server/internal/workspace"
 )
+
+// logger is the API front door's component logger (Phase 79.D unified format).
+var logger = logging.New("SRV:API")
 
 // Deps is the set of subsystems the front door mounts. Any field may be nil to
 // disable that subsystem.
@@ -94,7 +97,7 @@ func (s *Server) Handler() http.Handler {
 	hapi := s.newHumaAPI(mux)
 	spec, err := hapi.OpenAPI().MarshalJSON()
 	if err != nil {
-		log.Printf("api: OpenAPI marshal failed: %v", err) // serve an empty doc rather than crash
+		logger.Error("OpenAPI marshal failed", "err", err) // serve an empty doc rather than crash
 		spec = []byte("{}")
 	}
 	mux.HandleFunc("/api/openapi.json", serveSpec(spec))
