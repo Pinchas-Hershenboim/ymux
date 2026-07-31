@@ -25,6 +25,12 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-07-17 — Redesign fidelity pass: LIVE SMOKE PENDING (rest closed)
+- **Context:** Yossi asked for a refinement pass on the shipped redesign themes: canvas fidelity, per-direction ANSI, secondary screens. Done on worktree branch `claude/winmux-redesign-13049b` (commits `9815835`, `fe60d57`, `83735a3`) — see PROGRESS.txt 2026-07-17 entry.
+- **The 2026-07-15 open sub-questions are now all closed:** (1) dark variants — exist since `c6276e6`, ANSI now per-direction (`fe60d57`); (2) structural-chrome depth — canvas-fidelity + secondary-surface passes landed; (3) fonts — soft apply (custom user font wins) since `96947f7`.
+- **Live smoke PASSED (2026-07-17, same day):** 4 presets applied live, 16-colour ramps verified in a live pane under all 4 darks, FM + Notification Center spot-checked under modernist-dark. Only remainder: waiting-ring animation under a real blocking Claude permission (harness-verified only), and merging the worktree branch back into `redesign/winmux-directions`.
+
+
 ### 2026-07-15 — Secrets Vault: revive or archive (stalled since 2026-05-28)
 - **Context:** ranked MUST / ⭐⭐⭐⭐⭐ in `docs/IDEAS-RANKING.md` (#3.2); full research in `docs/SECRETS-VAULT-RESEARCH.md` + branch `origin/research/secrets-vault`. Deferred 2026-05-28 “waiting on the external MCP integration” and never resurfaced — the single biggest forgotten roadmap item.
 - **Options:** (A) revive — define the winmux egress hooks + the integration contract with the external MCP; (B) archive — the external MCP project owns secrets end-to-end and winmux drops the feature.
@@ -90,6 +96,12 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
   - **Accepted, stated plainly:** restore does one full SSH handshake **per restored pane** and re-runs the workspace `setup_command` on each, so a rate-limited / fail2ban-fronted host sees a burst of auths every time winmux opens. That is the feature working as asked, not a defect — worth knowing before it surprises someone.
   - Both new modules got unit tests (`sessionRestore.test.ts`, `fmPaths.test.ts`, 32 tests, `node:test` per the `mouseRtl.test.ts` precedent) — they're pure localStorage logic, and on a Linux box with no Windows to run they're the only verification available at all.
 - **Status:** implemented on branch `feat/restore-sessions-and-fm-path`; tsc green, 32 unit tests green, **the app not run live** (Windows-only, built on Linux). Needs Yossi's live test before merge. Push to `yyhezkel/winmux` is blocked — the credential on this machine is pull-only there — so the branch exists locally plus as patches/bundle in the session scratchpad.
+### 2026-07-15 — Redesign directions: ship as themes, not a chosen single look
+- **Context:** Claude Design handoff exported the WINMUX main screen in four visual directions (Industry / Broadsheet / Modernist / Classical). The design chat ended before Yossi picked one. Asked; Yossi: "why not all of them as themes?" + connect the real repo + main screen then extrapolate.
+- **Options:** (A) pick one direction and restyle; (B) all four as selectable theme presets on the existing engine; (C) static mock screen.
+- **Decision:** (B). Added 4 light-ground presets to `list_presets()`; per-theme fonts/radius/border/heading/waiting-ring in `app/src/themes-redesign.css` keyed on `[data-theme-preset]`; `applyTheme` stamps `data-theme-preset`/`data-theme-family`. Token-driven so it reaches every screen.
+- **Sub-questions closed 2026-07-17** (dark variants + ANSI, structural-chrome depth, soft fonts) — see the fidelity-pass entry under Open (live smoke is the only remainder).
+- **Outcome / Commit:** `redesign/winmux-directions` (`c6276e6`…`b8e0ab4`) + fidelity pass on `claude/winmux-redesign-13049b`.
 
 ### 2026-07-15 — Phase 64 J — CLOSED: [file] links live-verified (Track B shipped)
 - **Yossi live test (2026-07-15): WORKS.** Hover underline + tooltip, click → Save-As download / relative-path copy toast, all confirmed in the debug build. Thread open since 2026-06-18 — closed. Original entry (with the full Track A/B history) preserved below.

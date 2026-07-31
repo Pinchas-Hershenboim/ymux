@@ -224,3 +224,250 @@ NOTES: remaining unverified cases, both cheap and both about NOT doing something
    - both flags off → startup identical to pre-80.
   PR #5 body + the @yyhezkel comment both updated to say two verified, these two open.
 ==================================================================
+2026-07-15 · Redesign directions as themes (Claude Design handoff)
+TASK: implement the WINMUX redesign export — 4 visual directions
+  (Industry / Broadsheet / Modernist / Classical) shipped as selectable
+  THEMES on the existing preset engine, not a one-off screen. Signature
+  detail (pane frame pulses while an agent waits for approval) recoloured
+  per direction.
+FILES:
+  A app/public/fonts/*.woff2 (15 self-hosted latin subsets)
+  A app/src/themes-redesign.css (fonts, per-theme radius/border/heading,
+      structural nods, per-theme waiting-ring colour)
+  M app/src-tauri/src/settings.rs (list_presets(): +4 light-ground presets)
+  M app/src/settings.ts (applyTheme stamps data-theme-preset +
+      data-theme-family="redesign")
+  M app/src/tokens.css (light-mode !important override now :not redesign)
+  M app/src/App.tsx (import themes-redesign.css after tokens.css)
+RESULT: compiles, UNTESTED live. tsc --noEmit clean; vite build OK (fonts
+  + all 4 [data-theme-preset] rules + @font-face present in dist). Rust is
+  a pure data addition (mirrors existing PresetEntry structs), parses via
+  rustfmt; full `cargo check` not runnable here (Linux box lacks GTK/gdk-3.0,
+  Windows Tauri target) — needs a Windows build+smoke test.
+NOTES:
+  - Presets appear automatically in Settings → Theme (picker is data-driven
+    from settings_get_presets; no frontend list to edit).
+  - These are LIGHT-GROUND themes; they opt out of tokens.css daylight
+    override so their palette wins regardless of dark/light mode toggle.
+  - Fonts are latin-subset; Hebrew/Arabic UI text falls back per-glyph to
+    the system stack (correct — display faces carry no Hebrew).
+  - NEXT (pending Yossi's nod): finer per-screen chrome (Industry 4-corner
+    registration marks via markup, Broadsheet masthead, Modernist tab rules,
+    Classical dashed frames on modals), and derived dark variants if wanted.
+==================================================================
+
+------------------------------------------------------------------
+2026-07-15 · Redesign themes — pass 2 (Yossi's calls)
+DECISIONS APPLIED:
+  • Dark variants: YES — added industry/broadsheet/modernist/classical-dark
+    presets (8 redesign presets total). CSS shares per-direction fonts/radius/
+    chrome across the light+dark pair via [data-theme-preset^=] prefixes.
+  • Per-screen chrome: PUSHED — Modernist 2px frames + uppercase headings on
+    card/modal/feed-card/pane; Broadsheet double-rule masthead; Classical
+    dashed gold waiting frame; Industry 4-corner registration marks (new
+    .pane-marks markup in PaneView, shown only under [data-theme-preset^=industry]).
+  • Font override: SOFT — applyTheme now only supplies the direction font when
+    the user's UI font is still the default "system-ui"; a custom UI font wins.
+    Removed the !important from the per-theme --w-font-ui rules.
+FILES (added to pass 1):
+  M app/src-tauri/src/settings.rs (+4 dark presets)
+  M app/src/settings.ts (soft-font gate; -dark base detection)
+  M app/src/themes-redesign.css (prefix refactor, dark rings, per-screen chrome)
+  M app/src/PaneView.tsx (blueprint .pane-marks corner elements)
+RESULT: compiles, UNTESTED live. tsc clean; vite build OK; dist confirms 8
+  presets, prefix + dark selectors, .pane-marks, no font !important. Rust still
+  a pure data addition (not cargo-checkable here — no GTK). Needs Windows smoke test.
+------------------------------------------------------------------
+
+------------------------------------------------------------------
+2026-07-15 · Redesign themes — pass 3 (mockless screens)
+TASK: the design bundle only ever mocked the main screen. Extended each
+  direction's chrome to every OTHER screen (Settings, Create Workspace,
+  Notes, SSH-key offer, Provisioning Wizard, Ports, File Editor, host/
+  Claude/model pickers, Command Palette, File Manager, Addons window,
+  Browser window, Notification Center, Feed/Help/Hygiene/Insights panels)
+  by targeting the handful of SHARED chrome primitives those screens are
+  built from (.modal, .fm-window, .browser-window, .side-drawer,
+  .panel-chrome-head, .command-palette) rather than touching each
+  component file — same leverage principle as the token-driven main pass.
+FILES:
+  M app/src/themes-redesign.css (+~110 lines: heading-font selector list
+      extended to modal/window/drawer/panel titles; Industry CSS-only
+      corner marks via ::before/::after on .modal/.command-palette/
+      .fm-window/.browser-window/.side-drawer; Broadsheet double-rule
+      headers; Modernist 2px frames + uppercase tracked titles; Classical
+      gold hairline headers)
+RESULT: compiles, UNTESTED live. tsc clean; vite build OK; dist confirms
+  all new selectors present. No component markup touched (pure CSS
+  targeting existing shared classes) — zero behavioural risk, but still
+  needs a Windows visual pass across Settings / File Manager / Browser /
+  Notifications / Command Palette in each of the 8 presets.
+------------------------------------------------------------------
+------------------------------------------------------------------
+2026-07-16 · Redesign themes — Windows build + LIVE smoke test (pass 4)
+TASK: the Windows pass the Linux sessions couldn't do: full build + live
+  visual verification of the 8 redesign presets, plus one fix found live.
+FILES:
+  M app/src/App.css (.pane.active ring: hardcoded rgba(122,162,247,…)
+      Tokyo-Night literals → color-mix over var(--w-accent), so the
+      active-pane accent ring follows every theme incl. the redesign 8)
+RESULT: verified-live (tauri dev on Windows). tsc clean, vite build OK,
+  cargo check --workspace green (2 pre-existing warnings). All 8 presets
+  applied + persisted from Settings → Theme; verified per direction:
+  fonts (serif/sans swap; Hebrew falls back per-glyph as designed),
+  light/dark grounds, accents, Modernist 2px modal frame, Broadsheet
+  double-rule masthead, Classical gold hairline, Industry corner marks
+  (pane + modal), Command Palette themed (checked under Classical Dark),
+  RTL layout intact throughout. Restored user's Nord preset after test.
+NOTES:
+  - Blue frame around the pane grid under every theme = per-workspace
+    color (--ws-color, Phase 62.B) on this install's workspaces — a
+    feature, not a theme leak. Diagnosed live before "fixing".
+  - Env gotchas hit + solved: stale dev-profile rlib of winmux-policy
+    (pre-66.F) broke `tauri dev` while `cargo check` passed — fixed by
+    cargo clean -p; leftover vite held port 1420 — killed.
+  - NOT yet checked live: waiting-ring recolour (needs an agent pending
+    approval), File Manager / Browser window / Notification Center
+    chrome per preset — worth a pass when those surfaces are in use.
+------------------------------------------------------------------
+------------------------------------------------------------------
+2026-07-16 · Redesign themes — pass 5 (Yossi's two calls, verified live)
+DECISIONS APPLIED (Yossi, this session):
+  • "Why 8 presets when there's a dark/light/system toggle?" → FOLDED.
+    The engine keeps all 8 preset entries (they ARE the palettes), but the
+    Settings grid shows ONE card per direction; clicking resolves the
+    light/dark variant from the effective appearance mode, the mode toggle
+    re-applies the paired variant when a redesign preset is active, and
+    the card swatches preview the variant the toggle would apply.
+  • "The terminal was supposed to follow the theme" → WIRED. Theme.ansi
+    (shipped since Phase 9.A, never connected) now reaches xterm:
+    setTerminalTheme() mirrors the setTerminalFont contract (cache for
+    new constructions + live options.theme push to every g_terminals
+    member); applyTheme builds the ITheme (bg/fg from theme, cursor =
+    accent, selection = accent @35%, 16 ANSI slots).
+FILES:
+  M app/src/terminalInstance.ts (DEFAULT_TERM_THEME fallback extracted
+      from the constructor's hardcoded Tokyo Night; setTerminalTheme)
+  M app/src/settings.ts (buildTerminalTheme + alpha(); applyTheme calls
+      setTerminalTheme)
+  M app/src/SettingsModal.tsx (redesignBase/effectiveMode/cardTheme
+      helpers; onPickPreset variant resolution; onPickMode — immediate
+      save, no debounce race — swaps the active redesign variant; grid
+      filter hides the redesign -dark twins)
+RESULT: verified-live (tauri dev, Windows). Grid shows 9 cards (4 stock +
+  solarized-light + 4 directions). Clicked Broadsheet under system=dark →
+  broadsheet-dark applied, LIVE cmd.exe terminal recoloured (cyan cursor,
+  dark ground); toggled בהיר → broadsheet (light) auto-applied, terminal
+  flipped to light ground + dark text without reopening. tsc clean.
+NOTES:
+  - ANSI ramps are still recycled data (light directions share
+    solarized_light, darks share tokyo_night — settings.rs). Terminal bg/
+    fg/cursor ARE per-direction via Theme. Tuned per-direction 16-colour
+    ramps = pure data tweak in list_presets() when desired.
+  - OS scheme flip while on "system" + a redesign preset re-themes the
+    chrome (watchSystemTheme) but keeps the current preset variant until
+    the user touches the toggle/grid — acceptable edge, noted.
+------------------------------------------------------------------
+------------------------------------------------------------------
+2026-07-16 · Redesign themes — pass 6: light-theme contrast bugs (Yossi's live QA)
+TASK: Yossi tested the light directions and hit light-on-light /
+  dark-on-dark surfaces. Root causes found and fixed — all three were
+  the same class: values calibrated for dark-only that light grounds expose.
+FIXES:
+  1. PHANTOM CSS VARS (the big one): App.css referenced 11 var() names
+     that were NEVER DEFINED — --w-text-primary, --w-text-secondary,
+     --w-background, --w-bg-elev, --w-fg, --w-fg-muted, --w-mono,
+     --w-surface-2, --w-surface-hover, --w-surface-raised, --w-warn —
+     131 occurrences, every one silently falling back to a
+     hardcoded-dark default. Invisible on dark themes (fallback ≈
+     palette), broken on light. All renamed to the real tokens
+     (--w-text / --w-text-dim / --w-bg / --w-surface / --w-surface-hi /
+     --w-font-mono / --w-warning). +1 in ClaudeUsageIndicator.tsx.
+     This fixes Yossi's two chrome reports: Add-ons "winmux-cli" title
+     (light-on-light) and Settings→Logs viewer (dark-on-dark).
+  2. TERMINAL ANSI ON LIGHT GROUND: the 4 light directions recycled
+     AnsiPalette::solarized_light() whose white/bright_white are
+     #eee8d5/#fdf6e3 — invisible on the near-white grounds (Yossi's
+     "bullet circle" report; Claude Code prints bullets in ANSI white).
+     New AnsiPalette::daylight() (GitHub-Light derived, white slots are
+     mid-grays) wired to industry/broadsheet/modernist/classical light.
+     Stock solarized-light keeps its authentic ramp.
+FILES:
+  M app/src/App.css (131 phantom-var renames)
+  M app/src/ClaudeUsageIndicator.tsx (--w-warn → --w-warning)
+  M app/src-tauri/src/settings.rs (AnsiPalette::daylight() + 4 light
+      redesign presets point at it)
+RESULT: verified-live (tauri dev auto-rebuilt): Logs viewer light box +
+  dark text under Classical; Add-ons names readable; live Claude-session
+  terminal bullet turned visible gray after re-applying the preset.
+  tsc + cargo check green. themes-redesign.css/tokens.css sweep-clean.
+NOTES:
+  - Applied presets snapshot Theme (incl. ansi) into settings.json — a
+    palette data change only reaches users when they re-apply a preset.
+  - Incident during QA: open_application launched the INSTALLED winmux
+    alongside the dev instance (same %APPDATA% settings + rpc pipe).
+    Closed it; no damage. Watch for this when driving the dev app by name.
+------------------------------------------------------------------
+------------------------------------------------------------------
+2026-07-16 · Redesign themes — pass 6b: the REAL terminal-contrast fix
+TASK: Yossi re-tested — Claude Code's bullet was STILL pale on light
+  ground. Root cause understood properly this time: the bullet is drawn
+  with 256-colour/truecolor escapes, not the 16 ANSI slots — a theme
+  palette can't remap those, and apps pick them assuming a dark ground.
+FIX: xterm's built-in contrast floor — `minimumContrastRatio: 4.5`
+  (WCAG AA, VS Code's terminal default). The renderer auto-adjusts any
+  foreground that misses the ratio against the current background, which
+  covers indexed + truecolor output on BOTH light and dark grounds.
+  Set at construction + re-asserted in setTerminalTheme (HMR-safe).
+FILES:
+  M app/src/terminalInstance.ts
+RESULT: verified-live on Yossi's active Claude session (Classical light,
+  tmux reattach after webview reload): the bullet + dim-gray status lines
+  render dark and readable. tsc clean.
+NOTE: pass-6 daylight() ANSI ramp stays — it fixes the 16-slot layer
+  properly; the contrast floor catches everything the palette can't.
+------------------------------------------------------------------
+
+=== 2026-07-17 — Redesign fidelity pass (worktree winmux-redesign-13049b) ===
+[canvas fidelity 9815835] themes-redesign.css: per-direction main-screen gaps
+  closed vs the 4 design-canvas mocks — solid brand (no Tokyo gradient),
+  ws-item.active per direction (Industry steel tint+hairline / Broadsheet
+  emphasised text / Modernist 4px red bar RTL-aware / Classical gold ring),
+  toolbar ws-header-btn per direction (outline / cyan links / 2px cells /
+  gold outline), filled-accent ws-add (+reg-marks on Industry), waiting dot,
+  status text + blocking feed card + waiting pane FRAME follow
+  --wmx-wait-ring, sidebar badges re-derived from vars (ssh chip was
+  hardcoded Tokyo blue; "local" dark chip -> quiet text).
+[ANSI fe60d57] settings.rs: industry_dark/broadsheet_dark/modernist_dark/
+  classical_dark 16-colour ramps replace the tokyo_night() recycle; light
+  variants take one-slot identity nudges over daylight(). Snapshot caveat
+  unchanged: ramps reach a session only on preset re-apply.
+[secondary 83735a3] Industry+Modernist flatten App.css's hardcoded radii on
+  secondary surfaces via one :is() list; Modernist modal h3 gets the 2px
+  under-rule.
+VERIFICATION: static harness (real App.css+tokens+themes-redesign.css, real
+  class markup, 8 palette stamps) shot headless-Chrome 1440x900 — all 8
+  variants main screen + 4 variants secondary surfaces reviewed. cargo check
+  green. LIVE smoke NOT done (computer-use occupied by another session all
+  session) — app runs via tauri dev from the worktree (note: needed
+  resources/winmux-cli.exe copied from main repo; node_modules installed;
+  CARGO_TARGET_DIR shared with main repo target). Pending live: 16-colour
+  ANSI print per dark variant after preset re-apply, waiting-ring animation,
+  FM/Browser/Notifications under 2-3 presets.
+
+=== 2026-07-17 (המשך) — LIVE SMOKE PASSED ===
+computer-use freed; live pass on tauri-dev app.exe (Windows):
+- 4 direction presets applied from the Settings grid (light): Industry brand
+  caps+reg-marks on ws-add VERIFIED via zoom; Broadsheet serif+cyan links+
+  double rule; Modernist BOOST caps + 4px red active bar (LTR side correct);
+  Classical gold ring/outline buttons. Dark mode toggle folds correctly.
+- ANSI: 16-colour bg ramp printed live in a Local PowerShell pane under all
+  4 dark variants (preset re-apply picked up the new snapshots after the dev
+  rebuild): classical=warm gold, industry=cool steel, broadsheet=neutral ink
+  with loud magenta+cyan, modernist=monochrome+one red. Terminal recolours
+  live on preset switch (96947f7 path) — confirmed.
+- Secondary: FM window + Notification Center under modernist-dark — caps
+  titles, square chrome, red active filter chip. All good.
+NOT tested live: waiting-ring animation (needs a real blocking Claude
+permission) — harness-verified only. App left on modernist-dark (shared
+%APPDATA% settings — Yossi: switch back in Settings if unwanted).

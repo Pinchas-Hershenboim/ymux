@@ -223,6 +223,123 @@ impl AnsiPalette {
             bright_white: "#fdf6e3".into(),
         }
     }
+
+    /// Redesign pass 6: ANSI ramp for LIGHT-ground terminals (GitHub-Light
+    /// derived). Unlike solarized_light, the white/bright slots are mid
+    /// grays — apps that print "white" text (Claude Code bullets, dimmed
+    /// output) stay readable on a light background.
+    /// Redesign dark ramps — per-direction 16-colour tuning (the dark
+    /// variants used to recycle tokyo_night()). ANSI semantics stay
+    /// functional (red=error, green=ok); the direction's identity lives in
+    /// the cast of the neutrals and in which slots are allowed to shout.
+    /// All values sit comfortably above the xterm minimumContrastRatio 4.5
+    /// floor on their direction's ground.
+    ///
+    /// Industry dark — cool steel cast, engineering restraint.
+    fn industry_dark() -> Self {
+        Self {
+            black: "#1c232b".into(),
+            red: "#e0716b".into(),
+            green: "#74b585".into(),
+            yellow: "#d9b26a".into(),
+            blue: "#6f9fce".into(),
+            magenta: "#9a8fd0".into(),
+            cyan: "#6fc3ce".into(),
+            white: "#c3ccd6".into(),
+            bright_black: "#3d4a58".into(),
+            bright_red: "#f28b85".into(),
+            bright_green: "#8fd0a0".into(),
+            bright_yellow: "#ecc985".into(),
+            bright_blue: "#8fb8e0".into(),
+            bright_magenta: "#b3a8e6".into(),
+            bright_cyan: "#8fd9e3".into(),
+            bright_white: "#e2e9f0".into(),
+        }
+    }
+    /// Broadsheet dark — neutral ink ramp; cyan + magenta are the only
+    /// slots allowed to be loud (the direction's two spot colours).
+    fn broadsheet_dark() -> Self {
+        Self {
+            black: "#221f26".into(),
+            red: "#ff6b8a".into(),
+            green: "#7cb98a".into(),
+            yellow: "#d4b370".into(),
+            blue: "#6ea3c9".into(),
+            magenta: "#ff2f86".into(),
+            cyan: "#35b6df".into(),
+            white: "#cfc8c6".into(),
+            bright_black: "#494349".into(),
+            bright_red: "#ff8ba3".into(),
+            bright_green: "#97d0a4".into(),
+            bright_yellow: "#e6c98d".into(),
+            bright_blue: "#8ebcdd".into(),
+            bright_magenta: "#ff5ea1".into(),
+            bright_cyan: "#5ecbf0".into(),
+            bright_white: "#ece7e4".into(),
+        }
+    }
+    /// Modernist dark — near-monochrome ramp, one dominant red.
+    fn modernist_dark() -> Self {
+        Self {
+            black: "#232120".into(),
+            red: "#ff563c".into(),
+            green: "#86a98c".into(),
+            yellow: "#d6c08a".into(),
+            blue: "#8fa3b8".into(),
+            magenta: "#c39ab0".into(),
+            cyan: "#93b8ba".into(),
+            white: "#d9d6d4".into(),
+            bright_black: "#4a4644".into(),
+            bright_red: "#ff7a5f".into(),
+            bright_green: "#a0c2a6".into(),
+            bright_yellow: "#e8d4a2".into(),
+            bright_blue: "#aabccd".into(),
+            bright_magenta: "#d7b2c6".into(),
+            bright_cyan: "#adcfd1".into(),
+            bright_white: "#f3f2f2".into(),
+        }
+    }
+    /// Classical dark — warm library ramp, gold in the yellow slots.
+    fn classical_dark() -> Self {
+        Self {
+            black: "#262118".into(),
+            red: "#d9736a".into(),
+            green: "#94ab6e".into(),
+            yellow: "#cd9a45".into(),
+            blue: "#7f9cc0".into(),
+            magenta: "#b58ab8".into(),
+            cyan: "#7fb3a8".into(),
+            white: "#d8cfc0".into(),
+            bright_black: "#4d4436".into(),
+            bright_red: "#e88f86".into(),
+            bright_green: "#aec283".into(),
+            bright_yellow: "#e6b562".into(),
+            bright_blue: "#9cb5d6".into(),
+            bright_magenta: "#cca4cf".into(),
+            bright_cyan: "#99c9be".into(),
+            bright_white: "#efe9df".into(),
+        }
+    }
+    fn daylight() -> Self {
+        Self {
+            black: "#24292f".into(),
+            red: "#cf222e".into(),
+            green: "#116329".into(),
+            yellow: "#9a6700".into(),
+            blue: "#0969da".into(),
+            magenta: "#8250df".into(),
+            cyan: "#1b7c83".into(),
+            white: "#57606a".into(),
+            bright_black: "#656d76".into(),
+            bright_red: "#a40e26".into(),
+            bright_green: "#1a7f37".into(),
+            bright_yellow: "#bf8700".into(),
+            bright_blue: "#218bff".into(),
+            bright_magenta: "#a475f9".into(),
+            bright_cyan: "#3192aa".into(),
+            bright_white: "#8c959f".into(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
@@ -1074,6 +1191,153 @@ pub(crate) fn list_presets() -> Vec<PresetEntry> {
                 warning: "#b58900".into(),
                 error: "#dc322f".into(),
                 ansi: AnsiPalette::solarized_light(),
+            },
+        },
+        // ── Redesign directions (Claude Design handoff, 2026-07-15) ──────────
+        // Four light-ground design systems shipped as themes. Colours are the
+        // chrome palette; per-theme fonts + structural chrome (registration
+        // marks, double rules, gold hairlines) and the waiting-ring colour live
+        // in themes-redesign.css, keyed on [data-theme-preset]. These are
+        // light-ground; the redesign CSS layer opts them out of the daylight
+        // (data-theme-mode="light") override so the palette below always wins.
+        PresetEntry {
+            id: "industry".into(),
+            label: "Industry".into(),
+            theme: Theme {
+                preset: "industry".into(),
+                accent: "#5980a6".into(),
+                background: "#f2f2f3".into(),
+                surface: "#f5f5f8".into(),
+                border: "#d4d4d7".into(),
+                text_primary: "#1d1f20".into(),
+                text_secondary: "#5d5d60".into(),
+                success: "#3d7a54".into(),
+                warning: "#9a6a00".into(),
+                error: "#b3392f".into(),
+                ansi: AnsiPalette { blue: "#3d6a94".into(), bright_blue: "#4d7fae".into(), ..AnsiPalette::daylight() },
+            },
+        },
+        PresetEntry {
+            id: "broadsheet".into(),
+            label: "Broadsheet".into(),
+            theme: Theme {
+                preset: "broadsheet".into(),
+                accent: "#0088b0".into(),
+                background: "#f3f2f2".into(),
+                surface: "#f8f4f4".into(),
+                border: "#d7d3d3".into(),
+                text_primary: "#201e1d".into(),
+                text_secondary: "#605d5d".into(),
+                success: "#2f7d4f".into(),
+                warning: "#9a6a00".into(),
+                error: "#c02d3c".into(),
+                ansi: AnsiPalette { magenta: "#d6006c".into(), bright_magenta: "#aa0b56".into(), cyan: "#0e7a9b".into(), bright_cyan: "#006786".into(), ..AnsiPalette::daylight() },
+            },
+        },
+        PresetEntry {
+            id: "modernist".into(),
+            label: "Modernist".into(),
+            theme: Theme {
+                preset: "modernist".into(),
+                accent: "#ec3013".into(),
+                background: "#f3f2f2".into(),
+                surface: "#f8f4f4".into(),
+                border: "#201e1d".into(),
+                text_primary: "#201e1d".into(),
+                text_secondary: "#605d5d".into(),
+                success: "#2f7d4f".into(),
+                warning: "#9a6a00".into(),
+                error: "#ec3013".into(),
+                ansi: AnsiPalette { red: "#c22a10".into(), bright_red: "#a3230d".into(), ..AnsiPalette::daylight() },
+            },
+        },
+        PresetEntry {
+            id: "classical".into(),
+            label: "Classical".into(),
+            theme: Theme {
+                preset: "classical".into(),
+                accent: "#b68235".into(),
+                background: "#f3f2f2".into(),
+                surface: "#f8f4f4".into(),
+                border: "#d7d3d3".into(),
+                text_primary: "#201f1d".into(),
+                text_secondary: "#605d5d".into(),
+                success: "#4a7a4a".into(),
+                warning: "#b68235".into(),
+                error: "#a3392f".into(),
+                ansi: AnsiPalette { yellow: "#8a6215".into(), bright_yellow: "#7d5411".into(), ..AnsiPalette::daylight() },
+            },
+        },
+        // ── Dark variants of the four directions (same identity, night ground).
+        // Each keeps its direction's accent hue lifted for contrast on dark;
+        // the redesign CSS layer shares fonts/radius/chrome via [data-theme-preset^=]
+        // prefix selectors, so only the palette differs from the light sibling.
+        PresetEntry {
+            id: "industry-dark".into(),
+            label: "Industry Dark".into(),
+            theme: Theme {
+                preset: "industry-dark".into(),
+                accent: "#6f9fce".into(),
+                background: "#12151a".into(),
+                surface: "#1a1e25".into(),
+                border: "#2b3742".into(),
+                text_primary: "#dfe6ee".into(),
+                text_secondary: "#8b97a4".into(),
+                success: "#4ec9b0".into(),
+                warning: "#e0af68".into(),
+                error: "#f7768e".into(),
+                ansi: AnsiPalette::industry_dark(),
+            },
+        },
+        PresetEntry {
+            id: "broadsheet-dark".into(),
+            label: "Broadsheet Dark".into(),
+            theme: Theme {
+                preset: "broadsheet-dark".into(),
+                accent: "#35b6df".into(),
+                background: "#17161a".into(),
+                surface: "#201e24".into(),
+                border: "#37333b".into(),
+                text_primary: "#ece7e4".into(),
+                text_secondary: "#a49d9d".into(),
+                success: "#4ec9b0".into(),
+                warning: "#e0af68".into(),
+                error: "#ff6b8a".into(),
+                ansi: AnsiPalette::broadsheet_dark(),
+            },
+        },
+        PresetEntry {
+            id: "modernist-dark".into(),
+            label: "Modernist Dark".into(),
+            theme: Theme {
+                preset: "modernist-dark".into(),
+                accent: "#ff563c".into(),
+                background: "#141312".into(),
+                surface: "#1d1b1a".into(),
+                border: "#e7e3e1".into(),
+                text_primary: "#f3f2f2".into(),
+                text_secondary: "#a49d9d".into(),
+                success: "#4ec9b0".into(),
+                warning: "#e0af68".into(),
+                error: "#ff563c".into(),
+                ansi: AnsiPalette::modernist_dark(),
+            },
+        },
+        PresetEntry {
+            id: "classical-dark".into(),
+            label: "Classical Dark".into(),
+            theme: Theme {
+                preset: "classical-dark".into(),
+                accent: "#c99a4a".into(),
+                background: "#171512".into(),
+                surface: "#201d18".into(),
+                border: "#38322a".into(),
+                text_primary: "#efe9df".into(),
+                text_secondary: "#a99f90".into(),
+                success: "#7fae6a".into(),
+                warning: "#d8b06a".into(),
+                error: "#d9736a".into(),
+                ansi: AnsiPalette::classical_dark(),
             },
         },
     ]

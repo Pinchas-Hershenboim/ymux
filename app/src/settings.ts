@@ -3,7 +3,8 @@
 // this file is the typed mirror used by the frontend.
 
 import { invoke } from "@tauri-apps/api/core";
-import { setTerminalFont, setRtlMode, setAutoDirection, setAutoResetOnConnect, type RtlMode } from "./terminalInstance";
+import { setTerminalFont, setTerminalTheme, setRtlMode, setAutoDirection, setAutoResetOnConnect, type RtlMode } from "./terminalInstance";
+import type { ITheme } from "@xterm/xterm";
 
 export interface AnsiPalette {
   black: string;
@@ -419,7 +420,20 @@ export function applyTheme(s: Settings): void {
   r.setProperty("--w-text-faint", mix(t.text_secondary, t.background, 0.4));
   r.setProperty("--w-accent-hi", mix(t.accent, "#ffffff", 0.18));
 
-  r.setProperty("--w-font-ui", quoteFamily(s.font.ui_family));
+  // Redesign directions carry their own display font (Barlow / Source Serif /
+  // Archivo / Lora), but SOFTLY: only when the user hasn't picked a custom UI
+  // font. If ui_family is still the default ("system-ui"), we clear the inline
+  // var so themes-redesign.css can supply the direction's font; otherwise the
+  // user's explicit choice is written inline and wins over the theme.
+  const REDESIGN_PRESETS = ["industry", "broadsheet", "modernist", "classical"];
+  const presetBase = t.preset.replace(/-dark$/, "");
+  const isRedesign = REDESIGN_PRESETS.includes(presetBase);
+  const uiFontIsDefault = s.font.ui_family === "system-ui";
+  if (isRedesign && uiFontIsDefault) {
+    r.removeProperty("--w-font-ui");
+  } else {
+    r.setProperty("--w-font-ui", quoteFamily(s.font.ui_family));
+  }
   r.setProperty("--w-font-mono", quoteFamily(s.font.terminal_family));
   // Phase 9.A live size apply. App.css now bases :root font-size on this
   // var, and the --w-fs-* size vars are in em — so changing this single pt
@@ -428,6 +442,10 @@ export function applyTheme(s: Settings): void {
   // Push terminal font + size into every live xterm instance. New panes
   // opened later inherit the cached values via the constructor.
   setTerminalFont(quoteFamily(s.font.terminal_family), s.font.terminal_size_pt);
+  // Redesign pass 4: the terminal palette follows the theme — background,
+  // foreground, cursor and the 16 ANSI colours all come from the preset
+  // (Theme.ansi shipped since Phase 9.A but was never wired to xterm).
+  setTerminalTheme(buildTerminalTheme(t));
   // Phase 15.A: push the RTL mode. The write pipeline flips immediately
   // on every live pane; the renderer choice (DOM vs WebGL) is sticky
   // per pane and only affects newly-opened terminals.
@@ -442,6 +460,14 @@ export function applyTheme(s: Settings): void {
   // and write data-theme-mode on <html>; tokens.css keys the Light chrome
   // palette off it. Independent of the colour preset.
   document.documentElement.dataset.themeMode = resolveThemeMode(s.theme_mode);
+
+  // Redesign directions (Claude Design handoff): stamp the active preset id on
+  // <html> so themes-redesign.css can key per-theme fonts + structural chrome
+  // (registration marks, double rules, gold hairlines) and the waiting-ring
+  // colour off it. Also lets tokens.css opt these light-ground presets out of
+  // the daylight override so their inline --w-* palette always wins.
+  document.documentElement.dataset.themePreset = t.preset;
+  document.documentElement.dataset.themeFamily = isRedesign ? "redesign" : "";
 
   // Phase font-bug-fix v2 (stretch): if a web font URL is configured,
   // inject a single <link rel="stylesheet"> tag so that font becomes
@@ -517,6 +543,40 @@ function quoteFamily(family: string): string {
 // Minimal hex color blender (#rrggbb only). Best-effort — non-hex values
 // pass through unchanged, which still works because CSS will fall back
 // when it sees an invalid value.
+/** Redesign pass 4: map our Theme onto xterm's ITheme. */
+function buildTerminalTheme(t: Theme): ITheme {
+  const a = t.ansi;
+  return {
+    background: t.background,
+    foreground: t.text_primary,
+    cursor: t.accent,
+    cursorAccent: t.background,
+    selectionBackground: alpha(t.accent, 0.35),
+    black: a.black,
+    red: a.red,
+    green: a.green,
+    yellow: a.yellow,
+    blue: a.blue,
+    magenta: a.magenta,
+    cyan: a.cyan,
+    white: a.white,
+    brightBlack: a.bright_black,
+    brightRed: a.bright_red,
+    brightGreen: a.bright_green,
+    brightYellow: a.bright_yellow,
+    brightBlue: a.bright_blue,
+    brightMagenta: a.bright_magenta,
+    brightCyan: a.bright_cyan,
+    brightWhite: a.bright_white,
+  };
+}
+
+/** Hex colour → rgba() string with the given alpha (falls back to the hex). */
+function alpha(hex: string, a: number): string {
+  const c = parseHex(hex);
+  return c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${a})` : hex;
+}
+
 function mix(base: string, with_: string, amount: number): string {
   const a = parseHex(base);
   const b = parseHex(with_);

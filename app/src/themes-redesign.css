@@ -1,0 +1,554 @@
+/* ─────────────────────────────────────────────────────────────────────
+   winmux — redesign directions (Claude Design handoff, 2026-07-15)
+
+   Four visual directions — Industry / Broadsheet / Modernist / Classical —
+   shipped as selectable THEMES on the existing preset engine, each in a
+   LIGHT and a DARK variant (8 presets total). The Rust preset
+   (settings.rs → list_presets) carries each variant's chrome palette,
+   written inline as --w-* by applyTheme(); this layer adds what a colour
+   preset can't express, shared across a direction's light+dark pair via
+   [data-theme-preset^="…"] prefix selectors:
+
+     • self-hosted display fonts (offline, no CDN — privacy),
+     • per-direction UI + heading font (applied SOFTLY — see applyTheme:
+       only when the user hasn't chosen a custom UI font),
+     • per-direction corner radius / border grammar,
+     • the signature WAITING RING colour (the pane frame that pulses while
+       an agent waits for a blocking permission decision), and
+     • structural chrome: Industry registration marks, Broadsheet double
+       rule, Modernist 2px rules + caps, Classical gold hairlines / dashed
+       waiting frame.
+
+   Loaded AFTER tokens.css (App.tsx) so it wins the cascade. Keyed on
+   [data-theme-preset] / [data-theme-family="redesign"], both stamped on
+   <html> by applyTheme(). Token-driven, so it reaches every screen.
+   ───────────────────────────────────────────────────────────────────── */
+
+/* ── self-hosted fonts (latin woff2 subset; Hebrew/Arabic glyphs fall back
+   per-glyph to the system UI stack — correct, these display faces carry no
+   Hebrew glyphs). ── */
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/barlow-400.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/barlow-500.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/barlow-700.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/barlow-condensed-400.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/barlow-condensed-600.woff2') format('woff2'); }
+@font-face { font-family: 'Source Serif 4'; font-style: italic; font-weight: 400; font-display: swap; src: url('/fonts/source-serif-4-400-italic.woff2') format('woff2'); }
+@font-face { font-family: 'Source Serif 4'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/source-serif-4-400.woff2') format('woff2'); }
+@font-face { font-family: 'Source Serif 4'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/source-serif-4-600.woff2') format('woff2'); }
+@font-face { font-family: 'Archivo'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/archivo-400.woff2') format('woff2'); }
+@font-face { font-family: 'Archivo'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/archivo-600.woff2') format('woff2'); }
+@font-face { font-family: 'Archivo'; font-style: normal; font-weight: 800; font-display: swap; src: url('/fonts/archivo-800.woff2') format('woff2'); }
+@font-face { font-family: 'Cormorant Garamond'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/cormorant-garamond-400.woff2') format('woff2'); }
+@font-face { font-family: 'Cormorant Garamond'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/cormorant-garamond-600.woff2') format('woff2'); }
+@font-face { font-family: 'Lora'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/lora-400.woff2') format('woff2'); }
+@font-face { font-family: 'Lora'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/lora-600.woff2') format('woff2'); }
+
+:root {
+  --wmx-fallback: system-ui, "Segoe UI", "Noto Sans Hebrew", "Arial Hebrew", sans-serif;
+  --wmx-fallback-serif: Georgia, "Times New Roman", "Noto Serif Hebrew", "David Libre", serif;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   1 · INDUSTRY — technical blueprint: steel, square, hairline + reg. marks.
+   Barlow Condensed headings over Barlow. (^= covers industry + industry-dark)
+   ═══════════════════════════════════════════════════════════════════════ */
+[data-theme-preset^="industry"] {
+  --w-font-ui: 'Barlow', var(--wmx-fallback);
+  --wmx-font-heading: 'Barlow Condensed', 'Barlow', var(--wmx-fallback);
+  --w-r-sm: 0; --w-r-md: 0; --w-r-lg: 0;
+  --wmx-radius-sm: 0; --wmx-radius-md: 0; --wmx-radius-lg: 0; --wmx-radius-xl: 0;
+  --wmx-wait-ring: #5980a6;
+  --wmx-wait-glow-lo: rgba(89, 128, 166, 0.30);
+  --wmx-wait-glow-hi: rgba(89, 128, 166, 0.62);
+}
+[data-theme-preset="industry-dark"] { --wmx-wait-ring: #6f9fce;
+  --wmx-wait-glow-lo: rgba(111, 159, 206, 0.30); --wmx-wait-glow-hi: rgba(111, 159, 206, 0.62); }
+/* Blueprint registration marks — inset just inside each pane corner (the
+   pane clips overflow, so marks live inside). Shown only for Industry. */
+[data-theme-preset^="industry"] .pane-marks { display: block; }
+[data-theme-preset^="industry"] .pane-mark {
+  position: absolute; width: 11px; height: 11px; z-index: 4; opacity: 0.75;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--w-border-hi), var(--w-border-hi)) center / 100% 1.5px no-repeat,
+    linear-gradient(var(--w-border-hi), var(--w-border-hi)) center / 1.5px 100% no-repeat;
+}
+[data-theme-preset^="industry"] .pane-mark.tl { top: 3px; inset-inline-start: 3px; }
+[data-theme-preset^="industry"] .pane-mark.tr { top: 3px; inset-inline-end: 3px; }
+[data-theme-preset^="industry"] .pane-mark.bl { bottom: 3px; inset-inline-start: 3px; }
+[data-theme-preset^="industry"] .pane-mark.br { bottom: 3px; inset-inline-end: 3px; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   2 · BROADSHEET — newspaper serif: cyan interaction, MAGENTA waiting.
+   ═══════════════════════════════════════════════════════════════════════ */
+[data-theme-preset^="broadsheet"] {
+  --w-font-ui: 'Source Serif 4', var(--wmx-fallback-serif);
+  --wmx-font-heading: 'Source Serif 4', var(--wmx-fallback-serif);
+  --w-r-sm: 2px; --w-r-md: 2px; --w-r-lg: 3px;
+  --wmx-wait-ring: #d6006c;
+  --wmx-wait-glow-lo: rgba(214, 0, 108, 0.28);
+  --wmx-wait-glow-hi: rgba(214, 0, 108, 0.60);
+}
+[data-theme-preset="broadsheet-dark"] { --wmx-wait-ring: #ff2f86;
+  --wmx-wait-glow-lo: rgba(255, 47, 134, 0.30); --wmx-wait-glow-hi: rgba(255, 47, 134, 0.60); }
+/* Masthead double rule under the sidebar brand + a hairline under pane heads. */
+[data-theme-preset^="broadsheet"] .sidebar-brand-row {
+  border-bottom: 3px double var(--w-text);
+  padding-bottom: 6px;
+}
+[data-theme-preset^="broadsheet"] .pane-header { border-bottom: 1px solid var(--w-border-hi); }
+[data-theme-preset^="broadsheet"] .pane-title { font-weight: 600; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   3 · MODERNIST — Archivo, heavy rules, one red, square, caps headings.
+   ═══════════════════════════════════════════════════════════════════════ */
+[data-theme-preset^="modernist"] {
+  --w-font-ui: 'Archivo', var(--wmx-fallback);
+  --wmx-font-heading: 'Archivo', var(--wmx-fallback);
+  --w-r-sm: 0; --w-r-md: 0; --w-r-lg: 0;
+  --wmx-radius-sm: 0; --wmx-radius-md: 0; --wmx-radius-lg: 0; --wmx-radius-xl: 0;
+  --wmx-wait-ring: #ec3013;
+  --wmx-wait-glow-lo: rgba(236, 48, 19, 0.30);
+  --wmx-wait-glow-hi: rgba(236, 48, 19, 0.62);
+}
+[data-theme-preset="modernist-dark"] { --wmx-wait-ring: #ff563c;
+  --wmx-wait-glow-lo: rgba(255, 86, 60, 0.30); --wmx-wait-glow-hi: rgba(255, 86, 60, 0.62); }
+/* Hard 2px frames + uppercase tracked headings (the direction's signature). */
+[data-theme-preset^="modernist"] .pane { border-width: 2px; }
+[data-theme-preset^="modernist"] .pane-header { border-bottom-width: 2px; }
+[data-theme-preset^="modernist"] .card,
+[data-theme-preset^="modernist"] .feed-card,
+[data-theme-preset^="modernist"] .modal { border-width: 2px; }
+[data-theme-preset^="modernist"] .pane-title,
+[data-theme-preset^="modernist"] .group-header-name,
+[data-theme-preset^="modernist"] .sidebar-section-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 800;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   4 · CLASSICAL — literary: Lora / Cormorant, gold hairlines, dashed frame.
+   ═══════════════════════════════════════════════════════════════════════ */
+[data-theme-preset^="classical"] {
+  --w-font-ui: 'Lora', var(--wmx-fallback-serif);
+  --wmx-font-heading: 'Cormorant Garamond', 'Lora', var(--wmx-fallback-serif);
+  --w-r-sm: 4px; --w-r-md: 4px; --w-r-lg: 6px;
+  --wmx-wait-ring: #b68235;
+  --wmx-wait-glow-lo: rgba(182, 130, 53, 0.26);
+  --wmx-wait-glow-hi: rgba(182, 130, 53, 0.52);
+}
+[data-theme-preset="classical-dark"] { --wmx-wait-ring: #cd9a45;
+  --wmx-wait-glow-lo: rgba(205, 154, 69, 0.28); --wmx-wait-glow-hi: rgba(205, 154, 69, 0.54); }
+[data-theme-preset^="classical"] .group-header-name,
+[data-theme-preset^="classical"] .sidebar-brand { font-weight: 600; }
+/* Classical waiting pane keeps a dashed gold frame in addition to the glow. */
+[data-theme-preset^="classical"] .pane.waiting {
+  outline: 1.5px dashed var(--wmx-wait-ring);
+  outline-offset: 3px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Shared redesign chrome (all 8 presets).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Heading font on the app's heading-ish elements — extended to every
+   dialog/window/panel title so the "mockless" screens (Settings, File
+   Manager, Browser, Notifications, Feed/Help/Hygiene/Insights, Create
+   Workspace, Notes, SSH-key offer, Provisioning, Ports, Command Palette)
+   pick up each direction's identity through the SAME shared chrome
+   primitives every one of those screens is built from. */
+[data-theme-family="redesign"] .sidebar-brand,
+[data-theme-family="redesign"] .pane-title,
+[data-theme-family="redesign"] .group-header-name,
+[data-theme-family="redesign"] .sidebar-section-title,
+[data-theme-family="redesign"] .modal h3,
+[data-theme-family="redesign"] .fm-window-title,
+[data-theme-family="redesign"] .browser-window-title,
+[data-theme-family="redesign"] .side-drawer-title,
+[data-theme-family="redesign"] .notif-head-title,
+[data-theme-family="redesign"] .panel-chrome-title {
+  font-family: var(--wmx-font-heading);
+}
+
+/* Marks are hidden unless a direction opts in (only Industry does). */
+.pane-marks { display: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Mockless screens — the design bundle only ever mocked the main screen.
+   Rather than restyle each dialog/window individually, this hits the
+   handful of SHARED chrome primitives every other screen is assembled
+   from, so one rule block reaches all of them:
+
+     .modal            → Settings, Create Workspace, Notes, SSH-key offer,
+                          Provisioning Wizard, Ports, File Editor, host/
+                          Claude/model pickers, smart-prompt, Connect
+                          Existing flow, Command Palette (sits on the same
+                          backdrop)
+     .fm-window         → File Manager, Addons window
+     .browser-window     → Browser window
+     .side-drawer /
+     .panel-chrome-head  → Notification Center, and the Feed / Help /
+                          Hygiene / Insights panels in float+fullscreen mode
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Give the fixed dialog/window surfaces a positioning context so the
+   Industry corner marks below can anchor to them. */
+[data-theme-family="redesign"] .modal,
+[data-theme-family="redesign"] .command-palette {
+  position: relative;
+}
+
+/* ── Industry: blueprint corner marks (CSS-only — no per-screen markup
+   needed) on the two most legible diagonal corners of every dialog/window/
+   drawer, echoing the pane's four-corner treatment. ── */
+[data-theme-preset^="industry"] .modal::before,
+[data-theme-preset^="industry"] .command-palette::before,
+[data-theme-preset^="industry"] .fm-window::before,
+[data-theme-preset^="industry"] .browser-window::before,
+[data-theme-preset^="industry"] .side-drawer::before {
+  content: "";
+  position: absolute;
+  top: 6px; inset-inline-start: 6px;
+  width: 11px; height: 11px;
+  z-index: 5;
+  opacity: 0.7;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--w-border-hi), var(--w-border-hi)) center / 100% 1.5px no-repeat,
+    linear-gradient(var(--w-border-hi), var(--w-border-hi)) center / 1.5px 100% no-repeat;
+}
+[data-theme-preset^="industry"] .modal::after,
+[data-theme-preset^="industry"] .command-palette::after,
+[data-theme-preset^="industry"] .fm-window::after,
+[data-theme-preset^="industry"] .browser-window::after {
+  content: "";
+  position: absolute;
+  bottom: 6px; inset-inline-end: 6px;
+  width: 11px; height: 11px;
+  z-index: 5;
+  opacity: 0.7;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--w-border-hi), var(--w-border-hi)) center / 100% 1.5px no-repeat,
+    linear-gradient(var(--w-border-hi), var(--w-border-hi)) center / 1.5px 100% no-repeat;
+}
+/* The side-drawer is edge-docked (full viewport height) — a bottom mark
+   would sit off past the fold, so it only gets the top-start mark. */
+
+/* ── Broadsheet: masthead double rule under every dialog/window/drawer
+   heading, matching the sidebar brand treatment. ── */
+[data-theme-preset^="broadsheet"] .modal h3 {
+  border-bottom: 3px double var(--w-text);
+  padding-bottom: 8px;
+}
+[data-theme-preset^="broadsheet"] .fm-window-header,
+[data-theme-preset^="broadsheet"] .browser-window-header,
+[data-theme-preset^="broadsheet"] .side-drawer-head,
+[data-theme-preset^="broadsheet"] .notif-head,
+[data-theme-preset^="broadsheet"] .panel-chrome-head {
+  border-bottom: 3px double var(--w-border-hi);
+}
+
+/* ── Modernist: heavy 2px frame + uppercase, tracked titles — the same
+   grammar as the pane, applied to every dialog/window/drawer. ── */
+[data-theme-preset^="modernist"] .modal,
+[data-theme-preset^="modernist"] .command-palette,
+[data-theme-preset^="modernist"] .fm-window,
+[data-theme-preset^="modernist"] .browser-window {
+  border-width: 2px;
+}
+[data-theme-preset^="modernist"] .side-drawer { border-inline-start-width: 2px; }
+[data-theme-preset^="modernist"] .fm-window-header,
+[data-theme-preset^="modernist"] .browser-window-header { border-bottom-width: 2px; }
+[data-theme-preset^="modernist"] .modal h3 {
+  border-bottom: 2px solid color-mix(in srgb, var(--w-border) 45%, transparent);
+  padding-bottom: 8px;
+}
+[data-theme-preset^="modernist"] .modal h3,
+[data-theme-preset^="modernist"] .fm-window-title,
+[data-theme-preset^="modernist"] .browser-window-title,
+[data-theme-preset^="modernist"] .side-drawer-title,
+[data-theme-preset^="modernist"] .notif-head-title,
+[data-theme-preset^="modernist"] .panel-chrome-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 800;
+}
+
+/* ── Classical: gold hairline under every dialog/window/drawer heading —
+   the quiet, literary counterpart to Broadsheet's double rule. ── */
+[data-theme-preset^="classical"] .modal h3 {
+  border-bottom: 1px solid var(--wmx-wait-ring);
+  padding-bottom: 8px;
+}
+[data-theme-preset^="classical"] .fm-window-header,
+[data-theme-preset^="classical"] .browser-window-header,
+[data-theme-preset^="classical"] .side-drawer-head,
+[data-theme-preset^="classical"] .notif-head,
+[data-theme-preset^="classical"] .panel-chrome-head {
+  border-bottom-color: var(--wmx-wait-ring);
+}
+
+/* The signature "agent waiting for approval" pane ring, recoloured to each
+   direction's signature colour (overrides the app's default amber). Opacity/
+   spread pulse via box-shadow (compositor-friendly). Loaded after App.css so
+   it wins .pane.waiting and .pane.waiting.pane-pulse (≥ specificity + later). */
+[data-theme-family="redesign"] .pane.waiting,
+[data-theme-family="redesign"] .pane.waiting.pane-pulse {
+  animation: wmx-wait-pulse 1.4s ease-in-out infinite;
+}
+[data-theme-family="redesign"] .pane.waiting.pane-pulse::after { display: none; }
+
+@keyframes wmx-wait-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px var(--wmx-wait-ring),
+      0 0 10px 2px var(--wmx-wait-glow-lo);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px var(--wmx-wait-ring),
+      0 0 18px 6px var(--wmx-wait-glow-hi);
+  }
+}
+
+/* The blocking permission card's approve action inherits the direction's
+   accent already (token-driven); nudge the reject to read as a quiet
+   secondary in every direction. */
+[data-theme-family="redesign"] .feed-deny {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme-family="redesign"] .pane.waiting,
+  [data-theme-family="redesign"] .pane.waiting.pane-pulse {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--wmx-wait-ring);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Canvas fidelity pass (2026-07-17) — closes the visible gaps between the
+   live app and the 4 design-canvas mocks. Everything is var-driven
+   (--w-accent / --wmx-wait-ring) so each rule serves both the light and
+   the dark variant of its direction.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Shared: kill the Tokyo-blue hardcodes the redesign presets inherit
+   from App.css (gradient brand, blue active tint, amber waiting dot,
+   dark-only hover border). ── */
+[data-theme-family="redesign"] .sidebar-header .sidebar-brand {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: var(--w-text);
+}
+[data-theme-family="redesign"] .ws-item.has-waiting::after {
+  background: var(--wmx-wait-ring);
+  box-shadow: 0 0 6px 1px var(--wmx-wait-glow-hi);
+}
+[data-theme-family="redesign"] .pane-status-text { color: var(--wmx-wait-ring); }
+[data-theme-family="redesign"] .feed-card.blocking {
+  border-color: var(--wmx-wait-ring);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.35),
+    0 0 0 1px var(--wmx-wait-glow-lo);
+}
+[data-theme-family="redesign"] button:hover:not(:disabled) {
+  border-color: var(--w-border-hi);
+}
+/* Sidebar badges: App.css hardcodes Tokyo-blue tints and a dark "local"
+   chip — both wrong on the redesign grounds. Re-derive from the live vars;
+   the mock renders "מקומי" as quiet text, not a chip. */
+[data-theme-family="redesign"] .ws-badge {
+  background: var(--w-surface-hi);
+  color: var(--w-text-dim);
+}
+[data-theme-family="redesign"] .ws-badge.ssh {
+  background: color-mix(in srgb, var(--w-accent) 14%, transparent);
+  color: var(--w-accent);
+}
+[data-theme-family="redesign"] .ws-badge.split {
+  background: color-mix(in srgb, var(--w-success) 14%, transparent);
+  color: var(--w-success);
+}
+[data-theme-family="redesign"] .ws-badge.local {
+  background: transparent;
+  color: var(--w-text-faint);
+}
+/* The waiting pane's FRAME follows the signature waiting colour, not the
+   interaction accent (Broadsheet: magenta frame, cyan links — per mock). */
+[data-theme-family="redesign"] .pane.waiting:not([data-has-color="true"]) {
+  border-color: var(--wmx-wait-ring);
+}
+/* The mock's primary sidebar action is a filled accent button (Industry
+   steel / Broadsheet cyan / Modernist red), not App.css's dashed ghost. */
+[data-theme-preset^="industry"] .ws-add,
+[data-theme-preset^="broadsheet"] .ws-add,
+[data-theme-preset^="modernist"] .ws-add {
+  background: var(--w-accent);
+  color: var(--w-bg);
+  border: 1px solid var(--w-accent);
+  font-weight: 600;
+}
+[data-theme-preset^="industry"] .ws-add:hover,
+[data-theme-preset^="broadsheet"] .ws-add:hover,
+[data-theme-preset^="modernist"] .ws-add:hover {
+  background: color-mix(in srgb, var(--w-accent) 86%, var(--w-text));
+  border-color: color-mix(in srgb, var(--w-accent) 86%, var(--w-text));
+  color: var(--w-bg);
+}
+
+/* App.css hardcodes border-radius (3-10px) on dozens of secondary
+   surfaces/controls that never read --w-r-*. The two SQUARE directions
+   flatten them wholesale; round status dots (border-radius:50%) are
+   untouched — they're not in this list. */
+[data-theme-preset^="industry"] :is(button, input, select, textarea,
+  .modal, .command-palette, .fm-window, .browser-window, .addons-window,
+  .ports-window, .insights-window, .md-window, .feed-card, .notif-center,
+  .panel-float, .ws-menu, .pane, .ws-badge, .note-card, .settings-preset-card,
+  .welcome-card, .sidebar-empty-card, .feed-allow, .feed-deny),
+[data-theme-preset^="modernist"] :is(button, input, select, textarea,
+  .modal, .command-palette, .fm-window, .browser-window, .addons-window,
+  .ports-window, .insights-window, .md-window, .feed-card, .notif-center,
+  .panel-float, .ws-menu, .pane, .ws-badge, .note-card, .settings-preset-card,
+  .welcome-card, .sidebar-empty-card, .feed-allow, .feed-deny) {
+  border-radius: 0;
+}
+
+/* ── Industry: steel active row, outline toolbar, brand letterspacing,
+   registration marks on the primary button (mock's + crosses). ── */
+[data-theme-preset^="industry"] .sidebar-header .sidebar-brand {
+  color: var(--w-accent);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+[data-theme-preset^="industry"] .ws-item.active {
+  background: color-mix(in srgb, var(--w-accent) 10%, var(--w-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--w-accent) 55%, transparent);
+}
+[data-theme-preset^="industry"] .sidebar-section-title { letter-spacing: 0.08em; }
+[data-theme-preset^="industry"] .ws-header-btn {
+  background: transparent;
+  border-color: var(--w-border-hi);
+}
+[data-theme-preset^="industry"] .ws-header-btn:hover {
+  background: color-mix(in srgb, var(--w-accent) 10%, var(--w-bg));
+  border-color: color-mix(in srgb, var(--w-accent) 55%, transparent);
+}
+[data-theme-preset^="industry"] .ws-add { position: relative; }
+[data-theme-preset^="industry"] .ws-add::before,
+[data-theme-preset^="industry"] .ws-add::after {
+  content: "";
+  position: absolute;
+  width: 11px; height: 11px;
+  opacity: 0.55;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--w-text), var(--w-text)) center / 100% 1px no-repeat,
+    linear-gradient(var(--w-text), var(--w-text)) center / 1px 100% no-repeat;
+}
+[data-theme-preset^="industry"] .ws-add::before { top: -6px; inset-inline-end: -6px; }
+[data-theme-preset^="industry"] .ws-add::after { bottom: -6px; inset-inline-start: -6px; }
+
+/* ── Broadsheet: newspaper toolbar links (cyan, underline-on-rest),
+   italic serif metadata, emphasised active row. ── */
+[data-theme-preset^="broadsheet"] .sidebar-header .sidebar-brand {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+[data-theme-preset^="broadsheet"] .ws-item.active {
+  background: transparent;
+  box-shadow: none;
+}
+[data-theme-preset^="broadsheet"] .ws-item.active .ws-name {
+  font-weight: 600;
+  color: var(--w-accent);
+}
+[data-theme-preset^="broadsheet"] .ws-header-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--w-accent) 40%, transparent);
+  border-radius: 0;
+  color: var(--w-accent);
+  padding-inline: 4px;
+}
+[data-theme-preset^="broadsheet"] .ws-header-btn:hover {
+  background: transparent;
+  border-bottom-color: var(--w-accent);
+}
+[data-theme-preset^="broadsheet"] .ws-conn-info,
+[data-theme-preset^="broadsheet"] .pane-conn {
+  font-style: italic;
+  font-family: var(--w-font-ui);
+}
+[data-theme-preset^="broadsheet"] .pane-status-text { font-style: italic; }
+
+/* ── Modernist: red active bar (4px, logical inline-start), cell-like
+   toolbar buttons, caps on the workspace header. ── */
+[data-theme-preset^="modernist"] .sidebar-header .sidebar-brand {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-theme-preset^="modernist"] .ws-item.active {
+  background: color-mix(in srgb, var(--w-accent) 14%, var(--w-bg));
+  box-shadow: inset 4px 0 0 var(--w-accent);
+}
+[dir="rtl"][data-theme-preset^="modernist"] .ws-item.active {
+  box-shadow: inset -4px 0 0 var(--w-accent);
+}
+[data-theme-preset^="modernist"] .ws-header-btn {
+  background: transparent;
+  border: 2px solid color-mix(in srgb, var(--w-border) 45%, transparent);
+  font-weight: 600;
+  color: var(--w-text);
+}
+[data-theme-preset^="modernist"] .ws-header-btn:hover {
+  background: var(--w-surface-hi);
+  border-color: color-mix(in srgb, var(--w-border) 45%, transparent);
+}
+[data-theme-preset^="modernist"] .ws-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 800;
+}
+[data-theme-preset^="modernist"] .ws-conn-info { text-transform: uppercase; }
+
+/* ── Classical: gold hairline active row, gold outline toolbar + primary,
+   tabular numerals on counts. ── */
+[data-theme-preset^="classical"] .sidebar-header .sidebar-brand {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+[data-theme-preset^="classical"] .ws-item.active {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--w-accent);
+}
+[data-theme-preset^="classical"] .ws-header-btn {
+  background: transparent;
+  border-color: var(--w-accent);
+  color: color-mix(in srgb, var(--w-accent) 70%, var(--w-text));
+}
+[data-theme-preset^="classical"] .ws-header-btn:hover {
+  background: color-mix(in srgb, var(--w-accent) 12%, var(--w-bg));
+  border-color: var(--w-accent);
+}
+[data-theme-preset^="classical"] .ws-add {
+  background: transparent;
+  border: 1px solid var(--w-accent);
+  border-style: solid;
+  color: color-mix(in srgb, var(--w-accent) 70%, var(--w-text));
+}
+[data-theme-preset^="classical"] .ws-add:hover {
+  background: color-mix(in srgb, var(--w-accent) 12%, var(--w-bg));
+  border-color: var(--w-accent);
+  color: color-mix(in srgb, var(--w-accent) 70%, var(--w-text));
+}
+[data-theme-preset^="classical"] .ws-badge,
+[data-theme-preset^="classical"] .group-header-count,
+[data-theme-preset^="classical"] .ws-conn-info {
+  font-feature-settings: "tnum";
+}
