@@ -966,5 +966,11 @@
   "settings.tab.agentNotif": "الوكلاء والإشعارات",
   "settings.tab.ai": "Claude والصوت",
   "settings.tab.system": "النظام",
-  "settings.font.title": "الخطوط"
+  "settings.font.title": "الخطوط",
+  "fm.transfer.count": "{n} عمليات نقل",
+  "fm.transfer.cancel": "إلغاء النقل",
+  "fm.transfer.dismiss": "إغلاق",
+  "fm.transfer.canceling": "جارٍ الإلغاء…",
+  "fm.transfer.canceled": "أُلغي",
+  "fm.transfer.failed": "فشل"
 }
