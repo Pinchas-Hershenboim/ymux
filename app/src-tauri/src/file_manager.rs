@@ -1624,3 +1624,55 @@ pub(crate) async fn file_manager_unzip_remote(
     }
     Ok(dest)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basename_handles_both_separators_and_trailing_slashes() {
+        assert_eq!(basename("/home/yossi/backup.tar.gz"), "backup.tar.gz");
+        assert_eq!(basename(r"C:\Users\yossi\big file.iso"), "big file.iso");
+        // A trailing separator must not yield an empty label in the UI.
+        assert_eq!(basename("/var/log/"), "log");
+        assert_eq!(basename("plain.txt"), "plain.txt");
+        // Degenerate input still produces something renderable.
+        assert_eq!(basename("/"), "/");
+    }
+
+    #[test]
+    fn cancel_flips_only_the_targeted_transfer() {
+        let (a, flag_a) = transfer_begin();
+        let (b, flag_b) = transfer_begin();
+        assert_ne!(a, b, "ids must be unique");
+
+        assert!(fm_transfer_cancel(a.clone()).is_ok());
+        assert!(flag_a.load(Ordering::Relaxed), "target was not canceled");
+        assert!(!flag_b.load(Ordering::Relaxed), "sibling was canceled too");
+
+        transfer_end(&a);
+        transfer_end(&b);
+    }
+
+    #[test]
+    fn cancel_of_an_unknown_or_finished_transfer_errors_instead_of_panicking() {
+        let (id, _flag) = transfer_begin();
+        transfer_end(&id);
+        // The UI may click × just as a transfer completes; that must
+        // surface as a plain Err, never a panic (Rule #4 / #6).
+        assert!(fm_transfer_cancel(id).is_err());
+        assert!(fm_transfer_cancel("t-nonexistent".to_string()).is_err());
+    }
+
+    #[test]
+    fn finished_transfers_are_removed_from_the_registry() {
+        let (id, _flag) = transfer_begin();
+        {
+            let map = transfers().lock().expect("registry lock");
+            assert!(map.contains_key(&id));
+        }
+        transfer_end(&id);
+        let map = transfers().lock().expect("registry lock");
+        assert!(!map.contains_key(&id), "registry leaked a finished transfer");
+    }
+}
