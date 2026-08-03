@@ -1,16 +1,17 @@
 import { createSignal, createEffect, For, Show, onMount, onCleanup, createMemo } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { t } from "./i18n";
 import { FileEditor } from "./FileEditor";
 import { TechText } from "./TechText";
+import { open } from "@tauri-apps/plugin-dialog";
 import { saveRemoteFileAs } from "./download";
 import { loadFmPaths, saveFmPaths } from "./fmPaths";
 import { createLogger } from "./logger";
 
 const log = createLogger("FM");
 import { openMarkdown, isMarkdownFile } from "./mdViewerStore";
+import { TransferBar } from "./TransferBar";
 import {
   IconArrowUp,
   IconRefresh,
@@ -154,8 +155,6 @@ export function FileManagerPane(p: Props) {
   // button click()s this to pop the OS file picker. We stash which
   // side initiated the pick so the change handler knows where to put
   // the resulting bytes.
-  let fileInputRef: HTMLInputElement | undefined;
-  const [pickerTargetSide, setPickerTargetSide] = createSignal<Side>("remote");
   const openEditor = (side: Side, name: string) => {
     const path = side === "local" ? fullLocal(name) : fullRemote(name);
     setEditorTarget({ side, path, filename: name });
@@ -269,24 +268,6 @@ export function FileManagerPane(p: Props) {
       setRemoteEntries([]);
     }
   };
-
-  // Phase 75.3: live download progress — a large transfer now shows a
-  // percent/size readout in the status line instead of an idle-looking pane.
-  let unlistenProgress: (() => void) | undefined;
-  onMount(async () => {
-    unlistenProgress = await listen<{ path: string; done: number; total: number }>(
-      "fm-download-progress",
-      (e) => {
-        const { done, total } = e.payload;
-        if (total > 0) {
-          setStatus(`↧ ${Math.floor((done / total) * 100)}% · ${fmtSize(done)} / ${fmtSize(total)}`);
-        } else {
-          setStatus(`↧ ${fmtSize(done)}`);
-        }
-      },
-    );
-  });
-  onCleanup(() => unlistenProgress?.());
 
   // Phase 80.1: re-open where the user left off (per workspace, see fmPaths.ts). Writing
   // on every path change rather than on unmount: a pane can vanish with the
@@ -967,71 +948,44 @@ export function FileManagerPane(p: Props) {
     }
   };
 
-  // Phase 23: pick files from anywhere on disk via OS picker and
-  // upload them to the remote (or copy them into the local column if
-  // side === "local"). The HTML5 file input gives us a Blob; we read
-  // it into a Uint8Array and push it to the backend in one shot.
-  // We don't stream — uploads here are interactive and capped at the
-  // tens-of-MB range; for big transfers users should fall back to scp.
-  const pickAndUpload = (side: Side) => {
-    setPickerTargetSide(side);
-    fileInputRef?.click();
-  };
-  const onFilesPicked = async (ev: Event) => {
-    const input = ev.target as HTMLInputElement;
-    const files = input.files;
-    if (!files || files.length === 0) return;
-    const side = pickerTargetSide();
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      const arrayBuf = await f.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(arrayBuf));
+  // Phase 23: pick files from anywhere on disk via OS picker and upload
+  // them to the remote (or copy them into the local column if
+  // side === "local").
+  //
+  // Phase 81.E: this used the HTML5 <input type="file">, which only ever
+  // hands back a Blob — no real path. The bytes then crossed the Tauri
+  // IPC bridge as `Array.from(new Uint8Array(buf))`, i.e. a JSON array of
+  // one number per byte. A 60 MB file became a ~250 MB JSON string and
+  // wedged the webview outright. The native dialog returns actual
+  // filesystem paths instead, so the backend reads the file itself and
+  // zero bytes cross the bridge:
+  //   remote → file_upload (streams from disk, reports progress)
+  //   local  → file_copy_local (also fixes binaries, which the old
+  //            f.text() path silently corrupted through UTF-8)
+  const pickAndUpload = async (side: Side) => {
+    if (side === "remote" && !p.hasSsh) {
+      setErr("no remote — cannot upload");
+      return;
+    }
+    const picked = await open({ multiple: true, directory: false });
+    if (!picked) return; // cancelled
+    const paths = Array.isArray(picked) ? picked : [picked];
+    for (const src of paths) {
+      const name = src.split(/[\\/]/).filter(Boolean).pop() || "file";
       if (side === "remote") {
-        if (!p.hasSsh) {
-          setErr("no remote — cannot upload");
-          break;
-        }
-        const target = fullRemote(f.name);
-        await wrap(`upload ${f.name}`, () =>
-          invoke<number>("file_upload_bytes", {
+        await wrap(`upload ${name}`, () =>
+          invoke<number>("file_upload", {
             workspaceId: p.workspaceId,
-            remotePath: target,
-            bytes,
+            localPath: src,
+            remotePath: fullRemote(name),
           })
         );
       } else {
-        // Local-side "upload" = save the picked file's bytes into the
-        // currently-displayed local directory under its original name.
-        // We use file_write_local with binary text — but that goes
-        // through utf8. For now use a tiny exec dance: create_local +
-        // write_local via base64 isn't ideal. Cleanest is just a
-        // synchronous fs.writeFile on the backend; we'll model this
-        // as: create then write via the existing file_write_local
-        // path with bytes-as-utf8 only when the file is text. For
-        // arbitrary binaries we'd need a file_write_bytes_local —
-        // skip for now and surface a friendly error if the file
-        // looks binary.
-        const target = fullLocal(f.name);
-        // We can write any bytes via a minimal `fs writeFile` —
-        // exposing it as file_upload_bytes_local would mirror remote;
-        // for v1 lean on a fetch-data-URL → blob approach:
-        const blob = new Blob([arrayBuf]);
-        const url = URL.createObjectURL(blob);
-        try {
-          // Pull text via FileReader for text-likely cases; otherwise
-          // bail with a hint. Most users picking "Upload to local"
-          // are copying text/config files anyway.
-          const txt = await f.text();
-          await wrap(`save ${f.name}`, () =>
-            invoke("file_write_local", { path: target, text: txt })
-          );
-        } finally {
-          URL.revokeObjectURL(url);
-        }
+        await wrap(`copy ${name}`, () =>
+          invoke("file_copy_local", { src, dest: fullLocal(name) })
+        );
       }
     }
-    // Reset so picking the same files twice in a row re-fires change.
-    input.value = "";
     if (side === "remote") await refreshRemote();
     else await refreshLocal();
   };
@@ -1443,16 +1397,12 @@ export function FileManagerPane(p: Props) {
           </div>
         </Show>
       </div>
-      {/* Phase 23: hidden OS file picker — triggered by the ↥ toolbar
-           button. Persistent in the DOM so the click() handler always
-           has a target. */}
-      <input
-        ref={(el) => (fileInputRef = el)}
-        type="file"
-        multiple
-        style="display:none"
-        onChange={onFilesPicked}
-      />
+
+      {/* Phase 81: live progress for uploads and downloads. Reads the
+           global transferStore, so it also lights up for transfers this
+           pane didn't start (terminal drag-drop, OSC 8 link downloads).
+           Renders nothing when there is no transfer. */}
+      <TransferBar />
 
       {/* Phase 23: popup context menu. Position-fixed; tracks mouse
            coordinates of the right-click. Outside-click + Escape

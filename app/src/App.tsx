@@ -49,6 +49,7 @@ import {
 } from "./terminalInstance";
 import { saveRemoteFileAs } from "./download";
 import { MarkdownViewer } from "./MarkdownViewer";
+import { initTransferListener } from "./transferStore";
 import {
   applyTheme,
   watchSystemTheme,
@@ -2266,6 +2267,12 @@ function App() {
   };
 
   onMount(async () => {
+    // Phase 81.B: one global subscription to the SFTP transfer events.
+    // Transfers start from several places (File Manager, terminal
+    // drag-drop, OSC 8 links) but all feed the same store, so the
+    // listener belongs at the root rather than in any one pane.
+    void initTransferListener();
+
     // Phase 48-D: lightweight UI-stall instrumentation. A 100ms heartbeat
     // measures actual elapsed vs expected and reports gaps >300ms; a
     // PerformanceObserver on `longtask` reports any single task >200ms.

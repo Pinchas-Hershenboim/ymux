@@ -990,5 +990,11 @@
   "settings.tab.agentNotif": "агенты и уведомления",
   "settings.tab.ai": "Claude и голос",
   "settings.tab.system": "система",
-  "settings.font.title": "шрифты"
+  "settings.font.title": "шрифты",
+  "fm.transfer.count": "Передач: {n}",
+  "fm.transfer.cancel": "Отменить передачу",
+  "fm.transfer.dismiss": "Закрыть",
+  "fm.transfer.canceling": "Отмена…",
+  "fm.transfer.canceled": "Отменено",
+  "fm.transfer.failed": "Ошибка"
 }

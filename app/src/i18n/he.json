@@ -990,5 +990,11 @@
   "settings.tab.agentNotif": "סוכנים והתראות",
   "settings.tab.ai": "Claude וקול",
   "settings.tab.system": "מערכת",
-  "settings.font.title": "גופנים"
+  "settings.font.title": "גופנים",
+  "fm.transfer.count": "{n} העברות",
+  "fm.transfer.cancel": "בטל העברה",
+  "fm.transfer.dismiss": "סגור",
+  "fm.transfer.canceling": "מבטל…",
+  "fm.transfer.canceled": "בוטל",
+  "fm.transfer.failed": "נכשל"
 }

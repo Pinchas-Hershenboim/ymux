@@ -990,5 +990,11 @@
   "settings.tab.agentNotif": "agents & notifications",
   "settings.tab.ai": "claude & voice",
   "settings.tab.system": "system",
-  "settings.font.title": "fonts"
+  "settings.font.title": "fonts",
+  "fm.transfer.count": "{n} transfers",
+  "fm.transfer.cancel": "Cancel transfer",
+  "fm.transfer.dismiss": "Dismiss",
+  "fm.transfer.canceling": "Canceling…",
+  "fm.transfer.canceled": "Canceled",
+  "fm.transfer.failed": "Failed"
 }

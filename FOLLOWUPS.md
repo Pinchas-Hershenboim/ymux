@@ -17,6 +17,7 @@ Format:
 - [ ] P3 | 2026-08-03 | app/src-tauri/src/lib.rs:1604 | bidi_filter state is keyed by pane, so an SSH channel's stdout and stderr still share one escape-sequence state machine (the UTF-8 + OSC halves were split by the emit_data fix). A partial CSI/OSC on one stream can be completed by the other's bytes. Deliberate: a synthetic per-stream key would miss the per-pane smart_bidi toggle and silently leave stderr unfiltered. Only reachable via ExtendedData, rare on a PTY channel.
 - [ ] P3 | 2026-08-03 | app/src-tauri/src/settings.rs:1662 | Mono/UI split is a name-substring heuristic; "Courier 10,12,15 (120)" bitmap .fon entries still reach the terminal picker and are known to measure badly (see terminalInstance.ts remeasureFont comment). Consider filtering bitmap .fon families out entirely.
 - [ ] P3 | 2026-08-03 | app/src-tauri/src/settings.rs:1629 | Font enumeration shells out to PowerShell on every Settings open (~300ms). Fine at current call frequency; if the picker ever refreshes more often, read the registry via the winreg dep that fonts.rs now pulls in.
+- [ ] P3 | 2026-08-03 | app/src-tauri/build.rs (resources) | A fresh git worktree can't `cargo build`: `app/src-tauri/resources/winmux-cli.exe` is gitignored, so the Tauri build script dies with "resource path doesn't exist". Has to be copied from the main checkout by hand. Either build it on demand or document the step.
 
 ## Done
 
