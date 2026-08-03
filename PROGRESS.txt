@@ -816,3 +816,40 @@ REMAINING GAP: the Settings UI has never been exercised in the running
   app. Everything above is command-level and unit-level verification.
 COMMITS: fca8b54, 73505cc, e513e29, e646383, 1959439, 400c3bd
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~16:40 IDT] session=font-detect-install (cleanup + custom field)
+YOSSI'S CORRECTION: "I didn't mean install it on MY machine, I wanted it
+  built so any user can install." Fair - I read "download and test" as
+  license to mutate his machine. It was not.
+(1) UNINSTALL - done, verified:
+  28 registry values removed from HKCU\...\Fonts, 28 .ttf files removed
+  from %LOCALAPPDATA%\Microsoft\Windows\Fonts, WM_FONTCHANGE broadcast,
+  0 failures, 0 leftovers. Targeting was an explicit allow-list on the
+  file name from each registry value's DATA path (FiraCode-,
+  FiraCodeNerdFontMono-, JetBrainsMono-), so the user's own 5 Fb Vayikra
+  faces were never candidates. Confirmed via list_system_fonts(): all 4
+  catalog families read MISS again, i.e. the machine now shows exactly
+  what a fresh user sees. One-off script kept in the session temp dir,
+  deliberately NOT added to the repo.
+(2) PRODUCTION AUDIT - clean:
+  - no absolute/user/agent paths in fonts.rs or fontProbe.ts
+  - winmux-cli.exe still untracked (build artifact, gitignored)
+  - Tauri capabilities need no entry for app-defined commands
+  - live-install tests are all #[ignore], never run in a normal suite
+  CASCADIA: stays OUT, now with evidence - release ships only a 150MB
+  zip; the repo's only committed .ttf are sources/vtt_data/*_VTT.ttf,
+  which are VTT hinting sources and not distributable builds; the Nerd
+  Font variants are 52-55MB. No small legitimate source exists.
+  "SOMETHING ELSE": implemented as a free-text family field instead of
+  guessing - app/src/fontProbe.ts + CustomFontField in SettingsModal.
+  NOTE: deliberately NOT document.fonts.check() - in Chromium/WebView2 it
+  returns true for almost any unknown family, which would report a
+  missing font as present (the exact bug this feature exists to kill).
+  Uses canvas width comparison against 3 generics instead.
+  Also fixed a UX trap in that field: probing only on change/blur left
+  the Use button disabled at click time, swallowing the press. Now
+  debounced on input.
+STATUS: cargo test 134 + 3 ignored, tsc clean, vite build clean.
+REMAINING GAP (unchanged): the Settings UI has never been exercised in
+  the running app.
+------------------------------------------------------------------

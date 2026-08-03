@@ -30,6 +30,7 @@ import {
   OBSERVABILITY_HOOKS,
 } from "./settings";
 import { applyI18nSettings, LANGUAGES, t } from "./i18n";
+import { isFontAvailableAsync } from "./fontProbe";
 import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
@@ -79,6 +80,79 @@ function formatBytes(n: number): string {
  * answer, and hunting down a .ttf is exactly the step that stalls an
  * onboarding call.
  */
+/**
+ * Free-text family entry, for anything the dropdown can't offer: a font the
+ * mono/UI heuristic filed under the wrong list, one delivered by the
+ * web-font URL, or simply a family this build's catalog has never heard of.
+ *
+ * The verdict comes from `isFontAvailableAsync` — the renderer is asked
+ * whether it can actually draw the family, which is the only check that
+ * survives the Chromium `document.fonts.check()` false-positive.
+ */
+function CustomFontField(props: {
+  label: string;
+  onApply: (family: string) => void;
+}) {
+  const [value, setValue] = createSignal("");
+  const [ok, setOk] = createSignal<boolean | null>(null);
+
+  // Probe as the user types, debounced. Probing only on change/blur looks
+  // cheaper but traps them: the Use button stays disabled until a verdict
+  // exists, so typing a valid name and clicking Use swallows the click —
+  // the blur fires the probe, the button enables a moment later, and the
+  // press is gone.
+  let probeToken = 0;
+  let timer: number | undefined;
+  const probe = (raw: string) => {
+    const token = ++probeToken;
+    const family = raw.trim();
+    if (!family) {
+      setOk(null);
+      return;
+    }
+    void isFontAvailableAsync(family).then((available) => {
+      // Drop a verdict the user has already typed past.
+      if (token === probeToken) setOk(available);
+    });
+  };
+  const schedule = (raw: string) => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => probe(raw), 250);
+  };
+  onCleanup(() => window.clearTimeout(timer));
+
+  return (
+    <label>
+      <span>{props.label}</span>
+      <div style="display:flex; gap:8px; flex:1; align-items:center">
+        <input
+          type="text"
+          style="flex:1"
+          placeholder={t("settings.font.custom.placeholder")}
+          value={value()}
+          onInput={(e) => {
+            const raw = e.currentTarget.value;
+            setValue(raw);
+            setOk(null);
+            schedule(raw);
+          }}
+        />
+        <Show when={ok() !== null}>
+          <span title={ok() ? undefined : t("settings.font.custom.unavailable")}>
+            {ok() ? "✅" : "⚠️"}
+          </span>
+        </Show>
+        <button
+          disabled={!value().trim() || ok() !== true}
+          onClick={() => props.onApply(value().trim())}
+        >
+          {t("settings.font.custom.apply")}
+        </button>
+      </div>
+    </label>
+  );
+}
+
 function FontMissingNotice(props: {
   family: string;
   catalog: FontCatalogItem[];
@@ -615,6 +689,12 @@ export function SettingsModal(p: Props) {
                       />
                     )}
                   </Show>
+                  <CustomFontField
+                    label={t("settings.font.custom.ui")}
+                    onApply={(family) =>
+                      update("font", { ...p.settings.font, ui_family: family })
+                    }
+                  />
                   <label>
                     <span>{t("settings.font.terminal")}</span>
                     <div style="display:flex; gap:8px; flex:1">
@@ -654,6 +734,12 @@ export function SettingsModal(p: Props) {
                       />
                     )}
                   </Show>
+                  <CustomFontField
+                    label={t("settings.font.custom.terminal")}
+                    onApply={(family) =>
+                      update("font", { ...p.settings.font, terminal_family: family })
+                    }
+                  />
                   <Show when={fontNote()}>
                     {(note) => <p class="settings-hint">{note()}</p>}
                   </Show>
