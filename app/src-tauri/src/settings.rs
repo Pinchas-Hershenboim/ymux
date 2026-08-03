@@ -1581,16 +1581,90 @@ const CSS_GENERIC_FAMILIES: &[&str] = &[
     "fantasy",
 ];
 
-/// True if `name` is `base` plus a trailing style/weight word — i.e. `name`
-/// is a variant face of the family `base` ("JetBrains Mono ExtraBold" vs
-/// "JetBrains Mono"). Used to keep the picker one-row-per-family. The word
-/// boundary is what stops "Courier New" from being read as a variant of
-/// "Courier".
+/// Weight / style words that a registry face name appends to its family.
+/// Deliberately does NOT include words that start a genuinely different
+/// family: "New" ("Courier New"), "Variable" ("Segoe UI Variable"), "Code"
+/// / "Mono" ("Cascadia Code" vs "Cascadia Mono"), "Nerd" ("JetBrainsMono
+/// Nerd Font" is its own CSS family and must stay separately selectable).
+const FONT_STYLE_WORDS: &[&str] = &[
+    "regular",
+    "bold",
+    "italic",
+    "oblique",
+    "light",
+    "extralight",
+    "ultralight",
+    "semilight",
+    "thin",
+    "medium",
+    "semibold",
+    "demibold",
+    "extrabold",
+    "ultrabold",
+    "black",
+    "heavy",
+    "book",
+    "roman",
+    "retina",
+    "condensed",
+    "semicondensed",
+    "extracondensed",
+];
+
+/// True if `name` is `base` plus trailing style/weight words only — i.e.
+/// `name` is a variant FACE of the family `base` ("JetBrains Mono ExtraBold"
+/// vs "JetBrains Mono"), not a different family that merely shares a prefix.
+///
+/// The style-word check is load-bearing, not decoration: a plain
+/// prefix-plus-space rule makes "Courier New" answer a request for
+/// "Courier", which would mark an uninstalled family as installed — exactly
+/// the class of silent lie this whole change exists to remove.
 fn extends_family(name: &str, base: &str) -> bool {
-    base.len() < name.len()
-        && name.is_char_boundary(base.len())
-        && name[..base.len()].eq_ignore_ascii_case(base)
-        && name[base.len()..].starts_with(' ')
+    if base.is_empty() || base.len() >= name.len() {
+        return false;
+    }
+    if !name.is_char_boundary(base.len()) || !name[..base.len()].eq_ignore_ascii_case(base) {
+        return false;
+    }
+    let rest = &name[base.len()..];
+    if !rest.starts_with(' ') {
+        return false;
+    }
+    let mut words = rest.split_whitespace().peekable();
+    if words.peek().is_none() {
+        return false; // trailing whitespace only — not a distinct face
+    }
+    words.all(|w| {
+        FONT_STYLE_WORDS
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(w))
+    })
+}
+
+/// Heuristic split of the enumerated set into the terminal picker (mono) and
+/// the UI picker. Name-based — the registry doesn't tell us pitch — so it is
+/// a best guess, deliberately generous on the mono side.
+fn looks_monospace(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    const HINTS: &[&str] = &[
+        "mono",
+        "consolas",
+        "cascadia",
+        "courier",
+        "menlo",
+        "fira",
+        "jetbrains",
+        "iosevka",
+        "hack",
+        "source code",
+        "lucida console",
+    ];
+    // "Monotype Corsiva" is a script face, not a mono one — it only matched
+    // because "Monotype" contains "mono".
+    if lower.contains("monotype") && !lower.contains("mono ") {
+        return false;
+    }
+    HINTS.iter().any(|h| lower.contains(h))
 }
 
 /// True if `family` is present in the enumerated set.
@@ -1675,23 +1749,12 @@ pub(crate) fn list_system_fonts() -> Result<FontFamilies, String> {
         .filter(|n| !all.iter().any(|base| extends_family(n, base)))
         .cloned()
         .collect();
-    let mono_hints = [
-        "mono", "consolas", "cascadia", "courier", "menlo", "fira", "jetbrains",
-        "iosevka", "hack", "source code", "lucida console",
-    ];
-    let mono: Vec<String> = display
-        .iter()
-        .filter(|n| {
-            let lower = n.to_lowercase();
-            mono_hints.iter().any(|h| lower.contains(h))
-        })
-        .cloned()
-        .collect();
+    let mono: Vec<String> = display.iter().filter(|n| looks_monospace(n)).cloned().collect();
     let ui: Vec<String> = display
         .iter()
         .filter(|n| {
             let lower = n.to_lowercase();
-            !mono_hints.iter().any(|h| lower.contains(h))
+            !looks_monospace(n)
                 && !lower.contains("symbol")
                 && !lower.contains("emoji")
                 && !lower.contains("wingdings")
@@ -1784,31 +1847,38 @@ fn enumerate_windows_fonts() -> Option<Vec<String>> {
             }
         }
     }
-    // Strip variant suffixes like "Bold", "Italic" so the picker shows
-    // family names, not every weight. Keep the suffixed form too — it is what
-    // `family_is_installed` prefix-matches against for families whose only
-    // installed faces are non-regular.
-    let mut stripped_forms: Vec<String> = Vec::new();
-    for name in families.iter() {
-        let mut base = name.as_str();
-        for suffix in [
-            " Bold Italic",
-            " Bold",
-            " Italic",
-            " Light",
-            " Black",
-            " Semibold",
-        ] {
-            if let Some(s) = base.strip_suffix(suffix) {
-                base = s.trim_end();
-            }
-        }
-        if base != name.as_str() && !base.is_empty() {
-            stripped_forms.push(base.to_string());
-        }
-    }
+    // Add the bare family for every variant face ("Cascadia Code Regular" →
+    // "Cascadia Code") so the picker can show one row per family. The
+    // suffixed form is kept too: it is what `family_is_installed` matches
+    // against for a family whose regular face isn't separately registered.
+    let stripped_forms: Vec<String> = families
+        .iter()
+        .filter_map(|name| strip_style_suffix(name))
+        .collect();
     families.extend(stripped_forms);
     Some(families)
+}
+
+/// Drop trailing style/weight words from a face name, yielding the family
+/// ("Segoe UI Semibold" → "Segoe UI"). None when there is nothing to strip,
+/// or when stripping would consume the whole name.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn strip_style_suffix(name: &str) -> Option<String> {
+    let mut base = name.trim_end();
+    // Note: a missing space must BREAK, not return — "Consolas Bold Italic"
+    // strips down to a single word and still has a family to report.
+    while let Some(cut) = base.rfind(' ') {
+        let word = &base[cut + 1..];
+        if !FONT_STYLE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(word)) {
+            break;
+        }
+        base = base[..cut].trim_end();
+    }
+    if base.is_empty() || base.len() == name.trim_end().len() {
+        None
+    } else {
+        Some(base.to_string())
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1899,6 +1969,129 @@ fn insert_at_path(root: &mut Value, path: &str, leaf: Value) -> Result<(), Strin
             .or_insert_with(|| Value::Object(Default::default()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::{
+        extends_family, family_is_installed, list_system_fonts, looks_monospace,
+        strip_style_suffix,
+    };
+
+    fn installed() -> Vec<String> {
+        vec![
+            "Consolas".to_string(),
+            "Courier New".to_string(),
+            "JetBrains Mono ExtraBold".to_string(),
+            "Segoe UI".to_string(),
+        ]
+    }
+
+    #[test]
+    fn exact_match_counts() {
+        assert!(family_is_installed("Consolas", &installed()));
+        assert!(family_is_installed("consolas", &installed()), "case-insensitive");
+    }
+
+    #[test]
+    fn variant_face_satisfies_its_family() {
+        // Only the ExtraBold face is registered, but the family IS present.
+        assert!(family_is_installed("JetBrains Mono", &installed()));
+    }
+
+    #[test]
+    fn missing_family_is_reported_missing() {
+        assert!(!family_is_installed("Fira Code", &installed()));
+        assert!(!family_is_installed("Inter", &installed()));
+    }
+
+    #[test]
+    fn sibling_family_is_not_a_variant() {
+        // "Courier New" is its own family, NOT a face of "Courier" — so
+        // having it installed must not satisfy a request for "Courier".
+        assert!(!family_is_installed("Courier", &installed()));
+        assert!(!extends_family("Courier New", "Courier"));
+        assert!(!extends_family("CourierNew", "Courier"));
+        // Same trap, real cases from the picker's own baseline.
+        assert!(!extends_family("Cascadia Code", "Cascadia"));
+        assert!(!extends_family("Segoe UI Variable", "Segoe UI"));
+        assert!(
+            !extends_family("JetBrainsMono Nerd Font", "JetBrainsMono"),
+            "Nerd Font builds are a separate CSS family and must stay pickable"
+        );
+    }
+
+    #[test]
+    fn style_suffixes_are_variants() {
+        assert!(extends_family("Segoe UI Semibold", "Segoe UI"));
+        assert!(extends_family("Fira Code Retina", "Fira Code"));
+        assert!(extends_family("Consolas Bold Italic", "Consolas"));
+        assert!(extends_family("Consolas bold", "Consolas"), "case-insensitive");
+        assert!(!extends_family("Consolas ", "Consolas"), "whitespace only");
+    }
+
+    #[test]
+    fn css_generics_always_resolve() {
+        for g in ["monospace", "system-ui", "ui-monospace", "sans-serif"] {
+            assert!(
+                family_is_installed(g, &[]),
+                "{g} is a CSS generic and always resolves"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_family_is_not_installed() {
+        assert!(!family_is_installed("", &installed()));
+        assert!(!family_is_installed("   ", &installed()));
+    }
+
+    #[test]
+    fn strips_style_words_down_to_the_family() {
+        assert_eq!(
+            strip_style_suffix("Cascadia Code Regular").as_deref(),
+            Some("Cascadia Code")
+        );
+        assert_eq!(
+            strip_style_suffix("Consolas Bold Italic").as_deref(),
+            Some("Consolas"),
+            "consumes a run of style words"
+        );
+        // Nothing to strip → None, so the caller adds no redundant entry.
+        assert_eq!(strip_style_suffix("Consolas"), None);
+        assert_eq!(strip_style_suffix("Courier New"), None);
+        assert_eq!(strip_style_suffix("Bold"), None, "would consume the whole name");
+    }
+
+    #[test]
+    fn monospace_heuristic_skips_monotype() {
+        // "Monotype Corsiva" is a script face that only matched because
+        // "Monotype" contains "mono".
+        assert!(!looks_monospace("Monotype Corsiva"));
+        assert!(looks_monospace("Cascadia Mono"));
+        assert!(looks_monospace("JetBrainsMono Nerd Font"));
+        assert!(looks_monospace("Fira Code"));
+        assert!(!looks_monospace("Segoe UI"));
+    }
+
+    /// Live check against the real machine: the command must succeed, must
+    /// offer the baseline, and must not claim a family is installed unless
+    /// enumeration actually backs it.
+    #[test]
+    fn list_system_fonts_is_self_consistent() {
+        let f = list_system_fonts().expect("command is infallible by design");
+        assert!(!f.mono.is_empty() && !f.ui.is_empty());
+        // Baseline is always offered so the picker is never empty.
+        assert!(f.mono.iter().any(|e| e.name == "Consolas"));
+        // One row per family — no duplicate names within a list.
+        for list in [&f.ui, &f.mono] {
+            let mut names: Vec<String> = list.iter().map(|e| e.name.to_lowercase()).collect();
+            names.sort();
+            let before = names.len();
+            names.dedup();
+            assert_eq!(before, names.len(), "picker must not list a family twice");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2047,3 +2240,5 @@ mod tests {
         );
     }
 }
+
+

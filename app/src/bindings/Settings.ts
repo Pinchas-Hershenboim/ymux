@@ -49,7 +49,7 @@ ssh_key_offer_disabled: boolean,
  * connects. `default = "default_true"` keeps pre-41 settings.json
  * backwards-compatible (missing field → true).
  */
-auto_connect_on_workspace_select: boolean,
+auto_connect_on_workspace_select: boolean, 
 /**
  * Phase 80. When true, app start re-attaches the active workspace's SSH
  * panes to the tmux sessions they were on when it closed. OFF by default
@@ -59,13 +59,13 @@ auto_connect_on_workspace_select: boolean,
  * notice. `#[serde(default)]` → missing field is false, so an existing
  * settings.json keeps the old startup behavior until the user asks.
  */
-restore_sessions_on_start: boolean,
+restore_sessions_on_start: boolean, 
 /**
  * Phase 80.1. When true, the file manager reopens at the last directory
  * each column was showing (per workspace) instead of `$HOME`. OFF by
  * default so the pre-80.1 behavior is what an untouched install gets.
  */
-file_manager_remember_path: boolean,
+file_manager_remember_path: boolean, 
 /**
  * Phase 49-C: optional auto-delete of empty + stale workspaces at
  * startup. `None` (default) = disabled. Range 1-90 days enforced
