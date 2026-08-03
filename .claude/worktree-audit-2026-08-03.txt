@@ -1,0 +1,50 @@
+# winmux worktree audit — 2026-08-03
+
+## git worktree list
+C:/Users/mlastudent371/Documents/programing/winmux                                                         6140532 [wsl-smart-install-fix]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/file-transfer-progress                1fc05d3 [file-transfer-progress]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/file-transfer-progress-b              98f0c6d [worktree-file-transfer-progress-b]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/font-detect-install                   2dd0f3b [font-detect-install]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/group-state-button-layout-f6340d      c1b9a8c (detached HEAD)
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/integration                           456f0ed [claude/integration]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/rtl-visual-order                      ad40fbf [rtl-claude-visual-order]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/unified-logging                       e57d947 [claude/unified-logging]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/unified-setup-smart-installer-cb3dd1  52ac3d5 [claude/unified-setup-smart-installer-cb3dd1]
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/winmux-multi-machine-sync-52c06f      32597e7 (detached HEAD)
+C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/winmux-redesign-13049b                a8363d3 [claude/winmux-redesign-13049b]
+C:/Users/mlastudent371/Documents/programing/winmux-wt-mega                                                 98f0c6d [beta.3-mega]
+C:/Users/mlastudent371/Documents/programing/winmux-wt-unified                                              8938d97 [beta.3-unified]
+
+## git branch -avv
+  67-mobile                                   d6de67f feat(protocol): 67.A.1 — winmux-protocol crate (mobile/web wire types)
++ beta.3-mega                                 98f0c6d (C:/Users/mlastudent371/Documents/programing/winmux-wt-mega) chore(release): manifest.json -> v0.4.5-beta.1 mega bundles (new sha256/size)
++ beta.3-unified                              8938d97 (C:/Users/mlastudent371/Documents/programing/winmux-wt-unified) merge: PR #5 — Phase 80/80.1 (restore SSH tmux sessions + file-manager last dir)
+  browser-dev-mode-tickets                    aefbba4 feat(browser): reuse connection-wizard SFTP folder picker for Dev Mode + hide tunnel port behind remote URL + detected-ports dropdown
+  browser-tickets-v2                          1614af7 docs(decisions): close Phase 64 J — [file] links live-verified; Open down to 5
+  claude/group-state-button-layout-f6340d     c1b9a8c feat(sidebar): move group creation into the Move-to-group context submenu
++ claude/integration                          456f0ed (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/integration) docs: round-10 diagnosis — TUI-owns-bidi restored, saga closed into follow-up round
+  claude/tmux-claude-session-sync-d57bda      32597e7 chore: sync package-lock.json version to 0.4.5
++ claude/unified-logging                      e57d947 (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/unified-logging) feat(logs): component filter in the Logs tab
++ claude/unified-setup-smart-installer-cb3dd1 52ac3d5 (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/unified-setup-smart-installer-cb3dd1) Phase 80.E: LocalSetupFlow inspect no longer serialized behind listener registration; DECISIONS 6.2 closed
+  claude/winmux-multi-machine-sync-52c06f     7a361fd docs(decisions): J resolved to Track B — [file] is plain text, OSC8 transport works
++ claude/winmux-redesign-13049b               a8363d3 (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/winmux-redesign-13049b) docs: live smoke passed — presets, ANSI ramps x4 dark, FM+notifications verified on Windows
+  design-pass-01                              5413ef9 feat(palette): fuzzy match + categories + icons + shortcuts (Design Pass 01)
++ file-transfer-progress                      1fc05d3 (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/file-transfer-progress) docs(progress): Phase 81 — file-transfer progress bar + cancel
+  fix-emit-data-utf8                          6140532 docs(progress): WSL install path — preflight + UAC + 3010
++ font-detect-install                         2dd0f3b (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/font-detect-install) feat(fonts): free-text family field with a real availability probe
+  main                                        1614af7 [origin/main: behind 82] docs(decisions): close Phase 64 J — [file] links live-verified; Open down to 5
+  pr-5                                        7949af3 docs: Phase 80.1 verified live — file manager reopens at the last directory
+  redesign/winmux-directions                  a8363d3 [origin/redesign/winmux-directions] docs: live smoke passed — presets, ANSI ramps x4 dark, FM+notifications verified on Windows
++ rtl-claude-visual-order                     ad40fbf (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/rtl-visual-order) [origin/rtl-claude-visual-order] fix(rtl): stop double-bidi of Claude Code's visual-order output — per-pane TUI-owns-bidi state
+  settings-refactor-walkthrough               456f0ed docs: round-10 diagnosis — TUI-owns-bidi restored, saga closed into follow-up round
++ worktree-file-transfer-progress-b           98f0c6d (C:/Users/mlastudent371/Documents/programing/winmux/.claude/worktrees/file-transfer-progress-b) chore(release): manifest.json -> v0.4.5-beta.1 mega bundles (new sha256/size)
+* wsl-smart-install-fix                       6140532 docs(progress): WSL install path — preflight + UAC + 3010
+  remotes/origin/HEAD                         -> origin/main
+  remotes/origin/main                         98f0c6d chore(release): manifest.json -> v0.4.5-beta.1 mega bundles (new sha256/size)
+  remotes/origin/redesign/winmux-directions   a8363d3 docs: live smoke passed — presets, ANSI ramps x4 dark, FM+notifications verified on Windows
+  remotes/origin/research/secrets-vault       c0ace9a research: deep dive on Secrets Vault — state of the art, threat model, capability protocol, MVP recommendation
+  remotes/origin/rtl-claude-visual-order      ad40fbf fix(rtl): stop double-bidi of Claude Code's visual-order output — per-pane TUI-owns-bidi state
+
+## git stash list
+stash@{0}: On (no branch): pre-wsl-investigation: local linux-cli rebuild (sha 8b6276, 2026-07-16T05:52) superseded by beta.3-mega
+stash@{1}: On main: wip: terminal/textDirection changes during sync-commit

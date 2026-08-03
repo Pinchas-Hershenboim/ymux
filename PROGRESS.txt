@@ -708,3 +708,31 @@ FIX: terminalInstance.ts + textDirection.ts(+tests) restored to 9b87860
   complaints) - proper fix = DECISIONS return-conditions round.
 NOTE: winmux-pre-mouse-diag.exe (02:09) = standalone diag build @9b87860.
 ------------------------------------------------------------------
+
+=== 2026-08-03 — Worktree/branch cleanup (Phase 1 of 3) ===
+Task: 13 worktrees, 23 branches, shared tree parked on a feature branch,
+      two sessions writing the same working copy. Audit + cleanup.
+
+Findings:
+- origin/main == beta.3-mega (98f0c6d). Local main was 82 behind, 0 ahead
+  -> plain fast-forward, nothing was stuck.
+- wsl-smart-install-fix and fix-emit-data-utf8 were the SAME SHA (6140532).
+  Not a lost-work accident: one 9-commit line holds both the WSL and the
+  UTF-8 fixes. Duplicate ref, deleted after byte-level identity check.
+- rtl-visual-order's uncommitted Cargo.lock (+229) was cargo repairing a
+  stale lockfile committed at ad40fbf (its Cargo.toml already declared
+  bollard 0.17 + sysinfo 0.32; the lock did not). The repaired lock is
+  byte-identical to origin/main's. Junk, discarded.
+- Both stashes superseded: stash@{0} self-labelled "superseded by
+  beta.3-mega"; stash@{1}'s textDirection.ts/.test.ts are byte-identical
+  to main and 40/41 terminalInstance lines are on main (the 41st is a
+  comment; main's loadFaces().finally() supersedes the naive retry).
+- 3 empty orphan dirs under .claude/worktrees (netfree-cert-errors,
+  project-decisions-roadmap, remote-control) — no .git, 0 files.
+
+Actions: 13 worktrees -> 4; 23 branches -> 8; 2 stashes -> 0;
+  ~200MB of root winmux-*-test.exe gitignored (left on disk);
+  main fast-forwarded to 98f0c6d.
+
+Files: .gitignore (+2), .claude/worktree-audit-2026-08-03.txt (new)
+Result: every worktree clean, main clean. No push. Phases 2-3 pending.
