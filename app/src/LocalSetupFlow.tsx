@@ -200,6 +200,9 @@ export function LocalSetupFlow(p: Props) {
     if (s.state === "done") return { cls: "ok", icon: IconCheck };
     if (s.state === "failed") return { cls: "err", icon: IconClose };
     if (s.state === "running") return { cls: "running", icon: null };
+    // Without this the backend's "skipped" fell through to "pending" —
+    // an abandoned WSL chain looked like it simply hadn't started yet.
+    if (s.state === "skipped") return { cls: "skipped", icon: IconClose };
     return { cls: "pending", icon: IconCircle };
   };
 
@@ -434,7 +437,35 @@ export function LocalSetupFlow(p: Props) {
 
       {/* Step 3: done */}
       <Show when={step() === "done"}>
-        <p>{t("localSetup.done.message")}</p>
+        {/* A failed WSL chain skips workspace creation silently; saying
+            "finished" there is what made a broken install look clean. */}
+        <Show
+          when={(result()?.failed_steps.length ?? 0) > 0}
+          fallback={<p>{t("localSetup.done.message")}</p>}
+        >
+          <div class="prov-error-card">
+            <div class="prov-error-title">{t("localSetup.done.failed.title")}</div>
+            <p class="prov-error-body">
+              {t("localSetup.done.failed.body", {
+                steps: result()!
+                  .failed_steps.map((s) => t(`localSetup.step.${s}`))
+                  .join(", "),
+              })}
+            </p>
+            <Show when={result()!.skipped_steps.length > 0}>
+              <p class="prov-error-hint">
+                {t("localSetup.done.failed.skipped", {
+                  steps: result()!
+                    .skipped_steps.map((s) => t(`localSetup.step.${s}`))
+                    .join(", "),
+                })}
+              </p>
+            </Show>
+            <Show when={!result()!.wsl_chain_ok}>
+              <p class="prov-error-hint">{t("localSetup.done.failed.no_workspace")}</p>
+            </Show>
+          </div>
+        </Show>
         <Show when={result()?.workspace_id}>
           <div class="wizard-test-result ok">
             <div class="wizard-test-line">

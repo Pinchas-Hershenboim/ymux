@@ -534,6 +534,15 @@ pub(crate) struct LocalSetupResult {
     pub run_id: String,
     pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,
+    /// Steps that errored, in run order. The done screen must not claim
+    /// success while this is non-empty — a failed WSL chain silently
+    /// skips workspace creation, which used to render as a clean finish.
+    pub failed_steps: Vec<String>,
+    /// Chain steps abandoned because an earlier chain step failed.
+    pub skipped_steps: Vec<String>,
+    /// True when the WSL chain ran and came out clean. When false with a
+    /// non-empty `failed_steps`, no WSL workspace exists.
+    pub wsl_chain_ok: bool,
 }
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -739,6 +748,8 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
     // WSL-chain health — decides whether we finalize a workspace.
     let mut chain_failed = false;
     let mut ran_wsl_chain = false;
+    let mut failed_steps: Vec<String> = Vec::new();
+    let mut skipped_steps: Vec<String> = Vec::new();
 
     for (idx, step) in input.steps.iter().enumerate() {
         let kind = step.as_str();
@@ -751,12 +762,17 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 | "InstallTmuxInWsl"
                 | "DeployWinmuxCliToWsl"
                 | "DeployTmuxConfToWsl"
+                // Was missing: it ran against a non-existent distro after
+                // a broken chain and — being the last card — ended the
+                // run on a green check.
+                | "InstallHooksInWsl"
         );
         if is_wsl_chain {
             ran_wsl_chain = true;
             // A broken chain makes every later chain step meaningless —
             // skip them explicitly instead of cascading noise.
             if chain_failed {
+                skipped_steps.push(kind.to_string());
                 emit_step(
                     &app,
                     &run_id,
@@ -1076,7 +1092,16 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 )
                 .await
                 {
-                    Ok(Ok((_code, out))) => Ok(out),
+                    // The script ends in `|| true`, so a distro without
+                    // ~/.claude still exits 0 — best-effort posture kept.
+                    // A non-zero code here means wsl.exe itself failed
+                    // (e.g. no such distro), which is not best-effort.
+                    Ok(Ok((0, out))) => Ok(out),
+                    Ok(Ok((code, out))) => Err(ProvisioningError::StepFailed {
+                        step: kind.into(),
+                        exit_code: code,
+                        stderr: out,
+                    }),
                     Ok(Err(e)) => Err(ProvisioningError::Generic(e)),
                     Err(_) => Err(ProvisioningError::Generic("hooks install timed out".into())),
                 }
@@ -1093,8 +1118,21 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 if is_wsl_chain {
                     chain_failed = true;
                 }
+                failed_steps.push(kind.to_string());
                 let msg = err.user_message();
-                log_warn("SETUP", &format!("local-setup[{run_id}] step {kind} failed: {msg}"));
+                // user_message() drops StepFailed's stderr — without it a
+                // user-reported install failure is undiagnosable after the
+                // fact (the UI card has it, the log did not).
+                let detail = match &err {
+                    ProvisioningError::StepFailed { stderr, .. } if !stderr.trim().is_empty() => {
+                        format!(" — {}", stderr.trim())
+                    }
+                    _ => String::new(),
+                };
+                log_warn(
+                    "SETUP",
+                    &format!("local-setup[{run_id}] step {kind} failed: {msg}{detail}"),
+                );
                 emit_step(
                     &app,
                     &run_id,
@@ -1114,7 +1152,21 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
         run_id: run_id.clone(),
         workspace_id: None,
         workspace_name: None,
+        failed_steps: failed_steps.clone(),
+        skipped_steps,
+        wsl_chain_ok: ran_wsl_chain && !chain_failed,
     };
+    if !failed_steps.is_empty() {
+        log_warn(
+            "SETUP",
+            &format!(
+                "local-setup[{run_id}] finished with {} failed step(s): {} — WSL workspace {}",
+                failed_steps.len(),
+                failed_steps.join(", "),
+                if ran_wsl_chain && !chain_failed { "created" } else { "NOT created" }
+            ),
+        );
+    }
     if input.create_workspace && ran_wsl_chain && !chain_failed {
         match finalize_wsl_workspace(
             &state,
