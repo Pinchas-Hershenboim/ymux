@@ -1,13 +1,13 @@
 {
   "version": "0.4.5-beta.1",
-  "released_at": "2026-07-15T12:04:50Z",
+  "released_at": "2026-08-03T09:32:07Z",
   "notes_url": "https://github.com/yyhezkel/winmux/releases/tag/v0.4.5-beta.1",
   "msi_url": "https://github.com/yyhezkel/winmux/releases/download/v0.4.5-beta.1/winmux_0.4.5_x64_en-US.msi",
-  "msi_sha256": "d398c0ff0e5ab2610a7626791ed6b67e8ee84bc6f767bff8f927bd578bce2484",
-  "msi_size": 22044672,
+  "msi_sha256": "e7f64eb47d7e068e6de573ebad4f5b1521f015d3610a0052eb8ad7faac3ad47e",
+  "msi_size": 22642688,
   "nsis_url": "https://github.com/yyhezkel/winmux/releases/download/v0.4.5-beta.1/winmux_0.4.5_x64-setup.exe",
-  "nsis_sha256": "0b0e7f81b6360eca6dc5ed9b3f82d2964810b89eb24f90893c2da82e9038a4e5",
-  "nsis_size": 15829879,
+  "nsis_sha256": "aafcf8a4c1200bbc215a4224e55b32314a3ae2e2f706c82f46e3b53f05b3072f",
+  "nsis_size": 16324319,
   "min_supported_version": "0.1.0",
   "hooks": {
     "claude-code": {
