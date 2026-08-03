@@ -779,3 +779,57 @@ SEPARATE LATENT BUG FOUND: lib.rs:1565-1576 emit_data - strict UTF-8
   mechanism (ConPTY re-encodes from UTF-16), but real. -> FOLLOWUPS.
 RESULT: investigation only, no code changed. Awaiting Yossi's go-ahead.
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~13:50 IDT] session=wsl-smart-install-fix (BOTH FIXES IN)
+TASK: Yossi approved fixing both bugs from the investigation above.
+COMMITS: 1bcb584 (Bug B, lib.rs) + 6753759 (Bug A, local_setup + UI).
+  Split deliberately - unrelated concerns, B is shippable on its own.
+
+BUG B FIX (1bcb584) - VERIFIED LIVE, not just compiled.
+  utf8_shell_args(ShellKind) in lib.rs, called from spawn_local_pty right
+  after CommandBuilder::new. PowerShell (both flavours) gets
+    -NoExit -Command "$null = chcp 65001;
+       [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+       $OutputEncoding = [Console]::OutputEncoding"
+  cmd gets /K chcp 65001 >nul. Posix untouched. No -NoProfile, so the
+  user's profile still loads - this only PREPENDS.
+  Machine evidence that pinned it: OEMCP=862 / ACP=1255 on Yossi's box,
+  and pwsh.exe is NOT installed -> pick_default_shell falls to
+  powershell.exe 5.1, whose $OutputEncoding is us-ascii (measured).
+  NEW TEST MODULE utf8_pty_live_tests - spawns a REAL powershell.exe over
+  portable-pty exactly like spawn_local_pty:
+   1. preamble_puts_a_real_powershell_pane_on_utf8 -> CP=65001, PIPE=utf-8
+   2. without_the_preamble_powershell_5_1_pipes_ascii -> control, proves
+      the preamble is load-bearing (un-preambled 5.1 = us-ascii)
+   3. hebrew_from_a_native_command_survives_the_pty -> `cmd /c type` on a
+      BOM-less UTF-8 Hebrew file round-trips "שלום עולם", zero U+FFFD
+  Harness gotcha burned 1 cycle: dropping the ConPTY writer before the
+  child exits tears the session down (test finished in 0.14s with only
+  the startup escape sequences). Must sleep ~1.5s for PS 5.1 to consume
+  stdin, and keep BOTH writer and master alive past child exit.
+
+BUG A FIX (6753759) - compiles + tests, END-TO-END STILL UNVERIFIED.
+  LocalSetupResult gains failed_steps / skipped_steps / wsl_chain_ok.
+  - local_setup.rs: InstallHooksInWsl added to is_wsl_chain (was 6 of 7)
+    and now honours its exit code (was Ok(Ok((_code,out))) = always
+    green); the script's trailing `|| true` keeps best-effort posture for
+    a distro with no ~/.claude. Failure logging no longer drops
+    StepFailed's stderr. Summary WARN line on any failed run.
+  - LocalSetupFlow.tsx: stateBadge gains a "skipped" case (was falling
+    through to "pending" = looked not-yet-started); done screen now
+    branches on failed_steps and names what broke, what was abandoned,
+    and that no WSL workspace exists.
+  - App.css: .state-skipped dashed + dimmed; .provisioning-step-icon.skipped
+  - i18n he/en/ar/ru, 4 keys each, 972 total per locale (parity held).
+  CANNOT smoke end-to-end on this box: WSL genuinely absent (wsl --status
+  exit 50, LxssManager service missing) - which is exactly the condition
+  that exposed the false-success. Needs a live run on a WSL-capable
+  machine, or a UAC-declined `wsl --install` to re-trigger the red path.
+CHECKS: cargo check clean (only the 3 pre-existing warnings), 124/124 lib
+  tests, tsc --noEmit clean. Reverted ts-rs trailing-whitespace churn in
+  bindings/Settings.ts (cosmetic, unrelated).
+STILL OPEN: the 3 FOLLOWUPS items from the investigation (P1 emit_data
+  can permanently silence a pane; P2 locale-dependent elevation match +
+  no reboot-pending handling; P2 was the stderr log gap - now CLOSED by
+  6753759, leaving 2).
+------------------------------------------------------------------
