@@ -736,3 +736,57 @@ Actions: 13 worktrees -> 4; 23 branches -> 8; 2 stashes -> 0;
 
 Files: .gitignore (+2), .claude/worktree-audit-2026-08-03.txt (new)
 Result: every worktree clean, main clean. No push. Phases 2-3 pending.
+
+=== 2026-08-03 — Phase 2 of 3: rebase live branches onto the new main ===
+
+67-mobile -> main (cherry-pick d6de67f, landed as e237385)
+  3 conflicts, all mechanical:
+  - Cargo.toml workspace members: union (main's winmux-policy/-addons +
+    the branch's winmux-protocol).
+  - Cargo.lock: reset to main's and let `cargo check` add the crate,
+    rather than hand-merging a lockfile. +10 lines, one new package.
+  - DECISIONS.md: the branch side carried two 2026-06-26 entries; only
+    the winmux-protocol one was new (main already had the Phase 68
+    design-doc entry). Inserted it chronologically above main's copy.
+    Heading count 126 -> 127, nothing dropped.
+  Branch then re-pointed at main as a clean base for 67.A.2 (`winmux serve`).
+
+file-transfer-progress -> rebased onto main (7 commits, was 82 behind)
+  4 conflicts:
+  - file_manager.rs x3: main had migrated to the unified logger
+    (Phase 79) while the branch still called dlog/dlog_tag. Took main's
+    API, kept the branch's content (transfer id in the message, the
+    CANCELED arm, transfer_end/emit_done). Rule #9.
+  - i18n {en,he,ar,ru}.json: both sides appended keys at the tail. Kept
+    both; all four validate as JSON at 974 keys each.
+  - FileManagerPane.tsx: the branch deletes the Phase 75.3
+    fm-download-progress listener (superseded by <TransferBar>), but
+    main had added the Phase 80.1 rememberPath effect in the same
+    region. Deleted only 75.3, kept 80.1.
+  - PROGRESS.txt: append-vs-append. First resolution attempt was wrong
+    — a regex treated one of the file's own `=======` separator lines as
+    the conflict divider. Caught it, rebuilt the file as main's content
+    plus the branch's verified-pure-append block, amended the commit.
+  Follow-up commit 7412a38: the rebase carried in four legacy dlog_tag
+  callers from before the Phase 79 migration. Moved to log_info (cancel
+  events) / log_debug (upload begin). Rule #9 — zero dlog callers left
+  in file_manager.rs.
+
+browser-tickets-v2 -> re-pointed at main (had been branched off the
+  82-commits-stale main, so it was carrying an old base).
+
+VERIFICATION (real runs, not just compile):
+  main:                   cargo test 211 passed / 0 failed
+                          tsc --noEmit exit 0 · vite build ok · go test 10/10 pkgs ok
+  file-transfer-progress: cargo test 209 passed / 0 failed
+                          tsc --noEmit exit 0 · vite build ok · go test 10/10 pkgs ok
+  NOTE: app/node_modules was completely empty (0 entries) in this
+  checkout — no frontend verification had been possible at all. Ran
+  `npm ci` (166 packages). typescript is NOT a project dependency, so
+  the `npm run tsc` script does not exist; type-checking ran via the
+  freshly-installed compiler. Worth deciding whether to add typescript
+  + a `typecheck` script so this is reproducible.
+
+Worktrees: 4 -> 6 (added browser-tickets-v2, 67-mobile).
+NOT DONE: file-transfer-progress is NOT merged into main — that is
+  Phase 3 and needs Yossi's go-ahead. Nothing pushed.
