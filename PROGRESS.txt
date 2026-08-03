@@ -708,3 +708,74 @@ FIX: terminalInstance.ts + textDirection.ts(+tests) restored to 9b87860
   complaints) - proper fix = DECISIONS return-conditions round.
 NOTE: winmux-pre-mouse-diag.exe (02:09) = standalone diag build @9b87860.
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~13:00 IDT] session=wsl-smart-install-fix (INVESTIGATION ONLY)
+TASK: Yossi reported 2 bugs in the LOCAL HOST WSL flow (v0.4.5-beta.1
+  known-broken): (A) Smart Install "finished" but opened a PowerShell
+  workspace instead of WSL; (B) Hebrew broken in that PowerShell pane.
+BRANCH: wsl-smart-install-fix off beta.3-mega (NOT main - main has no
+  local_setup.rs at all; the WSL merge bcaa330 lives only on beta.3-mega).
+  Stale .git/index.lock (Jul 16) removed. Uncommitted linux-cli rebuild
+  (sha 8b6276) stashed - beta.3-mega already carries a newer one.
+
+BUG A - the premise was wrong. No PowerShell workspace was created.
+  NOTHING was created. Live evidence from Yossi's machine:
+  - debug.log 12:21:32 -> "step InstallWsl failed (exit 1)", no
+    "finalize failed" line -> finalize_wsl_workspace never called.
+  - workspaces.json mtime = Jul 16 (run was Aug 3) -> never written.
+  - "Local PowerShell" (connection.type=local, shell="") pre-dates the
+    run; the app just stayed on it.
+  - wsl --status on the machine = exit 50, LxssManager service ABSENT,
+    no reboot pending -> WSL genuinely not installed; needs UAC elevation.
+ROOT CAUSE (silent): local_setup.rs:1118
+    if input.create_workspace && ran_wsl_chain && !chain_failed
+  chain_failed=true (set :1093) -> gate false -> no workspace, no error,
+  and local_setup.rs:1133 emits "local-setup:complete" UNCONDITIONALLY.
+FALSE-SUCCESS CHAIN (3 independent bugs):
+  1. LocalSetupFlow.tsx:437 - done screen prints localSetup.done.message
+     ("ההתקנה המקומית הסתיימה") with NO failure branch.
+  2. LocalSetupFlow.tsx:198-204 stateBadge has no "skipped" case -> the 5
+     backend-skipped chain steps (emitted "skipped" at :759) render as
+     grey "pending", i.e. look not-yet-started.
+  3. local_setup.rs:1079 - InstallHooksInWsl matches Ok(Ok((_code,out)))
+     => exit code DISCARDED, always green; it is also missing from the
+     is_wsl_chain list (:746-754, only 6 of 7) so it is never skipped ->
+     it ran against a non-existent distro and the run ENDED on a green
+     check. That is what "finished and installed everything" looked like.
+LATENT (not the cause here): elevation detection local_setup.rs:881 is an
+  English substring match (low.contains("elevat")||"0x80070005") - breaks
+  on localized Windows. This machine is en-US so it is not the trigger;
+  it fired StepFailed, not ElevationRequired. Also: no reboot-pending
+  concept in inspect_wsl (:378-473); no ERROR_SUCCESS_REBOOT_REQUIRED
+  (3010) check.
+LOG GAP: local_setup.rs:1096 logs only err.user_message() -> stderr is
+  dropped. The UI red card had the real reason; the log does not. This is
+  why the exact wsl --install failure text is unrecoverable.
+NOT A BUG: finalize_wsl_workspace (:1139-1195) correctly builds
+  Connection::Wsl (:1152); there is no Connection::Local anywhere in
+  local_setup.rs. spawn_wsl_pty is reachable (lib.rs:5479, :1804).
+  wsl.exe UTF-16 output IS handled (WSL_UTF8=1 + clean_wsl_output :55).
+
+BUG B - encoding, not font and not bidi. Symptom predicted = MOJIBAKE.
+ROOT CAUSE: lib.rs:1636-1676 spawn_local_pty sets 5 env vars and NO args.
+  Repo-wide grep for chcp|65001|OutputEncoding|InputEncoding = ZERO hits.
+  lib.rs:1513-1526 pick_default_shell tries pwsh.exe -> powershell.exe ->
+  cmd.exe. VERIFIED on Yossi's machine: pwsh.exe NOT INSTALLED -> he gets
+  powershell.exe 5.1, whose [Console]::OutputEncoding is the OEM codepage
+  (437/862) and whose $OutputEncoding is ASCII. Hebrew -> garbage / "?".
+  "Local PowerShell" ws has shell="" -> hits exactly this path.
+WHY REMOTE IS FINE: spawn_wsl_pty/spawn_ssh target Linux = UTF-8 by
+  construction. winmux never sets LANG/LC_ALL anywhere; the remote paths
+  just get it for free. Local is the only OEM-codepage transport.
+RULED OUT: font (terminalInstance.ts:499 stack has no Hebrew face but
+  ends in generic monospace -> WebView2 falls back; would be tofu in ALL
+  panes, incl. the working SSH ones). bidi (applyRowDirections
+  terminalInstance.ts:933-962 is connection-agnostic; tuiOwnsBidi does
+  not exist on this branch - docs/DECISIONS.md:47 is stale).
+SEPARATE LATENT BUG FOUND: lib.rs:1565-1576 emit_data - strict UTF-8
+  decoder; if leftover starts with an invalid byte, valid_up_to==0 ->
+  early return WITHOUT draining -> pane goes permanently silent and the
+  buffer grows unbounded. No cap, no error branch. Not this bug's
+  mechanism (ConPTY re-encodes from UTF-16), but real. -> FOLLOWUPS.
+RESULT: investigation only, no code changed. Awaiting Yossi's go-ahead.
+------------------------------------------------------------------
