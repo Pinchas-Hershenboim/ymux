@@ -1296,6 +1296,35 @@ fn detect_shell_kind(cmd: &str) -> ShellKind {
     }
 }
 
+/// Startup args that force a local Windows shell into UTF-8.
+///
+/// A fresh ConPTY inherits the machine's OEM codepage (862 on a Hebrew
+/// install, 437 on en-US), and Windows PowerShell 5.1 additionally
+/// defaults `$OutputEncoding` to ASCII. Together that mojibakes every
+/// non-Latin byte a native command prints, and turns Hebrew piped *to*
+/// a native command into `?`. The SSH/WSL transports never hit this —
+/// they land on Linux, which is UTF-8 by construction.
+///
+/// pwsh 7 is already UTF-8 everywhere, so the PowerShell line is a
+/// harmless no-op there; keeping one branch for both avoids a second
+/// version probe on every pane spawn. Posix shells (a user-picked
+/// git-bash) are left alone.
+fn utf8_shell_args(kind: ShellKind) -> Vec<&'static str> {
+    match kind {
+        // -NoExit keeps the pane interactive; the profile still loads
+        // (no -NoProfile), so this only prepends the encoding setup.
+        ShellKind::PowerShell => vec![
+            "-NoExit",
+            "-Command",
+            "$null = chcp 65001; \
+             [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+             $OutputEncoding = [Console]::OutputEncoding",
+        ],
+        ShellKind::Cmd => vec!["/K", "chcp 65001 >nul"],
+        ShellKind::Posix => Vec::new(),
+    }
+}
+
 fn format_env_line(kind: ShellKind, key: &str, value: &str) -> String {
     match kind {
         ShellKind::PowerShell => {
@@ -1654,6 +1683,9 @@ fn spawn_local_pty(
 
     let shell_cmd = pick_default_shell(shell);
     let mut cmd = CommandBuilder::new(&shell_cmd);
+    for a in utf8_shell_args(detect_shell_kind(&shell_cmd)) {
+        cmd.arg(a);
+    }
     if let Some(d) = cwd.as_deref() {
         if Path::new(d).is_dir() {
             cmd.cwd(d);
@@ -7837,6 +7869,173 @@ mod smart_connect_tests {
         assert_eq!(
             build_smart_connect_script(ShellKind::Posix, "default", None, None, None),
             ""
+        );
+    }
+}
+
+#[cfg(test)]
+mod utf8_shell_tests {
+    // A fresh ConPTY inherits the machine's OEM codepage (862 on a Hebrew
+    // install), and Windows PowerShell 5.1 defaults $OutputEncoding to
+    // ASCII — together they mojibake every Hebrew byte a native command
+    // prints. These args are the only thing forcing the local transports
+    // to UTF-8; SSH/WSL get it free by landing on Linux.
+    use super::{detect_shell_kind, utf8_shell_args, ShellKind};
+
+    #[test]
+    fn powershell_forces_utf8_and_stays_interactive() {
+        let args = utf8_shell_args(ShellKind::PowerShell);
+        assert_eq!(args[0], "-NoExit", "the pane must stay interactive");
+        assert_eq!(args[1], "-Command");
+        let script = args[2];
+        assert!(script.contains("chcp 65001"), "console codepage not set");
+        assert!(
+            script.contains("[Console]::OutputEncoding"),
+            "native-command output decoding not set"
+        );
+        assert!(
+            script.contains("$OutputEncoding"),
+            "PS 5.1 pipes to native commands stay ASCII without this"
+        );
+        // -NoProfile would silently drop the user's profile; we only prepend.
+        assert!(!script.contains("-NoProfile"));
+        assert!(!args.contains(&"-NoProfile"));
+        // Nested double quotes would not survive CommandBuilder quoting.
+        assert!(!script.contains('"'), "script must stay double-quote free");
+    }
+
+    #[test]
+    fn cmd_forces_utf8_and_stays_interactive() {
+        assert_eq!(utf8_shell_args(ShellKind::Cmd), vec!["/K", "chcp 65001 >nul"]);
+    }
+
+    #[test]
+    fn posix_shell_is_left_alone() {
+        assert!(utf8_shell_args(ShellKind::Posix).is_empty());
+    }
+
+    #[test]
+    fn shell_kinds_route_to_the_right_args() {
+        // pick_default_shell can hand back a bare name or a full path.
+        for ps in ["pwsh.exe", "powershell.exe", r"C:\Windows\System32\powershell.exe"] {
+            assert!(
+                !utf8_shell_args(detect_shell_kind(ps)).is_empty(),
+                "{ps} should get the UTF-8 preamble"
+            );
+        }
+        assert_eq!(utf8_shell_args(detect_shell_kind("cmd.exe"))[0], "/K");
+        // A user-picked git-bash must not receive PowerShell args.
+        assert!(utf8_shell_args(detect_shell_kind("bash.exe")).is_empty());
+    }
+}
+
+/// Live ConPTY proof for the local-shell UTF-8 preamble.
+///
+/// The unit tests above only assert the argv we build. These spawn a real
+/// PTY the same way `spawn_local_pty` does and check what actually comes
+/// back, because the bug they close is invisible to a compile: on a Hebrew
+/// Windows the console starts at CP862 and PS 5.1's `$OutputEncoding` is
+/// ASCII, so Hebrew from a native command arrives as mojibake.
+#[cfg(all(test, windows))]
+mod utf8_pty_live_tests {
+    use super::{utf8_shell_args, ShellKind};
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+
+    /// Drive a real powershell.exe over a PTY and return everything it
+    /// printed. `extra` is prepended exactly as spawn_local_pty does.
+    fn run_in_pty(extra: &[&'static str], script: &str) -> String {
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 24, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new("powershell.exe");
+        for a in extra {
+            cmd.arg(a);
+        }
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn powershell");
+        drop(pair.slave);
+
+        let mut writer = pair.master.take_writer().expect("writer");
+        let mut reader = pair.master.try_clone_reader().expect("reader");
+        let collector = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            // Reads unblock when the child exits and the master closes.
+            while let Ok(n) = reader.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            buf
+        });
+
+        // PowerShell 5.1 needs a moment before it consumes stdin; writing
+        // into a not-yet-ready ConPTY loses the line.
+        std::thread::sleep(Duration::from_millis(1500));
+        write!(writer, "{script}\r\nexit\r\n").expect("write script");
+        writer.flush().expect("flush");
+
+        let deadline = Instant::now() + Duration::from_secs(45);
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        // Both the writer and the master must outlive the child, or
+        // ConPTY tears the session down before the shell has spoken.
+        drop(writer);
+        drop(pair.master);
+        // Lossy on purpose: the whole point is to see whether the bytes
+        // that came back are valid UTF-8 Hebrew or replacement junk.
+        String::from_utf8_lossy(&collector.join().unwrap_or_default()).into_owned()
+    }
+
+    #[test]
+    fn preamble_puts_a_real_powershell_pane_on_utf8() {
+        let out = run_in_pty(
+            &utf8_shell_args(ShellKind::PowerShell),
+            "Write-Output ('CP=' + [Console]::OutputEncoding.CodePage) ; \
+             Write-Output ('PIPE=' + $OutputEncoding.WebName)",
+        );
+        assert!(out.contains("CP=65001"), "console codepage not 65001:\n{out}");
+        assert!(out.contains("PIPE=utf-8"), "$OutputEncoding not utf-8:\n{out}");
+    }
+
+    /// The control: the same pane WITHOUT the preamble is what shipped in
+    /// v0.4.5-beta.1. If this ever starts reporting utf-8 the preamble has
+    /// become redundant — but on Windows PowerShell 5.1 it never is.
+    #[test]
+    fn without_the_preamble_powershell_5_1_pipes_ascii() {
+        let out = run_in_pty(&[], "Write-Output ('PIPE=' + $OutputEncoding.WebName)");
+        assert!(
+            out.contains("PIPE=us-ascii"),
+            "expected the un-preambled 5.1 default; got:\n{out}"
+        );
+    }
+
+    /// The user-visible bug: Hebrew emitted by a NATIVE command (not by
+    /// PowerShell itself) has to survive the console codepage round-trip.
+    #[test]
+    fn hebrew_from_a_native_command_survives_the_pty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hebrew.txt");
+        // Raw UTF-8, no BOM — exactly what a Linux-authored file or a
+        // modern CLI writes.
+        std::fs::write(&path, "שלום עולם".as_bytes()).expect("write fixture");
+
+        let script = format!("cmd /c type \"{}\"", path.display());
+        let out = run_in_pty(&utf8_shell_args(ShellKind::PowerShell), &script);
+        assert!(
+            out.contains("שלום עולם"),
+            "Hebrew did not survive the local PTY:\n{out}"
+        );
+        assert!(
+            !out.contains('\u{FFFD}'),
+            "replacement chars in the stream:\n{out}"
         );
     }
 }
