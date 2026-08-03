@@ -736,3 +736,53 @@ Actions: 13 worktrees -> 4; 23 branches -> 8; 2 stashes -> 0;
 
 Files: .gitignore (+2), .claude/worktree-audit-2026-08-03.txt (new)
 Result: every worktree clean, main clean. No push. Phases 2-3 pending.
+
+[2026-08-03] Phase 81 — file-transfer progress bar + cancel
+==================================================================
+TASK: Yossi reported a 60 MB upload in the File Manager shows nothing —
+  no bar, no percent, no sign of life. Same suspected for downloads.
+BRANCH: file-transfer-progress (worktree, from main @1614af7)
+
+ROOT CAUSE (two separate bugs):
+  1. file_upload / pane_upload_dropped did std::fs::read() into a Vec<u8>
+     then one write_all() — no chunking at all, so progress was not just
+     unreported but impossible. Downloads already streamed (Phase 75.3)
+     and DID emit fm-download-progress; the UI just rendered it as a line
+     of text in the status bar, and only inside the pane that started it.
+  2. The "Upload from disk" picker used <input type="file"> and shipped
+     the bytes over the Tauri IPC bridge as Array.from(Uint8Array) — a
+     JSON array of one number per byte. 60 MB became ~250 MB of JSON and
+     hung the webview before any transfer began.
+
+FILES:
+  M app/src-tauri/src/file_manager.rs  (stream_upload, ProgressEmitter,
+      transfer registry + fm_transfer_cancel, both commands rewired,
+      file_upload_bytes deleted, unit tests)
+  M app/src-tauri/src/lib.rs           (command registration)
+  A app/src/transferStore.ts           (global store + root listener)
+  A app/src/TransferBar.tsx            (progress strip)
+  M app/src/FileManagerPane.tsx        (mount bar, drop old listener,
+      native dialog picker instead of <input type="file">)
+  M app/src/App.tsx / App.css / i18n/{en,he,ar,ru}.json
+  M app/src-tauri/capabilities/{default,popout}.json (dialog:allow-open)
+
+EVENTS (new contract):
+  fm-transfer-progress { id, direction, name, path, done, total, speed_bps }
+  fm-transfer-done     { id, direction, name, ok, canceled, error }
+  fm-download-progress REMOVED (was Phase 75.3, download-only).
+
+RESULT: compiles-only — NOT verified live.
+  Verified: cargo check + cargo build clean; tsc --noEmit clean; vite
+  build clean; 4/4 new Rust unit tests pass (basename, cancel targeting,
+  cancel-after-finish returns Err, registry cleanup); app shell boots in
+  a browser with no console errors; transfer-bar CSS checked in-browser
+  (fill geometry exactly 45% of track, state colors resolve, long names
+  ellipsize, no horizontal overflow).
+  NOT verified: an actual SFTP transfer. This machine has no sshd and no
+  WSL, so there was no SSH target to transfer against. The 60 MB upload,
+  the live progress readout, and cancel-mid-transfer all still need a
+  real run against a remote host — Yossi to confirm.
+NOTES: worktree needed app/src-tauri/resources/winmux-cli.exe copied in
+  by hand (gitignored build artifact) before cargo would build, and a
+  node_modules junction to the main checkout.
+==================================================================
