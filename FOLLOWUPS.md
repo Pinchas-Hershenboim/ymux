@@ -10,8 +10,13 @@ Format:
 
 ## Open
 
-- [ ] P3 | 2026-08-03 | app/src-tauri/src/lib.rs:1604 | bidi_filter state is keyed by pane, so an SSH channel's stdout and stderr still share one escape-sequence state machine (the UTF-8 + OSC halves were split by the emit_data fix). A partial CSI/OSC on one stream can be completed by the other's bytes. Deliberate: a synthetic per-stream key would miss the per-pane smart_bidi toggle and silently leave stderr unfiltered. Only reachable via ExtendedData, rare on a PTY channel.
+- [ ] P1 | 2026-08-03 | app/src-tauri/src/fonts.rs | Install has no matching UNINSTALL. A user who installs FiraCode Nerd Font (27 MB, 6 files) has no in-app way to remove it — they must hand-delete from %LOCALAPPDATA%\Microsoft\Windows\Fonts and HKCU. Symmetry matters here because we are the ones who put the files there.
 - [ ] P2 | 2026-08-03 | app/src-tauri/src/local_setup.rs:881 | WSL elevation detection is an English substring match (`low.contains("elevat") || "0x80070005"`) -> on localized Windows a UAC-declined `wsl --install` is misreported as a generic StepFailed. Also no ERROR_SUCCESS_REBOOT_REQUIRED (3010) / reboot-pending concept in inspect_wsl (:378-473).
+- [ ] P2 | 2026-08-03 | app/src-tauri/src/fonts.rs:73 | Font catalog pins upstream tags+sha256; needs a periodic refresh check (JetBrainsMono v2.304, FiraCode 6.2, nerd-fonts v3.5.0, powerlevel10k-media master). An upstream re-release makes install fail with "checksum mismatch" — correct but opaque to the user.
+- [ ] P2 | 2026-08-03 | app/src-tauri/src/fonts.rs:588 | MesloLGS NF assets are pinned to `master` on powerlevel10k-media, not a tag — the sha256 pin is what protects us, but a legit upstream update will break the entry until refreshed. Prefer a tagged source if one appears.
+- [ ] P3 | 2026-08-03 | app/src-tauri/src/lib.rs:1604 | bidi_filter state is keyed by pane, so an SSH channel's stdout and stderr still share one escape-sequence state machine (the UTF-8 + OSC halves were split by the emit_data fix). A partial CSI/OSC on one stream can be completed by the other's bytes. Deliberate: a synthetic per-stream key would miss the per-pane smart_bidi toggle and silently leave stderr unfiltered. Only reachable via ExtendedData, rare on a PTY channel.
+- [ ] P3 | 2026-08-03 | app/src-tauri/src/settings.rs:1662 | Mono/UI split is a name-substring heuristic; "Courier 10,12,15 (120)" bitmap .fon entries still reach the terminal picker and are known to measure badly (see terminalInstance.ts remeasureFont comment). Consider filtering bitmap .fon families out entirely.
+- [ ] P3 | 2026-08-03 | app/src-tauri/src/settings.rs:1629 | Font enumeration shells out to PowerShell on every Settings open (~300ms). Fine at current call frequency; if the picker ever refreshes more often, read the registry via the winreg dep that fonts.rs now pulls in.
 
 ## Done
 

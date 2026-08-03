@@ -2576,6 +2576,37 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   border: 1px solid var(--w-border, #2a2e44); border-radius: 6px;
   font-family: var(--w-font-mono, monospace); font-size: 12px; direction: ltr; text-align: left;
 }
+/* Settings → Fonts: the picked family isn't installed on this machine, so
+   the CSS fallback chain silently swallows the choice. Called out inline
+   under the offending select. */
+.font-missing-notice {
+  margin: 6px 0 2px 0;
+  padding: 6px 10px;
+  font-size: var(--w-fs-sm);
+  line-height: 1.5;
+  color: var(--w-warning, #e0af68);
+  background: rgba(224, 175, 104, 0.1);
+  border: 1px solid var(--w-warning, #e0af68);
+  border-radius: 6px;
+}
+.font-missing-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.font-missing-actions button {
+  padding: 3px 10px;
+  font-size: var(--w-fs-sm);
+}
+/* License link — present but quiet; these fonts are OFL/Apache and the
+   attribution belongs next to the download button, not in a dialog. */
+.font-missing-actions a {
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+  text-decoration: none;
+}
+.font-missing-actions a:hover { text-decoration: underline; }
 .settings-hint code {
   background: var(--w-surface-hi);
   padding: 1px 6px;

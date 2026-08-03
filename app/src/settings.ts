@@ -361,9 +361,45 @@ export interface PresetEntry {
   theme: Theme;
 }
 
+/**
+ * One row in the Settings font picker. `installed` comes from the Rust-side
+ * registry enumeration (`list_system_fonts`); false means picking it would
+ * silently fall through `quoteFamily()`'s CSS fallback chain and change
+ * nothing on screen, so the UI flags it rather than letting the user
+ * conclude the setting is broken.
+ */
+export interface FontEntry {
+  name: string;
+  installed: boolean;
+}
+
 export interface FontFamilies {
-  ui: string[];
-  mono: string[];
+  ui: FontEntry[];
+  mono: FontEntry[];
+}
+
+/** A font winmux can download and install per-user (no admin needed). */
+export interface FontCatalogItem {
+  id: string;
+  /** CSS family name — matches the picker row this install would satisfy. */
+  family: string;
+  description: string;
+  homepage: string;
+  license: string;
+  download_bytes: number;
+}
+
+export interface FontInstallResult {
+  /** Face names actually written and registered. Empty when `guided`. */
+  installed: string[];
+  /**
+   * True when the silent per-user install failed (locked-down box, AV) and
+   * we handed the file to the shell instead — the font is NOT installed
+   * yet; the user still has to click Install in the Windows font preview.
+   */
+  guided: boolean;
+  guided_path: string | null;
+  fallback_reason: string | null;
 }
 
 export interface UpdateInfo {
@@ -397,6 +433,12 @@ export const resetSettings = (): Promise<Settings> =>
 
 export const listSystemFonts = (): Promise<FontFamilies> =>
   invoke<FontFamilies>("list_system_fonts");
+
+export const fontCatalog = (): Promise<FontCatalogItem[]> =>
+  invoke<FontCatalogItem[]>("font_catalog");
+
+export const fontInstall = (id: string): Promise<FontInstallResult> =>
+  invoke<FontInstallResult>("font_install", { id });
 
 export const checkForUpdates = (): Promise<UpdateInfo> =>
   invoke<UpdateInfo>("check_for_updates_now");
@@ -480,8 +522,7 @@ export function applyTheme(s: Settings): void {
   // inject a single <link rel="stylesheet"> tag so that font becomes
   // available by family name. Removing or changing the URL replaces the
   // tag — we don't try to garbage-collect previously-loaded sheets.
-  const url = (s.font as any).web_font_url as string | undefined;
-  applyWebFont(url ?? "");
+  applyWebFont(s.font.web_font_url ?? "");
 }
 
 /**

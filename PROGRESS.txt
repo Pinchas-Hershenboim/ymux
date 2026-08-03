@@ -1031,3 +1031,148 @@ NOTE: winmux-utf8-test.exe appeared untracked in the repo root during
   this session — not mine, left alone (assumed Yossi testing the Bug B
   build).
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~14:40 IDT] session=font-detect-install (stage 0)
+TASK: Yossi on an AnyDesk onboarding call: picking a font in Settings
+  changes nothing on a clean machine. Investigate + propose, then build
+  in a worktree.
+WORKTREE: .claude/worktrees/font-detect-install, branch
+  font-detect-install, based on origin/main 98f0c6d (local main was 82
+  commits behind).
+ROOT CAUSE (two independent bugs, both in the font path):
+  1) settings.rs list_system_fonts() merges a curated baseline over the
+     enumerated set and returned bare strings, so JetBrains Mono / Inter
+     were offered as if installed. Picking one falls through the CSS
+     fallback chain in settings.ts quoteFamily() back to Cascadia Mono =
+     the default, so the screen is byte-identical and nothing signals
+     failure.
+  2) enumerate_windows_fonts() read HKLM only. Per-user installs land in
+     HKCU (the no-admin path, and where our own installer will write) so
+     they were invisible. Measured here: 409 HKLM vs 5 HKCU unseen.
+FIX (fca8b54 + 73505cc):
+  - FontFamilies now carries FontEntry{name, installed}; CSS generics
+    always installed; enumeration failure => report all installed rather
+    than unsubstantiated badges.
+  - Enumerate HKLM+HKCU, split packed .fon names, strip more format tags.
+  - extends_family() requires the trailing words to be known style words,
+    else "Courier New" satisfies "Courier" (a test caught this).
+  - strip_style_suffix() replaces a 6-suffix hardcode that omitted
+    "Regular" => "Cascadia Code Regular" was a duplicate row.
+  - looks_monospace() excludes "Monotype Corsiva" (matched on "Mono"type).
+  - Settings: OK/MISS badge per family + inline notice under the select
+    when the SELECTED family is known-missing. i18n en/he/ar/ru.
+  - list_system_fonts now returns Result (Rule #6); dropped an `as any`
+    in settings.ts (Rule #5).
+VERIFIED: real run of the command, not just a compile. mono list 13->10
+  rows, duplicates + script face gone, JetBrains Mono/Inter/Roboto flagged
+  MISS, the 5 HKCU "Fb Vayikra" families now appear. cargo test 127 passed
+  (10 new), tsc clean. NOT yet run in the live app - no UI smoke test.
+NEXT: install flow (guided vs silent per-user) - awaiting Yossi on catalog
+  scope. Decided to SKIP the standalone canvas-detection layer: the Rust
+  enumeration covers it, canvas only pays off as a post-install check.
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~15:30 IDT] session=font-detect-install (install flow)
+TASK: second half of the font fix - let winmux install the font it just
+  flagged as missing. Yossi chose: silent per-user with guided fallback.
+NEW: app/src-tauri/src/fonts.rs (font_catalog / font_install commands).
+  - Pinned catalog: tag + sha256 + byte size, all verified against the
+    real artifacts downloaded during this session.
+  - Silent: get_with_retry (native-certs => Netfree/AV boxes work) ->
+    sha256 verify -> zip extract -> %LOCALAPPDATA%\Microsoft\Windows\
+    Fonts -> HKCU register -> WM_FONTCHANGE broadcast. No admin.
+  - Guided fallback on ANY silent failure: write to Downloads +
+    ShellExecute so a GPO/AV-locked box isn't a dead end. Result carries
+    guided:true so the UI doesn't claim a success that didn't happen.
+  - sfnt `name` table parser for the real face name - required, because
+    Windows keys the HKCU value on it and list_system_fonts reads those
+    names back to build the picker.
+CATALOG (narrower than Yossi asked - size-driven, flagged not silent):
+  IN  jetbrains-mono 5.6MB / fira-code 2.4MB / meslolgs-nf 4x ttf 10MB
+      / firacode-nf 27MB
+  OUT Cascadia Code (150MB upstream, ships with Win11/Windows Terminal)
+      JetBrainsMono Nerd Font (125MB - Meslo covers prompt glyphs)
+BUG CAUGHT BY TEST: "MesloLGS NF" matched no mono hint, so installing it
+  would have filed it under UI fonts - install succeeds, warning never
+  clears. Added "meslo"/"nerd" to looks_monospace; a test now asserts
+  every catalog family is visible in the terminal picker.
+ALSO: catalog families seeded into baseline_mono, else a font that only
+  appears once installed can never be discovered (Meslo's situation).
+VERIFIED LIVE (real installs on this machine, not compiles):
+  fira-code      -> 6 faces, picker None -> installed=true
+  jetbrains-mono -> 16 faces, picker false -> true, NL sibling filtered
+  Both fonts are now actually installed here (HKCU, per-user). To undo:
+  delete the FiraCode*/JetBrainsMono* files from
+  %LOCALAPPDATA%\Microsoft\Windows\Fonts and their values under
+  HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts.
+STATUS: cargo test 133 + 2 ignored live tests, tsc clean, vite build
+  clean. The Settings UI itself is STILL NOT exercised in the running
+  app - that is the one remaining gap.
+COMMITS: fca8b54, 73505cc, e513e29, e646383
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~16:05 IDT] session=font-detect-install (catalog name fix)
+BUG (400c3bd): the Nerd Font catalog entry declared family
+  "FiraCodeNerdFontMono" but the font's name table says "FiraCode Nerd
+  Font Mono" (with spaces). The picker is built from the names Windows
+  registered, so that row would have stayed warning-flagged forever -
+  install succeeds, warning never clears. Same class as the MesloLGS NF
+  bug, one layer deeper.
+  Second defect same entry: Nerd Font faces abbreviate the style word to
+  fit the 31-char name-table limit (Reg / Med / Ret / SemBd). None were
+  in FONT_STYLE_WORDS, so extends_family read each as a different family
+  and the match failed even after fixing the family string.
+WHY IT SURVIVED: the "looks monospace" test passed - the wrong string is
+  perfectly plausible. Replaced with a test that pins the REAL face names
+  read out of the shipped font files and asserts each resolves back to
+  its catalog family; it also fails if a new catalog entry is added
+  without recording its face names.
+VERIFIED LIVE: firacode-nf install, picker false -> true, 6 faces.
+STATE OF THIS MACHINE: three fonts were really installed during testing -
+  Fira Code, JetBrains Mono, FiraCode Nerd Font Mono. All per-user. To
+  undo: delete the matching files from
+  %LOCALAPPDATA%\Microsoft\Windows\Fonts and their values under
+  HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts.
+STATUS: cargo test 134 + 3 ignored live tests, tsc clean, vite build
+  clean, cargo build --bin app exit 0.
+REMAINING GAP: the Settings UI has never been exercised in the running
+  app. Everything above is command-level and unit-level verification.
+COMMITS: fca8b54, 73505cc, e513e29, e646383, 1959439, 400c3bd
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~16:40 IDT] session=font-detect-install (cleanup + custom field)
+YOSSI'S CORRECTION: "I didn't mean install it on MY machine, I wanted it
+  built so any user can install." Fair - I read "download and test" as
+  license to mutate his machine. It was not.
+(1) UNINSTALL - done, verified:
+  28 registry values removed from HKCU\...\Fonts, 28 .ttf files removed
+  from %LOCALAPPDATA%\Microsoft\Windows\Fonts, WM_FONTCHANGE broadcast,
+  0 failures, 0 leftovers. Targeting was an explicit allow-list on the
+  file name from each registry value's DATA path (FiraCode-,
+  FiraCodeNerdFontMono-, JetBrainsMono-), so the user's own 5 Fb Vayikra
+  faces were never candidates. Confirmed via list_system_fonts(): all 4
+  catalog families read MISS again, i.e. the machine now shows exactly
+  what a fresh user sees. One-off script kept in the session temp dir,
+  deliberately NOT added to the repo.
+(2) PRODUCTION AUDIT - clean:
+  - no absolute/user/agent paths in fonts.rs or fontProbe.ts
+  - winmux-cli.exe still untracked (build artifact, gitignored)
+  - Tauri capabilities need no entry for app-defined commands
+  - live-install tests are all #[ignore], never run in a normal suite
+  CASCADIA: stays OUT, now with evidence - release ships only a 150MB
+  zip; the repo's only committed .ttf are sources/vtt_data/*_VTT.ttf,
+  which are VTT hinting sources and not distributable builds; the Nerd
+  Font variants are 52-55MB. No small legitimate source exists.
+  "SOMETHING ELSE": implemented as a free-text family field instead of
+  guessing - app/src/fontProbe.ts + CustomFontField in SettingsModal.
+  NOTE: deliberately NOT document.fonts.check() - in Chromium/WebView2 it
+  returns true for almost any unknown family, which would report a
+  missing font as present (the exact bug this feature exists to kill).
+  Uses canvas width comparison against 3 generics instead.
+  Also fixed a UX trap in that field: probing only on change/blur left
+  the Use button disabled at click time, swallowing the press. Now
+  debounced on input.
+STATUS: cargo test 134 + 3 ignored, tsc clean, vite build clean.
+REMAINING GAP (unchanged): the Settings UI has never been exercised in
+  the running app.
+------------------------------------------------------------------
