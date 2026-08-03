@@ -833,3 +833,64 @@ STILL OPEN: the 3 FOLLOWUPS items from the investigation (P1 emit_data
   no reboot-pending handling; P2 was the stderr log gap - now CLOSED by
   6753759, leaving 2).
 ------------------------------------------------------------------
+
+=== 2026-08-03 | P1 emit_data UTF-8 stall + SSH stream-splice ===
+BRANCH: fix-emit-data-utf8 (off wsl-smart-install-fix, NOT main - main
+  lacks 1bcb584, the local-shell UTF-8 fix that this decoder pairs with).
+
+BUG 1 (P1, the reported one). emit_data's decoder held `leftover` and
+  emitted only up to `valid_up_to()`, with `if valid_up_to == 0 { return }`
+  and no other error branch. It never looked at Utf8Error::error_len()
+  (unused in the whole repo - checked). Consequence: a byte that can never
+  BEGIN a sequence (0x80-0xBF, 0xC0/0xC1, 0xF5-0xFF) pins valid_up_to at 0
+  permanently, because it is never drained. From that byte on the pane is
+  silent forever AND the Vec grows 8KB per read with no cap. Real triggers:
+  cat on a binary, less on a binary, a legacy exe writing raw CP1255,
+  a truncated download.
+  NOT the bug: split multi-byte chars. The incremental reassembly was
+  already correct for those - which is why from_utf8_lossy over the whole
+  buffer (the "Option A" in the brief) was REJECTED: it would turn every
+  Hebrew letter split across two reads back into U+FFFD, re-opening the
+  mojibake 1bcb584 just closed. Yossi agreed, dropped A.
+
+FIX. New module src/pty_decode.rs - `Utf8Stream` + `Decoded`. Branches on
+  error_len(): None = truncated tail, hold it for the next chunk;
+  Some(n) = invalid, push U+FFFD and drain valid+n. Draining >=1 byte per
+  invalid iteration is the anti-stall guarantee. Because the loop only
+  ever leaves a truncated-valid prefix behind, leftover is <=3 bytes by
+  construction - the unbounded growth is gone without needing a runtime
+  cap (asserted in a test instead of a dead branch). The old `.unwrap()`
+  at :1603 (Rule #4) is gone too - from_utf8_lossy on a known-valid slice
+  is an exact decode.
+  Logging: log_warn("PTY", ...) ONCE per stream, pane_id + session_id +
+  byte count only, never the bytes (Rule #1). Once-per-stream so a binary
+  dump can't flood debug.log.
+
+BUG 2 (the P3 I flagged in the investigation, fixed same commit). The SSH
+  io loop passed ONE `leftover` and ONE OscNotifyParser to BOTH
+  ChannelMsg::Data and ChannelMsg::ExtendedData - stdout and stderr
+  reassembled into a single buffer, so stdout's truncated tail could be
+  completed by stderr's head (and vice versa for a partial OSC). Now two
+  Utf8Streams + two parsers. Rare because request_pty is called on that
+  channel, but silent when it fires.
+  DELIBERATELY LEFT SHARED: bidi_filter, which is keyed by pane_id. A
+  synthetic per-stream key would miss the per-pane smart_bidi toggle and
+  silently leave stderr unfiltered - worse than the escape-splice it
+  would prevent. Logged as the new P3 in FOLLOWUPS with that reasoning.
+
+CHECKS: cargo check clean (only the 2 pre-existing warnings - unused
+  Duration import, renumber_group_list dead code). 138/138 lib tests
+  (124 before + 14 new in pty_decode): Hebrew + 4-byte emoji split at
+  EVERY byte boundary, byte-at-a-time feed, each invalid lead byte
+  proven not to stall, garbage-then-Hebrew recovery, leftover<=3 over
+  64x8KB of junk, report-once, truncated-tail-is-not-a-report,
+  two-streams-do-not-splice.
+NOT VERIFIED LIVE. Compiles + unit-tested only. The live smoke that
+  actually proves it: open a local pane, `cat` any .exe (or
+  `Get-Content winmux-DEBUG-test.exe`), then type `echo שלום` - before
+  the fix the pane is dead from the first bad byte; after it, garbage
+  renders as replacement chars and the Hebrew still arrives. Expect ONE
+  [WARN] [PTY] utf8: line in debug.log per pane.
+Reverted the ts-rs trailing-whitespace churn in bindings/Settings.ts
+  again (cosmetic, unrelated - same as last session).
+------------------------------------------------------------------

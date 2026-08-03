@@ -22,6 +22,7 @@ mod notes;
 mod osc_notify;
 mod pairing;
 mod provisioning;
+mod pty_decode;
 mod remote_bootstrap;
 mod rpc_server;
 mod settings;
@@ -1558,7 +1559,11 @@ fn emit_data(
     app: &AppHandle,
     session_id: &str,
     bytes: &[u8],
-    leftover: &mut Vec<u8>,
+    // Per-stream UTF-8 reassembly state (see `pty_decode`). One instance
+    // per byte stream — an SSH channel's stdout and stderr each get their
+    // own, because splicing them into a single buffer would join the tail
+    // of one character to the head of another.
+    stream: &mut pty_decode::Utf8Stream,
     // Phase 35 (#1.2): OSC-notification side channel. The parser
     // observes the RAW bytes (OSC sequences are ASCII, so this is
     // independent of the utf8 reassembly below) and emits an
@@ -1589,25 +1594,45 @@ fn emit_data(
     // UTF-8 reassembly so the filter's escape-sequence state machine
     // sees ANSI/CSI/OSC/DCS verbatim. The filter is itself a no-op
     // when smart_bidi is off for this pane.
+    //
+    // Note: unlike `stream` and `osc`, this state is keyed by pane and so
+    // is still SHARED across an SSH channel's stdout and stderr. Giving
+    // stderr its own entry would need a synthetic key, which would miss
+    // the per-pane smart_bidi toggle and silently leave stderr unfiltered
+    // — worse than the rare escape-splice it would prevent. Left shared
+    // deliberately; see FOLLOWUPS.
     let filtered = bidi_filter::apply_to_pane(bidi_filters, pane_id, bytes);
 
-    leftover.extend_from_slice(&filtered);
-    let valid_up_to = match std::str::from_utf8(leftover) {
-        Ok(_) => leftover.len(),
-        Err(e) => e.valid_up_to(),
-    };
-    if valid_up_to == 0 {
+    // Incremental UTF-8 reassembly: an incomplete trailing character is
+    // carried to the next chunk (so Hebrew/emoji split across two reads
+    // survive), while bytes that can never become valid are replaced with
+    // U+FFFD and skipped. The skip is what keeps the pane alive — the old
+    // decoder stalled forever on a leading invalid byte.
+    let decoded = stream.push(&filtered);
+
+    if let Some(n) = decoded.first_invalid {
+        // Rule #1: metadata only — counts and ids, never the bytes.
+        // Logged once per stream so a `cat` on a binary file can't flood
+        // the log; later drops are silent.
+        log_warn(
+            "PTY",
+            &format!(
+                "utf8: dropped {n} invalid byte(s) on pane={pane_id} \
+                 session={session_id}, substituted U+FFFD \
+                 (binary output or a non-UTF-8 codepage?); \
+                 further occurrences on this stream are not logged"
+            ),
+        );
+    }
+
+    if decoded.text.is_empty() {
         return;
     }
-    let s = std::str::from_utf8(&leftover[..valid_up_to])
-        .unwrap()
-        .to_string();
-    leftover.drain(..valid_up_to);
     let _ = app.emit(
         "pty:data",
         PtyDataEvent {
             session_id: session_id.to_string(),
-            data: s,
+            data: decoded.text,
         },
     );
 }
@@ -1726,7 +1751,7 @@ fn spawn_local_pty(
     let pane_sessions_for_thread = state.core.pane_sessions.clone();
     let bidi_for_thread = state.bidi_filters.clone();
     thread::spawn(move || {
-        let mut leftover: Vec<u8> = Vec::new();
+        let mut stream = pty_decode::Utf8Stream::new();
         let mut osc = osc_notify::OscNotifyParser::new();
         let mut buf = [0u8; 8192];
         loop {
@@ -1736,7 +1761,7 @@ fn spawn_local_pty(
                     &app_for_thread,
                     &id_for_thread,
                     &buf[..n],
-                    &mut leftover,
+                    &mut stream,
                     &pane_for_thread,
                     &mut osc,
                     &bidi_for_thread,
@@ -1906,7 +1931,7 @@ fn spawn_wsl_pty(
     let pane_sessions_for_thread = state.core.pane_sessions.clone();
     let bidi_for_thread = state.bidi_filters.clone();
     thread::spawn(move || {
-        let mut leftover: Vec<u8> = Vec::new();
+        let mut stream = pty_decode::Utf8Stream::new();
         let mut osc = osc_notify::OscNotifyParser::new();
         let mut buf = [0u8; 8192];
         loop {
@@ -1916,7 +1941,7 @@ fn spawn_wsl_pty(
                     &app_for_thread,
                     &id_for_thread,
                     &buf[..n],
-                    &mut leftover,
+                    &mut stream,
                     &pane_for_thread,
                     &mut osc,
                     &bidi_for_thread,
@@ -2869,8 +2894,17 @@ async fn spawn_ssh(
     let reconnecting_for_task = std::sync::Arc::clone(&reconnecting_flag);
     let reconnecting_for_state = std::sync::Arc::clone(&reconnecting_flag);
     tokio::spawn(async move {
-        let mut leftover: Vec<u8> = Vec::new();
+        // stdout and stderr are two independent byte streams, so each gets
+        // its own UTF-8 reassembly buffer and its own OSC parser. Sharing
+        // them (as this loop used to) splices the tail of a character or
+        // an escape sequence on one stream onto the head of whatever
+        // arrives on the other. A PTY was requested for this channel, so
+        // ExtendedData is rare in practice — but "rare" is not "never",
+        // and the corruption is silent when it happens.
+        let mut stream_out = pty_decode::Utf8Stream::new();
+        let mut stream_err = pty_decode::Utf8Stream::new();
         let mut osc = osc_notify::OscNotifyParser::new();
+        let mut osc_err = osc_notify::OscNotifyParser::new();
         let mut exit_reason: Option<String> = None;
         // Phase 38: track last inbound data so disconnect logs carry a
         // "how long was it idle before dropping" age — distinguishes a
@@ -2884,11 +2918,11 @@ async fn spawn_ssh(
                     match msg {
                         Some(ChannelMsg::Data { data }) => {
                             last_data_at = std::time::Instant::now();
-                            emit_data(&app_for_task, &id_for_task, &data[..], &mut leftover, &pane_for_task, &mut osc, &bidi_for_task);
+                            emit_data(&app_for_task, &id_for_task, &data[..], &mut stream_out, &pane_for_task, &mut osc, &bidi_for_task);
                         }
                         Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
                             last_data_at = std::time::Instant::now();
-                            emit_data(&app_for_task, &id_for_task, &data[..], &mut leftover, &pane_for_task, &mut osc, &bidi_for_task);
+                            emit_data(&app_for_task, &id_for_task, &data[..], &mut stream_err, &pane_for_task, &mut osc_err, &bidi_for_task);
                         }
                         Some(ChannelMsg::ExitStatus { exit_status }) => {
                             exit_reason = Some(format!("exit {exit_status}"));
