@@ -144,7 +144,12 @@ const CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         id: "firacode-nf",
-        family: "FiraCodeNerdFontMono",
+        // The family is what the font DECLARES in its name table
+        // ("FiraCode Nerd Font Mono"), which is not the file-name spelling
+        // ("FiraCodeNerdFontMono-Regular.ttf"). Getting this wrong leaves a
+        // permanently-⚠️ row that installing can never clear — the picker
+        // reads the declared name back out of the registry.
+        family: "FiraCode Nerd Font Mono",
         description: "Fira Code patched with Nerd Font glyphs, fixed-width variant. 27 MB download.",
         homepage: "https://github.com/ryanoasis/nerd-fonts",
         license: "SIL Open Font License 1.1",
@@ -660,6 +665,56 @@ mod tests {
         }
     }
 
+    /// The face names each catalog entry ACTUALLY registers, read out of the
+    /// shipped font files' `name` tables. Recorded here so the round trip
+    /// install → registry → picker is pinned by a test instead of by hope.
+    ///
+    /// This is the check that catches the failure mode a "does the family
+    /// look monospace" test cannot: a family string that is well-formed and
+    /// plausible but not what the font declares. `FiraCodeNerdFontMono`
+    /// passed every other assertion while being unmatchable forever.
+    const REGISTERED_FACES: &[(&str, &[&str])] = &[
+        (
+            "JetBrains Mono",
+            &["JetBrains Mono Regular", "JetBrains Mono ExtraBold Italic"],
+        ),
+        ("Fira Code", &["Fira Code Regular", "Fira Code Retina"]),
+        ("MesloLGS NF", &["MesloLGS NF Regular", "MesloLGS NF Bold Italic"]),
+        (
+            "FiraCode Nerd Font Mono",
+            &[
+                "FiraCode Nerd Font Mono Reg",
+                "FiraCode Nerd Font Mono Med",
+                "FiraCode Nerd Font Mono Ret",
+                "FiraCode Nerd Font Mono SemBd",
+                "FiraCode Nerd Font Mono Bold",
+            ],
+        ),
+    ];
+
+    #[test]
+    fn installed_faces_resolve_back_to_their_catalog_family() {
+        for (family, faces) in REGISTERED_FACES {
+            for face in *faces {
+                assert!(
+                    crate::settings::family_is_installed(family, &[face.to_string()]),
+                    "installing {face:?} must mark {family:?} as installed"
+                );
+            }
+        }
+        // Every catalog family must be covered above, so adding an entry
+        // without recording its real face names fails here rather than
+        // shipping an un-clearable ⚠️.
+        for e in CATALOG {
+            assert!(
+                REGISTERED_FACES.iter().any(|(f, _)| *f == e.family),
+                "{}: no recorded face names for family {:?}",
+                e.id,
+                e.family
+            );
+        }
+    }
+
     #[test]
     fn rejects_non_font_bytes() {
         assert!(validate_font_magic(b"<!DOCTYPE html><html>", "x.ttf").is_err());
@@ -726,6 +781,21 @@ mod live_install_tests {
     //! font directory. Run explicitly with
     //!   cargo test --lib live_install -- --ignored --nocapture
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn installs_nerd_font_for_real() {
+        let fam = "FiraCode Nerd Font Mono";
+        let before = crate::settings::list_system_fonts().expect("picker");
+        println!("BEFORE: {:?}", before.mono.iter().find(|e| e.name == fam).map(|e| e.installed));
+        let r = install_blocking("firacode-nf").expect("install");
+        assert!(!r.guided);
+        println!("faces ({}): {:?}", r.installed.len(), r.installed);
+        let after = crate::settings::list_system_fonts().expect("picker");
+        let hit = after.mono.iter().find(|e| e.name == fam).map(|e| e.installed);
+        println!("AFTER: {:?}", hit);
+        assert_eq!(hit, Some(true), "the abbreviated Nerd Font faces must resolve to the family");
+    }
 
     #[test]
     #[ignore]

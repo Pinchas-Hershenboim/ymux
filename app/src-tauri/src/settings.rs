@@ -1609,6 +1609,26 @@ const FONT_STYLE_WORDS: &[&str] = &[
     "condensed",
     "semicondensed",
     "extracondensed",
+    // Nerd Font patched faces abbreviate the style word to fit the 31-char
+    // name-table limit — "FiraCode Nerd Font Mono Reg", not "... Regular".
+    // Without these the family reads as uninstalled even right after a
+    // successful install.
+    "reg",
+    "med",
+    "ret",
+    "bd",
+    "sembd",
+    "semibd",
+    "extbd",
+    "exbd",
+    "blk",
+    "lt",
+    "xlt",
+    "extlt",
+    "th",
+    "obl",
+    "ital",
+    "cond",
 ];
 
 /// True if `name` is `base` plus trailing style/weight words only — i.e.
@@ -1680,7 +1700,7 @@ pub(crate) fn looks_monospace(name: &str) -> bool {
 /// ExtraBold`) while CSS wants the family (`JetBrains Mono`), so an exact
 /// match is not enough: a prefix match on a word boundary counts too. The
 /// boundary check is what stops `Courier` from matching `Courier New`.
-fn family_is_installed(family: &str, enumerated: &[String]) -> bool {
+pub(crate) fn family_is_installed(family: &str, enumerated: &[String]) -> bool {
     let want = family.trim();
     if want.is_empty() {
         return false;
