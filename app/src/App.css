@@ -1370,6 +1370,14 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   justify-content: flex-end;
   margin-top: 18px;
 }
+/* Confirm step of an irreversible action (e.g. the WSL install restart).
+   The existing .danger rules are all parent-scoped, so a modal button
+   needs its own. */
+.modal-buttons button.danger {
+  color: var(--w-error);
+  border-color: rgba(247, 118, 142, 0.5);
+}
+.modal-buttons button.danger:hover { background: rgba(247, 118, 142, 0.14); }
 
 /* Phase 42: wider, height-capped Create/Edit Workspace modal. The form
    was taller than typical viewports — its top + bottom bled off-screen.
@@ -3404,6 +3412,9 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .provisioning-step-card.state-running { border-color: var(--w-accent); }
 .provisioning-step-card.state-ok      { border-color: rgba(78, 201, 176, 0.4); }
 .provisioning-step-card.state-err     { border-color: rgba(247, 118, 142, 0.5); background: rgba(247, 118, 142, 0.06); }
+/* Abandoned after an earlier chain step failed — must read as "not run",
+   never as the grey "pending" that means "not started yet". */
+.provisioning-step-card.state-skipped { border-style: dashed; opacity: 0.65; }
 .provisioning-step-head {
   display: flex;
   align-items: center;
@@ -3424,6 +3435,7 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .provisioning-step-icon.running  { background: var(--w-accent); animation: pulse-live 1.4s ease-in-out infinite; }
 .provisioning-step-icon.ok       { background: var(--w-success); }
 .provisioning-step-icon.err      { background: var(--w-error); }
+.provisioning-step-icon.skipped  { background: var(--w-border-hi); color: var(--w-text-dim); opacity: 0.8; }
 .provisioning-step-label { font-weight: 500; flex: 1; }
 .provisioning-step-log {
   margin: 6px 0 0 30px;

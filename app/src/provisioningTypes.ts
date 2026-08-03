@@ -17,6 +17,9 @@ export type ProvisioningError =
   // Phase 80: a local install step needs elevation and/or a reboot
   // (WSL feature enable). The wizard renders an instruction card.
   | { kind: "ElevationRequired"; details: { step: string; hint: string } }
+  // Windows servicing returned 3010: the features are staged but only
+  // come alive after a restart, so retrying without one cannot work.
+  | { kind: "RebootRequired"; details: { step: string; hint: string } }
   | { kind: "Generic"; details: string };
 
 export interface StepProgress {

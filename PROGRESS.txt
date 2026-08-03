@@ -790,3 +790,244 @@ VERIFICATION (real runs, not just compile):
 Worktrees: 4 -> 6 (added browser-tickets-v2, 67-mobile).
 NOT DONE: file-transfer-progress is NOT merged into main — that is
   Phase 3 and needs Yossi's go-ahead. Nothing pushed.
+==================================================================
+[2026-08-03 ~13:00 IDT] session=wsl-smart-install-fix (INVESTIGATION ONLY)
+TASK: Yossi reported 2 bugs in the LOCAL HOST WSL flow (v0.4.5-beta.1
+  known-broken): (A) Smart Install "finished" but opened a PowerShell
+  workspace instead of WSL; (B) Hebrew broken in that PowerShell pane.
+BRANCH: wsl-smart-install-fix off beta.3-mega (NOT main - main has no
+  local_setup.rs at all; the WSL merge bcaa330 lives only on beta.3-mega).
+  Stale .git/index.lock (Jul 16) removed. Uncommitted linux-cli rebuild
+  (sha 8b6276) stashed - beta.3-mega already carries a newer one.
+
+BUG A - the premise was wrong. No PowerShell workspace was created.
+  NOTHING was created. Live evidence from Yossi's machine:
+  - debug.log 12:21:32 -> "step InstallWsl failed (exit 1)", no
+    "finalize failed" line -> finalize_wsl_workspace never called.
+  - workspaces.json mtime = Jul 16 (run was Aug 3) -> never written.
+  - "Local PowerShell" (connection.type=local, shell="") pre-dates the
+    run; the app just stayed on it.
+  - wsl --status on the machine = exit 50, LxssManager service ABSENT,
+    no reboot pending -> WSL genuinely not installed; needs UAC elevation.
+ROOT CAUSE (silent): local_setup.rs:1118
+    if input.create_workspace && ran_wsl_chain && !chain_failed
+  chain_failed=true (set :1093) -> gate false -> no workspace, no error,
+  and local_setup.rs:1133 emits "local-setup:complete" UNCONDITIONALLY.
+FALSE-SUCCESS CHAIN (3 independent bugs):
+  1. LocalSetupFlow.tsx:437 - done screen prints localSetup.done.message
+     ("ההתקנה המקומית הסתיימה") with NO failure branch.
+  2. LocalSetupFlow.tsx:198-204 stateBadge has no "skipped" case -> the 5
+     backend-skipped chain steps (emitted "skipped" at :759) render as
+     grey "pending", i.e. look not-yet-started.
+  3. local_setup.rs:1079 - InstallHooksInWsl matches Ok(Ok((_code,out)))
+     => exit code DISCARDED, always green; it is also missing from the
+     is_wsl_chain list (:746-754, only 6 of 7) so it is never skipped ->
+     it ran against a non-existent distro and the run ENDED on a green
+     check. That is what "finished and installed everything" looked like.
+LATENT (not the cause here): elevation detection local_setup.rs:881 is an
+  English substring match (low.contains("elevat")||"0x80070005") - breaks
+  on localized Windows. This machine is en-US so it is not the trigger;
+  it fired StepFailed, not ElevationRequired. Also: no reboot-pending
+  concept in inspect_wsl (:378-473); no ERROR_SUCCESS_REBOOT_REQUIRED
+  (3010) check.
+LOG GAP: local_setup.rs:1096 logs only err.user_message() -> stderr is
+  dropped. The UI red card had the real reason; the log does not. This is
+  why the exact wsl --install failure text is unrecoverable.
+NOT A BUG: finalize_wsl_workspace (:1139-1195) correctly builds
+  Connection::Wsl (:1152); there is no Connection::Local anywhere in
+  local_setup.rs. spawn_wsl_pty is reachable (lib.rs:5479, :1804).
+  wsl.exe UTF-16 output IS handled (WSL_UTF8=1 + clean_wsl_output :55).
+
+BUG B - encoding, not font and not bidi. Symptom predicted = MOJIBAKE.
+ROOT CAUSE: lib.rs:1636-1676 spawn_local_pty sets 5 env vars and NO args.
+  Repo-wide grep for chcp|65001|OutputEncoding|InputEncoding = ZERO hits.
+  lib.rs:1513-1526 pick_default_shell tries pwsh.exe -> powershell.exe ->
+  cmd.exe. VERIFIED on Yossi's machine: pwsh.exe NOT INSTALLED -> he gets
+  powershell.exe 5.1, whose [Console]::OutputEncoding is the OEM codepage
+  (437/862) and whose $OutputEncoding is ASCII. Hebrew -> garbage / "?".
+  "Local PowerShell" ws has shell="" -> hits exactly this path.
+WHY REMOTE IS FINE: spawn_wsl_pty/spawn_ssh target Linux = UTF-8 by
+  construction. winmux never sets LANG/LC_ALL anywhere; the remote paths
+  just get it for free. Local is the only OEM-codepage transport.
+RULED OUT: font (terminalInstance.ts:499 stack has no Hebrew face but
+  ends in generic monospace -> WebView2 falls back; would be tofu in ALL
+  panes, incl. the working SSH ones). bidi (applyRowDirections
+  terminalInstance.ts:933-962 is connection-agnostic; tuiOwnsBidi does
+  not exist on this branch - docs/DECISIONS.md:47 is stale).
+SEPARATE LATENT BUG FOUND: lib.rs:1565-1576 emit_data - strict UTF-8
+  decoder; if leftover starts with an invalid byte, valid_up_to==0 ->
+  early return WITHOUT draining -> pane goes permanently silent and the
+  buffer grows unbounded. No cap, no error branch. Not this bug's
+  mechanism (ConPTY re-encodes from UTF-16), but real. -> FOLLOWUPS.
+RESULT: investigation only, no code changed. Awaiting Yossi's go-ahead.
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~13:50 IDT] session=wsl-smart-install-fix (BOTH FIXES IN)
+TASK: Yossi approved fixing both bugs from the investigation above.
+COMMITS: 1bcb584 (Bug B, lib.rs) + 6753759 (Bug A, local_setup + UI).
+  Split deliberately - unrelated concerns, B is shippable on its own.
+
+BUG B FIX (1bcb584) - VERIFIED LIVE, not just compiled.
+  utf8_shell_args(ShellKind) in lib.rs, called from spawn_local_pty right
+  after CommandBuilder::new. PowerShell (both flavours) gets
+    -NoExit -Command "$null = chcp 65001;
+       [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+       $OutputEncoding = [Console]::OutputEncoding"
+  cmd gets /K chcp 65001 >nul. Posix untouched. No -NoProfile, so the
+  user's profile still loads - this only PREPENDS.
+  Machine evidence that pinned it: OEMCP=862 / ACP=1255 on Yossi's box,
+  and pwsh.exe is NOT installed -> pick_default_shell falls to
+  powershell.exe 5.1, whose $OutputEncoding is us-ascii (measured).
+  NEW TEST MODULE utf8_pty_live_tests - spawns a REAL powershell.exe over
+  portable-pty exactly like spawn_local_pty:
+   1. preamble_puts_a_real_powershell_pane_on_utf8 -> CP=65001, PIPE=utf-8
+   2. without_the_preamble_powershell_5_1_pipes_ascii -> control, proves
+      the preamble is load-bearing (un-preambled 5.1 = us-ascii)
+   3. hebrew_from_a_native_command_survives_the_pty -> `cmd /c type` on a
+      BOM-less UTF-8 Hebrew file round-trips "שלום עולם", zero U+FFFD
+  Harness gotcha burned 1 cycle: dropping the ConPTY writer before the
+  child exits tears the session down (test finished in 0.14s with only
+  the startup escape sequences). Must sleep ~1.5s for PS 5.1 to consume
+  stdin, and keep BOTH writer and master alive past child exit.
+
+BUG A FIX (6753759) - compiles + tests, END-TO-END STILL UNVERIFIED.
+  LocalSetupResult gains failed_steps / skipped_steps / wsl_chain_ok.
+  - local_setup.rs: InstallHooksInWsl added to is_wsl_chain (was 6 of 7)
+    and now honours its exit code (was Ok(Ok((_code,out))) = always
+    green); the script's trailing `|| true` keeps best-effort posture for
+    a distro with no ~/.claude. Failure logging no longer drops
+    StepFailed's stderr. Summary WARN line on any failed run.
+  - LocalSetupFlow.tsx: stateBadge gains a "skipped" case (was falling
+    through to "pending" = looked not-yet-started); done screen now
+    branches on failed_steps and names what broke, what was abandoned,
+    and that no WSL workspace exists.
+  - App.css: .state-skipped dashed + dimmed; .provisioning-step-icon.skipped
+  - i18n he/en/ar/ru, 4 keys each, 972 total per locale (parity held).
+  CANNOT smoke end-to-end on this box: WSL genuinely absent (wsl --status
+  exit 50, LxssManager service missing) - which is exactly the condition
+  that exposed the false-success. Needs a live run on a WSL-capable
+  machine, or a UAC-declined `wsl --install` to re-trigger the red path.
+CHECKS: cargo check clean (only the 3 pre-existing warnings), 124/124 lib
+  tests, tsc --noEmit clean. Reverted ts-rs trailing-whitespace churn in
+  bindings/Settings.ts (cosmetic, unrelated).
+STILL OPEN: the 3 FOLLOWUPS items from the investigation (P1 emit_data
+  can permanently silence a pane; P2 locale-dependent elevation match +
+  no reboot-pending handling; P2 was the stderr log gap - now CLOSED by
+  6753759, leaving 2).
+------------------------------------------------------------------
+
+=== 2026-08-03 | P1 emit_data UTF-8 stall + SSH stream-splice ===
+BRANCH: fix-emit-data-utf8 (off wsl-smart-install-fix, NOT main - main
+  lacks 1bcb584, the local-shell UTF-8 fix that this decoder pairs with).
+
+BUG 1 (P1, the reported one). emit_data's decoder held `leftover` and
+  emitted only up to `valid_up_to()`, with `if valid_up_to == 0 { return }`
+  and no other error branch. It never looked at Utf8Error::error_len()
+  (unused in the whole repo - checked). Consequence: a byte that can never
+  BEGIN a sequence (0x80-0xBF, 0xC0/0xC1, 0xF5-0xFF) pins valid_up_to at 0
+  permanently, because it is never drained. From that byte on the pane is
+  silent forever AND the Vec grows 8KB per read with no cap. Real triggers:
+  cat on a binary, less on a binary, a legacy exe writing raw CP1255,
+  a truncated download.
+  NOT the bug: split multi-byte chars. The incremental reassembly was
+  already correct for those - which is why from_utf8_lossy over the whole
+  buffer (the "Option A" in the brief) was REJECTED: it would turn every
+  Hebrew letter split across two reads back into U+FFFD, re-opening the
+  mojibake 1bcb584 just closed. Yossi agreed, dropped A.
+
+FIX. New module src/pty_decode.rs - `Utf8Stream` + `Decoded`. Branches on
+  error_len(): None = truncated tail, hold it for the next chunk;
+  Some(n) = invalid, push U+FFFD and drain valid+n. Draining >=1 byte per
+  invalid iteration is the anti-stall guarantee. Because the loop only
+  ever leaves a truncated-valid prefix behind, leftover is <=3 bytes by
+  construction - the unbounded growth is gone without needing a runtime
+  cap (asserted in a test instead of a dead branch). The old `.unwrap()`
+  at :1603 (Rule #4) is gone too - from_utf8_lossy on a known-valid slice
+  is an exact decode.
+  Logging: log_warn("PTY", ...) ONCE per stream, pane_id + session_id +
+  byte count only, never the bytes (Rule #1). Once-per-stream so a binary
+  dump can't flood debug.log.
+
+BUG 2 (the P3 I flagged in the investigation, fixed same commit). The SSH
+  io loop passed ONE `leftover` and ONE OscNotifyParser to BOTH
+  ChannelMsg::Data and ChannelMsg::ExtendedData - stdout and stderr
+  reassembled into a single buffer, so stdout's truncated tail could be
+  completed by stderr's head (and vice versa for a partial OSC). Now two
+  Utf8Streams + two parsers. Rare because request_pty is called on that
+  channel, but silent when it fires.
+  DELIBERATELY LEFT SHARED: bidi_filter, which is keyed by pane_id. A
+  synthetic per-stream key would miss the per-pane smart_bidi toggle and
+  silently leave stderr unfiltered - worse than the escape-splice it
+  would prevent. Logged as the new P3 in FOLLOWUPS with that reasoning.
+
+CHECKS: cargo check clean (only the 2 pre-existing warnings - unused
+  Duration import, renumber_group_list dead code). 138/138 lib tests
+  (124 before + 14 new in pty_decode): Hebrew + 4-byte emoji split at
+  EVERY byte boundary, byte-at-a-time feed, each invalid lead byte
+  proven not to stall, garbage-then-Hebrew recovery, leftover<=3 over
+  64x8KB of junk, report-once, truncated-tail-is-not-a-report,
+  two-streams-do-not-splice.
+NOT VERIFIED LIVE. Compiles + unit-tested only. The live smoke that
+  actually proves it: open a local pane, `cat` any .exe (or
+  `Get-Content winmux-DEBUG-test.exe`), then type `echo שלום` - before
+  the fix the pane is dead from the first bad byte; after it, garbage
+  renders as replacement chars and the Hebrew still arrives. Expect ONE
+  [WARN] [PTY] utf8: line in debug.log per pane.
+Reverted the ts-rs trailing-whitespace churn in bindings/Settings.ts
+  again (cosmetic, unrelated - same as last session).
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~15:10 IDT] session=wsl-smart-install-fix (install path)
+TASK: Yossi: "שיוסיף תהליך התקנה נכון" — preflight + exit-code elevation
+  detection + 3010 reboot handling + self-elevation. COMMIT: 65d6fdc.
+
+PUSHED BACK ON ONE ITEM: the spec asked for `code == 740`
+  (ERROR_ELEVATION_REQUIRED) on wsl.exe's exit. That check can never fire
+  — 740 comes from CreateProcess refusing to launch a manifest-elevated
+  binary, and wsl.exe launches fine unelevated then elevates INTERNALLY.
+  A declined UAC surfaces as ERROR_CANCELLED (1223) from ShellExecuteEx
+  itself. 740 is still mapped (policy-blocked ShellExecuteEx can raise
+  it) but 1223 is the code that actually does the work.
+
+WHAT LANDED
+- is_elevated() via OpenProcessToken + TokenElevation (windows-sys, now a
+  direct dep — was already transitive via tauri; needed the
+  Win32_System_Registry feature too because SHELLEXECUTEINFOW carries an
+  HKEY field).
+- local_setup_preflight command -> WslPreflight {platform_ready,
+  distro_present, elevated, needs_elevation}. needs_elevation is false
+  once the platform is up: adding a further distro to a live platform
+  does NOT need admin.
+- InstallWsl branches: elevated -> inline wsl_cmd (output still reaches
+  the UI); unelevated -> ShellExecuteEx("runas") on spawn_blocking. The
+  runas path loses stdout (no pipes) and buys a trustworthy exit code.
+- classify_wsl_install(code, output): code first, text only as fallback
+  for old builds that always return 1. 3010 -> new RebootRequired
+  variant, deliberately NOT ElevationRequired (retry can't work, so the
+  card offers a restart, not a retry).
+- restart_windows command: shutdown /r /t 0 via args array, behind TWO
+  explicit clicks + copy saying other apps will close. Never automatic.
+- Frontend: admin banner in the WSL group, "UAC will appear + maybe a
+  reboot — continue?" gate before startRun, RebootRequired card.
+
+TWO THINGS I INTRODUCED AND THEN FIXED IN THE SAME PASS
+1. WaitForSingleObject(INFINITE) silently dropped the 1800s ceiling
+   run_capture gives the inline path -> a stuck install would have hung
+   the wizard on "running" forever. Now WSL_INSTALL_TIMEOUT_MS (1800s)
+   with a clear timeout error. The process is deliberately NOT killed:
+   it holds an elevated token we cannot re-acquire and interrupting
+   Windows servicing mid-flight is worse than leaving it.
+2. Restart buttons were wired backwards (the "later" primary armed the
+   confirm). Rewritten: [Restart now] -> [Cancel][Yes, restart].
+
+CHECKS: 146/146 lib tests (7 new in wsl_elevation_tests, incl. a Hebrew
+  string that proves a localized failure no longer masquerades as a
+  generic StepFailed), tsc clean, i18n 981 keys x4. Reverted ts-rs
+  whitespace churn in bindings/Settings.ts again.
+UNVERIFIED: the success path. This box has no WSL (wsl --status exit 50,
+  LxssManager absent), so the UAC prompt, the 3010 card and the workspace
+  that should follow are all compile+unit-test only. Needs a live run.
+NOTE: winmux-utf8-test.exe appeared untracked in the repo root during
+  this session — not mine, left alone (assumed Yossi testing the Bug B
+  build).
+------------------------------------------------------------------
