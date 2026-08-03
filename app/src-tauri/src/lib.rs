@@ -7306,7 +7306,9 @@ pub fn run() {
             provisioning::provisioning_step_catalog,
             // Phase 80: local smart setup (wizard "local → new").
             local_setup::local_setup_inspect,
+            local_setup::local_setup_preflight,
             local_setup::local_setup_start,
+            local_setup::restart_windows,
             file_manager::file_list_local,
             file_manager::file_list_remote,
             file_manager::file_home_local,

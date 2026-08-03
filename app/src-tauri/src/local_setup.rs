@@ -27,6 +27,288 @@ use crate::{log_info, log_warn, AppState};
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// ─── Elevation + WSL platform preflight ──────────────────────────────
+//
+// Enabling the WSL Windows features needs administrator rights. wsl.exe
+// self-elevates via its own UAC prompt, which is why a declined prompt
+// used to surface as a bare `exit 1` with no way to tell it apart from a
+// genuine failure — and why matching the English word "elevat" in the
+// output was the only signal available. Checking the process token up
+// front removes the guesswork: we know before the run whether the UAC
+// step is coming, and when we drive it ourselves ShellExecuteEx reports
+// a *reliable* code (ERROR_CANCELLED on a dismissed prompt).
+
+/// The user dismissed the UAC consent dialog. Reported by ShellExecuteEx
+/// itself, not by the child — wsl.exe never gets to run.
+const ERROR_CANCELLED: u32 = 1223;
+/// Windows servicing succeeded but the features only come alive after a
+/// restart. `wsl --install` returns this when it enables the optional
+/// features on a machine that had none.
+const ERROR_SUCCESS_REBOOT_REQUIRED: u32 = 3010;
+/// ERROR_ELEVATION_REQUIRED. Not what a declined UAC prompt returns —
+/// kept because a policy-blocked ShellExecuteEx can still surface it.
+const ERROR_ELEVATION_REQUIRED: u32 = 740;
+/// Matches the 1800s ceiling `run_capture` puts on the non-elevated
+/// path, so neither route can hang the wizard indefinitely.
+#[cfg(target_os = "windows")]
+const WSL_INSTALL_TIMEOUT_MS: u32 = 1_800_000;
+
+/// Is this process running with an elevated token?
+#[cfg(target_os = "windows")]
+pub(crate) fn is_elevated() -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // SAFETY: every pointer handed to the API points at a live local, the
+    // token handle is closed on both paths, and we only read `elevation`
+    // after GetTokenInformation reports success.
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut returned: u32 = 0;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn is_elevated() -> bool {
+    false
+}
+
+/// Distro names go into a ShellExecuteEx parameter *string*, which has no
+/// argv array to hide behind (Rule #3). Nothing outside this shape is
+/// ever allowed through — the value comes from `wsl -l -v` parsing or a
+/// user field, so it is not trusted by construction.
+pub(crate) fn valid_distro_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// What the wizard needs to know before it offers to run the WSL chain.
+#[derive(Clone, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub(crate) struct WslPreflight {
+    /// `wsl --status` answers — the Windows features are enabled.
+    pub platform_ready: bool,
+    /// At least one distro is registered.
+    pub distro_present: bool,
+    /// This winmux process holds an elevated token.
+    pub elevated: bool,
+    /// Installing the platform needs admin and we don't have it, so a UAC
+    /// prompt is unavoidable. False once the platform is already up —
+    /// adding a further distro to a live platform needs no elevation.
+    pub needs_elevation: bool,
+}
+
+/// Read-only probe the wizard runs before showing the WSL group, so the
+/// UAC/reboot cost is stated up front instead of discovered by failing.
+#[tauri::command]
+pub(crate) async fn local_setup_preflight() -> Result<WslPreflight, String> {
+    let wsl = inspect_wsl(None).await;
+    let elevated = is_elevated();
+    let platform_ready = wsl.wsl_ready;
+    let pre = WslPreflight {
+        platform_ready,
+        distro_present: !wsl.distros.is_empty(),
+        elevated,
+        needs_elevation: !platform_ready && !elevated,
+    };
+    log_info(
+        "SETUP",
+        &format!(
+            "preflight: platform_ready={} distro_present={} elevated={} needs_elevation={}",
+            pre.platform_ready, pre.distro_present, pre.elevated, pre.needs_elevation
+        ),
+    );
+    Ok(pre)
+}
+
+/// Run `wsl.exe --install --no-launch -d <distro>` through a UAC consent
+/// prompt and wait for it. Returns the child's exit code.
+///
+/// ShellExecuteEx is the only way to request elevation for a child, and
+/// it costs us the output pipes — there is no stdout to capture. That is
+/// an acceptable trade because the codes it *does* give us are
+/// unambiguous, which the old substring match never was.
+#[cfg(target_os = "windows")]
+fn run_wsl_install_elevated(distro: &str) -> Result<u32, ProvisioningError> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    if !valid_distro_name(distro) {
+        return Err(ProvisioningError::Generic(format!(
+            "refusing to elevate with an unsafe distro name: {distro:?}"
+        )));
+    }
+    let wide = |s: &str| -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>()
+    };
+    let verb = wide("runas");
+    let file = wide("wsl.exe");
+    // Every fragment but `distro` is a literal, and `distro` just passed
+    // the allowlist above.
+    let params = wide(&format!("--install --no-launch -d {distro}"));
+
+    // SAFETY: the struct is fully initialised, every pointer refers to a
+    // buffer that outlives the call, and hProcess is closed on all paths.
+    unsafe {
+        let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpParameters = params.as_ptr();
+        info.nShow = SW_HIDE as i32;
+
+        if ShellExecuteExW(&mut info) == 0 {
+            let err = GetLastError();
+            return Err(match err {
+                ERROR_CANCELLED => ProvisioningError::ElevationRequired {
+                    step: "InstallWsl".into(),
+                    hint: "The Windows administrator prompt was dismissed. \
+                           Re-run the step and approve it."
+                        .into(),
+                },
+                ERROR_ELEVATION_REQUIRED => ProvisioningError::ElevationRequired {
+                    step: "InstallWsl".into(),
+                    hint: "Windows refused to elevate this process. Start winmux \
+                           as administrator and re-run the step."
+                        .into(),
+                },
+                other => ProvisioningError::Generic(format!(
+                    "elevated wsl --install could not start (Windows error {other})"
+                )),
+            });
+        }
+        if info.hProcess.is_null() {
+            return Err(ProvisioningError::Generic(
+                "elevated wsl --install returned no process handle".into(),
+            ));
+        }
+        // Same 30-minute ceiling the non-elevated path gets from
+        // run_capture — a feature enable plus a store download is slow,
+        // but never waiting would hang the wizard on "running" forever.
+        let waited = WaitForSingleObject(info.hProcess, WSL_INSTALL_TIMEOUT_MS);
+        if waited != WAIT_OBJECT_0 {
+            CloseHandle(info.hProcess);
+            // Deliberately not killed: it holds an elevated token we
+            // cannot re-acquire, and Windows servicing mid-flight is
+            // worse to interrupt than to leave running.
+            return Err(ProvisioningError::Generic(format!(
+                "elevated wsl --install did not finish within {}s — it may still be \
+                 running; re-run the step once it settles",
+                WSL_INSTALL_TIMEOUT_MS / 1000
+            )));
+        }
+        let mut code: u32 = 0;
+        let got = GetExitCodeProcess(info.hProcess, &mut code);
+        CloseHandle(info.hProcess);
+        if got == 0 {
+            return Err(ProvisioningError::Generic(
+                "could not read the elevated wsl --install exit code".into(),
+            ));
+        }
+        Ok(code)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_wsl_install_elevated(_distro: &str) -> Result<u32, ProvisioningError> {
+    Err(ProvisioningError::Generic(
+        "elevated WSL install is Windows-only".into(),
+    ))
+}
+
+/// Map a `wsl --install` exit code onto a structured error. Split out so
+/// the elevated and non-elevated paths classify identically, and unit
+/// tested — this is the logic that used to be an English substring match.
+pub(crate) fn classify_wsl_install(code: u32, output: &str) -> Result<(), ProvisioningError> {
+    let low = output.to_lowercase();
+    match code {
+        0 => Ok(()),
+        ERROR_SUCCESS_REBOOT_REQUIRED => Err(ProvisioningError::RebootRequired {
+            step: "InstallWsl".into(),
+            hint: "Windows enabled the WSL features. Restart the machine, then \
+                   run the install again to finish."
+                .into(),
+        }),
+        ERROR_CANCELLED | ERROR_ELEVATION_REQUIRED => Err(ProvisioningError::ElevationRequired {
+            step: "InstallWsl".into(),
+            hint: "The step needs administrator rights. Re-run it and approve \
+                   the Windows prompt."
+                .into(),
+        }),
+        other => {
+            // Last-resort text sniff for older wsl.exe builds that report a
+            // generic 1. Locale-dependent, hence the fallback position.
+            if low.contains("elevat") || low.contains("0x80070005") {
+                Err(ProvisioningError::ElevationRequired {
+                    step: "InstallWsl".into(),
+                    hint: "Run `wsl --install` from an elevated terminal, reboot \
+                           if prompted, then re-run this step."
+                        .into(),
+                })
+            } else if low.contains("reboot") || low.contains("restart") {
+                Err(ProvisioningError::RebootRequired {
+                    step: "InstallWsl".into(),
+                    hint: "Restart the machine, then run the install again to finish."
+                        .into(),
+                })
+            } else {
+                Err(ProvisioningError::StepFailed {
+                    step: "InstallWsl".into(),
+                    exit_code: other as i32,
+                    stderr: output.to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// Reboot the machine to finish a WSL feature enable. Only ever called
+/// from an explicit user confirmation in the reboot card — never
+/// automatically, since other apps may hold unsaved work.
+#[tauri::command]
+pub(crate) async fn restart_windows() -> Result<(), String> {
+    log_warn("SETUP", "user confirmed restart to finish the WSL install");
+    let mut c = hidden_cmd("shutdown.exe");
+    c.args(["/r", "/t", "0", "/c", "winmux: finishing the WSL install"]);
+    let out = c
+        .output()
+        .await
+        .map_err(|e| format!("could not start shutdown.exe: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "shutdown.exe exited {}: {}",
+            out.status.code().unwrap_or(-1),
+            clean_wsl_output(&out.stderr).trim()
+        ))
+    }
+}
+
 /// Build a hidden-console tokio Command. ALL wsl.exe / winget / npm /
 /// probe invocations go through this (or `wsl_cmd`).
 pub(crate) fn hidden_cmd(program: &str) -> tokio::process::Command {
@@ -882,34 +1164,51 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
             },
             "InstallWsl" => {
                 let d = distro.clone().unwrap_or_else(|| "Ubuntu".into());
-                let mut c = wsl_cmd();
-                c.args(["--install", "--no-launch", "-d", &d]);
-                match run_capture(c, "wsl --install", 1800).await {
-                    Ok((0, out)) => {
-                        distro = Some(d);
-                        Ok(out)
-                    }
-                    Ok((code, out)) => {
-                        let low = out.to_lowercase();
-                        // Modern WSL self-elevates via UAC; this branch is
-                        // the fallback for a declined UAC or a machine
-                        // that needs the Windows feature enable + reboot.
-                        if low.contains("elevat") || low.contains("0x80070005") {
-                            Err(ProvisioningError::ElevationRequired {
-                                step: kind.into(),
-                                hint:
-                                    "Run `wsl --install` from an elevated terminal, reboot if prompted, then re-run this step."
-                                        .into(),
-                            })
-                        } else {
-                            Err(ProvisioningError::StepFailed {
-                                step: kind.into(),
-                                exit_code: code,
-                                stderr: out,
-                            })
+                if !valid_distro_name(&d) {
+                    Err(ProvisioningError::Generic(format!(
+                        "unsafe distro name: {d:?}"
+                    )))
+                } else {
+                    // Enabling the Windows features needs admin. When we
+                    // already hold an elevated token, run wsl.exe inline so
+                    // its output still reaches the UI; otherwise drive it
+                    // through a UAC prompt, which trades the output pipes
+                    // for an exit code we can actually trust.
+                    let outcome = if is_elevated() {
+                        let mut c = wsl_cmd();
+                        c.args(["--install", "--no-launch", "-d", &d]);
+                        match run_capture(c, "wsl --install", 1800).await {
+                            Ok((code, out)) => Ok((code.max(0) as u32, out)),
+                            Err(e) => Err(ProvisioningError::Generic(e)),
                         }
+                    } else {
+                        log_info(
+                            "SETUP",
+                            "InstallWsl: no elevated token — requesting UAC consent",
+                        );
+                        let d2 = d.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            run_wsl_install_elevated(&d2)
+                        })
+                        .await
+                        {
+                            Ok(Ok(code)) => Ok((code, String::new())),
+                            Ok(Err(e)) => Err(e),
+                            Err(e) => Err(ProvisioningError::Generic(format!(
+                                "elevated install task failed: {e}"
+                            ))),
+                        }
+                    };
+                    match outcome {
+                        Ok((code, out)) => match classify_wsl_install(code, &out) {
+                            Ok(()) => {
+                                distro = Some(d);
+                                Ok(out)
+                            }
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
                     }
-                    Err(e) => Err(ProvisioningError::Generic(e)),
                 }
             }
             "CreateWslUser" => {
@@ -1270,5 +1569,96 @@ mod tests {
     fn winget_no_upgrade_code_is_ok() {
         assert!(winget_already_ok(0x8A15_002Bu32 as i32));
         assert!(!winget_already_ok(1));
+    }
+}
+
+#[cfg(test)]
+mod wsl_elevation_tests {
+    // The old code decided "does this need admin?" by looking for the
+    // English word "elevat" in wsl.exe's output, so a localized Windows
+    // reported a UAC problem as a generic failure. These pin the
+    // replacement: classify on the exit code first, text only as a
+    // last-resort fallback for old builds that always return 1.
+    use super::{classify_wsl_install, valid_distro_name};
+    use crate::provisioning::ProvisioningError;
+
+    #[test]
+    fn success_is_success() {
+        assert!(classify_wsl_install(0, "").is_ok());
+    }
+
+    #[test]
+    fn code_3010_asks_for_a_restart_not_a_retry() {
+        // The whole point of the variant: retrying without rebooting
+        // cannot work, so it must not look like ElevationRequired.
+        match classify_wsl_install(3010, "") {
+            Err(ProvisioningError::RebootRequired { step, .. }) => assert_eq!(step, "InstallWsl"),
+            other => panic!("expected RebootRequired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancelled_uac_is_an_elevation_problem() {
+        for code in [1223, 740] {
+            match classify_wsl_install(code, "") {
+                Err(ProvisioningError::ElevationRequired { .. }) => {}
+                other => panic!("code {code} should be ElevationRequired, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_localized_failure_no_longer_masquerades_as_generic() {
+        // Hebrew Windows: nothing in this string contains "elevat", which
+        // is exactly how Yossi's run produced a bare StepFailed.
+        let hebrew = "הפעולה דורשת הרשאות מנהל";
+        match classify_wsl_install(1223, hebrew) {
+            Err(ProvisioningError::ElevationRequired { .. }) => {}
+            other => panic!("expected ElevationRequired from the code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_code_still_carries_the_raw_output() {
+        match classify_wsl_install(1, "something went wrong") {
+            Err(ProvisioningError::StepFailed { exit_code, stderr, .. }) => {
+                assert_eq!(exit_code, 1);
+                assert_eq!(stderr, "something went wrong");
+            }
+            other => panic!("expected StepFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn english_text_fallback_still_works_for_old_builds() {
+        match classify_wsl_install(1, "Error: the requested operation requires elevation") {
+            Err(ProvisioningError::ElevationRequired { .. }) => {}
+            other => panic!("expected the text fallback to fire, got {other:?}"),
+        }
+        match classify_wsl_install(1, "Please reboot to complete the installation") {
+            Err(ProvisioningError::RebootRequired { .. }) => {}
+            other => panic!("expected the reboot fallback to fire, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn distro_names_are_allowlisted_before_reaching_shellexecute() {
+        for ok in ["Ubuntu", "Ubuntu-22.04", "openSUSE-Leap-15.6", "kali_linux"] {
+            assert!(valid_distro_name(ok), "{ok} should be accepted");
+        }
+        // ShellExecuteEx takes a parameter *string*, so anything that could
+        // add an argument or a quote has to be refused (Rule #3).
+        for bad in [
+            "",
+            "Ubuntu -d Other",
+            "Ubuntu\"",
+            "Ubuntu&calc",
+            "Ubuntu;calc",
+            "Ubuntu\ncalc",
+            "../evil",
+        ] {
+            assert!(!valid_distro_name(bad), "{bad:?} should be refused");
+        }
+        assert!(!valid_distro_name(&"A".repeat(65)));
     }
 }

@@ -113,6 +113,22 @@ bollard = { version = "0.17", default-features = false }
 # Direct dep for `StreamExt` on bollard's stats stream.
 futures-util = "0.3"
 
+# WSL smart-install preflight: process-token elevation check and the
+# ShellExecuteEx("runas") path that runs `wsl --install` elevated. Already
+# in the tree transitively via tauri, so this pins a direct handle to it
+# rather than pulling a new crate family.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    # SHELLEXECUTEINFOW carries an HKEY field, so the Shell struct is
+    # gated behind the Registry feature even though we never touch it.
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 # Phase 50 (#2.4): integration test for diff_pane::fetch_diff against a
 # real git repo seeded under a temporary directory.

@@ -186,6 +186,7 @@ dependencies = [
  "ts-rs",
  "ureq",
  "whoami",
+ "windows-sys 0.61.2",
  "winmux-addons",
  "winmux-bootstrap",
  "winmux-core",

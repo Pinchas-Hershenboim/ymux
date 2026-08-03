@@ -1370,6 +1370,14 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   justify-content: flex-end;
   margin-top: 18px;
 }
+/* Confirm step of an irreversible action (e.g. the WSL install restart).
+   The existing .danger rules are all parent-scoped, so a modal button
+   needs its own. */
+.modal-buttons button.danger {
+  color: var(--w-error);
+  border-color: rgba(247, 118, 142, 0.5);
+}
+.modal-buttons button.danger:hover { background: rgba(247, 118, 142, 0.14); }
 
 /* Phase 42: wider, height-capped Create/Edit Workspace modal. The form
    was taller than typical viewports — its top + bottom bled off-screen.
