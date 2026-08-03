@@ -8,8 +8,10 @@
 //! authenticated handle and avoids us having to chase teardown
 //! semantics when the terminal pane disconnects.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use russh::client::Handle as SshHandle;
@@ -20,24 +22,225 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{AppState, Session, SshClient};
 
-/// Phase 75.3: progress tick for an in-flight download, emitted to the
-/// frontend so a large transfer shows movement instead of a frozen pane.
+// ─── Phase 81: transfer progress + cancel ──────────────────────────────────
+//
+// Both directions stream in 256 KB chunks and report through one pair of
+// events, `fm-transfer-progress` / `fm-transfer-done`. Downloads had this
+// since Phase 75.3 (download-only, `fm-download-progress`); uploads had
+// nothing at all — `std::fs::read` slurped the whole file into RAM and a
+// single `write_all` pushed it out, so a 60 MB upload looked frozen. Every
+// transfer now registers a cancel flag checked between chunks.
+//
+// Rule #1: only ids, names, paths and byte counts are ever logged or
+// emitted — never file contents.
+
+/// Chunk size for both directions. Big enough that per-chunk overhead
+/// disappears, small enough that cancel feels immediate.
+const CHUNK: usize = 256 * 1024;
+
+/// Sentinel error returned by the streaming loops when the user cancels.
+/// Distinguishes a deliberate abort from a real failure so the UI can stay
+/// quiet instead of showing a red banner.
+pub(crate) const CANCELED: &str = "canceled";
+
+static TRANSFER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// In-flight transfers → their cancel flags. Module-local rather than a
+/// field on `AppState`: nothing outside this file has any business
+/// touching it, and it keeps the transfer feature self-contained.
+static TRANSFERS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn transfers() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    TRANSFERS.get_or_init(Default::default)
+}
+
+/// Register a transfer; returns its id and the cancel flag the streaming
+/// loop polls. A poisoned registry only costs us the ability to cancel
+/// this one transfer — never fail the transfer itself over it.
+fn transfer_begin() -> (String, Arc<AtomicBool>) {
+    let id = format!("t{}", TRANSFER_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Ok(mut map) = transfers().lock() {
+        map.insert(id.clone(), Arc::clone(&flag));
+    }
+    (id, flag)
+}
+
+fn transfer_end(id: &str) {
+    if let Ok(mut map) = transfers().lock() {
+        map.remove(id);
+    }
+}
+
+/// Basename of a path with either separator. Used for the UI label so the
+/// progress row shows `backup.tar.gz`, not the full remote path.
+fn basename(path: &str) -> String {
+    path.rsplit(|c: char| c == '/' || c == '\\')
+        .find(|s| !s.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Ask an in-flight transfer to stop. The streaming loop notices between
+/// chunks, removes the partial file, and returns `CANCELED` — which the
+/// command turns into a `fm-transfer-done { canceled: true }` event.
+#[tauri::command]
+pub(crate) fn fm_transfer_cancel(transfer_id: String) -> Result<(), String> {
+    let map = transfers()
+        .lock()
+        .map_err(|_| "transfer registry unavailable".to_string())?;
+    let flag = map
+        .get(&transfer_id)
+        .ok_or_else(|| format!("no such transfer: {transfer_id}"))?;
+    flag.store(true, Ordering::Relaxed);
+    crate::dlog_tag("FM", &format!("transfer {transfer_id} cancel requested"));
+    Ok(())
+}
+
+/// Live progress tick for an in-flight transfer.
+#[derive(Clone, Serialize)]
+struct TransferProgress {
+    id: String,
+    /// "upload" | "download"
+    direction: &'static str,
+    /// Basename — what the progress row shows.
+    name: String,
+    /// Remote-side path, for callers that key off it.
+    path: String,
+    done: u64,
+    /// 0 when the size couldn't be stat'd (progress renders indeterminate).
+    total: u64,
+    /// Average over the whole transfer so far, bytes/sec.
+    speed_bps: u64,
+}
+
+/// Phase 75.3's download-only payload. Kept alive alongside the new
+/// unified event purely so the existing single-pane listener in
+/// FileManagerPane keeps working while the TransferBar is built; both
+/// this struct and its emit are removed once the bar owns the UI.
 #[derive(Clone, Serialize)]
 struct DownloadProgress {
     path: String,
     done: u64,
-    total: u64, // 0 if the remote size couldn't be stat'd
+    total: u64,
 }
 
-/// Stream a remote file to `local` in chunks, emitting throttled
-/// `fm-download-progress` events. Returns bytes written. Avoids buffering the
-/// whole file in RAM (the old read_to_end) — important for multi-GB files —
-/// and gives the UI a live byte/percent readout.
+/// Terminal event for a transfer — success, cancel, or failure.
+#[derive(Clone, Serialize)]
+struct TransferDone {
+    id: String,
+    direction: &'static str,
+    name: String,
+    ok: bool,
+    canceled: bool,
+    error: Option<String>,
+}
+
+/// Throttled progress emitter shared by both directions. Fires at most
+/// every 300 ms (or every 4 MB, whichever lands first) so a fast LAN
+/// transfer can't flood the IPC bridge, plus forced ticks at 0 % and
+/// 100 % so the row appears immediately and always finishes full.
+struct ProgressEmitter<'a> {
+    app: &'a AppHandle,
+    id: String,
+    direction: &'static str,
+    name: String,
+    path: String,
+    total: u64,
+    started: std::time::Instant,
+    last: std::time::Instant,
+    last_done: u64,
+}
+
+impl<'a> ProgressEmitter<'a> {
+    fn new(app: &'a AppHandle, id: &str, direction: &'static str, path: &str, total: u64) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            app,
+            id: id.to_string(),
+            direction,
+            name: basename(path),
+            path: path.to_string(),
+            total,
+            started: now,
+            last: now,
+            last_done: 0,
+        }
+    }
+
+    fn tick(&mut self, done: u64, force: bool) {
+        if !force
+            && self.last.elapsed().as_millis() < 300
+            && done.saturating_sub(self.last_done) < 4 * 1024 * 1024
+        {
+            return;
+        }
+        // Average speed. Guarded against the first-tick divide-by-~zero,
+        // which would otherwise report an absurd "412 GB/s".
+        let secs = self.started.elapsed().as_secs_f64();
+        let speed_bps = if secs > 0.05 { (done as f64 / secs) as u64 } else { 0 };
+        let _ = self.app.emit(
+            "fm-transfer-progress",
+            TransferProgress {
+                id: self.id.clone(),
+                direction: self.direction,
+                name: self.name.clone(),
+                path: self.path.clone(),
+                done,
+                total: self.total,
+                speed_bps,
+            },
+        );
+        // Legacy Phase 75.3 event — dropped once the TransferBar lands.
+        if self.direction == "download" {
+            let _ = self.app.emit(
+                "fm-download-progress",
+                DownloadProgress { path: self.path.clone(), done, total: self.total },
+            );
+        }
+        self.last = std::time::Instant::now();
+        self.last_done = done;
+    }
+}
+
+/// Emit the terminal event for a transfer, mapping the streaming result
+/// onto ok / canceled / error.
+fn emit_done(
+    app: &AppHandle,
+    id: &str,
+    direction: &'static str,
+    path: &str,
+    res: &Result<u64, String>,
+) {
+    let (ok, canceled, error) = match res {
+        Ok(_) => (true, false, None),
+        Err(e) if e == CANCELED => (false, true, None),
+        Err(e) => (false, false, Some(e.clone())),
+    };
+    let _ = app.emit(
+        "fm-transfer-done",
+        TransferDone {
+            id: id.to_string(),
+            direction,
+            name: basename(path),
+            ok,
+            canceled,
+            error,
+        },
+    );
+}
+
+/// Stream a remote file to `local` in chunks. Returns bytes written.
+/// Avoids buffering the whole file in RAM (the pre-75.3 `read_to_end`) —
+/// important for multi-GB files — and gives the UI a live readout.
+/// On cancel the partial local file is removed.
 async fn stream_download(
     app: &AppHandle,
     sftp: &SftpSession,
     remote_path: &str,
     local: &std::path::Path,
+    id: &str,
+    cancel: &AtomicBool,
 ) -> Result<u64, String> {
     let total = sftp
         .metadata(remote_path)
@@ -45,7 +248,10 @@ async fn stream_download(
         .ok()
         .and_then(|m| m.size)
         .unwrap_or(0);
-    crate::log_debug("FM", &format!("download begin remote={remote_path} size={total}"));
+    crate::log_debug(
+        "FM",
+        &format!("download begin id={id} remote={remote_path} size={total}"),
+    );
     let mut file = sftp
         .open(remote_path)
         .await
@@ -53,32 +259,94 @@ async fn stream_download(
     let mut out = tokio::fs::File::create(local)
         .await
         .map_err(|e| format!("create {local:?}: {e}"))?;
-    let emit = |done: u64, total: u64| {
-        let _ = app.emit(
-            "fm-download-progress",
-            DownloadProgress { path: remote_path.to_string(), done, total },
-        );
-    };
+    let mut prog = ProgressEmitter::new(app, id, "download", remote_path, total);
+    prog.tick(0, true); // row appears before the first byte moves
     let mut done: u64 = 0;
-    let mut chunk = vec![0u8; 256 * 1024];
-    let mut last = std::time::Instant::now();
-    let mut last_done = 0u64;
+    let mut chunk = vec![0u8; CHUNK];
+    let mut canceled = false;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            canceled = true;
+            break;
+        }
         let n = file.read(&mut chunk).await.map_err(|e| format!("read: {e}"))?;
         if n == 0 {
             break;
         }
         out.write_all(&chunk[..n]).await.map_err(|e| format!("write: {e}"))?;
         done += n as u64;
-        // Throttle emits: ~every 300 ms or every 4 MB, whichever first.
-        if last.elapsed().as_millis() >= 300 || done - last_done >= 4 * 1024 * 1024 {
-            emit(done, total);
-            last = std::time::Instant::now();
-            last_done = done;
-        }
+        prog.tick(done, false);
     }
     out.flush().await.ok();
-    emit(done, total.max(done)); // final 100% tick
+    drop(out);
+    if canceled {
+        // Best-effort: a half-written file left on disk is worse than a
+        // failed cleanup we can't do anything about anyway.
+        let _ = tokio::fs::remove_file(local).await;
+        crate::dlog_tag("FM", &format!("download canceled id={id} after {done} bytes"));
+        return Err(CANCELED.to_string());
+    }
+    prog.total = prog.total.max(done);
+    prog.tick(done, true); // final 100% tick
+    Ok(done)
+}
+
+/// Stream a local file to `remote_path` over SFTP in chunks. The upload
+/// counterpart of `stream_download` — before Phase 81 this path read the
+/// entire file into a `Vec<u8>` and issued one `write_all`, which is why a
+/// large upload showed no progress at all. On cancel the partial remote
+/// file is removed.
+async fn stream_upload(
+    app: &AppHandle,
+    sftp: &SftpSession,
+    local: &std::path::Path,
+    remote_path: &str,
+    id: &str,
+    cancel: &AtomicBool,
+) -> Result<u64, String> {
+    let total = tokio::fs::metadata(local)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    crate::dlog_tag(
+        "FM",
+        &format!("upload begin id={id} local={local:?} remote={remote_path} size={total}"),
+    );
+    let mut src = tokio::fs::File::open(local)
+        .await
+        .map_err(|e| format!("open {local:?}: {e}"))?;
+    let mut dst = sftp
+        .create(remote_path)
+        .await
+        .map_err(|e| format!("sftp create {remote_path}: {e}"))?;
+    let mut prog = ProgressEmitter::new(app, id, "upload", remote_path, total);
+    prog.tick(0, true);
+    let mut done: u64 = 0;
+    let mut chunk = vec![0u8; CHUNK];
+    let mut canceled = false;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            canceled = true;
+            break;
+        }
+        let n = src.read(&mut chunk).await.map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&chunk[..n]).await.map_err(|e| format!("write: {e}"))?;
+        done += n as u64;
+        prog.tick(done, false);
+    }
+    dst.flush().await.ok();
+    dst.shutdown().await.ok();
+    drop(dst);
+    if canceled {
+        let _ = sftp.remove_file(remote_path).await;
+        crate::dlog_tag("FM", &format!("upload canceled id={id} after {done} bytes"));
+        return Err(CANCELED.to_string());
+    }
+    prog.total = prog.total.max(done);
+    prog.tick(done, true);
     Ok(done)
 }
 
@@ -89,6 +357,8 @@ async fn stream_download(
 fn fm_log<T>(op: &str, detail: &str, res: Result<T, String>) -> Result<T, String> {
     match &res {
         Ok(_) => crate::log_info("FM", &format!("{op} ok — {detail}")),
+        // A user-requested cancel is a normal outcome, not a failure.
+        Err(e) if e == CANCELED => crate::log_info("FM", &format!("{op} canceled — {detail}")),
         Err(e) => crate::log_warn("FM", &format!("{op} FAILED — {detail}: {e}")),
     }
     res
@@ -582,6 +852,7 @@ pub(crate) async fn file_upload_bytes(
 /// upload (the SSH session is per-workspace).
 #[tauri::command]
 pub(crate) async fn pane_upload_dropped(
+    app: AppHandle,
     state: State<'_, AppState>,
     workspace_id: String,
     pane_id: String,
@@ -601,30 +872,24 @@ pub(crate) async fn pane_upload_dropped(
     let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
         .ok_or_else(|| "no active SSH session".to_string())?;
     let local = PathBuf::from(expand_path(&local_path));
-    let bytes = std::fs::read(&local).map_err(|e| format!("read {local:?}: {e}"))?;
     let sftp = open_sftp(&handle).await?;
     // SFTP starts in the user's home dir; relative path puts us inside it.
     // create_dir errors if already present — ignore that case.
     let _ = sftp.create_dir("winmux-drops").await;
     let remote_path = format!("winmux-drops/{safe}");
-    let mut file = sftp
-        .create(&remote_path)
-        .await
-        .map_err(|e| format!("sftp create {remote_path}: {e}"))?;
-    file.write_all(&bytes)
-        .await
-        .map_err(|e| format!("write: {e}"))?;
-    file.flush().await.ok();
-    file.shutdown().await.ok();
-    drop(file);
+    // Streamed like every other transfer (was: slurp to Vec + one
+    // write_all), so dropping a large file onto a terminal pane shows a
+    // progress row and can be canceled.
+    let (id, cancel) = transfer_begin();
+    let res = stream_upload(&app, &sftp, &local, &remote_path, &id, &cancel).await;
     let _ = sftp.close().await;
-    crate::log_info("FM", &format!(
-        "[drop] uploaded {} bytes to {} (ws={}, pane={})",
-        bytes.len(),
-        remote_path,
-        workspace_id,
-        pane_id,
-    ));
+    transfer_end(&id);
+    emit_done(&app, &id, "upload", &remote_path, &res);
+    let n = res?;
+    crate::log_info(
+        "FM",
+        &format!("[drop] uploaded {n} bytes to {remote_path} (ws={workspace_id}, pane={pane_id})"),
+    );
     // Resolve to absolute via ~ for caller readability; the shell will
     // expand the leading `~`.
     Ok(format!("~/{remote_path}"))
@@ -632,37 +897,27 @@ pub(crate) async fn pane_upload_dropped(
 
 #[tauri::command]
 pub(crate) async fn file_upload(
+    app: AppHandle,
     state: State<'_, AppState>,
     workspace_id: String,
     local_path: String,
     remote_path: String,
 ) -> Result<u64, String> {
     let detail = format!("local={local_path} → remote={remote_path}");
-    fm_log(
-        "upload",
-        &detail,
-        async {
-            let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
-                .ok_or_else(|| "no active SSH session".to_string())?;
-            let local = PathBuf::from(expand_path(&local_path));
-            let bytes = std::fs::read(&local).map_err(|e| format!("read {local:?}: {e}"))?;
-            let sftp = open_sftp(&handle).await?;
-            let mut file = sftp
-                .create(&remote_path)
-                .await
-                .map_err(|e| format!("sftp create {remote_path}: {e}"))?;
-            file.write_all(&bytes)
-                .await
-                .map_err(|e| format!("write: {e}"))?;
-            file.flush().await.ok();
-            file.shutdown().await.ok();
-            let n = bytes.len() as u64;
-            drop(file);
-            let _ = sftp.close().await;
-            Ok(n)
-        }
-        .await,
-    )
+    let (id, cancel) = transfer_begin();
+    let res = async {
+        let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
+            .ok_or_else(|| "no active SSH session".to_string())?;
+        let local = PathBuf::from(expand_path(&local_path));
+        let sftp = open_sftp(&handle).await?;
+        let n = stream_upload(&app, &sftp, &local, &remote_path, &id, &cancel).await;
+        let _ = sftp.close().await;
+        n
+    }
+    .await;
+    transfer_end(&id);
+    emit_done(&app, &id, "upload", &remote_path, &res);
+    fm_log("upload", &detail, res)
 }
 
 #[tauri::command]
@@ -674,26 +929,26 @@ pub(crate) async fn file_download(
     local_path: String,
 ) -> Result<u64, String> {
     let detail = format!("remote={remote_path} → local={local_path}");
-    fm_log(
-        "download",
-        &detail,
-        async {
-            let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
-                .ok_or_else(|| "no active SSH session".to_string())?;
-            let local = PathBuf::from(expand_path(&local_path));
-            if let Some(parent) = local.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("mkdir parent {parent:?}: {e}"))?;
-                }
+    let (id, cancel) = transfer_begin();
+    let res = async {
+        let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
+            .ok_or_else(|| "no active SSH session".to_string())?;
+        let local = PathBuf::from(expand_path(&local_path));
+        if let Some(parent) = local.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("mkdir parent {parent:?}: {e}"))?;
             }
-            let sftp = open_sftp(&handle).await?;
-            let n = stream_download(&app, &sftp, &remote_path, &local).await?;
-            let _ = sftp.close().await;
-            Ok(n)
         }
-        .await,
-    )
+        let sftp = open_sftp(&handle).await?;
+        let n = stream_download(&app, &sftp, &remote_path, &local, &id, &cancel).await;
+        let _ = sftp.close().await;
+        n
+    }
+    .await;
+    transfer_end(&id);
+    emit_done(&app, &id, "download", &remote_path, &res);
+    fm_log("download", &detail, res)
 }
 
 /// Phase 62.B (item J): download a file referenced by an OSC 8 hyperlink
@@ -709,31 +964,34 @@ pub(crate) async fn download_remote_file_via_osc(
     workspace_id: String,
     remote_path: String,
 ) -> Result<String, String> {
-    fm_log(
-        "download-osc",
-        &format!("remote={remote_path}"),
-        async {
-            let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
-                .ok_or_else(|| "no active SSH session for this workspace".to_string())?;
-            // Basename of a POSIX remote path; fall back to a generic name.
-            let base = remote_path
-                .rsplit('/')
-                .find(|s| !s.is_empty())
-                .unwrap_or("download")
-                .to_string();
-            let home = std::env::var("USERPROFILE")
-                .or_else(|_| std::env::var("HOME"))
-                .map_err(|_| "cannot resolve home directory".to_string())?;
-            let downloads = std::path::Path::new(&home).join("Downloads");
-            std::fs::create_dir_all(&downloads).map_err(|e| format!("mkdir Downloads: {e}"))?;
-            let local = downloads.join(&base);
-            let sftp = open_sftp(&handle).await?;
-            stream_download(&app, &sftp, &remote_path, &local).await?;
-            let _ = sftp.close().await;
-            Ok(local.to_string_lossy().to_string())
-        }
-        .await,
-    )
+    let (id, cancel) = transfer_begin();
+    let res = async {
+        let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
+            .ok_or_else(|| "no active SSH session for this workspace".to_string())?;
+        // Basename of a POSIX remote path; fall back to a generic name.
+        let base = remote_path
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("download")
+            .to_string();
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map_err(|_| "cannot resolve home directory".to_string())?;
+        let downloads = std::path::Path::new(&home).join("Downloads");
+        std::fs::create_dir_all(&downloads).map_err(|e| format!("mkdir Downloads: {e}"))?;
+        let local = downloads.join(&base);
+        let sftp = open_sftp(&handle).await?;
+        let n = stream_download(&app, &sftp, &remote_path, &local, &id, &cancel).await;
+        let _ = sftp.close().await;
+        n.map(|_| local.to_string_lossy().to_string())
+    }
+    .await;
+    transfer_end(&id);
+    // emit_done wants the byte count shape; the path is what this command
+    // returns, so map it back to a unit-ish Result purely for the event.
+    let for_event = res.as_ref().map(|_| 0u64).map_err(|e| e.clone());
+    emit_done(&app, &id, "download", &remote_path, &for_event);
+    fm_log("download-osc", &format!("remote={remote_path}"), res)
 }
 
 // ─── Phase 17: Open with OS default app ────────────────────────────────────

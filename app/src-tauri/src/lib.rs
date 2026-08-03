@@ -7261,6 +7261,7 @@ pub fn run() {
             diff_pane::diff_pane_set_source,
             diff_pane::diff_pane_refresh,
             file_manager::file_download,
+            file_manager::fm_transfer_cancel,
             file_manager::download_remote_file_via_osc,
             file_manager::file_open_local,
             file_manager::file_open_remote,
