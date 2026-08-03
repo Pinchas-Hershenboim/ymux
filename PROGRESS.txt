@@ -894,3 +894,58 @@ NOT VERIFIED LIVE. Compiles + unit-tested only. The live smoke that
 Reverted the ts-rs trailing-whitespace churn in bindings/Settings.ts
   again (cosmetic, unrelated - same as last session).
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~15:10 IDT] session=wsl-smart-install-fix (install path)
+TASK: Yossi: "שיוסיף תהליך התקנה נכון" — preflight + exit-code elevation
+  detection + 3010 reboot handling + self-elevation. COMMIT: 65d6fdc.
+
+PUSHED BACK ON ONE ITEM: the spec asked for `code == 740`
+  (ERROR_ELEVATION_REQUIRED) on wsl.exe's exit. That check can never fire
+  — 740 comes from CreateProcess refusing to launch a manifest-elevated
+  binary, and wsl.exe launches fine unelevated then elevates INTERNALLY.
+  A declined UAC surfaces as ERROR_CANCELLED (1223) from ShellExecuteEx
+  itself. 740 is still mapped (policy-blocked ShellExecuteEx can raise
+  it) but 1223 is the code that actually does the work.
+
+WHAT LANDED
+- is_elevated() via OpenProcessToken + TokenElevation (windows-sys, now a
+  direct dep — was already transitive via tauri; needed the
+  Win32_System_Registry feature too because SHELLEXECUTEINFOW carries an
+  HKEY field).
+- local_setup_preflight command -> WslPreflight {platform_ready,
+  distro_present, elevated, needs_elevation}. needs_elevation is false
+  once the platform is up: adding a further distro to a live platform
+  does NOT need admin.
+- InstallWsl branches: elevated -> inline wsl_cmd (output still reaches
+  the UI); unelevated -> ShellExecuteEx("runas") on spawn_blocking. The
+  runas path loses stdout (no pipes) and buys a trustworthy exit code.
+- classify_wsl_install(code, output): code first, text only as fallback
+  for old builds that always return 1. 3010 -> new RebootRequired
+  variant, deliberately NOT ElevationRequired (retry can't work, so the
+  card offers a restart, not a retry).
+- restart_windows command: shutdown /r /t 0 via args array, behind TWO
+  explicit clicks + copy saying other apps will close. Never automatic.
+- Frontend: admin banner in the WSL group, "UAC will appear + maybe a
+  reboot — continue?" gate before startRun, RebootRequired card.
+
+TWO THINGS I INTRODUCED AND THEN FIXED IN THE SAME PASS
+1. WaitForSingleObject(INFINITE) silently dropped the 1800s ceiling
+   run_capture gives the inline path -> a stuck install would have hung
+   the wizard on "running" forever. Now WSL_INSTALL_TIMEOUT_MS (1800s)
+   with a clear timeout error. The process is deliberately NOT killed:
+   it holds an elevated token we cannot re-acquire and interrupting
+   Windows servicing mid-flight is worse than leaving it.
+2. Restart buttons were wired backwards (the "later" primary armed the
+   confirm). Rewritten: [Restart now] -> [Cancel][Yes, restart].
+
+CHECKS: 146/146 lib tests (7 new in wsl_elevation_tests, incl. a Hebrew
+  string that proves a localized failure no longer masquerades as a
+  generic StepFailed), tsc clean, i18n 981 keys x4. Reverted ts-rs
+  whitespace churn in bindings/Settings.ts again.
+UNVERIFIED: the success path. This box has no WSL (wsl --status exit 50,
+  LxssManager absent), so the UAC prompt, the 3010 card and the workspace
+  that should follow are all compile+unit-test only. Needs a live run.
+NOTE: winmux-utf8-test.exe appeared untracked in the repo root during
+  this session — not mine, left alone (assumed Yossi testing the Bug B
+  build).
+------------------------------------------------------------------
