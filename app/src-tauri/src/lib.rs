@@ -11,6 +11,7 @@ mod connect_wizard;
 mod dev;
 mod diff_pane;
 mod file_manager;
+mod fonts;
 // beta.3-lh-insights: native local Insights (sysinfo + bollard) for the
 // Monitor panel on Local workspaces. Commands mirror the remote daemon's
 // JSON shape so `insights_fetch` can route local vs. SSH transparently.
@@ -7217,6 +7218,8 @@ pub fn run() {
             settings::settings_apply_preset,
             settings::settings_reset,
             settings::list_system_fonts,
+            fonts::font_catalog,
+            fonts::font_install,
             updater::check_for_updates_now,
             updater::download_and_install_update,
             updater::updater_skip_version,

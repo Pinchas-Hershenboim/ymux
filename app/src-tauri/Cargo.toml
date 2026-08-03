@@ -113,6 +113,23 @@ bollard = { version = "0.17", default-features = false }
 # Direct dep for `StreamExt` on bollard's stats stream.
 futures-util = "0.3"
 
+# Font install (per-user, no admin): open the downloaded .ttf with the shell
+# for the guided fallback. Already in the tree via tauri-plugin-opener, so
+# naming it directly costs no extra build time.
+open = "5"
+
+# Font install, Windows-only. Both are already in the dependency tree
+# transitively, so these are direct-dep declarations, not new builds.
+#   winreg      — register the font under HKCU (no elevation needed).
+#   windows-sys — broadcast WM_FONTCHANGE so the new face is usable without
+#                 a reboot.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 # Phase 50 (#2.4): integration test for diff_pane::fetch_diff against a
 # real git repo seeded under a temporary directory.

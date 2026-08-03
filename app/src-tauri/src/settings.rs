@@ -1644,7 +1644,7 @@ fn extends_family(name: &str, base: &str) -> bool {
 /// Heuristic split of the enumerated set into the terminal picker (mono) and
 /// the UI picker. Name-based — the registry doesn't tell us pitch — so it is
 /// a best guess, deliberately generous on the mono side.
-fn looks_monospace(name: &str) -> bool {
+pub(crate) fn looks_monospace(name: &str) -> bool {
     let lower = name.to_lowercase();
     const HINTS: &[&str] = &[
         "mono",
@@ -1652,6 +1652,13 @@ fn looks_monospace(name: &str) -> bool {
         "cascadia",
         "courier",
         "menlo",
+        // "meslo" and "nerd" are load-bearing, not padding: MesloLGS NF
+        // matches none of the other hints, so without them an installed
+        // Nerd Font lands in the UI list and stays unpickable as a terminal
+        // font — install succeeds, ⚠️ never clears. `fonts::tests` guards
+        // this for every catalog family.
+        "meslo",
+        "nerd",
         "fira",
         "jetbrains",
         "iosevka",
@@ -1708,15 +1715,23 @@ pub(crate) fn list_system_fonts() -> Result<FontFamilies, String> {
         "Tahoma".to_string(),
         "Arial".to_string(),
     ];
-    let baseline_mono = vec![
+    // Every family the install catalog can supply is listed here even when
+    // absent, so it shows up flagged ⚠️ with an Install button next to it.
+    // A font that only appears once it is installed can never be discovered
+    // — which is the situation MesloLGS NF was in.
+    let mut baseline_mono = vec![
         "Cascadia Mono".to_string(),
         "Cascadia Code".to_string(),
-        "JetBrains Mono".to_string(),
         "Consolas".to_string(),
         "Courier New".to_string(),
         "ui-monospace".to_string(),
         "monospace".to_string(),
     ];
+    for family in crate::fonts::installable_families() {
+        if !baseline_mono.iter().any(|b| b.eq_ignore_ascii_case(family)) {
+            baseline_mono.push(family.to_string());
+        }
+    }
     // `all` is the MATCH set — it deliberately keeps weight-suffixed faces
     // ("JetBrains Mono ExtraBold") so `family_is_installed` can satisfy a
     // family whose regular face isn't separately registered.

@@ -165,6 +165,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "notify-rust",
+ "open",
  "portable-pty",
  "rand 0.8.6",
  "russh",
@@ -186,6 +187,7 @@ dependencies = [
  "ts-rs",
  "ureq",
  "whoami",
+ "windows-sys 0.59.0",
  "winmux-addons",
  "winmux-bootstrap",
  "winmux-core",
@@ -193,6 +195,7 @@ dependencies = [
  "winmux-ssh",
  "winmux-tunnel",
  "winmux-types",
+ "winreg 0.55.0",
  "zeroize",
  "zip",
 ]

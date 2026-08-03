@@ -6,6 +6,9 @@ import {
   PresetEntry,
   FontFamilies,
   FontEntry,
+  FontCatalogItem,
+  fontCatalog,
+  fontInstall,
   UpdateInfo,
   applyTheme,
   resolveThemeMode,
@@ -62,10 +65,52 @@ function missingFamily(list: FontEntry[], selected: string): string | undefined 
   return hit && !hit.installed ? hit.name : undefined;
 }
 
-function FontMissingNotice(props: { family: string }) {
+/** Bytes → "5.4 MB", so the user sees the cost before starting a download. */
+function formatBytes(n: number): string {
+  return n >= 1048576
+    ? `${(n / 1048576).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/**
+ * Shown under a font select whose chosen family isn't installed. When
+ * winmux can install that family itself, the notice carries the button —
+ * telling the user what's wrong without offering the fix is only half an
+ * answer, and hunting down a .ttf is exactly the step that stalls an
+ * onboarding call.
+ */
+function FontMissingNotice(props: {
+  family: string;
+  catalog: FontCatalogItem[];
+  busy: boolean;
+  onInstall: (item: FontCatalogItem) => void;
+}) {
+  const item = () =>
+    props.catalog.find(
+      (c) => c.family.toLowerCase() === props.family.toLowerCase(),
+    );
   return (
     <div class="font-missing-notice">
-      ⚠️ {t("settings.font.missing", { family: props.family })}
+      <div>⚠️ {t("settings.font.missing", { family: props.family })}</div>
+      <Show when={item()}>
+        {(c) => (
+          <div class="font-missing-actions">
+            <button
+              disabled={props.busy}
+              onClick={() => props.onInstall(c())}
+            >
+              {props.busy
+                ? t("settings.font.installing")
+                : t("settings.font.install", {
+                    size: formatBytes(c().download_bytes),
+                  })}
+            </button>
+            <a href={c().homepage} target="_blank" rel="noreferrer">
+              {c().license}
+            </a>
+          </div>
+        )}
+      </Show>
     </div>
   );
 }
@@ -90,6 +135,42 @@ export function SettingsModal(p: Props) {
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
   const [presets, setPresets] = createSignal<PresetEntry[]>([]);
   const [fonts, setFonts] = createSignal<FontFamilies>({ ui: [], mono: [] });
+  const [catalog, setCatalog] = createSignal<FontCatalogItem[]>([]);
+  /** Catalog id currently downloading, or null. */
+  const [fontBusy, setFontBusy] = createSignal<string | null>(null);
+  const [fontNote, setFontNote] = createSignal<string | null>(null);
+
+  /**
+   * Install a catalog font, then re-read the picker so the row flips from
+   * ⚠️ to ✅ without a restart. The Rust side registers under HKCU and
+   * `list_system_fonts` reads that same hive, so the refresh is enough.
+   */
+  const installFont = async (item: FontCatalogItem) => {
+    setFontBusy(item.id);
+    setFontNote(null);
+    try {
+      const r = await fontInstall(item.id);
+      if (r.guided) {
+        // The silent path was refused (locked-down box). The font is NOT
+        // installed yet — say so rather than showing a success message.
+        setFontNote(t("settings.font.install.guided", { family: item.family }));
+        log.warn("font install fell back to guided", r.fallback_reason);
+      } else {
+        setFontNote(
+          t("settings.font.install.ok", {
+            family: item.family,
+            count: r.installed.length,
+          }),
+        );
+      }
+      setFonts(await listSystemFonts());
+    } catch (e) {
+      log.warn("fontInstall failed", e);
+      setFontNote(t("settings.font.install.failed", { error: String(e) }));
+    } finally {
+      setFontBusy(null);
+    }
+  };
   const [advanced, setAdvanced] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [lastSaved, setLastSaved] = createSignal<number>(0);
@@ -187,6 +268,7 @@ export function SettingsModal(p: Props) {
   onMount(async () => {
     try { setPresets(await getPresets()); } catch (e) { log.warn("getPresets failed", e); }
     try { setFonts(await listSystemFonts()); } catch (e) { log.warn("listSystemFonts failed", e); }
+    try { setCatalog(await fontCatalog()); } catch (e) { log.warn("fontCatalog failed", e); }
     // Phase 38: resolve the debug.log path for the Logs section.
     try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { log.warn("log_dir_path failed", e); }
   });
@@ -524,7 +606,14 @@ export function SettingsModal(p: Props) {
                     </div>
                   </label>
                   <Show when={missingFamily(fonts().ui, p.settings.font.ui_family)}>
-                    {(family) => <FontMissingNotice family={family()} />}
+                    {(family) => (
+                      <FontMissingNotice
+                        family={family()}
+                        catalog={catalog()}
+                        busy={fontBusy() !== null}
+                        onInstall={installFont}
+                      />
+                    )}
                   </Show>
                   <label>
                     <span>{t("settings.font.terminal")}</span>
@@ -556,7 +645,17 @@ export function SettingsModal(p: Props) {
                     </div>
                   </label>
                   <Show when={missingFamily(fonts().mono, p.settings.font.terminal_family)}>
-                    {(family) => <FontMissingNotice family={family()} />}
+                    {(family) => (
+                      <FontMissingNotice
+                        family={family()}
+                        catalog={catalog()}
+                        busy={fontBusy() !== null}
+                        onInstall={installFont}
+                      />
+                    )}
+                  </Show>
+                  <Show when={fontNote()}>
+                    {(note) => <p class="settings-hint">{note()}</p>}
                   </Show>
                   <label>
                     <span>{t("settings.font.web.url")}</span>
