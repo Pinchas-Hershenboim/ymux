@@ -748,3 +748,42 @@ NEXT: install flow (guided vs silent per-user) - awaiting Yossi on catalog
   scope. Decided to SKIP the standalone canvas-detection layer: the Rust
   enumeration covers it, canvas only pays off as a post-install check.
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~15:30 IDT] session=font-detect-install (install flow)
+TASK: second half of the font fix - let winmux install the font it just
+  flagged as missing. Yossi chose: silent per-user with guided fallback.
+NEW: app/src-tauri/src/fonts.rs (font_catalog / font_install commands).
+  - Pinned catalog: tag + sha256 + byte size, all verified against the
+    real artifacts downloaded during this session.
+  - Silent: get_with_retry (native-certs => Netfree/AV boxes work) ->
+    sha256 verify -> zip extract -> %LOCALAPPDATA%\Microsoft\Windows\
+    Fonts -> HKCU register -> WM_FONTCHANGE broadcast. No admin.
+  - Guided fallback on ANY silent failure: write to Downloads +
+    ShellExecute so a GPO/AV-locked box isn't a dead end. Result carries
+    guided:true so the UI doesn't claim a success that didn't happen.
+  - sfnt `name` table parser for the real face name - required, because
+    Windows keys the HKCU value on it and list_system_fonts reads those
+    names back to build the picker.
+CATALOG (narrower than Yossi asked - size-driven, flagged not silent):
+  IN  jetbrains-mono 5.6MB / fira-code 2.4MB / meslolgs-nf 4x ttf 10MB
+      / firacode-nf 27MB
+  OUT Cascadia Code (150MB upstream, ships with Win11/Windows Terminal)
+      JetBrainsMono Nerd Font (125MB - Meslo covers prompt glyphs)
+BUG CAUGHT BY TEST: "MesloLGS NF" matched no mono hint, so installing it
+  would have filed it under UI fonts - install succeeds, warning never
+  clears. Added "meslo"/"nerd" to looks_monospace; a test now asserts
+  every catalog family is visible in the terminal picker.
+ALSO: catalog families seeded into baseline_mono, else a font that only
+  appears once installed can never be discovered (Meslo's situation).
+VERIFIED LIVE (real installs on this machine, not compiles):
+  fira-code      -> 6 faces, picker None -> installed=true
+  jetbrains-mono -> 16 faces, picker false -> true, NL sibling filtered
+  Both fonts are now actually installed here (HKCU, per-user). To undo:
+  delete the FiraCode*/JetBrainsMono* files from
+  %LOCALAPPDATA%\Microsoft\Windows\Fonts and their values under
+  HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts.
+STATUS: cargo test 133 + 2 ignored live tests, tsc clean, vite build
+  clean. The Settings UI itself is STILL NOT exercised in the running
+  app - that is the one remaining gap.
+COMMITS: fca8b54, 73505cc, e513e29, e646383
+------------------------------------------------------------------
