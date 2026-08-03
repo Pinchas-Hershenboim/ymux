@@ -7256,7 +7256,6 @@ pub fn run() {
             file_manager::file_create_local,
             file_manager::file_create_remote,
             file_manager::file_upload,
-            file_manager::file_upload_bytes,
             file_manager::pane_upload_dropped,
             diff_pane::diff_pane_set_source,
             diff_pane::diff_pane_refresh,

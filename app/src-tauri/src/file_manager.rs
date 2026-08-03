@@ -785,44 +785,12 @@ pub(crate) async fn file_create_remote(
     r
 }
 
-/// Phase 23: upload arbitrary bytes (sourced from the frontend, e.g.
-/// from an `<input type="file">` blob) to a remote path. Used by the
-/// "Upload from disk" picker so the user can grab files outside the
-/// current local-column directory without having to navigate there
-/// first. The frontend sends bytes as a JSON array of u8 — that's the
-/// shape Tauri's IPC bridge serializes Uint8Array into.
-#[tauri::command]
-pub(crate) async fn file_upload_bytes(
-    state: State<'_, AppState>,
-    workspace_id: String,
-    remote_path: String,
-    bytes: Vec<u8>,
-) -> Result<u64, String> {
-    let detail = format!("remote={remote_path} bytes={}", bytes.len());
-    fm_log(
-        "upload",
-        &detail,
-        async {
-            let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
-                .ok_or_else(|| "no active SSH session".to_string())?;
-            let sftp = open_sftp(&handle).await?;
-            let mut file = sftp
-                .create(&remote_path)
-                .await
-                .map_err(|e| format!("sftp create {remote_path}: {e}"))?;
-            file.write_all(&bytes)
-                .await
-                .map_err(|e| format!("write: {e}"))?;
-            file.flush().await.ok();
-            file.shutdown().await.ok();
-            let n = bytes.len() as u64;
-            drop(file);
-            let _ = sftp.close().await;
-            Ok(n)
-        }
-        .await,
-    )
-}
+// Phase 81.E: `file_upload_bytes` lived here. It took the whole file as a
+// `Vec<u8>` over the IPC bridge, which Tauri serializes as a JSON array of
+// one number per byte — a 60 MB pick became a ~250 MB JSON string and hung
+// the webview. Its only caller (the "Upload from disk" picker) now uses the
+// native dialog and passes a path to `file_upload`, so nothing crosses the
+// bridge and the transfer streams with progress.
 
 /// Phase 49-A: drag-drop into a Terminal pane. For SSH workspaces the
 /// dropped file is uploaded via SFTP to `~/winmux-drops/<file_name>`
