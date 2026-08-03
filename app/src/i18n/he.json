@@ -181,6 +181,7 @@
   "settings.theme.advanced": "פלטת ANSI (16 צבעים)",
   "settings.font.ui": "גופן ממשק",
   "settings.font.terminal": "גופן טרמינל",
+  "settings.font.missing": "הגופן \"{family}\" לא מותקן במחשב הזה, ולכן התצוגה נופלת חזרה לגופן ברירת המחדל — זו הסיבה ששום דבר לא משתנה.",
   "settings.font.family": "משפחה",
   "settings.font.size": "גודל (pt)",
   "settings.terminal.cursor": "סמן",

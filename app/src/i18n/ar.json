@@ -181,6 +181,7 @@
   "settings.theme.advanced": "لوحة ANSI (16 لون)",
   "settings.font.ui": "خط الواجهة",
   "settings.font.terminal": "خط الطرفية",
+  "settings.font.missing": "الخط \"{family}\" غير مثبَّت على هذا الجهاز، لذلك يعود العرض إلى الخط الافتراضي — وهذا سبب عدم تغيّر أي شيء.",
   "settings.font.family": "العائلة",
   "settings.font.size": "الحجم (pt)",
   "settings.terminal.cursor": "المؤشر",

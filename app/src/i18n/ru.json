@@ -181,6 +181,7 @@
   "settings.theme.advanced": "Палитра ANSI (16 цветов)",
   "settings.font.ui": "Шрифт интерфейса",
   "settings.font.terminal": "Шрифт терминала",
+  "settings.font.missing": "Шрифт «{family}» не установлен на этом компьютере, поэтому отображение возвращается к шрифту по умолчанию — вот почему ничего не меняется.",
   "settings.font.family": "Семейство",
   "settings.font.size": "Размер (pt)",
   "settings.terminal.cursor": "Курсор",

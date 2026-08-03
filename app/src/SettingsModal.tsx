@@ -5,6 +5,7 @@ import {
   Settings,
   PresetEntry,
   FontFamilies,
+  FontEntry,
   UpdateInfo,
   applyTheme,
   resolveThemeMode,
@@ -33,6 +34,41 @@ import { AddonsTab } from "./AddonsTab";
 import { createLogger } from "./logger";
 
 const log = createLogger("SETTINGS");
+
+// ─── font availability ─────────────────────────────────────────────────────
+//
+// The picker offers a curated baseline on top of what is actually installed
+// (see `list_system_fonts` in settings.rs), so it can list families this
+// machine does not have — `JetBrains Mono` and `Inter` ship with nothing.
+// Picking one used to do nothing visible at all: `quoteFamily()` appends a
+// CSS fallback chain ending back at the default, so the terminal re-rendered
+// identically and the setting looked broken. These mark the gap instead.
+
+/** Option label: family name prefixed with an availability badge. */
+function fontLabel(f: FontEntry): string {
+  return `${f.installed ? "✅" : "⚠️"} ${f.name}`;
+}
+
+/**
+ * The currently-selected family, but only when we positively know it is NOT
+ * installed. Returns undefined when it is installed OR when it isn't in the
+ * list at all — an unlisted family (hand-typed, or supplied by the web-font
+ * URL) is unverifiable here, and a false alarm is worse than no alarm.
+ */
+function missingFamily(list: FontEntry[], selected: string): string | undefined {
+  const hit = list.find(
+    (f) => f.name.toLowerCase() === selected.trim().toLowerCase(),
+  );
+  return hit && !hit.installed ? hit.name : undefined;
+}
+
+function FontMissingNotice(props: { family: string }) {
+  return (
+    <div class="font-missing-notice">
+      ⚠️ {t("settings.font.missing", { family: props.family })}
+    </div>
+  );
+}
 
 interface Props {
   open: boolean;
@@ -466,7 +502,11 @@ export function SettingsModal(p: Props) {
                         value={p.settings.font.ui_family}
                         onChange={(e) => update("font", { ...p.settings.font, ui_family: e.currentTarget.value })}
                       >
-                        <For each={fonts().ui}>{(f) => <option value={f}>{f}</option>}</For>
+                        <For each={fonts().ui}>
+                          {(f) => (
+                            <option value={f.name}>{fontLabel(f)}</option>
+                          )}
+                        </For>
                       </select>
                       <input
                         type="number"
@@ -483,6 +523,9 @@ export function SettingsModal(p: Props) {
                       />
                     </div>
                   </label>
+                  <Show when={missingFamily(fonts().ui, p.settings.font.ui_family)}>
+                    {(family) => <FontMissingNotice family={family()} />}
+                  </Show>
                   <label>
                     <span>{t("settings.font.terminal")}</span>
                     <div style="display:flex; gap:8px; flex:1">
@@ -491,7 +534,11 @@ export function SettingsModal(p: Props) {
                         value={p.settings.font.terminal_family}
                         onChange={(e) => update("font", { ...p.settings.font, terminal_family: e.currentTarget.value })}
                       >
-                        <For each={fonts().mono}>{(f) => <option value={f}>{f}</option>}</For>
+                        <For each={fonts().mono}>
+                          {(f) => (
+                            <option value={f.name}>{fontLabel(f)}</option>
+                          )}
+                        </For>
                       </select>
                       <input
                         type="number"
@@ -508,6 +555,9 @@ export function SettingsModal(p: Props) {
                       />
                     </div>
                   </label>
+                  <Show when={missingFamily(fonts().mono, p.settings.font.terminal_family)}>
+                    {(family) => <FontMissingNotice family={family()} />}
+                  </Show>
                   <label>
                     <span>{t("settings.font.web.url")}</span>
                     <input

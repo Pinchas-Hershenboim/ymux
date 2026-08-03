@@ -181,6 +181,7 @@
   "settings.theme.advanced": "ANSI palette (xterm 16)",
   "settings.font.ui": "UI font",
   "settings.font.terminal": "Terminal font",
+  "settings.font.missing": "\"{family}\" is not installed on this machine, so the display falls back to the default font — that's why nothing changes.",
   "settings.font.family": "Family",
   "settings.font.size": "Size (pt)",
   "settings.terminal.cursor": "Cursor",

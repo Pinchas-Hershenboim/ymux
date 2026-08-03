@@ -361,9 +361,21 @@ export interface PresetEntry {
   theme: Theme;
 }
 
+/**
+ * One row in the Settings font picker. `installed` comes from the Rust-side
+ * registry enumeration (`list_system_fonts`); false means picking it would
+ * silently fall through `quoteFamily()`'s CSS fallback chain and change
+ * nothing on screen, so the UI flags it rather than letting the user
+ * conclude the setting is broken.
+ */
+export interface FontEntry {
+  name: string;
+  installed: boolean;
+}
+
 export interface FontFamilies {
-  ui: string[];
-  mono: string[];
+  ui: FontEntry[];
+  mono: FontEntry[];
 }
 
 export interface UpdateInfo {
@@ -480,8 +492,7 @@ export function applyTheme(s: Settings): void {
   // inject a single <link rel="stylesheet"> tag so that font becomes
   // available by family name. Removing or changing the URL replaces the
   // tag — we don't try to garbage-collect previously-loaded sheets.
-  const url = (s.font as any).web_font_url as string | undefined;
-  applyWebFont(url ?? "");
+  applyWebFont(s.font.web_font_url ?? "");
 }
 
 /**
