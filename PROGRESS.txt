@@ -708,3 +708,43 @@ FIX: terminalInstance.ts + textDirection.ts(+tests) restored to 9b87860
   complaints) - proper fix = DECISIONS return-conditions round.
 NOTE: winmux-pre-mouse-diag.exe (02:09) = standalone diag build @9b87860.
 ------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~14:40 IDT] session=font-detect-install (stage 0)
+TASK: Yossi on an AnyDesk onboarding call: picking a font in Settings
+  changes nothing on a clean machine. Investigate + propose, then build
+  in a worktree.
+WORKTREE: .claude/worktrees/font-detect-install, branch
+  font-detect-install, based on origin/main 98f0c6d (local main was 82
+  commits behind).
+ROOT CAUSE (two independent bugs, both in the font path):
+  1) settings.rs list_system_fonts() merges a curated baseline over the
+     enumerated set and returned bare strings, so JetBrains Mono / Inter
+     were offered as if installed. Picking one falls through the CSS
+     fallback chain in settings.ts quoteFamily() back to Cascadia Mono =
+     the default, so the screen is byte-identical and nothing signals
+     failure.
+  2) enumerate_windows_fonts() read HKLM only. Per-user installs land in
+     HKCU (the no-admin path, and where our own installer will write) so
+     they were invisible. Measured here: 409 HKLM vs 5 HKCU unseen.
+FIX (fca8b54 + 73505cc):
+  - FontFamilies now carries FontEntry{name, installed}; CSS generics
+    always installed; enumeration failure => report all installed rather
+    than unsubstantiated badges.
+  - Enumerate HKLM+HKCU, split packed .fon names, strip more format tags.
+  - extends_family() requires the trailing words to be known style words,
+    else "Courier New" satisfies "Courier" (a test caught this).
+  - strip_style_suffix() replaces a 6-suffix hardcode that omitted
+    "Regular" => "Cascadia Code Regular" was a duplicate row.
+  - looks_monospace() excludes "Monotype Corsiva" (matched on "Mono"type).
+  - Settings: OK/MISS badge per family + inline notice under the select
+    when the SELECTED family is known-missing. i18n en/he/ar/ru.
+  - list_system_fonts now returns Result (Rule #6); dropped an `as any`
+    in settings.ts (Rule #5).
+VERIFIED: real run of the command, not just a compile. mono list 13->10
+  rows, duplicates + script face gone, JetBrains Mono/Inter/Roboto flagged
+  MISS, the 5 HKCU "Fb Vayikra" families now appear. cargo test 127 passed
+  (10 new), tsc clean. NOT yet run in the live app - no UI smoke test.
+NEXT: install flow (guided vs silent per-user) - awaiting Yossi on catalog
+  scope. Decided to SKIP the standalone canvas-detection layer: the Rust
+  enumeration covers it, canvas only pays off as a post-install check.
+------------------------------------------------------------------
