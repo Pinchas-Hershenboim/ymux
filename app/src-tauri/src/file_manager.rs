@@ -93,7 +93,7 @@ pub(crate) fn fm_transfer_cancel(transfer_id: String) -> Result<(), String> {
         .get(&transfer_id)
         .ok_or_else(|| format!("no such transfer: {transfer_id}"))?;
     flag.store(true, Ordering::Relaxed);
-    crate::dlog_tag("FM", &format!("transfer {transfer_id} cancel requested"));
+    crate::log_info("FM", &format!("transfer {transfer_id} cancel requested"));
     Ok(())
 }
 
@@ -265,7 +265,7 @@ async fn stream_download(
         // Best-effort: a half-written file left on disk is worse than a
         // failed cleanup we can't do anything about anyway.
         let _ = tokio::fs::remove_file(local).await;
-        crate::dlog_tag("FM", &format!("download canceled id={id} after {done} bytes"));
+        crate::log_info("FM", &format!("download canceled id={id} after {done} bytes"));
         return Err(CANCELED.to_string());
     }
     prog.total = prog.total.max(done);
@@ -290,7 +290,7 @@ async fn stream_upload(
         .await
         .map(|m| m.len())
         .unwrap_or(0);
-    crate::dlog_tag(
+    crate::log_debug(
         "FM",
         &format!("upload begin id={id} local={local:?} remote={remote_path} size={total}"),
     );
@@ -324,7 +324,7 @@ async fn stream_upload(
     drop(dst);
     if canceled {
         let _ = sftp.remove_file(remote_path).await;
-        crate::dlog_tag("FM", &format!("upload canceled id={id} after {done} bytes"));
+        crate::log_info("FM", &format!("upload canceled id={id} after {done} bytes"));
         return Err(CANCELED.to_string());
     }
     prog.total = prog.total.max(done);
