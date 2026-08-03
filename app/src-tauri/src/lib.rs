@@ -625,20 +625,6 @@ fn renumber_workspace_scope(file: &mut WorkspacesFile, scope: Option<&str>) {
     }
 }
 
-// beta.3 (ws-dragdrop): same idea, but for the top-level group list.
-fn renumber_group_list(file: &mut WorkspacesFile) {
-    let mut in_scope: Vec<(usize, i32, usize)> = file
-        .groups
-        .iter()
-        .enumerate()
-        .map(|(idx, g)| (idx, g.sort_order.unwrap_or(i32::MAX), idx))
-        .collect();
-    in_scope.sort_by_key(|(_, order, ins)| (*order, *ins));
-    for (new_key, (idx, _, _)) in in_scope.into_iter().enumerate() {
-        file.groups[idx].sort_order = Some(new_key as i32);
-    }
-}
-
 // Diagnostic: tag every persist with its caller so debug.log shows the exact
 // Tauri/RPC handler that triggered each save. Helpful while chasing autosave
 // loops; safe to remove once the regression is closed out.
