@@ -114,17 +114,6 @@ struct TransferProgress {
     speed_bps: u64,
 }
 
-/// Phase 75.3's download-only payload. Kept alive alongside the new
-/// unified event purely so the existing single-pane listener in
-/// FileManagerPane keeps working while the TransferBar is built; both
-/// this struct and its emit are removed once the bar owns the UI.
-#[derive(Clone, Serialize)]
-struct DownloadProgress {
-    path: String,
-    done: u64,
-    total: u64,
-}
-
 /// Terminal event for a transfer — success, cancel, or failure.
 #[derive(Clone, Serialize)]
 struct TransferDone {
@@ -191,13 +180,6 @@ impl<'a> ProgressEmitter<'a> {
                 speed_bps,
             },
         );
-        // Legacy Phase 75.3 event — dropped once the TransferBar lands.
-        if self.direction == "download" {
-            let _ = self.app.emit(
-                "fm-download-progress",
-                DownloadProgress { path: self.path.clone(), done, total: self.total },
-            );
-        }
         self.last = std::time::Instant::now();
         self.last_done = done;
     }

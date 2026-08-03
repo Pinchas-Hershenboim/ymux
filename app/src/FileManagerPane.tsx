@@ -1,6 +1,5 @@
 import { createSignal, createEffect, For, Show, onMount, onCleanup, createMemo } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { t } from "./i18n";
 import { FileEditor } from "./FileEditor";
@@ -11,6 +10,7 @@ import { createLogger } from "./logger";
 
 const log = createLogger("FM");
 import { openMarkdown, isMarkdownFile } from "./mdViewerStore";
+import { TransferBar } from "./TransferBar";
 import {
   IconArrowUp,
   IconRefresh,
@@ -269,24 +269,6 @@ export function FileManagerPane(p: Props) {
       setRemoteEntries([]);
     }
   };
-
-  // Phase 75.3: live download progress — a large transfer now shows a
-  // percent/size readout in the status line instead of an idle-looking pane.
-  let unlistenProgress: (() => void) | undefined;
-  onMount(async () => {
-    unlistenProgress = await listen<{ path: string; done: number; total: number }>(
-      "fm-download-progress",
-      (e) => {
-        const { done, total } = e.payload;
-        if (total > 0) {
-          setStatus(`↧ ${Math.floor((done / total) * 100)}% · ${fmtSize(done)} / ${fmtSize(total)}`);
-        } else {
-          setStatus(`↧ ${fmtSize(done)}`);
-        }
-      },
-    );
-  });
-  onCleanup(() => unlistenProgress?.());
 
   // Phase 80.1: re-open where the user left off (per workspace, see fmPaths.ts). Writing
   // on every path change rather than on unmount: a pane can vanish with the
@@ -1443,6 +1425,13 @@ export function FileManagerPane(p: Props) {
           </div>
         </Show>
       </div>
+
+      {/* Phase 81: live progress for uploads and downloads. Reads the
+           global transferStore, so it also lights up for transfers this
+           pane didn't start (terminal drag-drop, OSC 8 link downloads).
+           Renders nothing when there is no transfer. */}
+      <TransferBar />
+
       {/* Phase 23: hidden OS file picker — triggered by the ↥ toolbar
            button. Persistent in the DOM so the click() handler always
            has a target. */}
