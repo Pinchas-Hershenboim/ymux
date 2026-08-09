@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
 use crate::notes::{self, NoteStatus};
@@ -32,8 +33,10 @@ pub use winmux_core::pipe_name;
 // wrap the builder in catch_unwind so a future tokio-version change to
 // the limit degrades to a logged fallback instead of crashing the
 // server task.
+#[cfg(windows)]
 const PIPE_MAX_INSTANCES: usize = 254;
 
+#[cfg(windows)]
 fn make_listener(name: &str) -> Result<NamedPipeServer, String> {
     use tokio::net::windows::named_pipe::PipeMode;
     let build = |max: usize| {
@@ -65,8 +68,10 @@ fn make_listener(name: &str) -> Result<NamedPipeServer, String> {
 // backoff. max_instances(254) ceiling unchanged. Each slot owns its
 // loop; handlers run on a separate task so the slot recreates its
 // listener immediately, not after the handler completes.
+#[cfg(windows)]
 const LISTENER_POOL_SIZE: usize = 8;
 
+#[cfg(windows)]
 pub async fn run(state: AppState, app: AppHandle) {
     let name = pipe_name();
     tracing::info!(
@@ -77,6 +82,41 @@ pub async fn run(state: AppState, app: AppHandle) {
     spawn_listener_pool(name, LISTENER_POOL_SIZE, state, app);
 }
 
+/// Unix/macOS: a single Unix-domain-socket listener replaces the whole
+/// named-pipe pool — the kernel backlog absorbs concurrent connects, so
+/// none of the 254-instance / ERROR 231 machinery applies.
+#[cfg(not(windows))]
+pub async fn run(state: AppState, app: AppHandle) {
+    let name = pipe_name();
+    // Stale socket file from a previous crash blocks bind — remove it.
+    // A second live instance is prevented upstream (single-instance app).
+    let _ = std::fs::remove_file(&name);
+    let listener = match tokio::net::UnixListener::bind(&name) {
+        Ok(l) => l,
+        Err(e) => {
+            crate::log_warn("RPC", &format!("rpc_server: bind {name} failed: {e}"));
+            return;
+        }
+    };
+    tracing::info!("rpc: listening on {}", name);
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let state2 = state.clone();
+                    let app2 = app.clone();
+                    tokio::spawn(handle_client_with_telemetry(stream, state2, app2));
+                }
+                Err(e) => {
+                    crate::log_warn("RPC", &format!("rpc_server: accept failed: {e}"));
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    });
+}
+
+#[cfg(windows)]
 fn spawn_listener_pool(name: String, size: usize, state: AppState, app: AppHandle) {
     for slot in 0..size {
         let name = name.clone();
@@ -124,11 +164,13 @@ fn spawn_listener_pool(name: String, size: usize, state: AppState, app: AppHandl
 // process's lifetime.
 pub(crate) static HANDLER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-async fn handle_client_with_telemetry(
-    stream: NamedPipeServer,
+async fn handle_client_with_telemetry<S>(
+    stream: S,
     state: AppState,
     app: AppHandle,
-) {
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
     use std::sync::atomic::Ordering;
     let conn_id = format!("{:05x}", HANDLER_SEQ.fetch_add(1, Ordering::Relaxed));
     let start = std::time::Instant::now();
@@ -157,7 +199,10 @@ async fn handle_client_with_telemetry(
 /// `dispatch` (after the read), so gated requests are unaffected.
 const HANDLER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn handle_client(stream: NamedPipeServer, state: AppState, app: AppHandle) {
+async fn handle_client<S>(stream: S, state: AppState, app: AppHandle)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
     let (read_half, write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let mut writer = write_half;
@@ -2170,7 +2215,10 @@ fn fold_pane_kinds(node: &LayoutNode, out: &mut std::collections::HashMap<String
     let _ = collect_panes_with_kind; // keep symbol live for other call sites
 }
 
-#[cfg(test)]
+// The pool/instance-leak regression tests exercise Windows named-pipe
+// semantics (max_instances, ERROR 231) that don't exist on the Unix
+// socket path.
+#[cfg(all(test, windows))]
 mod tests {
     use super::make_listener;
 
