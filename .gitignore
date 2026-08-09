@@ -61,3 +61,6 @@ status.txt
 
 # Ad-hoc debug/test builds dropped at the repo root by dev sessions (~65MB each).
 winmux-*-test.exe
+
+# Local dev-server config for the Claude preview tool; machine-specific.
+.claude/launch.json
