@@ -4,7 +4,7 @@
     "beforeBuildCommand": "npm run build:frontend"
   },
   "bundle": {
-    "targets": ["app", "dmg"],
+    "targets": ["app"],
     "resources": [
       "resources/winmux-linux-x64",
       "resources/remote-manifest.json",
