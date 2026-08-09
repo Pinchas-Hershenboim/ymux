@@ -12,6 +12,39 @@ conventions to keep things consistent.
    methods or wire-level features.
 4. The source. `lib.rs` is large but well-sectioned with `// ─── Section ─────` headers.
 
+## Building a runnable exe
+
+**Never build the app with plain `cargo build --release`.** It compiles and
+links without complaint, and the binary it produces is broken: `tauri-build`
+only embeds `frontendDist` when the build runs through the Tauri CLI, which
+injects the env that selects production mode. Without it the exe stays in dev
+mode and loads `devUrl` (`http://localhost:1420`) at startup — so on a machine
+with no dev server running, every window is a WebView2
+`ERR_CONNECTION_REFUSED` page. Nothing in the Rust log hints at it; boot
+proceeds normally up to `rpc server spawned` and then simply stops, because no
+frontend ever loads to call in.
+
+Use one of:
+
+```bash
+npm run tauri build -- --no-bundle            # just the exe, from app/
+powershell -ExecutionPolicy Bypass -File ./scripts/build-release.ps1   # full release, see RELEASING.md
+```
+
+To check a binary is a real production build, look for the current
+`app/dist/assets/index-<hash>.js` filename inside it:
+
+```bash
+grep -c -a -F "$(ls app/dist/assets/*.js | xargs -n1 basename)" app/src-tauri/target/release/app.exe
+```
+
+A dev-mode binary scores 0. Note that `localhost:1420` appears in *both* kinds
+— the whole config, `devUrl` included, is embedded either way — so its presence
+proves nothing on its own.
+
+And per CLAUDE.md: a build that compiles is not a build that runs. Launch it and
+confirm the UI actually comes up before calling it verified.
+
 ## Recipes
 
 ### Add a new RPC method

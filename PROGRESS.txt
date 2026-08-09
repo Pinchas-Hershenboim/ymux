@@ -1345,3 +1345,51 @@ WHAT THE ORIGINAL exit 1 WAS: unrecoverable — the message was discarded,
 NEXT: re-run the wizard. If it fails again the log will now carry the
   real message. WSL being up also unblocks the Phase 81 transfer bar,
   which had no SSH target on this machine.
+
+=== 2026-08-09 — the release exe was built wrong (my error) ===
+
+SYMPTOM: Yossi launched app.exe and got a WebView2
+  "ERR_CONNECTION_REFUSED — localhost" page INSIDE the winmux window.
+  He reported it four times; I misread it three times as a leftover
+  Claude preview pane and sent him chasing a browser tab. It was the app
+  itself the whole way. His screenshot of the winmux title bar is what
+  finally settled it.
+
+CAUSE: I built with `cargo build --release`. That compiles and links
+  fine, but tauri-build only embeds `frontendDist` when the build runs
+  through the Tauri CLI, which injects the env that selects production
+  mode. Without it the binary stays in dev mode and loads devUrl
+  (http://localhost:1420) — a server that does not exist on a user
+  machine. Both exes I produced this session (Aug 3 and 13:32) were
+  broken this way, and I twice reported "exe unified built" on the
+  strength of a clean compile. CLAUDE.md says "Verified = real run, not
+  compile"; I did not follow it.
+
+  Nothing in the Rust log hints at it: boot runs normally through
+  "rpc server spawned" and then stops, because no frontend loads to call
+  back in. That silence is the tell.
+
+FIX: rebuilt with `npm run tauri build -- --no-bundle` (--no-bundle
+  skips NSIS, so the known os error 32 cleanup false-alarm cannot even
+  arise and Yossi gets the exe he actually needs). RELEASING.md already
+  points at scripts/build-release.ps1 for real cuts — the doc was right,
+  I just did not read it.
+
+VERIFIED (real run this time):
+  - this build's exact asset hashes are inside the exe:
+    index-BJhbBlwx.css, index-zVEv1mLi.js, logo-BtuLyPip.svg — all 1.
+    The broken build had none. `localhost:1420` shows up in BOTH kinds
+    (the config is embedded regardless), so it is not a usable signal.
+  - launched it: log went past setup into
+    [TUNNEL] tcpip_forward got remote port 40159 and
+    [SSH] workspace_ensure_connected: headless session up (method=Key).
+    Those only fire when the frontend calls into Rust, i.e. the UI is up
+    and auto-connected the workspace.
+
+DOCS: added a "Building a runnable exe" section at the top of
+  docs/CONTRIBUTING.md — the trap, the two correct commands, and the
+  grep that tells a production binary from a dev one.
+
+UNAFFECTED: the merges, the 266 tests and the wsl --install capture fix
+  are all source-level and were never in question. Only my packaging of
+  the binary was wrong.
