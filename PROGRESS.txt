@@ -1287,3 +1287,61 @@ NOT LIVE-VERIFIED (both need a real run on Yossi's machine):
   - SFTP transfer bar: no sshd and no WSL on this machine, so no remote
     to transfer against. The 60 MB upload, live readout and
     cancel-mid-transfer are all still unproven.
+
+=== 2026-08-09 — elevated wsl --install was undiagnosable (fd1f537) ===
+
+TRIGGER: Yossi ran the WSL wizard. It reported "ההתקנה לא הושלמה" and
+debug.log had only:
+  12:15:32 preflight: platform_ready=false distro_present=false
+           elevated=false needs_elevation=true
+  12:15:45 InstallWsl: no elevated token — requesting UAC consent
+  12:16:08 step InstallWsl failed (exit 1)
+23s between consent and failure — the elevated child did real work, then
+exited 1. No reason anywhere.
+
+ROOT CAUSE (of the blindness, not of the install):
+  local_setup.rs:1195 `Ok(Ok(code)) => Ok((code, String::new()))`.
+  ShellExecuteEx("runas") is the only way to elevate a child and it gives
+  no stdout/stderr pipes, so the elevated branch passed an EMPTY string
+  to classify_wsl_install. Its text fallbacks (contains "elevat" /
+  "reboot") are therefore dead code on that path, and any code outside
+  0/3010/1223/740 collapses to StepFailed{stderr:""}. Generic 1 is the
+  common case. The doc comment called the lost pipes "an acceptable trade
+  because the codes it does give us are unambiguous" — but 1 is exactly
+  the ambiguous one.
+
+FIX: elevate `cmd /s /c` instead of wsl.exe and redirect into a per-run
+  temp file we own, read it back after the wait, delete on every exit
+  path. `/s` makes cmd strip exactly our outer quote pair instead of
+  rebalancing. WSL_UTF8=1 for the same reason wsl_cmd sets it (no space
+  before `&&`, or the value becomes "1 " and wsl.exe reverts to UTF-16).
+  Rule #3: a command string has no argv array, so both interpolated
+  values are pre-validated — distro by the existing valid_distro_name,
+  the log path by the new cmd_safe_path allowlist. An unrepresentable
+  temp path drops the redirect and still installs. Exit code is now
+  logged on success too, so a 3010 is in debug.log after the fact.
+
+FILES: app/src-tauri/src/local_setup.rs (+cmd_safe_path,
+  +wsl_install_cmd_params, run_wsl_install_elevated now returns
+  (u32,String), caller logs it), 5 new tests in wsl_elevation_tests.
+
+VERIFIED: the exact cmd parameter string run against a real cmd.exe with
+  --status swapped in for --install — cmd exit 0, redirect file written,
+  0 NUL bytes (UTF-8, no UTF-16 leak), real wsl.exe text captured.
+  cargo test 266/0 · tsc exit 0 · vite ok · go 10/10.
+
+WHAT THE ORIGINAL exit 1 WAS: unrecoverable — the message was discarded,
+  which is the whole bug. But probing the machine afterwards with the new
+  capture method showed WSL is now UP: `wsl -l -v` = "* Ubuntu Stopped 2",
+  `wsl --version` = WSL 2.7.11.0 / kernel 6.18.33.2, and `wsl --status`
+  exits 0 with 195 bytes — so inspect_wsl would now set wsl_ready=true.
+  Either Yossi's manual elevated run landed it, or winmux's own elevated
+  run did the work and still returned 1. Cannot tell retroactively.
+  NOTE the WSL1 line in `wsl --status` output ("Please enable the Windows
+  Subsystem for Linux optional component to use WSL1") is about WSL1 only
+  and is harmless — wsl_ready keys off exit code + non-empty output, not
+  that text, so it does not mis-trip.
+
+NEXT: re-run the wizard. If it fails again the log will now carry the
+  real message. WSL being up also unblocks the Phase 81 transfer bar,
+  which had no SSH target on this machine.
