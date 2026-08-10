@@ -1673,3 +1673,51 @@ DRY RUN ON THE CURRENT MACHINE was itself informative:
   20:39 log still shows "EXISTS " with an empty name, which is the argv
   transport, i.e. without 9bd44bc. The MSI from run 31413798581 is the
   one to install.
+
+=== 2026-08-10 — Smart Install VERIFIED LIVE, WSL saga closed ===
+
+Yossi: "ההתקנה עובדת והWSL נפתח והעברית מוצגת מימין לשמאל".
+
+Log confirms it. Progression across the day, same machine:
+  18:55  finished with 2 failed: InstallLocalHooks, CreateWslUser
+         -- WSL workspace NOT created
+  20:39  same 2 failures ("EXISTS " empty = still the argv transport)
+  20:57  finished with 1 failed: InstallLocalHooks
+         -- WSL workspace CREATED    <- the stdin fix (9bd44bc) landing
+  21:23  preflight, then NO failure lines at all
+         -- the "finished with N failed" WARN only fires on failure,
+            so this run completed with zero failed steps.
+
+That makes these live-verified for the first time, having never run
+before today: EnableLinuxEnv, InstallTmuxInWsl, DeployWinmuxCliToWsl,
+DeployTmuxConfToWsl, InstallHooksInWsl, and InstallLocalHooks. Plus a
+working WSL workspace that opens, with Hebrew rendering right-to-left.
+
+The last blocker was not a code bug: InstallLocalHooks resolves the CLI
+from `resource_dir()`, which for a bare app.exe is its own folder. Yossi
+was running the downloaded artifact standalone, where nothing had staged
+winmux-cli.exe next to it. Copying the repo's staged copy alongside the
+exe cleared it. The MSI carries it properly; the bare exe is not
+self-sufficient for anything that touches setup. My earlier
+recommendation of the bare exe as "the quick way to test" was wrong and
+cost several rounds.
+
+ALSO CORRECTED: I claimed there were no parallel instances, reasoning
+from boot-count in debug.log. Wrong method — the process list showed BOTH
+running at once (target/release/app.exe from Aug 9 and the downloaded
+9bd44bc one), sharing one %APPDATA%\winmux: one debug.log, one
+workspaces.json, one named pipe. Yossi had said so and I talked past it.
+Check the process list, not the log, for that question. WINMUX_CONFIG_DIR
+is the right tool for running two builds side by side.
+
+STILL NOT VERIFIED LIVE (both unrelated to WSL):
+  - The bad-byte PTY stall fix (fe9b840). Hebrew RENDERING works, but
+    that is a different thing: the fix is about an invalid byte silencing
+    a pane forever, and debug.log still shows ZERO "[PTY] utf8" warnings,
+    i.e. no invalid byte has been fed to a pane yet. The test remains:
+    `Get-Content <any winmux-*-test.exe>` then `echo שלום` in a LOCAL
+    pane — expect garbage as replacement chars, Hebrew still arriving,
+    and exactly ONE [WARN] [PTY] utf8 line per pane. Worth repeating in
+    Command Prompt, which only gets `chcp 65001` and has no PTY test.
+  - Phase 81 transfer bar. WSL now gives a possible SFTP target
+    (`sudo apt install openssh-server`).
