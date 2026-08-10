@@ -58,3 +58,9 @@ status.txt
 # synced across machines per Yossi, 2026-07-15. Only AGENTS.md stays local.
 # Root-anchored so docs/INSTALL_AGENTS.md stays tracked.
 /AGENTS.md
+
+# Ad-hoc debug/test builds dropped at the repo root by dev sessions (~65MB each).
+winmux-*-test.exe
+
+# Local dev-server config for the Claude preview tool; machine-specific.
+.claude/launch.json

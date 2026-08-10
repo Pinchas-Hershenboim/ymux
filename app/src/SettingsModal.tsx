@@ -5,6 +5,10 @@ import {
   Settings,
   PresetEntry,
   FontFamilies,
+  FontEntry,
+  FontCatalogItem,
+  fontCatalog,
+  fontInstall,
   UpdateInfo,
   applyTheme,
   resolveThemeMode,
@@ -26,6 +30,7 @@ import {
   OBSERVABILITY_HOOKS,
 } from "./settings";
 import { applyI18nSettings, LANGUAGES, t } from "./i18n";
+import { isFontAvailableAsync } from "./fontProbe";
 import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
@@ -33,6 +38,156 @@ import { AddonsTab } from "./AddonsTab";
 import { createLogger } from "./logger";
 
 const log = createLogger("SETTINGS");
+
+// ─── font availability ─────────────────────────────────────────────────────
+//
+// The picker offers a curated baseline on top of what is actually installed
+// (see `list_system_fonts` in settings.rs), so it can list families this
+// machine does not have — `JetBrains Mono` and `Inter` ship with nothing.
+// Picking one used to do nothing visible at all: `quoteFamily()` appends a
+// CSS fallback chain ending back at the default, so the terminal re-rendered
+// identically and the setting looked broken. These mark the gap instead.
+
+/** Option label: family name prefixed with an availability badge. */
+function fontLabel(f: FontEntry): string {
+  return `${f.installed ? "✅" : "⚠️"} ${f.name}`;
+}
+
+/**
+ * The currently-selected family, but only when we positively know it is NOT
+ * installed. Returns undefined when it is installed OR when it isn't in the
+ * list at all — an unlisted family (hand-typed, or supplied by the web-font
+ * URL) is unverifiable here, and a false alarm is worse than no alarm.
+ */
+function missingFamily(list: FontEntry[], selected: string): string | undefined {
+  const hit = list.find(
+    (f) => f.name.toLowerCase() === selected.trim().toLowerCase(),
+  );
+  return hit && !hit.installed ? hit.name : undefined;
+}
+
+/** Bytes → "5.4 MB", so the user sees the cost before starting a download. */
+function formatBytes(n: number): string {
+  return n >= 1048576
+    ? `${(n / 1048576).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/**
+ * Shown under a font select whose chosen family isn't installed. When
+ * winmux can install that family itself, the notice carries the button —
+ * telling the user what's wrong without offering the fix is only half an
+ * answer, and hunting down a .ttf is exactly the step that stalls an
+ * onboarding call.
+ */
+/**
+ * Free-text family entry, for anything the dropdown can't offer: a font the
+ * mono/UI heuristic filed under the wrong list, one delivered by the
+ * web-font URL, or simply a family this build's catalog has never heard of.
+ *
+ * The verdict comes from `isFontAvailableAsync` — the renderer is asked
+ * whether it can actually draw the family, which is the only check that
+ * survives the Chromium `document.fonts.check()` false-positive.
+ */
+function CustomFontField(props: {
+  label: string;
+  onApply: (family: string) => void;
+}) {
+  const [value, setValue] = createSignal("");
+  const [ok, setOk] = createSignal<boolean | null>(null);
+
+  // Probe as the user types, debounced. Probing only on change/blur looks
+  // cheaper but traps them: the Use button stays disabled until a verdict
+  // exists, so typing a valid name and clicking Use swallows the click —
+  // the blur fires the probe, the button enables a moment later, and the
+  // press is gone.
+  let probeToken = 0;
+  let timer: number | undefined;
+  const probe = (raw: string) => {
+    const token = ++probeToken;
+    const family = raw.trim();
+    if (!family) {
+      setOk(null);
+      return;
+    }
+    void isFontAvailableAsync(family).then((available) => {
+      // Drop a verdict the user has already typed past.
+      if (token === probeToken) setOk(available);
+    });
+  };
+  const schedule = (raw: string) => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => probe(raw), 250);
+  };
+  onCleanup(() => window.clearTimeout(timer));
+
+  return (
+    <label>
+      <span>{props.label}</span>
+      <div style="display:flex; gap:8px; flex:1; align-items:center">
+        <input
+          type="text"
+          style="flex:1"
+          placeholder={t("settings.font.custom.placeholder")}
+          value={value()}
+          onInput={(e) => {
+            const raw = e.currentTarget.value;
+            setValue(raw);
+            setOk(null);
+            schedule(raw);
+          }}
+        />
+        <Show when={ok() !== null}>
+          <span title={ok() ? undefined : t("settings.font.custom.unavailable")}>
+            {ok() ? "✅" : "⚠️"}
+          </span>
+        </Show>
+        <button
+          disabled={!value().trim() || ok() !== true}
+          onClick={() => props.onApply(value().trim())}
+        >
+          {t("settings.font.custom.apply")}
+        </button>
+      </div>
+    </label>
+  );
+}
+
+function FontMissingNotice(props: {
+  family: string;
+  catalog: FontCatalogItem[];
+  busy: boolean;
+  onInstall: (item: FontCatalogItem) => void;
+}) {
+  const item = () =>
+    props.catalog.find(
+      (c) => c.family.toLowerCase() === props.family.toLowerCase(),
+    );
+  return (
+    <div class="font-missing-notice">
+      <div>⚠️ {t("settings.font.missing", { family: props.family })}</div>
+      <Show when={item()}>
+        {(c) => (
+          <div class="font-missing-actions">
+            <button
+              disabled={props.busy}
+              onClick={() => props.onInstall(c())}
+            >
+              {props.busy
+                ? t("settings.font.installing")
+                : t("settings.font.install", {
+                    size: formatBytes(c().download_bytes),
+                  })}
+            </button>
+            <a href={c().homepage} target="_blank" rel="noreferrer">
+              {c().license}
+            </a>
+          </div>
+        )}
+      </Show>
+    </div>
+  );
+}
 
 interface Props {
   open: boolean;
@@ -54,6 +209,42 @@ export function SettingsModal(p: Props) {
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
   const [presets, setPresets] = createSignal<PresetEntry[]>([]);
   const [fonts, setFonts] = createSignal<FontFamilies>({ ui: [], mono: [] });
+  const [catalog, setCatalog] = createSignal<FontCatalogItem[]>([]);
+  /** Catalog id currently downloading, or null. */
+  const [fontBusy, setFontBusy] = createSignal<string | null>(null);
+  const [fontNote, setFontNote] = createSignal<string | null>(null);
+
+  /**
+   * Install a catalog font, then re-read the picker so the row flips from
+   * ⚠️ to ✅ without a restart. The Rust side registers under HKCU and
+   * `list_system_fonts` reads that same hive, so the refresh is enough.
+   */
+  const installFont = async (item: FontCatalogItem) => {
+    setFontBusy(item.id);
+    setFontNote(null);
+    try {
+      const r = await fontInstall(item.id);
+      if (r.guided) {
+        // The silent path was refused (locked-down box). The font is NOT
+        // installed yet — say so rather than showing a success message.
+        setFontNote(t("settings.font.install.guided", { family: item.family }));
+        log.warn("font install fell back to guided", r.fallback_reason);
+      } else {
+        setFontNote(
+          t("settings.font.install.ok", {
+            family: item.family,
+            count: r.installed.length,
+          }),
+        );
+      }
+      setFonts(await listSystemFonts());
+    } catch (e) {
+      log.warn("fontInstall failed", e);
+      setFontNote(t("settings.font.install.failed", { error: String(e) }));
+    } finally {
+      setFontBusy(null);
+    }
+  };
   const [advanced, setAdvanced] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [lastSaved, setLastSaved] = createSignal<number>(0);
@@ -151,6 +342,7 @@ export function SettingsModal(p: Props) {
   onMount(async () => {
     try { setPresets(await getPresets()); } catch (e) { log.warn("getPresets failed", e); }
     try { setFonts(await listSystemFonts()); } catch (e) { log.warn("listSystemFonts failed", e); }
+    try { setCatalog(await fontCatalog()); } catch (e) { log.warn("fontCatalog failed", e); }
     // Phase 38: resolve the debug.log path for the Logs section.
     try { setLogPath(await invoke<string>("log_dir_path")); } catch (e) { log.warn("log_dir_path failed", e); }
   });
@@ -466,7 +658,11 @@ export function SettingsModal(p: Props) {
                         value={p.settings.font.ui_family}
                         onChange={(e) => update("font", { ...p.settings.font, ui_family: e.currentTarget.value })}
                       >
-                        <For each={fonts().ui}>{(f) => <option value={f}>{f}</option>}</For>
+                        <For each={fonts().ui}>
+                          {(f) => (
+                            <option value={f.name}>{fontLabel(f)}</option>
+                          )}
+                        </For>
                       </select>
                       <input
                         type="number"
@@ -483,6 +679,22 @@ export function SettingsModal(p: Props) {
                       />
                     </div>
                   </label>
+                  <Show when={missingFamily(fonts().ui, p.settings.font.ui_family)}>
+                    {(family) => (
+                      <FontMissingNotice
+                        family={family()}
+                        catalog={catalog()}
+                        busy={fontBusy() !== null}
+                        onInstall={installFont}
+                      />
+                    )}
+                  </Show>
+                  <CustomFontField
+                    label={t("settings.font.custom.ui")}
+                    onApply={(family) =>
+                      update("font", { ...p.settings.font, ui_family: family })
+                    }
+                  />
                   <label>
                     <span>{t("settings.font.terminal")}</span>
                     <div style="display:flex; gap:8px; flex:1">
@@ -491,7 +703,11 @@ export function SettingsModal(p: Props) {
                         value={p.settings.font.terminal_family}
                         onChange={(e) => update("font", { ...p.settings.font, terminal_family: e.currentTarget.value })}
                       >
-                        <For each={fonts().mono}>{(f) => <option value={f}>{f}</option>}</For>
+                        <For each={fonts().mono}>
+                          {(f) => (
+                            <option value={f.name}>{fontLabel(f)}</option>
+                          )}
+                        </For>
                       </select>
                       <input
                         type="number"
@@ -508,6 +724,25 @@ export function SettingsModal(p: Props) {
                       />
                     </div>
                   </label>
+                  <Show when={missingFamily(fonts().mono, p.settings.font.terminal_family)}>
+                    {(family) => (
+                      <FontMissingNotice
+                        family={family()}
+                        catalog={catalog()}
+                        busy={fontBusy() !== null}
+                        onInstall={installFont}
+                      />
+                    )}
+                  </Show>
+                  <CustomFontField
+                    label={t("settings.font.custom.terminal")}
+                    onApply={(family) =>
+                      update("font", { ...p.settings.font, terminal_family: family })
+                    }
+                  />
+                  <Show when={fontNote()}>
+                    {(note) => <p class="settings-hint">{note()}</p>}
+                  </Show>
                   <label>
                     <span>{t("settings.font.web.url")}</span>
                     <input

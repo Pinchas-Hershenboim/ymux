@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "cli", "mcp", "crates/winmux-types", "crates/winmux-core", "crates/winmux-tunnel", "crates/winmux-bootstrap", "crates/winmux-ssh", "crates/winmux-policy", "crates/winmux-addons"]
+members = [".", "cli", "mcp", "crates/winmux-types", "crates/winmux-core", "crates/winmux-tunnel", "crates/winmux-bootstrap", "crates/winmux-ssh", "crates/winmux-policy", "crates/winmux-addons", "crates/winmux-protocol"]
 resolver = "2"
 
 # Pre-public hardening: strip symbols from release builds. The
@@ -112,6 +112,36 @@ sysinfo = "0.32"
 bollard = { version = "0.17", default-features = false }
 # Direct dep for `StreamExt` on bollard's stats stream.
 futures-util = "0.3"
+
+# Font install (per-user, no admin): open the downloaded .ttf with the shell
+# for the guided fallback. Already in the tree via tauri-plugin-opener, so
+# naming it directly costs no extra build time.
+open = "5"
+
+# Windows-only direct deps. The WSL smart-install and font-install branches
+# each landed a cfg(windows) section in the same release; merged into one.
+# Both crates are already in the tree transitively, so these are direct-dep
+# declarations rather than new builds.
+#   winreg      — register an installed font under HKCU (no elevation needed).
+#   windows-sys — WSL preflight (process-token elevation check + the
+#                 ShellExecuteEx("runas") path that runs `wsl --install`
+#                 elevated), and the WM_FONTCHANGE broadcast that makes a
+#                 newly installed face usable without a reboot.
+# Pinned at the higher of the two versions the branches asked for (0.61, from
+# the WSL path). The font code needs only Win32_Foundation +
+# Win32_UI_WindowsAndMessaging, both of which are in this feature set.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    # SHELLEXECUTEINFOW carries an HKEY field, so the Shell struct is
+    # gated behind the Registry feature even though we never touch it.
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 # Phase 50 (#2.4): integration test for diff_pane::fetch_diff against a

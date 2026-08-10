@@ -709,6 +709,691 @@ FIX: terminalInstance.ts + textDirection.ts(+tests) restored to 9b87860
 NOTE: winmux-pre-mouse-diag.exe (02:09) = standalone diag build @9b87860.
 ------------------------------------------------------------------
 
+=== 2026-08-03 — Worktree/branch cleanup (Phase 1 of 3) ===
+Task: 13 worktrees, 23 branches, shared tree parked on a feature branch,
+      two sessions writing the same working copy. Audit + cleanup.
+
+Findings:
+- origin/main == beta.3-mega (98f0c6d). Local main was 82 behind, 0 ahead
+  -> plain fast-forward, nothing was stuck.
+- wsl-smart-install-fix and fix-emit-data-utf8 were the SAME SHA (6140532).
+  Not a lost-work accident: one 9-commit line holds both the WSL and the
+  UTF-8 fixes. Duplicate ref, deleted after byte-level identity check.
+- rtl-visual-order's uncommitted Cargo.lock (+229) was cargo repairing a
+  stale lockfile committed at ad40fbf (its Cargo.toml already declared
+  bollard 0.17 + sysinfo 0.32; the lock did not). The repaired lock is
+  byte-identical to origin/main's. Junk, discarded.
+- Both stashes superseded: stash@{0} self-labelled "superseded by
+  beta.3-mega"; stash@{1}'s textDirection.ts/.test.ts are byte-identical
+  to main and 40/41 terminalInstance lines are on main (the 41st is a
+  comment; main's loadFaces().finally() supersedes the naive retry).
+- 3 empty orphan dirs under .claude/worktrees (netfree-cert-errors,
+  project-decisions-roadmap, remote-control) — no .git, 0 files.
+
+Actions: 13 worktrees -> 4; 23 branches -> 8; 2 stashes -> 0;
+  ~200MB of root winmux-*-test.exe gitignored (left on disk);
+  main fast-forwarded to 98f0c6d.
+
+Files: .gitignore (+2), .claude/worktree-audit-2026-08-03.txt (new)
+Result: every worktree clean, main clean. No push. Phases 2-3 pending.
+
+=== 2026-08-03 — Phase 2 of 3: rebase live branches onto the new main ===
+
+67-mobile -> main (cherry-pick d6de67f, landed as e237385)
+  3 conflicts, all mechanical:
+  - Cargo.toml workspace members: union (main's winmux-policy/-addons +
+    the branch's winmux-protocol).
+  - Cargo.lock: reset to main's and let `cargo check` add the crate,
+    rather than hand-merging a lockfile. +10 lines, one new package.
+  - DECISIONS.md: the branch side carried two 2026-06-26 entries; only
+    the winmux-protocol one was new (main already had the Phase 68
+    design-doc entry). Inserted it chronologically above main's copy.
+    Heading count 126 -> 127, nothing dropped.
+  Branch then re-pointed at main as a clean base for 67.A.2 (`winmux serve`).
+
+file-transfer-progress -> rebased onto main (7 commits, was 82 behind)
+  4 conflicts:
+  - file_manager.rs x3: main had migrated to the unified logger
+    (Phase 79) while the branch still called dlog/dlog_tag. Took main's
+    API, kept the branch's content (transfer id in the message, the
+    CANCELED arm, transfer_end/emit_done). Rule #9.
+  - i18n {en,he,ar,ru}.json: both sides appended keys at the tail. Kept
+    both; all four validate as JSON at 974 keys each.
+  - FileManagerPane.tsx: the branch deletes the Phase 75.3
+    fm-download-progress listener (superseded by <TransferBar>), but
+    main had added the Phase 80.1 rememberPath effect in the same
+    region. Deleted only 75.3, kept 80.1.
+  - PROGRESS.txt: append-vs-append. First resolution attempt was wrong
+    — a regex treated one of the file's own `=======` separator lines as
+    the conflict divider. Caught it, rebuilt the file as main's content
+    plus the branch's verified-pure-append block, amended the commit.
+  Follow-up commit 7412a38: the rebase carried in four legacy dlog_tag
+  callers from before the Phase 79 migration. Moved to log_info (cancel
+  events) / log_debug (upload begin). Rule #9 — zero dlog callers left
+  in file_manager.rs.
+
+browser-tickets-v2 -> re-pointed at main (had been branched off the
+  82-commits-stale main, so it was carrying an old base).
+
+VERIFICATION (real runs, not just compile):
+  main:                   cargo test 211 passed / 0 failed
+                          tsc --noEmit exit 0 · vite build ok · go test 10/10 pkgs ok
+  file-transfer-progress: cargo test 209 passed / 0 failed
+                          tsc --noEmit exit 0 · vite build ok · go test 10/10 pkgs ok
+  NOTE: app/node_modules was completely empty (0 entries) in this
+  checkout — no frontend verification had been possible at all. Ran
+  `npm ci` (166 packages). typescript is NOT a project dependency, so
+  the `npm run tsc` script does not exist; type-checking ran via the
+  freshly-installed compiler. Worth deciding whether to add typescript
+  + a `typecheck` script so this is reproducible.
+
+Worktrees: 4 -> 6 (added browser-tickets-v2, 67-mobile).
+NOT DONE: file-transfer-progress is NOT merged into main — that is
+  Phase 3 and needs Yossi's go-ahead. Nothing pushed.
+==================================================================
+[2026-08-03 ~13:00 IDT] session=wsl-smart-install-fix (INVESTIGATION ONLY)
+TASK: Yossi reported 2 bugs in the LOCAL HOST WSL flow (v0.4.5-beta.1
+  known-broken): (A) Smart Install "finished" but opened a PowerShell
+  workspace instead of WSL; (B) Hebrew broken in that PowerShell pane.
+BRANCH: wsl-smart-install-fix off beta.3-mega (NOT main - main has no
+  local_setup.rs at all; the WSL merge bcaa330 lives only on beta.3-mega).
+  Stale .git/index.lock (Jul 16) removed. Uncommitted linux-cli rebuild
+  (sha 8b6276) stashed - beta.3-mega already carries a newer one.
+
+BUG A - the premise was wrong. No PowerShell workspace was created.
+  NOTHING was created. Live evidence from Yossi's machine:
+  - debug.log 12:21:32 -> "step InstallWsl failed (exit 1)", no
+    "finalize failed" line -> finalize_wsl_workspace never called.
+  - workspaces.json mtime = Jul 16 (run was Aug 3) -> never written.
+  - "Local PowerShell" (connection.type=local, shell="") pre-dates the
+    run; the app just stayed on it.
+  - wsl --status on the machine = exit 50, LxssManager service ABSENT,
+    no reboot pending -> WSL genuinely not installed; needs UAC elevation.
+ROOT CAUSE (silent): local_setup.rs:1118
+    if input.create_workspace && ran_wsl_chain && !chain_failed
+  chain_failed=true (set :1093) -> gate false -> no workspace, no error,
+  and local_setup.rs:1133 emits "local-setup:complete" UNCONDITIONALLY.
+FALSE-SUCCESS CHAIN (3 independent bugs):
+  1. LocalSetupFlow.tsx:437 - done screen prints localSetup.done.message
+     ("ההתקנה המקומית הסתיימה") with NO failure branch.
+  2. LocalSetupFlow.tsx:198-204 stateBadge has no "skipped" case -> the 5
+     backend-skipped chain steps (emitted "skipped" at :759) render as
+     grey "pending", i.e. look not-yet-started.
+  3. local_setup.rs:1079 - InstallHooksInWsl matches Ok(Ok((_code,out)))
+     => exit code DISCARDED, always green; it is also missing from the
+     is_wsl_chain list (:746-754, only 6 of 7) so it is never skipped ->
+     it ran against a non-existent distro and the run ENDED on a green
+     check. That is what "finished and installed everything" looked like.
+LATENT (not the cause here): elevation detection local_setup.rs:881 is an
+  English substring match (low.contains("elevat")||"0x80070005") - breaks
+  on localized Windows. This machine is en-US so it is not the trigger;
+  it fired StepFailed, not ElevationRequired. Also: no reboot-pending
+  concept in inspect_wsl (:378-473); no ERROR_SUCCESS_REBOOT_REQUIRED
+  (3010) check.
+LOG GAP: local_setup.rs:1096 logs only err.user_message() -> stderr is
+  dropped. The UI red card had the real reason; the log does not. This is
+  why the exact wsl --install failure text is unrecoverable.
+NOT A BUG: finalize_wsl_workspace (:1139-1195) correctly builds
+  Connection::Wsl (:1152); there is no Connection::Local anywhere in
+  local_setup.rs. spawn_wsl_pty is reachable (lib.rs:5479, :1804).
+  wsl.exe UTF-16 output IS handled (WSL_UTF8=1 + clean_wsl_output :55).
+
+BUG B - encoding, not font and not bidi. Symptom predicted = MOJIBAKE.
+ROOT CAUSE: lib.rs:1636-1676 spawn_local_pty sets 5 env vars and NO args.
+  Repo-wide grep for chcp|65001|OutputEncoding|InputEncoding = ZERO hits.
+  lib.rs:1513-1526 pick_default_shell tries pwsh.exe -> powershell.exe ->
+  cmd.exe. VERIFIED on Yossi's machine: pwsh.exe NOT INSTALLED -> he gets
+  powershell.exe 5.1, whose [Console]::OutputEncoding is the OEM codepage
+  (437/862) and whose $OutputEncoding is ASCII. Hebrew -> garbage / "?".
+  "Local PowerShell" ws has shell="" -> hits exactly this path.
+WHY REMOTE IS FINE: spawn_wsl_pty/spawn_ssh target Linux = UTF-8 by
+  construction. winmux never sets LANG/LC_ALL anywhere; the remote paths
+  just get it for free. Local is the only OEM-codepage transport.
+RULED OUT: font (terminalInstance.ts:499 stack has no Hebrew face but
+  ends in generic monospace -> WebView2 falls back; would be tofu in ALL
+  panes, incl. the working SSH ones). bidi (applyRowDirections
+  terminalInstance.ts:933-962 is connection-agnostic; tuiOwnsBidi does
+  not exist on this branch - docs/DECISIONS.md:47 is stale).
+SEPARATE LATENT BUG FOUND: lib.rs:1565-1576 emit_data - strict UTF-8
+  decoder; if leftover starts with an invalid byte, valid_up_to==0 ->
+  early return WITHOUT draining -> pane goes permanently silent and the
+  buffer grows unbounded. No cap, no error branch. Not this bug's
+  mechanism (ConPTY re-encodes from UTF-16), but real. -> FOLLOWUPS.
+RESULT: investigation only, no code changed. Awaiting Yossi's go-ahead.
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~13:50 IDT] session=wsl-smart-install-fix (BOTH FIXES IN)
+TASK: Yossi approved fixing both bugs from the investigation above.
+COMMITS: 1bcb584 (Bug B, lib.rs) + 6753759 (Bug A, local_setup + UI).
+  Split deliberately - unrelated concerns, B is shippable on its own.
+
+BUG B FIX (1bcb584) - VERIFIED LIVE, not just compiled.
+  utf8_shell_args(ShellKind) in lib.rs, called from spawn_local_pty right
+  after CommandBuilder::new. PowerShell (both flavours) gets
+    -NoExit -Command "$null = chcp 65001;
+       [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+       $OutputEncoding = [Console]::OutputEncoding"
+  cmd gets /K chcp 65001 >nul. Posix untouched. No -NoProfile, so the
+  user's profile still loads - this only PREPENDS.
+  Machine evidence that pinned it: OEMCP=862 / ACP=1255 on Yossi's box,
+  and pwsh.exe is NOT installed -> pick_default_shell falls to
+  powershell.exe 5.1, whose $OutputEncoding is us-ascii (measured).
+  NEW TEST MODULE utf8_pty_live_tests - spawns a REAL powershell.exe over
+  portable-pty exactly like spawn_local_pty:
+   1. preamble_puts_a_real_powershell_pane_on_utf8 -> CP=65001, PIPE=utf-8
+   2. without_the_preamble_powershell_5_1_pipes_ascii -> control, proves
+      the preamble is load-bearing (un-preambled 5.1 = us-ascii)
+   3. hebrew_from_a_native_command_survives_the_pty -> `cmd /c type` on a
+      BOM-less UTF-8 Hebrew file round-trips "שלום עולם", zero U+FFFD
+  Harness gotcha burned 1 cycle: dropping the ConPTY writer before the
+  child exits tears the session down (test finished in 0.14s with only
+  the startup escape sequences). Must sleep ~1.5s for PS 5.1 to consume
+  stdin, and keep BOTH writer and master alive past child exit.
+
+BUG A FIX (6753759) - compiles + tests, END-TO-END STILL UNVERIFIED.
+  LocalSetupResult gains failed_steps / skipped_steps / wsl_chain_ok.
+  - local_setup.rs: InstallHooksInWsl added to is_wsl_chain (was 6 of 7)
+    and now honours its exit code (was Ok(Ok((_code,out))) = always
+    green); the script's trailing `|| true` keeps best-effort posture for
+    a distro with no ~/.claude. Failure logging no longer drops
+    StepFailed's stderr. Summary WARN line on any failed run.
+  - LocalSetupFlow.tsx: stateBadge gains a "skipped" case (was falling
+    through to "pending" = looked not-yet-started); done screen now
+    branches on failed_steps and names what broke, what was abandoned,
+    and that no WSL workspace exists.
+  - App.css: .state-skipped dashed + dimmed; .provisioning-step-icon.skipped
+  - i18n he/en/ar/ru, 4 keys each, 972 total per locale (parity held).
+  CANNOT smoke end-to-end on this box: WSL genuinely absent (wsl --status
+  exit 50, LxssManager service missing) - which is exactly the condition
+  that exposed the false-success. Needs a live run on a WSL-capable
+  machine, or a UAC-declined `wsl --install` to re-trigger the red path.
+CHECKS: cargo check clean (only the 3 pre-existing warnings), 124/124 lib
+  tests, tsc --noEmit clean. Reverted ts-rs trailing-whitespace churn in
+  bindings/Settings.ts (cosmetic, unrelated).
+STILL OPEN: the 3 FOLLOWUPS items from the investigation (P1 emit_data
+  can permanently silence a pane; P2 locale-dependent elevation match +
+  no reboot-pending handling; P2 was the stderr log gap - now CLOSED by
+  6753759, leaving 2).
+------------------------------------------------------------------
+
+=== 2026-08-03 | P1 emit_data UTF-8 stall + SSH stream-splice ===
+BRANCH: fix-emit-data-utf8 (off wsl-smart-install-fix, NOT main - main
+  lacks 1bcb584, the local-shell UTF-8 fix that this decoder pairs with).
+
+BUG 1 (P1, the reported one). emit_data's decoder held `leftover` and
+  emitted only up to `valid_up_to()`, with `if valid_up_to == 0 { return }`
+  and no other error branch. It never looked at Utf8Error::error_len()
+  (unused in the whole repo - checked). Consequence: a byte that can never
+  BEGIN a sequence (0x80-0xBF, 0xC0/0xC1, 0xF5-0xFF) pins valid_up_to at 0
+  permanently, because it is never drained. From that byte on the pane is
+  silent forever AND the Vec grows 8KB per read with no cap. Real triggers:
+  cat on a binary, less on a binary, a legacy exe writing raw CP1255,
+  a truncated download.
+  NOT the bug: split multi-byte chars. The incremental reassembly was
+  already correct for those - which is why from_utf8_lossy over the whole
+  buffer (the "Option A" in the brief) was REJECTED: it would turn every
+  Hebrew letter split across two reads back into U+FFFD, re-opening the
+  mojibake 1bcb584 just closed. Yossi agreed, dropped A.
+
+FIX. New module src/pty_decode.rs - `Utf8Stream` + `Decoded`. Branches on
+  error_len(): None = truncated tail, hold it for the next chunk;
+  Some(n) = invalid, push U+FFFD and drain valid+n. Draining >=1 byte per
+  invalid iteration is the anti-stall guarantee. Because the loop only
+  ever leaves a truncated-valid prefix behind, leftover is <=3 bytes by
+  construction - the unbounded growth is gone without needing a runtime
+  cap (asserted in a test instead of a dead branch). The old `.unwrap()`
+  at :1603 (Rule #4) is gone too - from_utf8_lossy on a known-valid slice
+  is an exact decode.
+  Logging: log_warn("PTY", ...) ONCE per stream, pane_id + session_id +
+  byte count only, never the bytes (Rule #1). Once-per-stream so a binary
+  dump can't flood debug.log.
+
+BUG 2 (the P3 I flagged in the investigation, fixed same commit). The SSH
+  io loop passed ONE `leftover` and ONE OscNotifyParser to BOTH
+  ChannelMsg::Data and ChannelMsg::ExtendedData - stdout and stderr
+  reassembled into a single buffer, so stdout's truncated tail could be
+  completed by stderr's head (and vice versa for a partial OSC). Now two
+  Utf8Streams + two parsers. Rare because request_pty is called on that
+  channel, but silent when it fires.
+  DELIBERATELY LEFT SHARED: bidi_filter, which is keyed by pane_id. A
+  synthetic per-stream key would miss the per-pane smart_bidi toggle and
+  silently leave stderr unfiltered - worse than the escape-splice it
+  would prevent. Logged as the new P3 in FOLLOWUPS with that reasoning.
+
+CHECKS: cargo check clean (only the 2 pre-existing warnings - unused
+  Duration import, renumber_group_list dead code). 138/138 lib tests
+  (124 before + 14 new in pty_decode): Hebrew + 4-byte emoji split at
+  EVERY byte boundary, byte-at-a-time feed, each invalid lead byte
+  proven not to stall, garbage-then-Hebrew recovery, leftover<=3 over
+  64x8KB of junk, report-once, truncated-tail-is-not-a-report,
+  two-streams-do-not-splice.
+NOT VERIFIED LIVE. Compiles + unit-tested only. The live smoke that
+  actually proves it: open a local pane, `cat` any .exe (or
+  `Get-Content winmux-DEBUG-test.exe`), then type `echo שלום` - before
+  the fix the pane is dead from the first bad byte; after it, garbage
+  renders as replacement chars and the Hebrew still arrives. Expect ONE
+  [WARN] [PTY] utf8: line in debug.log per pane.
+Reverted the ts-rs trailing-whitespace churn in bindings/Settings.ts
+  again (cosmetic, unrelated - same as last session).
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~15:10 IDT] session=wsl-smart-install-fix (install path)
+TASK: Yossi: "שיוסיף תהליך התקנה נכון" — preflight + exit-code elevation
+  detection + 3010 reboot handling + self-elevation. COMMIT: 65d6fdc.
+
+PUSHED BACK ON ONE ITEM: the spec asked for `code == 740`
+  (ERROR_ELEVATION_REQUIRED) on wsl.exe's exit. That check can never fire
+  — 740 comes from CreateProcess refusing to launch a manifest-elevated
+  binary, and wsl.exe launches fine unelevated then elevates INTERNALLY.
+  A declined UAC surfaces as ERROR_CANCELLED (1223) from ShellExecuteEx
+  itself. 740 is still mapped (policy-blocked ShellExecuteEx can raise
+  it) but 1223 is the code that actually does the work.
+
+WHAT LANDED
+- is_elevated() via OpenProcessToken + TokenElevation (windows-sys, now a
+  direct dep — was already transitive via tauri; needed the
+  Win32_System_Registry feature too because SHELLEXECUTEINFOW carries an
+  HKEY field).
+- local_setup_preflight command -> WslPreflight {platform_ready,
+  distro_present, elevated, needs_elevation}. needs_elevation is false
+  once the platform is up: adding a further distro to a live platform
+  does NOT need admin.
+- InstallWsl branches: elevated -> inline wsl_cmd (output still reaches
+  the UI); unelevated -> ShellExecuteEx("runas") on spawn_blocking. The
+  runas path loses stdout (no pipes) and buys a trustworthy exit code.
+- classify_wsl_install(code, output): code first, text only as fallback
+  for old builds that always return 1. 3010 -> new RebootRequired
+  variant, deliberately NOT ElevationRequired (retry can't work, so the
+  card offers a restart, not a retry).
+- restart_windows command: shutdown /r /t 0 via args array, behind TWO
+  explicit clicks + copy saying other apps will close. Never automatic.
+- Frontend: admin banner in the WSL group, "UAC will appear + maybe a
+  reboot — continue?" gate before startRun, RebootRequired card.
+
+TWO THINGS I INTRODUCED AND THEN FIXED IN THE SAME PASS
+1. WaitForSingleObject(INFINITE) silently dropped the 1800s ceiling
+   run_capture gives the inline path -> a stuck install would have hung
+   the wizard on "running" forever. Now WSL_INSTALL_TIMEOUT_MS (1800s)
+   with a clear timeout error. The process is deliberately NOT killed:
+   it holds an elevated token we cannot re-acquire and interrupting
+   Windows servicing mid-flight is worse than leaving it.
+2. Restart buttons were wired backwards (the "later" primary armed the
+   confirm). Rewritten: [Restart now] -> [Cancel][Yes, restart].
+
+CHECKS: 146/146 lib tests (7 new in wsl_elevation_tests, incl. a Hebrew
+  string that proves a localized failure no longer masquerades as a
+  generic StepFailed), tsc clean, i18n 981 keys x4. Reverted ts-rs
+  whitespace churn in bindings/Settings.ts again.
+UNVERIFIED: the success path. This box has no WSL (wsl --status exit 50,
+  LxssManager absent), so the UAC prompt, the 3010 card and the workspace
+  that should follow are all compile+unit-test only. Needs a live run.
+NOTE: winmux-utf8-test.exe appeared untracked in the repo root during
+  this session — not mine, left alone (assumed Yossi testing the Bug B
+  build).
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~14:40 IDT] session=font-detect-install (stage 0)
+TASK: Yossi on an AnyDesk onboarding call: picking a font in Settings
+  changes nothing on a clean machine. Investigate + propose, then build
+  in a worktree.
+WORKTREE: .claude/worktrees/font-detect-install, branch
+  font-detect-install, based on origin/main 98f0c6d (local main was 82
+  commits behind).
+ROOT CAUSE (two independent bugs, both in the font path):
+  1) settings.rs list_system_fonts() merges a curated baseline over the
+     enumerated set and returned bare strings, so JetBrains Mono / Inter
+     were offered as if installed. Picking one falls through the CSS
+     fallback chain in settings.ts quoteFamily() back to Cascadia Mono =
+     the default, so the screen is byte-identical and nothing signals
+     failure.
+  2) enumerate_windows_fonts() read HKLM only. Per-user installs land in
+     HKCU (the no-admin path, and where our own installer will write) so
+     they were invisible. Measured here: 409 HKLM vs 5 HKCU unseen.
+FIX (fca8b54 + 73505cc):
+  - FontFamilies now carries FontEntry{name, installed}; CSS generics
+    always installed; enumeration failure => report all installed rather
+    than unsubstantiated badges.
+  - Enumerate HKLM+HKCU, split packed .fon names, strip more format tags.
+  - extends_family() requires the trailing words to be known style words,
+    else "Courier New" satisfies "Courier" (a test caught this).
+  - strip_style_suffix() replaces a 6-suffix hardcode that omitted
+    "Regular" => "Cascadia Code Regular" was a duplicate row.
+  - looks_monospace() excludes "Monotype Corsiva" (matched on "Mono"type).
+  - Settings: OK/MISS badge per family + inline notice under the select
+    when the SELECTED family is known-missing. i18n en/he/ar/ru.
+  - list_system_fonts now returns Result (Rule #6); dropped an `as any`
+    in settings.ts (Rule #5).
+VERIFIED: real run of the command, not just a compile. mono list 13->10
+  rows, duplicates + script face gone, JetBrains Mono/Inter/Roboto flagged
+  MISS, the 5 HKCU "Fb Vayikra" families now appear. cargo test 127 passed
+  (10 new), tsc clean. NOT yet run in the live app - no UI smoke test.
+NEXT: install flow (guided vs silent per-user) - awaiting Yossi on catalog
+  scope. Decided to SKIP the standalone canvas-detection layer: the Rust
+  enumeration covers it, canvas only pays off as a post-install check.
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~15:30 IDT] session=font-detect-install (install flow)
+TASK: second half of the font fix - let winmux install the font it just
+  flagged as missing. Yossi chose: silent per-user with guided fallback.
+NEW: app/src-tauri/src/fonts.rs (font_catalog / font_install commands).
+  - Pinned catalog: tag + sha256 + byte size, all verified against the
+    real artifacts downloaded during this session.
+  - Silent: get_with_retry (native-certs => Netfree/AV boxes work) ->
+    sha256 verify -> zip extract -> %LOCALAPPDATA%\Microsoft\Windows\
+    Fonts -> HKCU register -> WM_FONTCHANGE broadcast. No admin.
+  - Guided fallback on ANY silent failure: write to Downloads +
+    ShellExecute so a GPO/AV-locked box isn't a dead end. Result carries
+    guided:true so the UI doesn't claim a success that didn't happen.
+  - sfnt `name` table parser for the real face name - required, because
+    Windows keys the HKCU value on it and list_system_fonts reads those
+    names back to build the picker.
+CATALOG (narrower than Yossi asked - size-driven, flagged not silent):
+  IN  jetbrains-mono 5.6MB / fira-code 2.4MB / meslolgs-nf 4x ttf 10MB
+      / firacode-nf 27MB
+  OUT Cascadia Code (150MB upstream, ships with Win11/Windows Terminal)
+      JetBrainsMono Nerd Font (125MB - Meslo covers prompt glyphs)
+BUG CAUGHT BY TEST: "MesloLGS NF" matched no mono hint, so installing it
+  would have filed it under UI fonts - install succeeds, warning never
+  clears. Added "meslo"/"nerd" to looks_monospace; a test now asserts
+  every catalog family is visible in the terminal picker.
+ALSO: catalog families seeded into baseline_mono, else a font that only
+  appears once installed can never be discovered (Meslo's situation).
+VERIFIED LIVE (real installs on this machine, not compiles):
+  fira-code      -> 6 faces, picker None -> installed=true
+  jetbrains-mono -> 16 faces, picker false -> true, NL sibling filtered
+  Both fonts are now actually installed here (HKCU, per-user). To undo:
+  delete the FiraCode*/JetBrainsMono* files from
+  %LOCALAPPDATA%\Microsoft\Windows\Fonts and their values under
+  HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts.
+STATUS: cargo test 133 + 2 ignored live tests, tsc clean, vite build
+  clean. The Settings UI itself is STILL NOT exercised in the running
+  app - that is the one remaining gap.
+COMMITS: fca8b54, 73505cc, e513e29, e646383
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~16:05 IDT] session=font-detect-install (catalog name fix)
+BUG (400c3bd): the Nerd Font catalog entry declared family
+  "FiraCodeNerdFontMono" but the font's name table says "FiraCode Nerd
+  Font Mono" (with spaces). The picker is built from the names Windows
+  registered, so that row would have stayed warning-flagged forever -
+  install succeeds, warning never clears. Same class as the MesloLGS NF
+  bug, one layer deeper.
+  Second defect same entry: Nerd Font faces abbreviate the style word to
+  fit the 31-char name-table limit (Reg / Med / Ret / SemBd). None were
+  in FONT_STYLE_WORDS, so extends_family read each as a different family
+  and the match failed even after fixing the family string.
+WHY IT SURVIVED: the "looks monospace" test passed - the wrong string is
+  perfectly plausible. Replaced with a test that pins the REAL face names
+  read out of the shipped font files and asserts each resolves back to
+  its catalog family; it also fails if a new catalog entry is added
+  without recording its face names.
+VERIFIED LIVE: firacode-nf install, picker false -> true, 6 faces.
+STATE OF THIS MACHINE: three fonts were really installed during testing -
+  Fira Code, JetBrains Mono, FiraCode Nerd Font Mono. All per-user. To
+  undo: delete the matching files from
+  %LOCALAPPDATA%\Microsoft\Windows\Fonts and their values under
+  HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts.
+STATUS: cargo test 134 + 3 ignored live tests, tsc clean, vite build
+  clean, cargo build --bin app exit 0.
+REMAINING GAP: the Settings UI has never been exercised in the running
+  app. Everything above is command-level and unit-level verification.
+COMMITS: fca8b54, 73505cc, e513e29, e646383, 1959439, 400c3bd
+------------------------------------------------------------------
+==================================================================
+[2026-08-03 ~16:40 IDT] session=font-detect-install (cleanup + custom field)
+YOSSI'S CORRECTION: "I didn't mean install it on MY machine, I wanted it
+  built so any user can install." Fair - I read "download and test" as
+  license to mutate his machine. It was not.
+(1) UNINSTALL - done, verified:
+  28 registry values removed from HKCU\...\Fonts, 28 .ttf files removed
+  from %LOCALAPPDATA%\Microsoft\Windows\Fonts, WM_FONTCHANGE broadcast,
+  0 failures, 0 leftovers. Targeting was an explicit allow-list on the
+  file name from each registry value's DATA path (FiraCode-,
+  FiraCodeNerdFontMono-, JetBrainsMono-), so the user's own 5 Fb Vayikra
+  faces were never candidates. Confirmed via list_system_fonts(): all 4
+  catalog families read MISS again, i.e. the machine now shows exactly
+  what a fresh user sees. One-off script kept in the session temp dir,
+  deliberately NOT added to the repo.
+(2) PRODUCTION AUDIT - clean:
+  - no absolute/user/agent paths in fonts.rs or fontProbe.ts
+  - winmux-cli.exe still untracked (build artifact, gitignored)
+  - Tauri capabilities need no entry for app-defined commands
+  - live-install tests are all #[ignore], never run in a normal suite
+  CASCADIA: stays OUT, now with evidence - release ships only a 150MB
+  zip; the repo's only committed .ttf are sources/vtt_data/*_VTT.ttf,
+  which are VTT hinting sources and not distributable builds; the Nerd
+  Font variants are 52-55MB. No small legitimate source exists.
+  "SOMETHING ELSE": implemented as a free-text family field instead of
+  guessing - app/src/fontProbe.ts + CustomFontField in SettingsModal.
+  NOTE: deliberately NOT document.fonts.check() - in Chromium/WebView2 it
+  returns true for almost any unknown family, which would report a
+  missing font as present (the exact bug this feature exists to kill).
+  Uses canvas width comparison against 3 generics instead.
+  Also fixed a UX trap in that field: probing only on change/blur left
+  the Use button disabled at click time, swallowing the press. Now
+  debounced on input.
+STATUS: cargo test 134 + 3 ignored, tsc clean, vite build clean.
+REMAINING GAP (unchanged): the Settings UI has never been exercised in
+  the running app.
+------------------------------------------------------------------
+
+[2026-08-03] Phase 81 — file-transfer progress bar + cancel
+==================================================================
+TASK: Yossi reported a 60 MB upload in the File Manager shows nothing —
+  no bar, no percent, no sign of life. Same suspected for downloads.
+BRANCH: file-transfer-progress (worktree, from main @1614af7)
+
+ROOT CAUSE (two separate bugs):
+  1. file_upload / pane_upload_dropped did std::fs::read() into a Vec<u8>
+     then one write_all() — no chunking at all, so progress was not just
+     unreported but impossible. Downloads already streamed (Phase 75.3)
+     and DID emit fm-download-progress; the UI just rendered it as a line
+     of text in the status bar, and only inside the pane that started it.
+  2. The "Upload from disk" picker used <input type="file"> and shipped
+     the bytes over the Tauri IPC bridge as Array.from(Uint8Array) — a
+     JSON array of one number per byte. 60 MB became ~250 MB of JSON and
+     hung the webview before any transfer began.
+
+FILES:
+  M app/src-tauri/src/file_manager.rs  (stream_upload, ProgressEmitter,
+      transfer registry + fm_transfer_cancel, both commands rewired,
+      file_upload_bytes deleted, unit tests)
+  M app/src-tauri/src/lib.rs           (command registration)
+  A app/src/transferStore.ts           (global store + root listener)
+  A app/src/TransferBar.tsx            (progress strip)
+  M app/src/FileManagerPane.tsx        (mount bar, drop old listener,
+      native dialog picker instead of <input type="file">)
+  M app/src/App.tsx / App.css / i18n/{en,he,ar,ru}.json
+  M app/src-tauri/capabilities/{default,popout}.json (dialog:allow-open)
+
+EVENTS (new contract):
+  fm-transfer-progress { id, direction, name, path, done, total, speed_bps }
+  fm-transfer-done     { id, direction, name, ok, canceled, error }
+  fm-download-progress REMOVED (was Phase 75.3, download-only).
+
+RESULT: compiles-only — NOT verified live.
+  Verified: cargo check + cargo build clean; tsc --noEmit clean; vite
+  build clean; 4/4 new Rust unit tests pass (basename, cancel targeting,
+  cancel-after-finish returns Err, registry cleanup); app shell boots in
+  a browser with no console errors; transfer-bar CSS checked in-browser
+  (fill geometry exactly 45% of track, state colors resolve, long names
+  ellipsize, no horizontal overflow).
+  NOT verified: an actual SFTP transfer. This machine has no sshd and no
+  WSL, so there was no SSH target to transfer against. The 60 MB upload,
+  the live progress readout, and cancel-mid-transfer all still need a
+  real run against a remote host — Yossi to confirm.
+NOTES: worktree needed app/src-tauri/resources/winmux-cli.exe copied in
+  by hand (gitignored build artifact) before cargo would build, and a
+  node_modules junction to the main checkout.
+==================================================================
+
+=== 2026-08-03 — Phase 3 of 3: merge everything into main ===
+
+Merged in order, full verification after each. No push, no tags.
+
+0. claude/backlog-follow-up-review-5840fe (a parallel session that
+   finished mid-cleanup — last commit 3h+ old, tree clean). Merged first
+   because it edits docs/DECISIONS.md, which the other merges touch.
+   Clean auto-merge; both its edits and the winmux-protocol entry survived.
+
+1. wsl-smart-install-fix (9 commits) -> c6e7a51
+   Conflict: PROGRESS.txt only (append vs append). Verified both sides
+   are pure appends over the merge base, then concatenated: 710 + 82 +
+   241 = 1033 lines, exact.
+   cargo test 240/0 · tsc exit 0 · vite ok · go 10/10
+
+2. font-detect-install (8 commits) -> d4c9762
+   Conflicts:
+   - Cargo.toml: both branches added a [target.'cfg(windows)'.dependencies]
+     section in the same release, with DIFFERENT windows-sys versions
+     (WSL 0.61, fonts 0.59). Merged into one section pinned at 0.61 —
+     the WSL feature set is a strict superset of what the font code needs
+     (Win32_Foundation + Win32_UI_WindowsAndMessaging are both in it).
+     Kept fonts' winreg = "0.55" and open = "5". cargo check confirms the
+     font code builds against 0.61.
+   - Cargo.lock: reset to ours, regenerated by cargo (+2 lines).
+   - PROGRESS.txt: pure-append concat again.
+   - FOLLOWUPS.md: both sides inserted at the top of ## Open. Kept all 7,
+     sorted by priority per the file's own "surface P0/P1 first" rule.
+   cargo test 257/0 · tsc exit 0 · vite ok · go 10/10
+
+3. file-transfer-progress (8 commits) -> bf8cd6f
+   Conflicts:
+   - PROGRESS.txt: pure-append concat (738 + 440 + 50 = 1228).
+   - FOLLOWUPS.md: the branch had filed an OPEN `- [ ]` item under
+     ## Done with an empty ## Open — its own mistake. Moved the build.rs
+     P3 into Open where it belongs; Open is now 8, Done 2, one ## Done
+     heading.
+   cargo test 261/0 · tsc exit 0 · vite ok · go 10/10 (-count=1)
+
+CARGO.LOCK MYSTERY — closed, no rescue was needed:
+  No stash was ever taken. The Step-0 plan listed a rescue stash, but the
+  investigation ran first and made it unnecessary, so it was skipped.
+  `git diff` in the rtl-visual-order worktree showed +229 lines adding
+  bollard, bollard-stubs, sysinfo, rayon, rayon-core, crossbeam-deque,
+  crossbeam-epoch, either, hyperlocal, hyper-named-pipe, httpdate, ntapi,
+  serde_urlencoded, ryu, and the windows-* family. None of them are
+  suspicious: ad40fbf's own Cargo.toml already declared `sysinfo = "0.32"`
+  and `bollard = { version = "0.17" }` at lines 111-112 while its
+  committed Cargo.lock lacked them — a stale lockfile. Someone ran cargo
+  in that worktree and cargo repaired it. The repaired file is
+  byte-identical to origin/main's Cargo.lock (verified by diff), and every
+  package listed already existed in origin/main. Nothing to merge,
+  nothing lost — discarded with the worktree.
+
+STATE: main = bf8cd6f, clean, 12 ahead of origin/main. NOT PUSHED.
+NOT LIVE-VERIFIED (both need a real run on Yossi's machine):
+  - WSL install path: UAC consent + 3010 reboot. Rust tests only.
+  - SFTP transfer bar: no sshd and no WSL on this machine, so no remote
+    to transfer against. The 60 MB upload, live readout and
+    cancel-mid-transfer are all still unproven.
+
+=== 2026-08-09 — elevated wsl --install was undiagnosable (fd1f537) ===
+
+TRIGGER: Yossi ran the WSL wizard. It reported "ההתקנה לא הושלמה" and
+debug.log had only:
+  12:15:32 preflight: platform_ready=false distro_present=false
+           elevated=false needs_elevation=true
+  12:15:45 InstallWsl: no elevated token — requesting UAC consent
+  12:16:08 step InstallWsl failed (exit 1)
+23s between consent and failure — the elevated child did real work, then
+exited 1. No reason anywhere.
+
+ROOT CAUSE (of the blindness, not of the install):
+  local_setup.rs:1195 `Ok(Ok(code)) => Ok((code, String::new()))`.
+  ShellExecuteEx("runas") is the only way to elevate a child and it gives
+  no stdout/stderr pipes, so the elevated branch passed an EMPTY string
+  to classify_wsl_install. Its text fallbacks (contains "elevat" /
+  "reboot") are therefore dead code on that path, and any code outside
+  0/3010/1223/740 collapses to StepFailed{stderr:""}. Generic 1 is the
+  common case. The doc comment called the lost pipes "an acceptable trade
+  because the codes it does give us are unambiguous" — but 1 is exactly
+  the ambiguous one.
+
+FIX: elevate `cmd /s /c` instead of wsl.exe and redirect into a per-run
+  temp file we own, read it back after the wait, delete on every exit
+  path. `/s` makes cmd strip exactly our outer quote pair instead of
+  rebalancing. WSL_UTF8=1 for the same reason wsl_cmd sets it (no space
+  before `&&`, or the value becomes "1 " and wsl.exe reverts to UTF-16).
+  Rule #3: a command string has no argv array, so both interpolated
+  values are pre-validated — distro by the existing valid_distro_name,
+  the log path by the new cmd_safe_path allowlist. An unrepresentable
+  temp path drops the redirect and still installs. Exit code is now
+  logged on success too, so a 3010 is in debug.log after the fact.
+
+FILES: app/src-tauri/src/local_setup.rs (+cmd_safe_path,
+  +wsl_install_cmd_params, run_wsl_install_elevated now returns
+  (u32,String), caller logs it), 5 new tests in wsl_elevation_tests.
+
+VERIFIED: the exact cmd parameter string run against a real cmd.exe with
+  --status swapped in for --install — cmd exit 0, redirect file written,
+  0 NUL bytes (UTF-8, no UTF-16 leak), real wsl.exe text captured.
+  cargo test 266/0 · tsc exit 0 · vite ok · go 10/10.
+
+WHAT THE ORIGINAL exit 1 WAS: unrecoverable — the message was discarded,
+  which is the whole bug. But probing the machine afterwards with the new
+  capture method showed WSL is now UP: `wsl -l -v` = "* Ubuntu Stopped 2",
+  `wsl --version` = WSL 2.7.11.0 / kernel 6.18.33.2, and `wsl --status`
+  exits 0 with 195 bytes — so inspect_wsl would now set wsl_ready=true.
+  Either Yossi's manual elevated run landed it, or winmux's own elevated
+  run did the work and still returned 1. Cannot tell retroactively.
+  NOTE the WSL1 line in `wsl --status` output ("Please enable the Windows
+  Subsystem for Linux optional component to use WSL1") is about WSL1 only
+  and is harmless — wsl_ready keys off exit code + non-empty output, not
+  that text, so it does not mis-trip.
+
+NEXT: re-run the wizard. If it fails again the log will now carry the
+  real message. WSL being up also unblocks the Phase 81 transfer bar,
+  which had no SSH target on this machine.
+
+=== 2026-08-09 — the release exe was built wrong (my error) ===
+
+SYMPTOM: Yossi launched app.exe and got a WebView2
+  "ERR_CONNECTION_REFUSED — localhost" page INSIDE the winmux window.
+  He reported it four times; I misread it three times as a leftover
+  Claude preview pane and sent him chasing a browser tab. It was the app
+  itself the whole way. His screenshot of the winmux title bar is what
+  finally settled it.
+
+CAUSE: I built with `cargo build --release`. That compiles and links
+  fine, but tauri-build only embeds `frontendDist` when the build runs
+  through the Tauri CLI, which injects the env that selects production
+  mode. Without it the binary stays in dev mode and loads devUrl
+  (http://localhost:1420) — a server that does not exist on a user
+  machine. Both exes I produced this session (Aug 3 and 13:32) were
+  broken this way, and I twice reported "exe unified built" on the
+  strength of a clean compile. CLAUDE.md says "Verified = real run, not
+  compile"; I did not follow it.
+
+  Nothing in the Rust log hints at it: boot runs normally through
+  "rpc server spawned" and then stops, because no frontend loads to call
+  back in. That silence is the tell.
+
+FIX: rebuilt with `npm run tauri build -- --no-bundle` (--no-bundle
+  skips NSIS, so the known os error 32 cleanup false-alarm cannot even
+  arise and Yossi gets the exe he actually needs). RELEASING.md already
+  points at scripts/build-release.ps1 for real cuts — the doc was right,
+  I just did not read it.
+
+VERIFIED (real run this time):
+  - this build's exact asset hashes are inside the exe:
+    index-BJhbBlwx.css, index-zVEv1mLi.js, logo-BtuLyPip.svg — all 1.
+    The broken build had none. `localhost:1420` shows up in BOTH kinds
+    (the config is embedded regardless), so it is not a usable signal.
+  - launched it: log went past setup into
+    [TUNNEL] tcpip_forward got remote port 40159 and
+    [SSH] workspace_ensure_connected: headless session up (method=Key).
+    Those only fire when the frontend calls into Rust, i.e. the UI is up
+    and auto-connected the workspace.
+
+DOCS: added a "Building a runnable exe" section at the top of
+  docs/CONTRIBUTING.md — the trap, the two correct commands, and the
+  grep that tells a production binary from a dev one.
+
+UNAFFECTED: the merges, the 266 tests and the wsl --install capture fix
+  are all source-level and were never in question. Only my packaging of
+  the binary was wrong.
+
 ==================================================================
 [2026-08-09 11:45 IDT] session=macos-intel-port
 TASK: macOS Intel (x86_64, macOS 13+) build — IPC port + CI, merged to main
@@ -827,3 +1512,163 @@ NOTES: ports triage on the Mac, now that the socket is ruled out — grep
   Windows regression check still owed: SFTP panel nav + upload, and
   drag-drop on a 125%/150%-scaled display (dpr != 1).
 ==================================================================
+
+=== 2026-08-09 — Windows CI/CD on GitHub Actions ===
+
+CONTEXT: a collaborator ported winmux to macOS on a server, and Claude
+  Code there added .github/workflows/build-macos-intel.yml. There was no
+  Windows equivalent — every Windows build was manual, which is exactly
+  how a dev-mode binary reached Yossi twice today.
+
+MERGED FIRST: origin/main had moved 5 commits ahead (macOS Intel port:
+  named pipe -> Unix socket in rpc_server.rs, tauri.macos.conf.json, the
+  build:frontend script split, the macOS workflow). Merged into main
+  (1f5c318). Only PROGRESS.txt conflicted — append vs append, resolved by
+  the verified pure-append concat (710 + 685 + 21 = 1416 lines).
+  rpc_server.rs merged clean: `git diff origin/main HEAD` on that file is
+  empty, so the Unix-socket port came through byte-identical.
+  Re-verified after the merge: cargo test 266/0, tsc exit 0, vite ok,
+  go 10/10.
+
+ADDED — .github/workflows/ci-windows.yml (tests, ~8 min):
+  push + PR to main, plus workflow_dispatch. cargo test --workspace,
+  tsc --noEmit, vite build, go test ./.... rust-cache keyed on the
+  workspace, npm + go module caches, concurrency group cancels
+  superseded runs.
+  ORDERING TRAP baked in: `npm run build:linux-cli` must run BEFORE any
+  cargo step. It stages src-tauri/resources/winmux-cli.exe, which is
+  gitignored, and Tauri's build script hard-fails without it — a fresh
+  CI checkout is exactly the FOLLOWUPS P3 case.
+  typescript is installed with `npm i --no-save typescript@5` because it
+  is still not a project dependency (BACKLOG P2). Step carries a note to
+  delete it once package.json carries typescript.
+
+ADDED — .github/workflows/build-windows.yml (bundles, dispatch + v* tags):
+  Goes through app/scripts/build-release.ps1 rather than calling
+  `npm run tauri build` directly — that wrapper injects the
+  --remap-path-prefix RUSTFLAGS that scrub the builder's $HOME out of
+  panic-location strings, and deletes the stale app.exe so Cargo cannot
+  reuse an unscrubbed incremental artifact. Uploads MSI, NSIS setup, and
+  the bare app.exe, with sha256s in the log. Publishing stays manual per
+  RELEASING.md step 4.
+  Cross-compile note: the bundled Linux CLI is static-musl linked with
+  rust-lld (src-tauri/.cargo/config.toml), so a Windows runner needs no
+  extra toolchain.
+
+THE GUARD THAT MATTERS: build-windows.yml asserts the frontend is really
+  embedded — it greps the freshly built dist/assets/index-<hash>.js
+  filename out of app.exe and fails the build if absent. That is exactly
+  today's failure; a dev-mode binary can no longer leave CI.
+  `localhost:1420` is embedded in BOTH kinds of build (the whole config
+  is), so it is useless as a signal and is not used.
+
+VERIFIED (not just YAML-valid):
+  - all three workflows parse with yaml.safe_load; every step has
+    uses/run; every referenced path and npm script exists.
+  - the embed assertion was run locally against the real app.exe:
+    passes on 'index-zVEv1mLi.js', and a negative control
+    ('index-DEADBEEF.js') correctly reports false — so it discriminates
+    rather than always passing.
+  - that test caught a real bug in my first draft: [System.IO.File]::
+    ReadAllBytes resolves against the PROCESS working directory, not
+    PowerShell's location, so the relative path threw
+    DirectoryNotFoundException. Now uses Convert-Path.
+
+NOT DONE: neither workflow has run on GitHub yet — nothing is pushed.
+  First real run is the actual proof.
+
+--- 2026-08-10 — both Windows workflows verified green on GitHub ---
+
+ci-windows      run 31378991088  success  10m50s
+build-windows   run 31379824868  success  15m54s
+  artifacts: winmux_0.4.5_x64_en-US.msi (21MB, 8b3f10b8…),
+             winmux_0.4.5_x64-setup.exe (15MB, 22c3c168…),
+             app.exe (19MB, cf4dbe1e…)
+  guard verdict: "OK: production build — 'index-zVEv1mLi.js' is embedded"
+  — i.e. the check that would have caught yesterday's dev-mode binary
+  actually runs and passes on a real build.
+
+THREE FAILED RUNS BEFORE GREEN, and the middle one is the lesson.
+
+Symptom: build-linux-cli.ps1 died at "Get-FileHash : The term is not
+recognized" — a built-in cmdlet — one full minute INTO the musl
+cross-build, which had already succeeded.
+
+First fix was wrong. I assumed the runner's PSModulePath omitted the
+Windows PowerShell 5.1 module dirs and set it at job level. The run
+still failed — but the cheap precondition step I had added alongside it
+PASSED, which proved the cmdlet was reachable from a directly-spawned
+powershell and the problem lay elsewhere. Instead of guessing a third
+time I printed PSModulePath from both paths: identical, and correct.
+
+That made the real cause visible in a line I had been reading past:
+  shell: C:\Program Files\PowerShell\7\pwsh.EXE
+The default shell for `run:` on Windows runners is pwsh, and pwsh
+rewrites PSModulePath for its children to its own module dirs. npm
+inherits that and hands it to the Windows PowerShell 5.1 that
+build:linux-cli spawns, which can then no longer autoload
+Microsoft.PowerShell.Utility.
+
+Fix: `shell: cmd` on the steps that shell out to Windows PowerShell —
+in ci-windows.yml directly, and in build-windows.yml where the same 5.1
+invocation hides four links down (build-release.ps1 -> npm run tauri
+build -> beforeBuildCommand -> build:linux-cli). app/scripts/*.ps1 were
+NOT touched; they are correct and work locally. The PSModulePath env is
+kept only to make the value explicit, and both files' comments now name
+the real cause rather than the guess.
+
+Generalisable: a precondition step that fails in seconds is worth its
+line count purely because a passing one narrows the search.
+
+=== 2026-08-10 — CreateWslUser reported success without creating a user ===
+
+TRIGGER: Yossi re-ran the WSL wizard on the repaired WSL. InstallWsl was
+  correctly skipped (preflight: platform_ready=true distro_present=true),
+  the user/env/tmux steps all reported success, and it failed at
+  DeployWinmuxCliToWsl:
+    finalize failed: SHA MISMATCH got
+    WSL (414 - Relay) ERROR: CreateProcessParseCommon:1014: getpwnam() failed 0
+    sha256sum: "/root"/.winmux/bin/...winmux-upload.tmp: No such file
+  Note the empty "got" — the hash was never computed. (The message
+  reaching the log at all is yesterday's fd1f537 working.)
+
+THE FAILING STEP WAS NOT THE BROKEN ONE. Probing the distro:
+    /etc/wsl.conf ->  [user]\ndefault=        <- empty
+    uid>=1000 users -> none
+    /home/          -> empty
+    /root/.winmux/bin/ -> exists, empty
+  So `wsl.exe` was calling getpwnam("") on every invocation, failing, and
+  silently falling back to root. CreateWslUser had reported success while
+  creating nothing.
+
+TWO DEFECTS, both "present != correct", in the CreateWslUser script:
+  A. `grep -q '^\[user\]' /etc/wsl.conf` treated the mere presence of the
+     section header as proof a default user was set. A section with an
+     empty `default=` — exactly the state on this machine — took the
+     "already set" branch and left it empty forever.
+  B. `else useradd ... && (...) && echo CREATED; fi` — when useradd
+     failed, the && chain stopped, but the NEXT statement (the wsl.conf
+     `if`) ran and ITS exit status became the script's. A failed useradd
+     was swallowed whole. Same class as 6753759 (install reporting
+     success on failure), different step.
+
+FIX: `set -e`, plus parse the actual `default=` VALUE rather than the
+  section header, plus an explicit verify before returning
+  (`getent passwd "$U"` and a non-empty final default, else exit 1).
+  An existing non-empty default is respected rather than overwritten.
+
+VERIFIED LIVE, not just compiled: ran the exact generated script against
+  Yossi's broken distro as root ->
+    CREATED mlastudent371 / wsl.conf default set / VERIFIED
+  then `wsl --terminate Ubuntu` (what the step does) and re-probed:
+    uid=1000(mlastudent371) groups=...,27(sudo)  HOME=/home/mlastudent371
+    getpwnam errors: gone
+    /etc/wsl.conf: [user] default=mlastudent371
+  His WSL is repaired in place — the wizard can be re-run as-is.
+
+SCANNED for the same swallow pattern in the other generated scripts:
+  only this one had it. fin_script (local_setup.rs:1026) looks similar but
+  is correct — its `if` is the last statement and the else branch exits 1
+  explicitly, so the status does propagate.
+
+cargo test 266/0.

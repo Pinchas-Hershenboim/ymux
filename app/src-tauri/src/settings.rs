@@ -1544,19 +1544,188 @@ pub(crate) fn settings_reset(
     })
 }
 
+/// One entry in the Settings font picker.
+///
+/// `installed` is the whole point: the picker always offers a curated
+/// baseline (so it is never empty and so the defaults are pickable before
+/// enumeration succeeds), but a baseline name is NOT necessarily present on
+/// the machine — `JetBrains Mono` and `Inter` ship with nothing. Picking a
+/// missing family used to silently fall through the CSS fallback chain in
+/// `quoteFamily()` back to Cascadia Mono, i.e. the default, i.e. "nothing
+/// happened". The frontend renders this flag as ✅ / ⚠️ so the user can see
+/// why, instead of concluding the setting is broken.
 #[derive(Clone, Serialize)]
-pub(crate) struct FontFamilies {
-    pub ui: Vec<String>,
-    pub mono: Vec<String>,
+pub(crate) struct FontEntry {
+    pub name: String,
+    pub installed: bool,
 }
 
-/// Best-effort enumeration of installed font families on Windows. Reads
-/// `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts` and a handful
-/// of mono-font hints. If anything fails (non-Windows, registry locked,
-/// etc.) we fall back to a curated baseline so the picker is always
-/// usable.
+#[derive(Clone, Serialize)]
+pub(crate) struct FontFamilies {
+    pub ui: Vec<FontEntry>,
+    pub mono: Vec<FontEntry>,
+}
+
+/// CSS generic families. They always resolve (the browser picks something),
+/// so they are reported installed regardless of what the registry says —
+/// flagging them ⚠️ would be a lie.
+const CSS_GENERIC_FAMILIES: &[&str] = &[
+    "system-ui",
+    "ui-monospace",
+    "ui-sans-serif",
+    "ui-serif",
+    "monospace",
+    "sans-serif",
+    "serif",
+    "cursive",
+    "fantasy",
+];
+
+/// Weight / style words that a registry face name appends to its family.
+/// Deliberately does NOT include words that start a genuinely different
+/// family: "New" ("Courier New"), "Variable" ("Segoe UI Variable"), "Code"
+/// / "Mono" ("Cascadia Code" vs "Cascadia Mono"), "Nerd" ("JetBrainsMono
+/// Nerd Font" is its own CSS family and must stay separately selectable).
+const FONT_STYLE_WORDS: &[&str] = &[
+    "regular",
+    "bold",
+    "italic",
+    "oblique",
+    "light",
+    "extralight",
+    "ultralight",
+    "semilight",
+    "thin",
+    "medium",
+    "semibold",
+    "demibold",
+    "extrabold",
+    "ultrabold",
+    "black",
+    "heavy",
+    "book",
+    "roman",
+    "retina",
+    "condensed",
+    "semicondensed",
+    "extracondensed",
+    // Nerd Font patched faces abbreviate the style word to fit the 31-char
+    // name-table limit — "FiraCode Nerd Font Mono Reg", not "... Regular".
+    // Without these the family reads as uninstalled even right after a
+    // successful install.
+    "reg",
+    "med",
+    "ret",
+    "bd",
+    "sembd",
+    "semibd",
+    "extbd",
+    "exbd",
+    "blk",
+    "lt",
+    "xlt",
+    "extlt",
+    "th",
+    "obl",
+    "ital",
+    "cond",
+];
+
+/// True if `name` is `base` plus trailing style/weight words only — i.e.
+/// `name` is a variant FACE of the family `base` ("JetBrains Mono ExtraBold"
+/// vs "JetBrains Mono"), not a different family that merely shares a prefix.
+///
+/// The style-word check is load-bearing, not decoration: a plain
+/// prefix-plus-space rule makes "Courier New" answer a request for
+/// "Courier", which would mark an uninstalled family as installed — exactly
+/// the class of silent lie this whole change exists to remove.
+fn extends_family(name: &str, base: &str) -> bool {
+    if base.is_empty() || base.len() >= name.len() {
+        return false;
+    }
+    if !name.is_char_boundary(base.len()) || !name[..base.len()].eq_ignore_ascii_case(base) {
+        return false;
+    }
+    let rest = &name[base.len()..];
+    if !rest.starts_with(' ') {
+        return false;
+    }
+    let mut words = rest.split_whitespace().peekable();
+    if words.peek().is_none() {
+        return false; // trailing whitespace only — not a distinct face
+    }
+    words.all(|w| {
+        FONT_STYLE_WORDS
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(w))
+    })
+}
+
+/// Heuristic split of the enumerated set into the terminal picker (mono) and
+/// the UI picker. Name-based — the registry doesn't tell us pitch — so it is
+/// a best guess, deliberately generous on the mono side.
+pub(crate) fn looks_monospace(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    const HINTS: &[&str] = &[
+        "mono",
+        "consolas",
+        "cascadia",
+        "courier",
+        "menlo",
+        // "meslo" and "nerd" are load-bearing, not padding: MesloLGS NF
+        // matches none of the other hints, so without them an installed
+        // Nerd Font lands in the UI list and stays unpickable as a terminal
+        // font — install succeeds, ⚠️ never clears. `fonts::tests` guards
+        // this for every catalog family.
+        "meslo",
+        "nerd",
+        "fira",
+        "jetbrains",
+        "iosevka",
+        "hack",
+        "source code",
+        "lucida console",
+    ];
+    // "Monotype Corsiva" is a script face, not a mono one — it only matched
+    // because "Monotype" contains "mono".
+    if lower.contains("monotype") && !lower.contains("mono ") {
+        return false;
+    }
+    HINTS.iter().any(|h| lower.contains(h))
+}
+
+/// True if `family` is present in the enumerated set.
+///
+/// Registry face names carry weight/style suffixes (`JetBrains Mono
+/// ExtraBold`) while CSS wants the family (`JetBrains Mono`), so an exact
+/// match is not enough: a prefix match on a word boundary counts too. The
+/// boundary check is what stops `Courier` from matching `Courier New`.
+pub(crate) fn family_is_installed(family: &str, enumerated: &[String]) -> bool {
+    let want = family.trim();
+    if want.is_empty() {
+        return false;
+    }
+    if CSS_GENERIC_FAMILIES
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(want))
+    {
+        return true;
+    }
+    enumerated
+        .iter()
+        // "JetBrains Mono ExtraBold" satisfies a request for "JetBrains Mono".
+        .any(|have| have.eq_ignore_ascii_case(want) || extends_family(have, want))
+}
+
+/// Best-effort enumeration of installed font families on Windows. Reads both
+/// `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts` (machine-wide)
+/// and the `HKCU` counterpart (per-user installs — the no-admin path, and
+/// the one our own installer writes to). If anything fails (non-Windows,
+/// registry locked, etc.) we fall back to a curated baseline so the picker
+/// is always usable; in that case nothing can be verified, so every entry is
+/// reported installed rather than drowning the list in false ⚠️.
 #[tauri::command]
-pub(crate) fn list_system_fonts() -> FontFamilies {
+pub(crate) fn list_system_fonts() -> Result<FontFamilies, String> {
     let baseline_ui = vec![
         "system-ui".to_string(),
         "Segoe UI Variable".to_string(),
@@ -1566,96 +1735,185 @@ pub(crate) fn list_system_fonts() -> FontFamilies {
         "Tahoma".to_string(),
         "Arial".to_string(),
     ];
-    let baseline_mono = vec![
+    // Every family the install catalog can supply is listed here even when
+    // absent, so it shows up flagged ⚠️ with an Install button next to it.
+    // A font that only appears once it is installed can never be discovered
+    // — which is the situation MesloLGS NF was in.
+    let mut baseline_mono = vec![
         "Cascadia Mono".to_string(),
         "Cascadia Code".to_string(),
-        "JetBrains Mono".to_string(),
         "Consolas".to_string(),
         "Courier New".to_string(),
         "ui-monospace".to_string(),
         "monospace".to_string(),
     ];
+    for family in crate::fonts::installable_families() {
+        if !baseline_mono.iter().any(|b| b.eq_ignore_ascii_case(family)) {
+            baseline_mono.push(family.to_string());
+        }
+    }
+    // `all` is the MATCH set — it deliberately keeps weight-suffixed faces
+    // ("JetBrains Mono ExtraBold") so `family_is_installed` can satisfy a
+    // family whose regular face isn't separately registered.
     let mut all: Vec<String> = enumerate_windows_fonts().unwrap_or_default();
     all.sort();
     all.dedup();
+    // Enumeration failed (or non-Windows): we cannot tell installed from
+    // missing, so claim everything installed — a picker full of ⚠️ that we
+    // cannot substantiate is worse than no badges at all.
     if all.is_empty() {
-        return FontFamilies {
-            ui: baseline_ui,
-            mono: baseline_mono,
+        let assume_installed = |names: Vec<String>| -> Vec<FontEntry> {
+            names
+                .into_iter()
+                .map(|name| FontEntry {
+                    name,
+                    installed: true,
+                })
+                .collect()
         };
+        return Ok(FontFamilies {
+            ui: assume_installed(baseline_ui),
+            mono: assume_installed(baseline_mono),
+        });
     }
-    let mono_hints = [
-        "mono", "consolas", "cascadia", "courier", "menlo", "fira", "jetbrains",
-        "iosevka", "hack", "source code", "lucida console",
-    ];
-    let mono: Vec<String> = all
+    // `display` is what the picker SHOWS: drop any face that is just a
+    // weight/style variant of a family already in the set, so the user sees
+    // "JetBrains Mono" once instead of once per weight.
+    let display: Vec<String> = all
         .iter()
-        .filter(|n| {
-            let lower = n.to_lowercase();
-            mono_hints.iter().any(|h| lower.contains(h))
-        })
+        .filter(|n| !all.iter().any(|base| extends_family(n, base)))
         .cloned()
         .collect();
-    let ui: Vec<String> = all
+    let mono: Vec<String> = display.iter().filter(|n| looks_monospace(n)).cloned().collect();
+    let ui: Vec<String> = display
         .iter()
         .filter(|n| {
             let lower = n.to_lowercase();
-            !mono_hints.iter().any(|h| lower.contains(h))
+            !looks_monospace(n)
                 && !lower.contains("symbol")
                 && !lower.contains("emoji")
                 && !lower.contains("wingdings")
         })
         .cloned()
         .collect();
-    let merge = |mut head: Vec<String>, tail: Vec<String>| -> Vec<String> {
+    // `head` is the curated baseline (may contain names that are NOT on this
+    // machine — those get flagged); `tail` came out of the registry, so it is
+    // installed by construction.
+    let merge = |head: Vec<String>, tail: Vec<String>| -> Vec<FontEntry> {
+        let mut out: Vec<FontEntry> = head
+            .into_iter()
+            .map(|name| {
+                let installed = family_is_installed(&name, &all);
+                FontEntry { name, installed }
+            })
+            .collect();
         for t in tail {
-            if !head.iter().any(|h| h.eq_ignore_ascii_case(&t)) {
-                head.push(t);
+            if !out.iter().any(|h| h.name.eq_ignore_ascii_case(&t)) {
+                out.push(FontEntry {
+                    name: t,
+                    installed: true,
+                });
             }
         }
-        head
+        out
     };
-    FontFamilies {
+    Ok(FontFamilies {
         ui: merge(baseline_ui, ui),
         mono: merge(baseline_mono, mono),
-    }
+    })
 }
+
+/// Static PowerShell source for {@link enumerate_windows_fonts}. Both font
+/// hives, machine-wide first. HKCU is where a per-user (no-admin) install
+/// lands — including the one this app performs — and reading only HKLM used
+/// to make those fonts invisible to the picker forever.
+#[cfg(target_os = "windows")]
+const ENUM_FONTS_PS: &str = "\
+$ErrorActionPreference = 'SilentlyContinue'; \
+foreach ($k in @( \
+  'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts', \
+  'HKCU:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts' \
+)) { \
+  if (Test-Path $k) { \
+    Get-ItemProperty $k | Get-Member -MemberType NoteProperty | \
+    Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object { $_.Name } \
+  } \
+}";
 
 #[cfg(target_os = "windows")]
 fn enumerate_windows_fonts() -> Option<Vec<String>> {
     // Spawn a tiny PowerShell call rather than pulling in winreg as a dep.
-    // Output is one font name per line. Best-effort: errors → None.
+    // Output is one registry value name per line, e.g. "Cascadia Code
+    // (TrueType)". Best-effort: errors → None. The command is a fixed
+    // literal — no interpolation of anything user-supplied (Rule #3).
     use std::process::Command;
     let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts' | \
-             Get-Member -MemberType NoteProperty | Where-Object { $_.Name -notmatch '^PS' } | \
-             ForEach-Object { ($_.Name -replace ' \\(TrueType\\)$','') -replace ' \\(OpenType\\)$','' }",
-        ])
+        .args(["-NoProfile", "-NonInteractive", "-Command", ENUM_FONTS_PS])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut families: Vec<String> = text
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    // Strip variant suffixes like "Bold", "Italic" so the picker shows
-    // family names, not every weight.
-    for name in families.iter_mut() {
-        for suffix in [" Bold Italic", " Bold", " Italic", " Light", " Black", " Semibold"] {
-            if let Some(stripped) = name.strip_suffix(suffix) {
-                *name = stripped.to_string();
+    let mut families: Vec<String> = Vec::new();
+    for line in text.lines() {
+        // Strip the format tag the registry appends to the value name.
+        let mut name = line.trim();
+        for tag in [
+            " (TrueType)",
+            " (OpenType)",
+            " (VGA res)",
+            " (All res)",
+            " (8514/a res)",
+        ] {
+            if let Some(stripped) = name.strip_suffix(tag) {
+                name = stripped.trim_end();
+            }
+        }
+        if name.is_empty() {
+            continue;
+        }
+        // Bitmap .fon entries pack several faces into one value name
+        // ("MS Sans Serif 8,10,12 & MS Serif"); split them back apart.
+        for part in name.split('&') {
+            let part = part.trim();
+            if !part.is_empty() {
+                families.push(part.to_string());
             }
         }
     }
+    // Add the bare family for every variant face ("Cascadia Code Regular" →
+    // "Cascadia Code") so the picker can show one row per family. The
+    // suffixed form is kept too: it is what `family_is_installed` matches
+    // against for a family whose regular face isn't separately registered.
+    let stripped_forms: Vec<String> = families
+        .iter()
+        .filter_map(|name| strip_style_suffix(name))
+        .collect();
+    families.extend(stripped_forms);
     Some(families)
+}
+
+/// Drop trailing style/weight words from a face name, yielding the family
+/// ("Segoe UI Semibold" → "Segoe UI"). None when there is nothing to strip,
+/// or when stripping would consume the whole name.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn strip_style_suffix(name: &str) -> Option<String> {
+    let mut base = name.trim_end();
+    // Note: a missing space must BREAK, not return — "Consolas Bold Italic"
+    // strips down to a single word and still has a family to report.
+    while let Some(cut) = base.rfind(' ') {
+        let word = &base[cut + 1..];
+        if !FONT_STYLE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(word)) {
+            break;
+        }
+        base = base[..cut].trim_end();
+    }
+    if base.is_empty() || base.len() == name.trim_end().len() {
+        None
+    } else {
+        Some(base.to_string())
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1746,6 +2004,129 @@ fn insert_at_path(root: &mut Value, path: &str, leaf: Value) -> Result<(), Strin
             .or_insert_with(|| Value::Object(Default::default()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::{
+        extends_family, family_is_installed, list_system_fonts, looks_monospace,
+        strip_style_suffix,
+    };
+
+    fn installed() -> Vec<String> {
+        vec![
+            "Consolas".to_string(),
+            "Courier New".to_string(),
+            "JetBrains Mono ExtraBold".to_string(),
+            "Segoe UI".to_string(),
+        ]
+    }
+
+    #[test]
+    fn exact_match_counts() {
+        assert!(family_is_installed("Consolas", &installed()));
+        assert!(family_is_installed("consolas", &installed()), "case-insensitive");
+    }
+
+    #[test]
+    fn variant_face_satisfies_its_family() {
+        // Only the ExtraBold face is registered, but the family IS present.
+        assert!(family_is_installed("JetBrains Mono", &installed()));
+    }
+
+    #[test]
+    fn missing_family_is_reported_missing() {
+        assert!(!family_is_installed("Fira Code", &installed()));
+        assert!(!family_is_installed("Inter", &installed()));
+    }
+
+    #[test]
+    fn sibling_family_is_not_a_variant() {
+        // "Courier New" is its own family, NOT a face of "Courier" — so
+        // having it installed must not satisfy a request for "Courier".
+        assert!(!family_is_installed("Courier", &installed()));
+        assert!(!extends_family("Courier New", "Courier"));
+        assert!(!extends_family("CourierNew", "Courier"));
+        // Same trap, real cases from the picker's own baseline.
+        assert!(!extends_family("Cascadia Code", "Cascadia"));
+        assert!(!extends_family("Segoe UI Variable", "Segoe UI"));
+        assert!(
+            !extends_family("JetBrainsMono Nerd Font", "JetBrainsMono"),
+            "Nerd Font builds are a separate CSS family and must stay pickable"
+        );
+    }
+
+    #[test]
+    fn style_suffixes_are_variants() {
+        assert!(extends_family("Segoe UI Semibold", "Segoe UI"));
+        assert!(extends_family("Fira Code Retina", "Fira Code"));
+        assert!(extends_family("Consolas Bold Italic", "Consolas"));
+        assert!(extends_family("Consolas bold", "Consolas"), "case-insensitive");
+        assert!(!extends_family("Consolas ", "Consolas"), "whitespace only");
+    }
+
+    #[test]
+    fn css_generics_always_resolve() {
+        for g in ["monospace", "system-ui", "ui-monospace", "sans-serif"] {
+            assert!(
+                family_is_installed(g, &[]),
+                "{g} is a CSS generic and always resolves"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_family_is_not_installed() {
+        assert!(!family_is_installed("", &installed()));
+        assert!(!family_is_installed("   ", &installed()));
+    }
+
+    #[test]
+    fn strips_style_words_down_to_the_family() {
+        assert_eq!(
+            strip_style_suffix("Cascadia Code Regular").as_deref(),
+            Some("Cascadia Code")
+        );
+        assert_eq!(
+            strip_style_suffix("Consolas Bold Italic").as_deref(),
+            Some("Consolas"),
+            "consumes a run of style words"
+        );
+        // Nothing to strip → None, so the caller adds no redundant entry.
+        assert_eq!(strip_style_suffix("Consolas"), None);
+        assert_eq!(strip_style_suffix("Courier New"), None);
+        assert_eq!(strip_style_suffix("Bold"), None, "would consume the whole name");
+    }
+
+    #[test]
+    fn monospace_heuristic_skips_monotype() {
+        // "Monotype Corsiva" is a script face that only matched because
+        // "Monotype" contains "mono".
+        assert!(!looks_monospace("Monotype Corsiva"));
+        assert!(looks_monospace("Cascadia Mono"));
+        assert!(looks_monospace("JetBrainsMono Nerd Font"));
+        assert!(looks_monospace("Fira Code"));
+        assert!(!looks_monospace("Segoe UI"));
+    }
+
+    /// Live check against the real machine: the command must succeed, must
+    /// offer the baseline, and must not claim a family is installed unless
+    /// enumeration actually backs it.
+    #[test]
+    fn list_system_fonts_is_self_consistent() {
+        let f = list_system_fonts().expect("command is infallible by design");
+        assert!(!f.mono.is_empty() && !f.ui.is_empty());
+        // Baseline is always offered so the picker is never empty.
+        assert!(f.mono.iter().any(|e| e.name == "Consolas"));
+        // One row per family — no duplicate names within a list.
+        for list in [&f.ui, &f.mono] {
+            let mut names: Vec<String> = list.iter().map(|e| e.name.to_lowercase()).collect();
+            names.sort();
+            let before = names.len();
+            names.dedup();
+            assert_eq!(before, names.len(), "picker must not list a family twice");
+        }
+    }
 }
 
 #[cfg(test)]

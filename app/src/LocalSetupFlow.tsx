@@ -22,6 +22,7 @@ import type { ProvisioningError, StepProgress, RunHandle } from "./provisioningT
 import type { ToolStatus } from "./bindings/ToolStatus";
 import type { LocalSetupInspect } from "./bindings/LocalSetupInspect";
 import type { LocalSetupResult } from "./bindings/LocalSetupResult";
+import type { WslPreflight } from "./bindings/WslPreflight";
 
 interface Props {
   onCreated: (workspaceId: string) => void;
@@ -65,6 +66,13 @@ export function LocalSetupFlow(p: Props) {
   const [inspecting, setInspecting] = createSignal(true);
   const [inspectErr, setInspectErr] = createSignal<string | null>(null);
   const [inspect, setInspect] = createSignal<LocalSetupInspect | null>(null);
+  // Whether enabling the WSL features will need a UAC prompt, known
+  // before the run instead of discovered by failing halfway through.
+  const [preflight, setPreflight] = createSignal<WslPreflight | null>(null);
+  const [elevationAcked, setElevationAcked] = createSignal(false);
+  const [confirmElevation, setConfirmElevation] = createSignal(false);
+  const [restarting, setRestarting] = createSignal(false);
+  const [restartErr, setRestartErr] = createSignal<string | null>(null);
 
   // Which tool steps the user keeps checked. Seeded from the inspect
   // result (missing → checked).
@@ -111,6 +119,13 @@ export function LocalSetupFlow(p: Props) {
         distro: null,
       });
       setInspect(r);
+      // Read-only; a failure here must not block the wizard, it only
+      // costs us the up-front UAC warning.
+      try {
+        setPreflight(await invoke<WslPreflight>("local_setup_preflight"));
+      } catch {
+        setPreflight(null);
+      }
       // Pre-check every missing tool (that its dependencies allow).
       const pre = new Set<string>();
       for (const row of TOOL_ROWS) {
@@ -164,6 +179,16 @@ export function LocalSetupFlow(p: Props) {
   const startRun = async () => {
     const steps = buildSteps();
     if (steps.length === 0) return;
+    // Installing the WSL platform needs admin. Say so — with the reboot
+    // caveat — before a UAC dialog appears out of nowhere mid-run.
+    if (
+      steps.includes("InstallWsl") &&
+      preflight()?.needs_elevation &&
+      !elevationAcked()
+    ) {
+      setConfirmElevation(true);
+      return;
+    }
     setPlannedSteps(steps);
     setStepStates({});
     setResult(null);
@@ -200,6 +225,9 @@ export function LocalSetupFlow(p: Props) {
     if (s.state === "done") return { cls: "ok", icon: IconCheck };
     if (s.state === "failed") return { cls: "err", icon: IconClose };
     if (s.state === "running") return { cls: "running", icon: null };
+    // Without this the backend's "skipped" fell through to "pending" —
+    // an abandoned WSL chain looked like it simply hadn't started yet.
+    if (s.state === "skipped") return { cls: "skipped", icon: IconClose };
     return { cls: "pending", icon: IconCircle };
   };
 
@@ -303,6 +331,16 @@ export function LocalSetupFlow(p: Props) {
               </label>
               <p class="settings-hint">{t("localSetup.persistence_scope")}</p>
               <Show when={wslGroup()}>
+                {/* Stated up front: without an elevated token the WSL
+                    feature enable cannot happen silently. */}
+                <Show when={preflight()?.needs_elevation}>
+                  <div class="prov-error-card">
+                    <div class="prov-error-title">
+                      {t("localSetup.preflight.admin.title")}
+                    </div>
+                    <p class="prov-error-body">{t("localSetup.preflight.admin.body")}</p>
+                  </div>
+                </Show>
                 <Show when={!r().wsl.wsl_ready || r().wsl.distros.length === 0}>
                   <p class="settings-hint">{t("localSetup.hint.uac")}</p>
                   <label>
@@ -331,16 +369,45 @@ export function LocalSetupFlow(p: Props) {
                 </label>
               </Show>
 
-              <div class="modal-buttons">
-                <button onClick={p.onClose}>{t("common.cancel")}</button>
-                <button
-                  class="primary"
-                  disabled={buildSteps().length === 0}
-                  onClick={() => void startRun()}
-                >
-                  {t("localSetup.btn.install")}
-                </button>
-              </div>
+              {/* The "this needs admin, continue?" gate. Replaces the
+                  action row so the run cannot start behind it. */}
+              <Show
+                when={confirmElevation()}
+                fallback={
+                  <div class="modal-buttons">
+                    <button onClick={p.onClose}>{t("common.cancel")}</button>
+                    <button
+                      class="primary"
+                      disabled={buildSteps().length === 0}
+                      onClick={() => void startRun()}
+                    >
+                      {t("localSetup.btn.install")}
+                    </button>
+                  </div>
+                }
+              >
+                <div class="prov-error-card">
+                  <div class="prov-error-title">
+                    {t("localSetup.preflight.confirm.title")}
+                  </div>
+                  <p class="prov-error-body">{t("localSetup.preflight.confirm.body")}</p>
+                </div>
+                <div class="modal-buttons">
+                  <button onClick={() => setConfirmElevation(false)}>
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    class="primary"
+                    onClick={() => {
+                      setElevationAcked(true);
+                      setConfirmElevation(false);
+                      void startRun();
+                    }}
+                  >
+                    {t("localSetup.preflight.confirm.btn")}
+                  </button>
+                </div>
+              </Show>
             </>
           )}
         </Show>
@@ -372,6 +439,58 @@ export function LocalSetupFlow(p: Props) {
                       {t(`localSetup.step.${stepId}`)}
                     </span>
                   </div>
+                  {/* 3010: the features are staged but dormant. Retrying
+                      is pointless, so this card offers a restart instead. */}
+                  <Show when={s()?.error?.kind === "RebootRequired"}>
+                    {(() => {
+                      const rb = s()!.error as Extract<
+                        ProvisioningError,
+                        { kind: "RebootRequired" }
+                      >;
+                      return (
+                        <div class="prov-error-card">
+                          <div class="prov-error-title">
+                            {t("localSetup.error.reboot_required")}
+                          </div>
+                          <p class="prov-error-body">{rb.details.hint}</p>
+                          <Show when={restartErr()}>
+                            <p class="prov-error-hint">{restartErr()}</p>
+                          </Show>
+                          {/* Rebooting can destroy unsaved work in other
+                              apps, so it takes two explicit clicks and
+                              doing nothing is always a valid answer. */}
+                          <p class="prov-error-hint">
+                            {t("localSetup.hint.restart_later")}
+                          </p>
+                          <div class="modal-buttons">
+                            <Show
+                              when={restarting()}
+                              fallback={
+                                <button onClick={() => setRestarting(true)}>
+                                  {t("localSetup.btn.restart_now")}
+                                </button>
+                              }
+                            >
+                              <button onClick={() => setRestarting(false)}>
+                                {t("common.cancel")}
+                              </button>
+                              <button
+                                class="danger"
+                                onClick={() => {
+                                  setRestartErr(null);
+                                  invoke("restart_windows").catch((e) =>
+                                    setRestartErr(String(e))
+                                  );
+                                }}
+                              >
+                                {t("localSetup.btn.restart_confirm")}
+                              </button>
+                            </Show>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </Show>
                   {/* ElevationRequired gets an instruction card (UAC
                       declined / WSL feature-enable needs a reboot). */}
                   <Show
@@ -434,7 +553,35 @@ export function LocalSetupFlow(p: Props) {
 
       {/* Step 3: done */}
       <Show when={step() === "done"}>
-        <p>{t("localSetup.done.message")}</p>
+        {/* A failed WSL chain skips workspace creation silently; saying
+            "finished" there is what made a broken install look clean. */}
+        <Show
+          when={(result()?.failed_steps.length ?? 0) > 0}
+          fallback={<p>{t("localSetup.done.message")}</p>}
+        >
+          <div class="prov-error-card">
+            <div class="prov-error-title">{t("localSetup.done.failed.title")}</div>
+            <p class="prov-error-body">
+              {t("localSetup.done.failed.body", {
+                steps: result()!
+                  .failed_steps.map((s) => t(`localSetup.step.${s}`))
+                  .join(", "),
+              })}
+            </p>
+            <Show when={result()!.skipped_steps.length > 0}>
+              <p class="prov-error-hint">
+                {t("localSetup.done.failed.skipped", {
+                  steps: result()!
+                    .skipped_steps.map((s) => t(`localSetup.step.${s}`))
+                    .join(", "),
+                })}
+              </p>
+            </Show>
+            <Show when={!result()!.wsl_chain_ok}>
+              <p class="prov-error-hint">{t("localSetup.done.failed.no_workspace")}</p>
+            </Show>
+          </div>
+        </Show>
         <Show when={result()?.workspace_id}>
           <div class="wizard-test-result ok">
             <div class="wizard-test-line">

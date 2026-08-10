@@ -477,6 +477,15 @@ pub(crate) enum ProvisioningError {
         step: String,
         hint: String,
     },
+    /// The step succeeded as far as Windows servicing is concerned
+    /// (ERROR_SUCCESS_REBOOT_REQUIRED / 3010) but the features only come
+    /// alive after a restart. Distinct from ElevationRequired: retrying
+    /// without rebooting cannot possibly work, so the wizard offers a
+    /// restart instead of a retry.
+    RebootRequired {
+        step: String,
+        hint: String,
+    },
     /// Fallback for failures that don't fit the structured cases
     /// (SSH connect, local key generation, etc.).
     Generic(String),
@@ -493,6 +502,9 @@ impl ProvisioningError {
             }
             ProvisioningError::ElevationRequired { step, hint } => {
                 format!("Step '{step}' needs administrator elevation. {hint}")
+            }
+            ProvisioningError::RebootRequired { step, hint } => {
+                format!("Step '{step}' needs a restart to finish. {hint}")
             }
             ProvisioningError::Generic(s) => s.clone(),
         }
