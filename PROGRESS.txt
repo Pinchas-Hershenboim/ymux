@@ -1716,3 +1716,51 @@ REMAINING: Half B (skills registry + per-workspace deploy, model on addons.rs);
   statusLine deploy via apply_to_settings; wire winmux setup to deploy
   winmux-tools/ + point statusLine at compose.js (preserving sabra's entries).
 ------------------------------------------------------------------
+2026-08-10 20:36 UTC — Half B: winmux-tools skills registry (Rust backend only)
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+BACKEND:
+  A app/src-tauri/src/skills.rs        (new module — 4 Tauri commands:
+      skills_list, skill_install, skill_uninstall, skills_installed.
+      Source registry: config_dir()/winmux-tools/skills/<name>/ [missing dir
+      = empty, not an error]. Local install = recursive fs copy into
+      dirs::home_dir()/.claude/skills/<name>/. Remote install = mkdir -p over
+      SSH exec() + per-file sftp_upload() into $HOME/.claude/skills/<name>/,
+      $HOME resolved via addons::remote_home(). Uninstall = rm -rf local dir
+      or remote `rm -rf`. skills_installed lists dir names under the
+      workspace's ~/.claude/skills/ [local: read_dir; remote: `ls -1`].
+      SkillInfo{name,files} derives Serialize + ts_rs::TS, same export
+      pattern as claude_usage::ModelUsage. valid_skill_name() whitelists
+      [A-Za-z0-9._-] and rejects "", ".", ".." before `name` ever reaches a
+      path join or a remote shell string — Rule #3 (name is user-influenced
+      and lands in `mkdir -p`/`rm -rf`). 2 unit tests on the validator
+      covering traversal + shell-metacharacter payloads.)
+  M app/src-tauri/src/addons.rs        (sftp_upload, remote_home: private ->
+      pub(crate) so skills.rs can reuse them; no behavior change)
+  M app/src-tauri/src/lib.rs           (mod skills; + 4 commands registered
+      in invoke_handler next to the addon_*/insights_* block)
+
+Frontend: NOT touched (out of scope for this half — frontend is being
+  written against this exact command contract in parallel).
+
+VERIFIED (real runs, not just compile):
+  - `cargo check --workspace` from app/src-tauri: clean. Only the two
+    pre-existing warnings noted in the task (ts-rs serde-attribute parse
+    warnings on unrelated structs, and the unused `Duration` import in
+    insights_local.rs) — no new warnings or errors from this change.
+  - `cargo test --lib skills::` : 3/3 pass — the 2 validator unit tests plus
+    ts-rs's auto-generated `export_bindings_skillinfo` test, which also
+    confirms app/src/bindings/SkillInfo.ts was written correctly
+    ({ name: string, files: number }).
+  - `cargo test --lib addons::` : 3/3 pass, unchanged — confirms making
+    sftp_upload/remote_home pub(crate) didn't disturb addons.rs.
+NOT VERIFIED LIVE: app.exe was running per task constraints, so no real
+  install/uninstall against a live local or SSH workspace was exercised —
+  compile + unit-test verified only, as scoped by this task.
+
+REMAINING (tracked in the Half A entry above, unchanged): statusLine deploy
+  via apply_to_settings; wire winmux setup to deploy winmux-tools/ + point
+  statusLine at compose.js. Frontend half of the skills registry (Settings UI
+  calling skills_list/skill_install/skill_uninstall/skills_installed) is a
+  separate in-flight task, not part of this change.
+------------------------------------------------------------------

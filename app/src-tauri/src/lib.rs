@@ -27,6 +27,7 @@ mod pty_decode;
 mod remote_bootstrap;
 mod rpc_server;
 mod settings;
+mod skills;
 mod stt;
 mod tray;
 mod updater;
@@ -7270,6 +7271,11 @@ pub fn run() {
             addons::insights_fetch,
             addons::insights_docker_action,
             addons::insights_hygiene_kill,
+            // winmux-tools skills registry: per-workspace skill installer.
+            skills::skills_list,
+            skills::skill_install,
+            skills::skill_uninstall,
+            skills::skills_installed,
             // beta.3-lh-insights: native local Insights commands. The panel
             // primarily goes through `insights_fetch` (which routes local↔SSH
             // internally), but we expose these too for direct callers.

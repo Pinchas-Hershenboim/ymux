@@ -234,7 +234,7 @@ async fn run_builtin(
 
 /// Upload bytes to a remote path via a fresh SFTP channel (atomic-ish:
 /// write to .tmp then mv).
-async fn sftp_upload(
+pub(crate) async fn sftp_upload(
     handle: &SshHandle<SshClient>,
     remote_path: &str,
     bytes: &[u8],
