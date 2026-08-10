@@ -44,8 +44,17 @@ When starting a new session, scan the **Open** section. Don't let threads die si
 ## Release safety
 
 - Never push a half-done release. If a step fails for a real reason, stop and report.
-- `app.exe` running on the user's machine causes `os error 32` during NSIS bundler cleanup — cosmetic; the binary + bundles produced fine.
+- Build through the Tauri CLI, never plain `cargo build --release` — see Rule #13.
+- `app.exe` running on the user's machine causes `os error 32` during NSIS bundler cleanup — cosmetic; the binary + bundles produced fine. A running `app.exe` also blocks the link step outright (`failed to remove file … Access is denied`); ask Yossi to close it rather than retrying.
 - v0.2.3+: updater uses native `ureq` + `rustls` (no more PowerShell).
+
+## CI (GitHub Actions)
+
+- `ci-windows.yml` — cargo test + tsc + vite + go test on every push/PR to `main` (~5 min warm).
+- `build-windows.yml` — MSI/NSIS/exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded. Publishing stays manual (`docs/RELEASING.md`).
+- `build-macos-intel.yml` — the collaborator's macOS build, on `workflow_dispatch` or push to `macos-build`.
+- Steps that shell out to Windows PowerShell need `shell: cmd`. The default `run:` shell is pwsh, which rewrites `PSModulePath` for its children, so the 5.1 instance `build:linux-cli` spawns loses `Get-FileHash`.
+- `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `winmux-cli.exe` the Tauri build script requires.
 
 ## Communication
 
@@ -67,3 +76,5 @@ When starting a new session, scan the **Open** section. Don't let threads die si
 10. **Don't push a half-done release.** If any step in RELEASING.md fails for a real reason (not the `os error 32` NSIS cleanup false-alarm), stop and report.
 11. **Don't touch `backup-phase23-*/` or repo-root `.bat` / `.ps1` helper scripts.** Don't commit `release_notes.md`.
 12. **`remote-manifest.json` timestamp churn is cosmetic.** Discard unless the embedded SHA actually changed.
+13. **Never build the app with plain `cargo build --release`.** It links cleanly and produces a binary that loads `devUrl` (`localhost:1420`) at startup — every window is an `ERR_CONNECTION_REFUSED` page on any machine without a dev server, and the Rust log gives no hint (boot stops silently after `rpc server spawned`). `tauri-build` only embeds `frontendDist` when the build runs through the Tauri CLI. Use `npm run tauri build -- --no-bundle` from `app/`, or `app/scripts/build-release.ps1` for a real cut. To check a binary: the current `app/dist/assets/index-<hash>.js` filename must appear inside `app.exe` (`localhost:1420` appears in both kinds and proves nothing). Details in `docs/CONTRIBUTING.md` → "Building a runnable exe".
+14. **A build that compiles is not a build that runs.** Launch it and confirm the UI comes up before saying "built" or "verified" — this is Rule #13's parent, and the reason that one shipped twice.
