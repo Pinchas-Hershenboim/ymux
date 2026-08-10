@@ -73,6 +73,19 @@ jobs:
         shell: cmd
         run: powershell -NoProfile -Command "if (-not (Get-Command Get-FileHash -EA SilentlyContinue)) { Write-Error 'Get-FileHash unavailable in Windows PowerShell — PSModulePath is wrong, build-linux-cli.ps1 will fail'; exit 1 }; 'Get-FileHash OK'"
 
+      # TEMPORARY: the job-level PSModulePath fixes a directly-spawned
+      # powershell (the step above passes) but NOT the one npm spawns, so
+      # the environment differs somewhere between them. Print both before
+      # guessing again.
+      - name: Diagnose the PowerShell env npm actually provides
+        working-directory: app
+        shell: cmd
+        run: |
+          echo --- PSModulePath as the shell sees it ---
+          echo %PSModulePath%
+          echo --- PSModulePath as npm passes it to scripts ---
+          npm run env | findstr /I PSModulePath
+
       - name: Stage CLI resources
         working-directory: app
         run: npm run build:linux-cli
