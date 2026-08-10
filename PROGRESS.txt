@@ -729,3 +729,21 @@ NOTES: dmg built with hdiutil (tauri bundle_dmg.sh needs Finder, fails headless)
   wizard is WSL-based, no mac-native winmux-cli/mcp bundled. macos-build branch
   kept for CI trigger (workflow runs on push to it + workflow_dispatch).
 ==================================================================
+[2026-08-10] macOS: "UI stall 1000ms" (perceived as connection dropping every second)
+TASK: Yossi reported the mac build "disconnects every second". debug.log showed a
+  clean tunnel/RPC path (handshake OK, bridge done Ok(46)/Ok(107), no ssh-disconnect,
+  no bridge error) plus repeated "[UI:APP] UI stall: ~1000ms (expected ~100ms)".
+  The Phase 48-D 100ms heartbeat firing at exactly 1Hz = macOS App Nap / occluded-
+  window timer coalescing throttling the whole WKWebView JS loop. Backend was fine;
+  the UI was frozen at 1fps.
+FILES:
+  A app/src-tauri/Info.plist (NSAppSleepDisabled=true; Tauri merges it on mac builds)
+  M app/src-tauri/crates/winmux-core/src/lib.rs (write_line: single write_all instead
+    of writeln! — write_fmt emitted body and "\n" as separate writes, so concurrent
+    tunnel/rpc tasks interleaved mid-line under O_APPEND; the pasted log was garbled)
+RESULT: untested — needs a live mac run to confirm the UI stall warnings stop.
+NOTES: if 1Hz persists with the plist in place, it's WebKit page-occlusion throttling
+  rather than App Nap; plan B is disabling NSApplication _windowOcclusionDetectionEnabled
+  (private API) at startup. Verify by checking whether stalls only appear while the
+  winmux window is covered/minimized.
+==================================================================

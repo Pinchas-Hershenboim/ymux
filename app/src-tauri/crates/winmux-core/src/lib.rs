@@ -149,7 +149,12 @@ fn write_line(line: &str) {
             .open(&p)
             .and_then(|mut f| {
                 use std::io::Write as _;
-                writeln!(f, "{line}")
+                // One write syscall — `writeln!` goes through `write_fmt`, which
+                // emits the body and the "\n" as SEPARATE writes. With O_APPEND
+                // and concurrent tasks (tunnel bridge + rpc handlers) that
+                // interleaves mid-line. A single `write_all` under O_APPEND is
+                // atomic on both APFS and NTFS for line-sized buffers.
+                f.write_all(format!("{line}\n").as_bytes())
             });
     }
 }
