@@ -1632,3 +1632,43 @@ NOT A CODE BUG, worth recording: the same run also failed
 
 cargo test 266/0. The live proof above is the real verification — this
 interaction cannot be unit-tested.
+
+[2026-08-10] winmux-tools Half A — modular statuslines + session Ticker (issue #4)
+==================================================================
+TASK: GitHub issue #4 (Dina) — "ETA per Claude session" so she can decide
+  whether to go do dishes or stay. Yossi widened it: build winmux-tools/,
+  a modular home split into skills/ + statuslines/, decomposing the sabra
+  statusline monolith so components install/toggle independently.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+HALF A (this commit) — statuslines, pure JS, no winmux build needed:
+  A winmux-tools/statuslines/compose.js        (single statusLine command;
+      runs enabled modules from ./config, joins output)
+  A winmux-tools/statuslines/modules/model-dir.js   (model + cwd)
+  A winmux-tools/statuslines/modules/ctx-meter.js   (ctx bar; extracted verbatim)
+  A winmux-tools/statuslines/modules/sabra-badge.js (🌵 badge; extracted verbatim)
+  A winmux-tools/statuslines/modules/turn-ticker.js (⏱ elapsed + rolling avg)
+  A winmux-tools/statuslines/hooks/turn-state.js    (start/end/session-end;
+      per-session state at ~/.claude/winmux-tools/turn-state/<sid>.json)
+  A winmux-tools/statuslines/config
+  A winmux-tools/README.md
+
+DESIGN: turn boundaries from UserPromptSubmit(start)+Stop(end) — fires in
+  EVERY permission mode, unlike pre-tool-use which winmux-cli short-circuits
+  in acceptEdits/bypass (cli/src/main.rs:2153-2177). total_duration_ms is
+  whole-session incl. idle, so it can't express "this turn" — hence the
+  state file. Turns <2s (text-only) excluded from the average.
+
+VERIFIED (node, real runs):
+  - Composer parity: ctx-meter+model-dir+sabra-badge output is BYTE-IDENTICAL
+    to the original ~/.claude/sabra/statusline.js on the same payload.
+  - Ticker lifecycle: ⏱ counts mid-turn; avg appears after a completed turn;
+    a <2s turn does NOT move the average; session-end clears state.
+
+REMAINING (per approved plan C:\Users\...\plans\precious-sparking-iverson.md):
+  - Half A chrome ticker: winmux backend UserPromptSubmit hook + per-pane
+    agent_runs state + pane:agent-run event; frontend ticking label.
+  - Half B: skills registry + per-workspace deploy (model on addons.rs).
+  - statusLine deploy via apply_to_settings merge-writer (must preserve the
+    user's manual sabra statusLine/UserPromptSubmit entries).
+------------------------------------------------------------------
