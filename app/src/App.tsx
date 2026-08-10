@@ -2281,10 +2281,19 @@ function App() {
         const now = performance.now();
         const gap = now - lastTick;
         lastTick = now;
-        if (gap > STALL_THRESHOLD_MS) {
+        // macOS: WebKit suspends a fully-occluded page's timers to 1Hz, so a
+        // hidden window reports a ~1000ms "stall" every second — throttling,
+        // not jank, and it buried the real signal under ~60 warns/minute.
+        // Only measure while the page is actually visible.
+        if (gap > STALL_THRESHOLD_MS && !document.hidden) {
           log.warn(`UI stall: ${Math.round(gap)}ms (expected ~${HEARTBEAT_MS}ms)`);
         }
       }, HEARTBEAT_MS);
+      // Re-baseline on show, else the first visible tick reports the whole
+      // hidden stretch as one giant stall.
+      document.addEventListener("visibilitychange", () => {
+        lastTick = performance.now();
+      });
       try {
         const obs = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
