@@ -1056,6 +1056,17 @@ body {
   text-overflow: ellipsis;
 }
 
+/* issue #4: session Ticker label, pinned to the right of the pane header.
+   tabular-nums keeps the M:SS from jittering as digits change. */
+.pane-agent-run {
+  margin-left: auto;
+  padding: 0 2px;
+  font-size: var(--w-fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--w-accent, var(--w-text-dim));
+  white-space: nowrap;
+}
+
 .pane-title {
   color: var(--w-text);
   font-family: var(--w-font-ui);

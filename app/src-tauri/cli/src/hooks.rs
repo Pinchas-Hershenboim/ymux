@@ -88,7 +88,7 @@ pub struct HookEvent {
 /// `source=bundled` AND as the version recorded when no fetched spec
 /// was applied. Bump whenever you ship a new hook in a release with a
 /// matching `hooks/claude-code.json` change.
-const BUNDLED_CLAUDE_VERSION: &str = "1.2.0";
+const BUNDLED_CLAUDE_VERSION: &str = "1.3.0";
 
 /// The bundled fallback spec for Claude Code. Mirrors what
 /// `hooks/claude-code.json` carries at the same `winmux_hooks_version`
@@ -110,9 +110,14 @@ fn bundled_claude_spec() -> HookSpec {
     // ("your turn") and SessionEnd ("session closed"). Any stale settings.json
     // that still calls `claude-hook notification|session-start` is silent-acked
     // by the CLI, so dropping them here is safe on already-set-up machines.
+    // UserPromptSubmit (v1.3.0, issue #4): turn-start signal for the
+    // winmux-tools chrome Ticker. Fires in every permission mode (unlike
+    // pre-tool-use, which the CLI short-circuits in acceptEdits/bypass).
+    // The desktop keeps it off the feed — it only stamps per-pane turn timing.
     for (ev, sub) in [
         ("SessionEnd", "session-end"),
         ("Stop", "stop"),
+        ("UserPromptSubmit", "user-prompt-submit"),
     ] {
         events.insert(
             ev.into(),
