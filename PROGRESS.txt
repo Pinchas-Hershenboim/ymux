@@ -1478,3 +1478,46 @@ VERIFIED (not just YAML-valid):
 
 NOT DONE: neither workflow has run on GitHub yet — nothing is pushed.
   First real run is the actual proof.
+
+--- 2026-08-10 — both Windows workflows verified green on GitHub ---
+
+ci-windows      run 31378991088  success  10m50s
+build-windows   run 31379824868  success  15m54s
+  artifacts: winmux_0.4.5_x64_en-US.msi (21MB, 8b3f10b8…),
+             winmux_0.4.5_x64-setup.exe (15MB, 22c3c168…),
+             app.exe (19MB, cf4dbe1e…)
+  guard verdict: "OK: production build — 'index-zVEv1mLi.js' is embedded"
+  — i.e. the check that would have caught yesterday's dev-mode binary
+  actually runs and passes on a real build.
+
+THREE FAILED RUNS BEFORE GREEN, and the middle one is the lesson.
+
+Symptom: build-linux-cli.ps1 died at "Get-FileHash : The term is not
+recognized" — a built-in cmdlet — one full minute INTO the musl
+cross-build, which had already succeeded.
+
+First fix was wrong. I assumed the runner's PSModulePath omitted the
+Windows PowerShell 5.1 module dirs and set it at job level. The run
+still failed — but the cheap precondition step I had added alongside it
+PASSED, which proved the cmdlet was reachable from a directly-spawned
+powershell and the problem lay elsewhere. Instead of guessing a third
+time I printed PSModulePath from both paths: identical, and correct.
+
+That made the real cause visible in a line I had been reading past:
+  shell: C:\Program Files\PowerShell\7\pwsh.EXE
+The default shell for `run:` on Windows runners is pwsh, and pwsh
+rewrites PSModulePath for its children to its own module dirs. npm
+inherits that and hands it to the Windows PowerShell 5.1 that
+build:linux-cli spawns, which can then no longer autoload
+Microsoft.PowerShell.Utility.
+
+Fix: `shell: cmd` on the steps that shell out to Windows PowerShell —
+in ci-windows.yml directly, and in build-windows.yml where the same 5.1
+invocation hides four links down (build-release.ps1 -> npm run tauri
+build -> beforeBuildCommand -> build:linux-cli). app/scripts/*.ps1 were
+NOT touched; they are correct and work locally. The PSModulePath env is
+kept only to make the value explicit, and both files' comments now name
+the real cause rather than the guess.
+
+Generalisable: a precondition step that fails in seconds is worth its
+line count purely because a passing one narrows the search.
