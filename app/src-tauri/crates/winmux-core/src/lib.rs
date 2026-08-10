@@ -696,12 +696,26 @@ pub type PaneSessionMap = Arc<Mutex<HashMap<String, String>>>;
 /// winmux-core so both winmux-tunnel (bridge_to_pipe) and the future
 /// winmux-rpc (server bind) can reach it without depending on each
 /// other.
+#[cfg(windows)]
 pub fn pipe_name() -> String {
     let user = std::env::var("USERNAME")
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| whoami::username());
     format!(r"\\.\pipe\winmux-{}", user)
+}
+
+/// Unix equivalent: a per-user Unix domain socket. `temp_dir()` honors
+/// TMPDIR, which on macOS is a per-user private directory — so the
+/// socket gets the same user-isolation the per-user pipe name gives
+/// on Windows.
+#[cfg(not(windows))]
+pub fn pipe_name() -> String {
+    let user = whoami::username();
+    std::env::temp_dir()
+        .join(format!("winmux-{user}.sock"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 // ─── CoreState ───────────────────────────────────────────────────────
@@ -1042,6 +1056,7 @@ mod tests {
 
     // ── pipe_name ──────────────────────────────────────────────────
 
+    #[cfg(windows)]
     #[test]
     fn pipe_name_prefixes_correctly() {
         let name = pipe_name();

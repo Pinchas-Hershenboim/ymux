@@ -1393,3 +1393,24 @@ DOCS: added a "Building a runnable exe" section at the top of
 UNAFFECTED: the merges, the 266 tests and the wsl --install capture fix
   are all source-level and were never in question. Only my packaging of
   the binary was wrong.
+
+==================================================================
+[2026-08-09 11:45 IDT] session=macos-intel-port
+TASK: macOS Intel (x86_64, macOS 13+) build — IPC port + CI, merged to main
+FILES:
+  A .github/workflows/build-macos-intel.yml
+  A app/src-tauri/tauri.macos.conf.json
+  M app/src-tauri/crates/winmux-core/src/lib.rs (pipe_name → unix socket on non-win)
+  M app/src-tauri/crates/winmux-tunnel/src/lib.rs (UnixStream connect)
+  M app/src-tauri/crates/winmux-ssh/src/lib.rs (agent auth via SSH_AUTH_SOCK)
+  M app/src-tauri/src/rpc_server.rs (UnixListener accept loop; handle_client generic)
+  M app/package.json (build:frontend split so mac skips linux-cli ps1)
+RESULT: compiles-untested (CI run 31305655951 green on macos-15-intel; dmg+app
+  artifacts produced and delivered to Yossi; NOT yet run live on a real Mac)
+NOTES: dmg built with hdiutil (tauri bundle_dmg.sh needs Finder, fails headless).
+  .app tarred before upload-artifact (zip strips symlinks). Unsigned/un-notarized
+  — Gatekeeper needs right-click→Open. Windows paths cfg-gated, msvc cargo check
+  clean on split crates. Known mac gaps: updater still MSI-only, local-workspace
+  wizard is WSL-based, no mac-native winmux-cli/mcp bundled. macos-build branch
+  kept for CI trigger (workflow runs on push to it + workflow_dispatch).
+==================================================================

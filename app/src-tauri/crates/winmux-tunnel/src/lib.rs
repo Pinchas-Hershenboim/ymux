@@ -151,8 +151,10 @@ where
     // log spam. Per-attempt waits are silent (tracing::debug only);
     // a genuine give-up surfaces via spawn_bridge's dlog.
     let pipe_name = pipe_name();
+    #[cfg(windows)]
+    let pipe = {
     let mut backoff_ms = 25u64;
-    let pipe = loop {
+    loop {
         match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
             Ok(c) => break c,
             Err(e) if e.raw_os_error() == Some(231) && backoff_ms <= 800 => {
@@ -165,7 +167,15 @@ where
             }
             Err(e) => return Err(format!("open pipe {}: {}", pipe_name, e)),
         }
+    }
     };
+    // Unix: the rpc_server listens on a Unix domain socket; the kernel
+    // queues concurrent connects in the listener backlog, so no
+    // busy-retry loop is needed.
+    #[cfg(not(windows))]
+    let pipe = tokio::net::UnixStream::connect(&pipe_name)
+        .await
+        .map_err(|e| format!("open socket {}: {}", pipe_name, e))?;
 
     log_debug("TUNNEL", "tunnel: bridging channel <-> pipe");
     bridge_copy(bs, pipe).await;

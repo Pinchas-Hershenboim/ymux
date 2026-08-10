@@ -89,6 +89,7 @@ pub async fn try_agent_auth(
 ) -> Option<bool> {
     let mut any_agent_seen = false;
 
+    #[cfg(windows)]
     for (label, pipe_path) in [
         ("openssh-ssh-agent", r"\\.\pipe\openssh-ssh-agent"),
         ("pageant", r"\\.\pipe\pageant"),
@@ -142,6 +143,83 @@ pub async fn try_agent_auth(
         };
         if identities.is_empty() {
             continue;
+        }
+        any_agent_seen = true;
+        for id in identities {
+            log_debug("SSH", &format!("ssh.auth: agent {label} attempting authenticate_publickey_with"));
+            match handle.authenticate_publickey_with(user, id, &mut agent).await {
+                Ok(true) => {
+                    log_debug("SSH", &format!("ssh.auth: agent {label} authenticated OK"));
+                    return Some(true);
+                }
+                Ok(false) => {
+                    log_debug("SSH", &format!("ssh.auth: agent {label} key not accepted by server"));
+                    continue;
+                }
+                Err(e) => {
+                    log_warn("SSH", &format!("ssh.auth: agent {label} auth error: {e}"));
+                    continue;
+                }
+            }
+        }
+    }
+
+    // Unix/macOS: the one agent transport is the Unix socket in
+    // SSH_AUTH_SOCK (covers ssh-agent, gpg-agent, 1Password, …).
+    // Same 2s caps as the Windows probes.
+    #[cfg(not(windows))]
+    'unix_agent: {
+        let label = "ssh-agent (SSH_AUTH_SOCK)";
+        if std::env::var("SSH_AUTH_SOCK").map(|v| v.is_empty()).unwrap_or(true) {
+            log_debug("SSH", "ssh.auth: SSH_AUTH_SOCK not set — no agent");
+            break 'unix_agent;
+        }
+        log_debug("SSH", &format!("ssh.auth: agent probe {label}"));
+        let connect_fut = russh_keys::agent::client::AgentClient::connect_env();
+        let mut agent = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connect_fut,
+        )
+        .await
+        {
+            Ok(Ok(a)) => {
+                log_debug("SSH", &format!("ssh.auth: agent probe {label} CONNECTED"));
+                a
+            }
+            Ok(Err(e)) => {
+                log_debug("SSH", &format!("ssh.auth: agent probe {label} not reachable: {e}"));
+                break 'unix_agent;
+            }
+            Err(_) => {
+                log_warn("SSH", &format!(
+                    "ssh.auth: agent probe {label} TIMED OUT after 2s — skipping"
+                ));
+                break 'unix_agent;
+            }
+        };
+        let identities = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.request_identities(),
+        )
+        .await
+        {
+            Ok(Ok(ids)) => {
+                log_debug("SSH", &format!("ssh.auth: agent {label} offered {} identit(y/ies)", ids.len()));
+                ids
+            }
+            Ok(Err(e)) => {
+                log_warn("SSH", &format!("ssh.auth: agent {label} request_identities: {e}"));
+                break 'unix_agent;
+            }
+            Err(_) => {
+                log_warn("SSH", &format!(
+                    "ssh.auth: agent {label} request_identities TIMED OUT after 2s — skipping"
+                ));
+                break 'unix_agent;
+            }
+        };
+        if identities.is_empty() {
+            break 'unix_agent;
         }
         any_agent_seen = true;
         for id in identities {

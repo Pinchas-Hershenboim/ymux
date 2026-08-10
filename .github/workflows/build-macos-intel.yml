@@ -1,0 +1,64 @@
+# macOS Intel (x86_64) build — targets macOS 13 Ventura and up.
+# Runner: macos-15-intel (GitHub's last x86_64 image, available until Aug 2027).
+# The binary's deployment target is 13.0 via tauri.macos.conf.json
+# (minimumSystemVersion) + MACOSX_DEPLOYMENT_TARGET, so building on the
+# macOS 15 image still produces a Ventura-compatible app.
+name: build-macos-intel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [macos-build]
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Install frontend deps
+        working-directory: app
+        run: npm ci
+
+      - name: Build (.app bundle)
+        working-directory: app
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: npm run tauri build -- --target x86_64-apple-darwin
+
+      # Tauri's bundle_dmg.sh drives Finder via AppleScript, which fails on
+      # headless runners — build the dmg directly with hdiutil instead.
+      - name: Create dmg
+        working-directory: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
+        run: |
+          mkdir dmg-root
+          cp -R winmux.app dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname winmux -srcfolder dmg-root -ov -format UDZO winmux_x64_macos13.dmg
+          shasum -a 256 winmux_x64_macos13.dmg
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmux-macos-intel-dmg
+          path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/winmux_x64_macos13.dmg
+          if-no-files-found: error
+
+      # tar first — upload-artifact's zip does not preserve the symlinks and
+      # exec bits inside a .app bundle.
+      - name: Upload .app bundle (tarred)
+        working-directory: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
+        run: tar -czf winmux-app.tar.gz winmux.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winmux-macos-intel-app
+          path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/winmux-app.tar.gz
+          if-no-files-found: error
