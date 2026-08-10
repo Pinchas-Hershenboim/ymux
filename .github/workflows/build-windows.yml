@@ -26,6 +26,13 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      # Same reason as ci-windows.yml: the runner's PSModulePath omits the
+      # Windows PowerShell 5.1 module dirs, so the 5.1 instance that
+      # `npm run build:linux-cli` spawns (via build-release.ps1 ->
+      # npm run tauri build -> beforeBuildCommand) cannot autoload
+      # Microsoft.PowerShell.Utility and Get-FileHash is undefined.
+      PSModulePath: C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules
     steps:
       - uses: actions/checkout@v4
 

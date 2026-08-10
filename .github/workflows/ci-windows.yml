@@ -27,6 +27,16 @@ jobs:
   test:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      # GitHub's Windows runners leave PSModulePath pointing only at the
+      # PowerShell 7 module dirs. `npm run build:linux-cli` spawns Windows
+      # PowerShell 5.1, which then cannot autoload
+      # Microsoft.PowerShell.Utility — so Get-FileHash is undefined and
+      # build-linux-cli.ps1 dies at its first hash, AFTER a full musl
+      # cross-build has already succeeded. Restoring the 5.1 module path
+      # fixes it here without touching the script, which works fine
+      # locally.
+      PSModulePath: C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +66,13 @@ jobs:
       # Stages winmux-cli.exe + winmux-linux-x64 + remote-manifest.json.
       # The musl cross-build links with rust-lld (see src-tauri/.cargo/
       # config.toml), so no external linker is needed on a Windows runner.
+      # Fail loudly and early if the PSModulePath workaround above ever
+      # stops being enough — otherwise the symptom is a missing cmdlet
+      # four minutes into a cross-build.
+      - name: Check Windows PowerShell can autoload its own cmdlets
+        shell: cmd
+        run: powershell -NoProfile -Command "if (-not (Get-Command Get-FileHash -EA SilentlyContinue)) { Write-Error 'Get-FileHash unavailable in Windows PowerShell — PSModulePath is wrong, build-linux-cli.ps1 will fail'; exit 1 }; 'Get-FileHash OK'"
+
       - name: Stage CLI resources
         working-directory: app
         run: npm run build:linux-cli
