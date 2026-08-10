@@ -1521,3 +1521,56 @@ the real cause rather than the guess.
 
 Generalisable: a precondition step that fails in seconds is worth its
 line count purely because a passing one narrows the search.
+
+=== 2026-08-10 — CreateWslUser reported success without creating a user ===
+
+TRIGGER: Yossi re-ran the WSL wizard on the repaired WSL. InstallWsl was
+  correctly skipped (preflight: platform_ready=true distro_present=true),
+  the user/env/tmux steps all reported success, and it failed at
+  DeployWinmuxCliToWsl:
+    finalize failed: SHA MISMATCH got
+    WSL (414 - Relay) ERROR: CreateProcessParseCommon:1014: getpwnam() failed 0
+    sha256sum: "/root"/.winmux/bin/...winmux-upload.tmp: No such file
+  Note the empty "got" — the hash was never computed. (The message
+  reaching the log at all is yesterday's fd1f537 working.)
+
+THE FAILING STEP WAS NOT THE BROKEN ONE. Probing the distro:
+    /etc/wsl.conf ->  [user]\ndefault=        <- empty
+    uid>=1000 users -> none
+    /home/          -> empty
+    /root/.winmux/bin/ -> exists, empty
+  So `wsl.exe` was calling getpwnam("") on every invocation, failing, and
+  silently falling back to root. CreateWslUser had reported success while
+  creating nothing.
+
+TWO DEFECTS, both "present != correct", in the CreateWslUser script:
+  A. `grep -q '^\[user\]' /etc/wsl.conf` treated the mere presence of the
+     section header as proof a default user was set. A section with an
+     empty `default=` — exactly the state on this machine — took the
+     "already set" branch and left it empty forever.
+  B. `else useradd ... && (...) && echo CREATED; fi` — when useradd
+     failed, the && chain stopped, but the NEXT statement (the wsl.conf
+     `if`) ran and ITS exit status became the script's. A failed useradd
+     was swallowed whole. Same class as 6753759 (install reporting
+     success on failure), different step.
+
+FIX: `set -e`, plus parse the actual `default=` VALUE rather than the
+  section header, plus an explicit verify before returning
+  (`getent passwd "$U"` and a non-empty final default, else exit 1).
+  An existing non-empty default is respected rather than overwritten.
+
+VERIFIED LIVE, not just compiled: ran the exact generated script against
+  Yossi's broken distro as root ->
+    CREATED mlastudent371 / wsl.conf default set / VERIFIED
+  then `wsl --terminate Ubuntu` (what the step does) and re-probed:
+    uid=1000(mlastudent371) groups=...,27(sudo)  HOME=/home/mlastudent371
+    getpwnam errors: gone
+    /etc/wsl.conf: [user] default=mlastudent371
+  His WSL is repaired in place — the wizard can be re-run as-is.
+
+SCANNED for the same swallow pattern in the other generated scripts:
+  only this one had it. fin_script (local_setup.rs:1026) looks similar but
+  is correct — its `if` is the last statement and the else branch exits 1
+  explicitly, so the status does propagate.
+
+cargo test 266/0.

@@ -1314,12 +1314,45 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                         })
                         .as_str(),
                 );
+                // Two things this script must NOT do, both learned the hard
+                // way on 2026-08-10 (see PROGRESS):
+                //
+                // 1. Treat the presence of a `[user]` section as proof that
+                //    a default user is set. A section with an empty
+                //    `default=` is exactly the broken state we have to
+                //    repair — WSL then calls getpwnam("") on every single
+                //    invocation, fails, and silently falls back to root, so
+                //    every later step runs with HOME=/root.
+                // 2. Let a failed `useradd` pass. The old chain ended with a
+                //    second `if`, whose exit status became the script's, so
+                //    a failure to create the user was swallowed and the step
+                //    reported success — the same class of bug 6753759 fixed
+                //    for the install itself.
+                //
+                // `set -e` plus an explicit verify at the end means the step
+                // fails loudly if the user or the default is not actually in
+                // place when it returns.
                 let script = format!(
-                    "U={u}; \
+                    "set -e; U={u}; \
                      if getent passwd 1000 >/dev/null 2>&1; then U=\"$(id -nu 1000)\"; echo \"EXISTS $U\"; \
-                     else useradd -m -u 1000 -s /bin/bash \"$U\" && (usermod -aG sudo \"$U\" 2>/dev/null || usermod -aG wheel \"$U\" 2>/dev/null || true) && echo \"CREATED $U\"; fi; \
-                     if grep -q '^\\[user\\]' /etc/wsl.conf 2>/dev/null; then echo 'wsl.conf [user] already set'; \
-                     else printf '\\n[user]\\ndefault=%s\\n' \"$U\" >> /etc/wsl.conf; echo 'wsl.conf updated'; fi",
+                     else useradd -m -u 1000 -s /bin/bash \"$U\"; \
+                          (usermod -aG sudo \"$U\" 2>/dev/null || usermod -aG wheel \"$U\" 2>/dev/null || true); \
+                          echo \"CREATED $U\"; fi; \
+                     [ -n \"$U\" ] || {{ echo 'could not determine the linux username'; exit 1; }}; \
+                     touch /etc/wsl.conf; \
+                     CUR=\"$(sed -n 's/^[[:space:]]*default[[:space:]]*=[[:space:]]*//p' /etc/wsl.conf | tail -n1)\"; \
+                     if [ \"$CUR\" = \"$U\" ]; then echo \"wsl.conf default already $U\"; \
+                     elif [ -n \"$CUR\" ]; then echo \"wsl.conf default is '$CUR', leaving it\"; U=\"$CUR\"; \
+                     else \
+                       sed -i '/^[[:space:]]*default[[:space:]]*=/d' /etc/wsl.conf; \
+                       if grep -q '^[[:space:]]*\\[user\\]' /etc/wsl.conf; then \
+                         sed -i \"0,/^[[:space:]]*\\\\[user\\\\]/s//[user]\\\\ndefault=$U/\" /etc/wsl.conf; \
+                       else printf '\\n[user]\\ndefault=%s\\n' \"$U\" >> /etc/wsl.conf; fi; \
+                       echo \"wsl.conf default set to $U\"; fi; \
+                     getent passwd \"$U\" >/dev/null || {{ echo \"user $U does not exist after setup\"; exit 1; }}; \
+                     FIN=\"$(sed -n 's/^[[:space:]]*default[[:space:]]*=[[:space:]]*//p' /etc/wsl.conf | tail -n1)\"; \
+                     [ -n \"$FIN\" ] || {{ echo 'wsl.conf still has no default user'; exit 1; }}; \
+                     echo \"VERIFIED user=$U default=$FIN\"",
                     u = shell_quote(&user)
                 );
                 match tokio::time::timeout(
