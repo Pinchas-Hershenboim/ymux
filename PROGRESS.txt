@@ -1764,3 +1764,25 @@ REMAINING (tracked in the Half A entry above, unchanged): statusLine deploy
   calling skills_list/skill_install/skill_uninstall/skills_installed) is a
   separate in-flight task, not part of this change.
 ------------------------------------------------------------------
+
+[2026-08-10] winmux-tools Half B — skills registry UI (frontend)
+==================================================================
+TASK: frontend for the skills registry (backend landed in bc505d2 via
+  implementer-tester). Settings panel to install/uninstall skills per-workspace.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+  A app/src/WinmuxToolsTab.tsx   (skills list + per-workspace install/uninstall,
+      modeled on AddonsTab; drives skills_list/skill_install/skill_uninstall/
+      skills_installed)
+  M app/src/SettingsModal.tsx    (import + render WinmuxToolsTab next to AddonsTab)
+
+VERIFIED: tsc --noEmit clean (caught + fixed a Set<unknown> inference bug).
+  app.exe now CLOSED (Yossi closed it) → running cargo build (dev link) +
+  vite build to confirm the whole thing links and bundles.
+
+REMAINING: B3 statusLine deploy (apply_to_settings merge-writer to point each
+  env's statusLine at compose.js + wire turn-state hooks, preserving sabra's
+  entries) — deferred/follow-up. Live end-to-end (ticker turn-timing with a
+  real Claude session; skill install onto a workspace) best verified in the
+  running app.
+------------------------------------------------------------------
