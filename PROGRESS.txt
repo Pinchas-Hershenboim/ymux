@@ -1632,3 +1632,44 @@ NOT A CODE BUG, worth recording: the same run also failed
 
 cargo test 266/0. The live proof above is the real verification — this
 interaction cannot be unit-tested.
+
+=== 2026-08-10 — reset-local-setup.ps1 (test helper) ===
+
+Yossi: "Smart Install shows everything as already installed - can we have
+a script that resets the machine so the steps actually run again?"
+
+Added app/scripts/reset-local-setup.ps1. Two levels:
+  Soft (default) - removes only winmux's own artifacts: the winmux hooks
+    block in ~/.claude/settings.json + ~/.claude/hooks.json on Windows,
+    and ~/.winmux plus the distro's winmux hooks block inside WSL. Leaves
+    the distro, the linux user, tmux and /etc/wsl.conf alone.
+  Full - Soft plus `wsl --unregister`, the only way to retest InstallWsl
+    and CreateWslUser. Deletes the whole linux filesystem, so it asks the
+    user to type the distro name back before doing it.
+Dry run unless -Apply. settings.json is backed up before any edit.
+NEVER touches %APPDATA%\winmux\workspaces.json / settings.json.
+
+Two things the writing of it taught, both recorded in the file:
+  - Windows PowerShell 5.1 reads a .ps1 as ANSI when the file has no BOM,
+    so the em-dashes in the first draft corrupted and broke the parser
+    with errors pointing at unrelated lines. The script is ASCII-only now
+    and asserts 0 bytes >127.
+  - A shell heredoc nested inside a PowerShell here-string does not
+    survive PowerShell's parser; the WSL-side JSON edit is a python3 -c
+    one-liner instead.
+  It pipes scripts to `sh -ls` on stdin for the same reason wsl_exec now
+  does - argv loses shell variables.
+
+DRY RUN ON THE CURRENT MACHINE was itself informative:
+    no winmux hooks in C:\Users\...\.claude\settings.json  <- InstallLocalHooks never succeeded
+    [plan] delete C:\Users\...\.claude\hooks.json          <- a leftover
+    WSL state: NONE | user=mlastudent371 home=/home/mlastudent371
+  i.e. ~/.winmux does not exist (the deploy steps have never completed),
+  and the user/HOME fix from earlier today is holding.
+
+  So there is nothing meaningful to reset: the wizard reports InstallWsl
+  and CreateWslUser as done because they genuinely ARE done. What is
+  blocking Yossi is that he is still launching the OLD binary - the
+  20:39 log still shows "EXISTS " with an empty name, which is the argv
+  transport, i.e. without 9bd44bc. The MSI from run 31413798581 is the
+  one to install.
