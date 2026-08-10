@@ -23,6 +23,46 @@ const FEED_MAX_ITEMS_LIMIT: usize = 50;
 
 // Phase 51.C: pipe_name moved to winmux-core (shared with winmux-tunnel).
 pub use winmux_core::pipe_name;
+#[cfg(not(windows))]
+use winmux_core::pipe_names;
+
+/// Why the local RPC endpoint isn't listening, or `None` while it is.
+///
+/// The Unix-socket bind used to fail with a single `log_warn` and a bare
+/// `return`, which meant a dead RPC endpoint looked exactly like "no ports
+/// detected yet" — PortsWindow spun forever with nothing to say. Every hop
+/// upstream of it (the remote `/proc/net/tcp` watcher, the SSH reverse
+/// tunnel) is platform-agnostic, so on macOS this is the ONE link the port
+/// went near and the one that had no way to report itself. `doctor` reads it.
+pub(crate) static BIND_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn bind_error() -> Option<String> {
+    BIND_ERROR.lock().ok().and_then(|g| g.clone())
+}
+
+// Only the Unix bind path can fail outright: the Windows pool retries
+// make_listener forever, so it has no terminal "never came up" state to record.
+#[cfg(not(windows))]
+fn set_bind_error(msg: Option<String>) {
+    if let Ok(mut g) = BIND_ERROR.lock() {
+        *g = msg;
+    }
+}
+
+/// How many listeners the RPC server keeps in accept state. Windows needs a
+/// pool (each named-pipe instance serves one client); a Unix listener's
+/// backlog does it in one. Reported by `doctor`, so it must not lie about
+/// the platform being diagnosed.
+pub(crate) fn listener_count() -> usize {
+    #[cfg(windows)]
+    {
+        LISTENER_POOL_SIZE
+    }
+    #[cfg(not(windows))]
+    {
+        1
+    }
+}
 
 // Phase 39.A: removed the 8-cap that caused ERROR_PIPE_NOT_AVAILABLE
 // storms under concurrent RPC.
@@ -87,17 +127,44 @@ pub async fn run(state: AppState, app: AppHandle) {
 /// none of the 254-instance / ERROR 231 machinery applies.
 #[cfg(not(windows))]
 pub async fn run(state: AppState, app: AppHandle) {
-    let name = pipe_name();
-    // Stale socket file from a previous crash blocks bind — remove it.
-    // A second live instance is prevented upstream (single-instance app).
-    let _ = std::fs::remove_file(&name);
-    let listener = match tokio::net::UnixListener::bind(&name) {
-        Ok(l) => l,
-        Err(e) => {
-            crate::log_warn("RPC", &format!("rpc_server: bind {name} failed: {e}"));
+    // Try each candidate path in order — winmux-tunnel's client side walks
+    // the same list, so whichever one binds here is the one it will find.
+    let candidates = pipe_names();
+    let mut listener = None;
+    let mut errors: Vec<String> = Vec::new();
+    for name in &candidates {
+        // Stale socket file from a previous crash blocks bind — remove it.
+        // A second live instance is prevented upstream (single-instance app).
+        let _ = std::fs::remove_file(name);
+        match tokio::net::UnixListener::bind(name) {
+            Ok(l) => {
+                listener = Some((l, name.clone()));
+                break;
+            }
+            Err(e) => {
+                crate::log_warn("RPC", &format!("rpc_server: bind {name} failed: {e}"));
+                errors.push(format!("{name}: {e}"));
+            }
+        }
+    }
+    let (listener, name) = match listener {
+        Some(v) => v,
+        None => {
+            // Loud, and readable from `doctor`: with the socket down, no
+            // detected port, CLI hook, or tunnel RPC can ever arrive, while
+            // SSH panes keep working — an easy failure to misread as "the
+            // ports feature is broken".
+            let msg = errors.join("; ");
+            crate::log_error("RPC", &format!(
+                "rpc_server: no socket could be bound ({msg}) — port detection, \
+                 CLI hooks and tunnel RPC are all disabled for this session"
+            ));
+            set_bind_error(Some(msg));
             return;
         }
     };
+    set_bind_error(None);
+    crate::log_info("RPC", &format!("rpc_server: listening on {name}"));
     tracing::info!("rpc: listening on {}", name);
     tokio::spawn(async move {
         loop {

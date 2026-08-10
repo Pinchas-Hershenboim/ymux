@@ -6,6 +6,7 @@ import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
 import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
+import { isMac } from "./platform";
 import { createLogger } from "./logger";
 
 const log = createLogger("PANE");
@@ -660,9 +661,15 @@ export function PaneView(p: Props) {
             setDropping(false);
             return;
           }
-          const dpr = window.devicePixelRatio || 1;
-          const x = payload.position.x / dpr;
-          const y = payload.position.y / dpr;
+          // Windows (WebView2) reports the drop position in physical
+          // pixels, so it has to be scaled down to compare against
+          // CSS-pixel rects. macOS (wry/wkwebview) passes NSDraggingInfo's
+          // draggingLocation through unscaled — logical points already —
+          // so dividing there halved every coordinate on a Retina screen
+          // and the pane hit-test silently missed.
+          const scale = isMac() ? 1 : window.devicePixelRatio || 1;
+          const x = payload.position.x / scale;
+          const y = payload.position.y / scale;
           const inside = pointInPane(x, y);
           if (payload.type === "enter" || payload.type === "over") {
             setDropping(inside);

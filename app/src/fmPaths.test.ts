@@ -85,9 +85,11 @@ test("a UNC local path is dropped on read (no unattended SMB handshake)", () => 
   assert.deepEqual(loadFmPaths("ws1"), {});
 });
 
-test("relative and forward-slash-rooted local paths are dropped", () => {
+test("relative and double-slash-rooted local paths are dropped", () => {
   store[KEY] = JSON.stringify({
     a: { local: "..\\..\\etc" },
+    // The POSIX spelling of the UNC replay above — same outbound SMB
+    // handshake, so accepting POSIX-absolute paths must not let it back in.
     b: { local: "//attacker.tld/share" },
     c: { local: "work" },
   });
@@ -103,6 +105,20 @@ test("drive-absolute local paths survive, with either slash", () => {
   });
   assert.equal(loadFmPaths("a").local, "C:\\work");
   assert.equal(loadFmPaths("b").local, "d:/work");
+});
+
+// macOS port: before this, LOCAL_OK demanded a drive letter, so every mac
+// path failed the gate and the remembered local directory was silently
+// discarded on every launch — the column always reopened at $HOME.
+test("POSIX-absolute local paths survive (macOS / Linux hosts)", () => {
+  store[KEY] = JSON.stringify({
+    a: { local: "/Users/yossi/work" },
+    b: { local: "/home/yossi/work" },
+    c: { local: "/" },
+  });
+  assert.equal(loadFmPaths("a").local, "/Users/yossi/work");
+  assert.equal(loadFmPaths("b").local, "/home/yossi/work");
+  assert.equal(loadFmPaths("c").local, "/");
 });
 
 test("a relative remote path is dropped, POSIX-absolute survives", () => {

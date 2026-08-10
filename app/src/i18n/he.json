@@ -825,6 +825,7 @@
   "ports.window.row.openAction": "פתח בדפדפן",
   "ports.window.row.stopAction": "סגור",
   "ports.window.empty.detectionOn": "זיהוי פעיל. ממתין לפורטים מרוחקים…",
+  "ports.window.empty.rpcDown": "זיהוי הפורטים לא זמין: נקודת הקצה המקומית של ה-RPC לא עלתה ({error}). הפעל מחדש את winmux; אם זה נמשך, בדוק את debug.log.",
   "ports.window.error.unreachable": "הפורוורד נפתח אך localhost:{local} לא נגיש. הסתיים. ({msg})",
   "settings.autoDestroy.label": "מחק אוטומטית סביבות עבודה ריקות אחרי (ימים)",
   "settings.autoDestroy.hint": "טווח 1-90. ריק לכיבוי. סביבת עבודה נמחקת רק אם אין בה panes וההפעלה האחרונה שלה הייתה לפני יותר מ-N ימים. שקט — קורה בהפעלת האפליקציה.",

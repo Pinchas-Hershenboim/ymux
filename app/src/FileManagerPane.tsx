@@ -7,6 +7,7 @@ import { FileEditor } from "./FileEditor";
 import { TechText } from "./TechText";
 import { saveRemoteFileAs } from "./download";
 import { loadFmPaths, saveFmPaths } from "./fmPaths";
+import { isMac, isWindows, sep } from "./platform";
 import { createLogger } from "./logger";
 
 const log = createLogger("FM");
@@ -325,7 +326,7 @@ export function FileManagerPane(p: Props) {
         const home = await invoke<string>("file_home_local");
         setLocalPath(home);
       } catch (e) {
-        setLocalPath("C:\\");
+        setLocalPath(isWindows() ? "C:\\" : "/");
       }
       await refreshLocal();
     }
@@ -361,11 +362,19 @@ export function FileManagerPane(p: Props) {
     // Phase 23: register OS drag-drop. Tauri 2 emits 'enter' / 'over'
     // / 'drop' / 'leave' phases. We use 'over' to drive the
     // dragOverSide highlight, 'drop' to actually do the upload, and
-    // 'leave' to clear the highlight. Positions are in window
-    // physical pixels; we divide by devicePixelRatio to compare
-    // against CSS-pixel DOM rects. The webview emits ALL events for
+    // 'leave' to clear the highlight. The webview emits ALL events for
     // the whole window — we hit-test against our column refs to
     // ignore drops outside the file-manager pane.
+    //
+    // Coordinate space is platform-dependent even though Tauri types it
+    // as PhysicalPosition on both. Windows (WebView2) reports physical
+    // pixels — ScreenToClient on a DPI-aware HWND — so they must be
+    // divided by devicePixelRatio to compare against CSS-pixel DOM rects.
+    // macOS (wry's wkwebview backend) passes NSDraggingInfo's
+    // draggingLocation straight through, y-flipped and NOT scaled, i.e.
+    // logical points already. Dividing there halved every coordinate on a
+    // Retina display, so the hit-test missed both columns and the drop was
+    // swallowed with no upload and no error.
     let unlisten: (() => void) | undefined;
     try {
       unlisten = await getCurrentWebview().onDragDropEvent((event) => {
@@ -377,9 +386,9 @@ export function FileManagerPane(p: Props) {
           setDragOverSide(null);
           return;
         }
-        const dpr = window.devicePixelRatio || 1;
-        const x = payload.position.x / dpr;
-        const y = payload.position.y / dpr;
+        const scale = isMac() ? 1 : window.devicePixelRatio || 1;
+        const x = payload.position.x / scale;
+        const y = payload.position.y / scale;
         const hitLocal = localColRef && pointInRect(x, y, localColRef.getBoundingClientRect());
         const hitRemote = remoteColRef && pointInRect(x, y, remoteColRef.getBoundingClientRect());
         const side: Side | null = hitRemote ? "remote" : hitLocal ? "local" : null;
@@ -480,7 +489,7 @@ export function FileManagerPane(p: Props) {
   const navIntoLocal = (e: FileEntry) => {
     if (!e.is_dir) return;
     const cur = localPath().replace(/[\\/]+$/, "");
-    setLocalPath(`${cur}\\${e.name}`);
+    setLocalPath(`${cur}${sep()}${e.name}`);
     void refreshLocal();
   };
   const navIntoRemote = (e: FileEntry) => {
@@ -491,7 +500,7 @@ export function FileManagerPane(p: Props) {
   };
   const goUp = (side: Side) => {
     if (side === "local") {
-      setLocalPath(parentOf(localPath(), "\\"));
+      setLocalPath(parentOf(localPath(), sep()));
       void refreshLocal();
     } else {
       setRemotePath(parentOf(remotePath(), "/") || "/");
@@ -499,9 +508,14 @@ export function FileManagerPane(p: Props) {
     }
   };
 
+  // Every local-side file op routes through here — upload, rename, mkdir,
+  // create, zip/unzip, copy-paste, copy-path, and the local drop target. The
+  // separator MUST be the host's: joining with a literal `\` on macOS built
+  // `/Users/yossi/Downloads\file.txt`, which std::fs::read then failed on —
+  // that was the whole "upload is broken on mac" bug.
   const fullLocal = (name: string): string => {
     const cur = localPath().replace(/[\\/]+$/, "");
-    return `${cur}\\${name}`;
+    return `${cur}${sep()}${name}`;
   };
   const fullRemote = (name: string): string => {
     const cur = remotePath().replace(/\/+$/, "");

@@ -12,7 +12,9 @@ use russh::{Channel, ChannelMsg};
 use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 
-use winmux_core::{log_debug, log_info, log_warn, pipe_name, SshClient};
+use winmux_core::{log_debug, log_info, log_warn, SshClient};
+#[cfg(windows)]
+use winmux_core::pipe_name;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -150,6 +152,7 @@ where
     // server no longer turns a transient busy into a hard error +
     // log spam. Per-attempt waits are silent (tracing::debug only);
     // a genuine give-up surfaces via spawn_bridge's dlog.
+    #[cfg(windows)]
     let pipe_name = pipe_name();
     #[cfg(windows)]
     let pipe = {
@@ -171,11 +174,28 @@ where
     };
     // Unix: the rpc_server listens on a Unix domain socket; the kernel
     // queues concurrent connects in the listener backlog, so no
-    // busy-retry loop is needed.
+    // busy-retry loop is needed. It may have fallen back to the second
+    // candidate path (see winmux_core::pipe_names), so try them in the
+    // same order the server does — otherwise the two ends split and every
+    // RPC dies with ENOENT on a path nobody is listening on.
     #[cfg(not(windows))]
-    let pipe = tokio::net::UnixStream::connect(&pipe_name)
-        .await
-        .map_err(|e| format!("open socket {}: {}", pipe_name, e))?;
+    let pipe = {
+        let mut connected = None;
+        let mut errors: Vec<String> = Vec::new();
+        for name in winmux_core::pipe_names() {
+            match tokio::net::UnixStream::connect(&name).await {
+                Ok(s) => {
+                    connected = Some(s);
+                    break;
+                }
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        match connected {
+            Some(s) => s,
+            None => return Err(format!("open socket: {}", errors.join("; "))),
+        }
+    };
 
     log_debug("TUNNEL", "tunnel: bridging channel <-> pipe");
     bridge_copy(bs, pipe).await;

@@ -723,6 +723,48 @@ pub fn pipe_name() -> String {
         .into_owned()
 }
 
+/// Second socket path to try when `pipe_name()` can't be bound.
+///
+/// `sockaddr_un.sun_path` is capped at 104 bytes on macOS (108 on Linux),
+/// and `$TMPDIR` on macOS is a generated `/var/folders/<xx>/<hash>/T/` path
+/// — normally ~66 bytes with the file name, so there's headroom, but no
+/// guarantee and no way to notice when it runs out. A custom TMPDIR, a long
+/// user name, or a sandboxed container can all push it over, and the only
+/// symptom is that nothing that travels over the RPC socket ever arrives
+/// (detected ports, CLI hooks) while SSH panes keep working, because those
+/// use russh channels directly.
+///
+/// The config dir is short and stable (`~/Library/Application Support/winmux`
+/// on macOS), so it makes a good second try. Both the server (rpc_server) and
+/// the client (winmux-tunnel) must walk this list in the same order.
+#[cfg(not(windows))]
+pub fn pipe_name_fallback() -> Option<String> {
+    let primary = pipe_name();
+    let alt = config_dir().ok()?.join("rpc.sock");
+    let alt = alt.to_string_lossy().into_owned();
+    if alt == primary {
+        None
+    } else {
+        Some(alt)
+    }
+}
+
+/// The socket paths to try, in order. Windows has exactly one name (the
+/// pipe namespace has no length problem), so this is a single-element list
+/// there and callers stay platform-agnostic.
+pub fn pipe_names() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![pipe_name()]
+    }
+    #[cfg(not(windows))]
+    {
+        let mut v = vec![pipe_name()];
+        v.extend(pipe_name_fallback());
+        v
+    }
+}
+
 // ─── CoreState ───────────────────────────────────────────────────────
 
 /// Phase 51.B4: the russh/PTY/forward runtime state that every future

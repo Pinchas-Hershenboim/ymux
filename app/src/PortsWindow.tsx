@@ -1,4 +1,5 @@
-import { createMemo, createEffect, For, Show, onCleanup } from "solid-js";
+import { createMemo, createEffect, createSignal, For, Show, onCleanup } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ForwardRow, Workspace } from "./types";
 import { t } from "./i18n";
@@ -45,6 +46,27 @@ type RowState =
 type Row = { remote_port: number } & RowState;
 
 export function PortsWindow(p: Props) {
+  // Every detected port reaches this panel through the local RPC endpoint.
+  // When that endpoint fails to bind, nothing ever arrives and the panel
+  // used to sit on "Waiting for remote ports…" forever — indistinguishable
+  // from a remote that simply isn't listening. SSH panes keep working
+  // meanwhile (they use russh channels directly), which is what made this
+  // read as "the ports feature is broken" instead of "the RPC socket is
+  // down". Ask doctor once per open and say so.
+  const [rpcDown, setRpcDown] = createSignal<string | null>(null);
+  createEffect(() => {
+    if (!p.open) return;
+    void (async () => {
+      try {
+        const snap = await invoke<{ rpc_server?: { bind_error?: string | null } }>("doctor");
+        setRpcDown(snap.rpc_server?.bind_error ?? null);
+      } catch (e) {
+        // Diagnostics are best-effort — never let them break the panel.
+        log.warn("doctor probe failed", e);
+      }
+    })();
+  });
+
   // Esc to close.
   createEffect(() => {
     if (!p.open) return;
@@ -169,9 +191,11 @@ export function PortsWindow(p: Props) {
                 when={rows().length > 0}
                 fallback={
                   <p class="ports-panel-empty">
-                    {enabled()
-                      ? t("ports.window.empty.detectionOn")
-                      : t("ports.window.empty.toggleOff")}
+                    {rpcDown()
+                      ? t("ports.window.empty.rpcDown", { error: rpcDown()! })
+                      : enabled()
+                        ? t("ports.window.empty.detectionOn")
+                        : t("ports.window.empty.toggleOff")}
                   </p>
                 }
               >

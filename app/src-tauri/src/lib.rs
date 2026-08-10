@@ -6627,8 +6627,12 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
         "pty_sessions": pty_count,
         "rpc_server": {
             "pipe_name": rpc_server::pipe_name(),
-            "listener_pool_size": 8,
+            "listener_pool_size": rpc_server::listener_count(),
             "handlers_served": rpc_server::HANDLER_SEQ.load(Ordering::Relaxed),
+            // Some(...) means the local endpoint never came up: no detected
+            // ports, no CLI hooks, no tunnel RPC — while SSH panes still
+            // work, which is what makes it easy to misdiagnose.
+            "bind_error": rpc_server::bind_error(),
         },
         "bundled_linux_cli_sha256": bundled_cli_sha256,
         "recent_errors": recent_errors,
@@ -6638,6 +6642,17 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
 #[tauri::command]
 fn doctor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(build_doctor_snapshot(&state))
+}
+
+/// The OS the desktop app is running on, as `std::env::consts::OS`
+/// (`"windows"` / `"macos"` / `"linux"`). The frontend had NO platform
+/// awareness at all before the macOS port, so every local path was joined
+/// with `\` and every drag-drop position was divided by devicePixelRatio —
+/// both correct on Windows only. `app/src/platform.ts` resolves this once
+/// at boot and hands the answer to those call sites synchronously.
+#[tauri::command]
+fn host_platform() -> Result<String, String> {
+    Ok(std::env::consts::OS.to_string())
 }
 
 #[tauri::command]
@@ -7202,6 +7217,7 @@ pub fn run() {
             pty_write,
             pty_resize,
             doctor,
+            host_platform,
             notifications_list,
             notifications_clear,
             pane_status_get,
