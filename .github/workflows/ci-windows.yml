@@ -1,0 +1,101 @@
+# Windows CI — the checks that used to be run by hand on every merge.
+#
+# Deliberately NOT a build: this job proves the tree is healthy, in the
+# ~8 minutes you are willing to wait on a PR. Producing installers is
+# build-windows.yml's job, on demand.
+#
+# Ordering note that is easy to get wrong: `build:linux-cli` MUST run
+# before anything that touches cargo. It is what stages
+# src-tauri/resources/winmux-cli.exe, which is gitignored — and Tauri's
+# build script hard-fails with "resource path doesn't exist" without it.
+# A fresh checkout is exactly that case (see FOLLOWUPS P3).
+name: ci-windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A new push to the same branch makes the previous run pointless.
+concurrency:
+  group: ci-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Keyed on the lockfile: dependency builds dominate the runtime and
+      # only change when Cargo.lock does.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/src-tauri/server/go.mod
+          cache-dependency-path: app/src-tauri/server/go.sum
+
+      - name: Install frontend deps
+        working-directory: app
+        run: npm ci
+
+      # Stages winmux-cli.exe + winmux-linux-x64 + remote-manifest.json.
+      # The musl cross-build links with rust-lld (see src-tauri/.cargo/
+      # config.toml), so no external linker is needed on a Windows runner.
+      - name: Stage CLI resources
+        working-directory: app
+        run: npm run build:linux-cli
+
+      - name: cargo test
+        working-directory: app/src-tauri
+        run: cargo test --workspace
+
+      # typescript is not currently a project dependency (BACKLOG P2), so
+      # install it here rather than silently skipping the type check.
+      # Delete this step once app/package.json carries it.
+      - name: Type-check
+        working-directory: app
+        run: |
+          npm i --no-save typescript@5
+          npx tsc --noEmit -p tsconfig.json
+
+      # esbuild strips types without checking them, so this is a bundling
+      # check, not a type check — it catches bad imports and dead assets.
+      - name: Frontend build
+        working-directory: app
+        run: npm run build:frontend
+
+      - name: go test
+        working-directory: app/src-tauri/server
+        run: go test ./...
+
+      # The staging script rewrites remote-manifest.json with a fresh
+      # built_at every run. Per CLAUDE.md #12 that churn is cosmetic — but
+      # a changed sha256 means the CLI binary actually moved, which is
+      # worth seeing in the log rather than discovering at release time.
+      - name: Report staged-resource drift
+        if: always()
+        working-directory: app
+        shell: pwsh
+        run: |
+          $diff = git diff --unified=0 -- src-tauri/resources/remote-manifest.json
+          if ($diff -match '"sha256"') {
+            Write-Host "::notice::remote-manifest sha256 changed — the staged CLI binary differs from the committed one"
+            Write-Host $diff
+          } else {
+            Write-Host "remote-manifest: timestamp-only churn (expected)"
+          }

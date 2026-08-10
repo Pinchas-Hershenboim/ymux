@@ -1414,3 +1414,67 @@ NOTES: dmg built with hdiutil (tauri bundle_dmg.sh needs Finder, fails headless)
   wizard is WSL-based, no mac-native winmux-cli/mcp bundled. macos-build branch
   kept for CI trigger (workflow runs on push to it + workflow_dispatch).
 ==================================================================
+
+=== 2026-08-09 — Windows CI/CD on GitHub Actions ===
+
+CONTEXT: a collaborator ported winmux to macOS on a server, and Claude
+  Code there added .github/workflows/build-macos-intel.yml. There was no
+  Windows equivalent — every Windows build was manual, which is exactly
+  how a dev-mode binary reached Yossi twice today.
+
+MERGED FIRST: origin/main had moved 5 commits ahead (macOS Intel port:
+  named pipe -> Unix socket in rpc_server.rs, tauri.macos.conf.json, the
+  build:frontend script split, the macOS workflow). Merged into main
+  (1f5c318). Only PROGRESS.txt conflicted — append vs append, resolved by
+  the verified pure-append concat (710 + 685 + 21 = 1416 lines).
+  rpc_server.rs merged clean: `git diff origin/main HEAD` on that file is
+  empty, so the Unix-socket port came through byte-identical.
+  Re-verified after the merge: cargo test 266/0, tsc exit 0, vite ok,
+  go 10/10.
+
+ADDED — .github/workflows/ci-windows.yml (tests, ~8 min):
+  push + PR to main, plus workflow_dispatch. cargo test --workspace,
+  tsc --noEmit, vite build, go test ./.... rust-cache keyed on the
+  workspace, npm + go module caches, concurrency group cancels
+  superseded runs.
+  ORDERING TRAP baked in: `npm run build:linux-cli` must run BEFORE any
+  cargo step. It stages src-tauri/resources/winmux-cli.exe, which is
+  gitignored, and Tauri's build script hard-fails without it — a fresh
+  CI checkout is exactly the FOLLOWUPS P3 case.
+  typescript is installed with `npm i --no-save typescript@5` because it
+  is still not a project dependency (BACKLOG P2). Step carries a note to
+  delete it once package.json carries typescript.
+
+ADDED — .github/workflows/build-windows.yml (bundles, dispatch + v* tags):
+  Goes through app/scripts/build-release.ps1 rather than calling
+  `npm run tauri build` directly — that wrapper injects the
+  --remap-path-prefix RUSTFLAGS that scrub the builder's $HOME out of
+  panic-location strings, and deletes the stale app.exe so Cargo cannot
+  reuse an unscrubbed incremental artifact. Uploads MSI, NSIS setup, and
+  the bare app.exe, with sha256s in the log. Publishing stays manual per
+  RELEASING.md step 4.
+  Cross-compile note: the bundled Linux CLI is static-musl linked with
+  rust-lld (src-tauri/.cargo/config.toml), so a Windows runner needs no
+  extra toolchain.
+
+THE GUARD THAT MATTERS: build-windows.yml asserts the frontend is really
+  embedded — it greps the freshly built dist/assets/index-<hash>.js
+  filename out of app.exe and fails the build if absent. That is exactly
+  today's failure; a dev-mode binary can no longer leave CI.
+  `localhost:1420` is embedded in BOTH kinds of build (the whole config
+  is), so it is useless as a signal and is not used.
+
+VERIFIED (not just YAML-valid):
+  - all three workflows parse with yaml.safe_load; every step has
+    uses/run; every referenced path and npm script exists.
+  - the embed assertion was run locally against the real app.exe:
+    passes on 'index-zVEv1mLi.js', and a negative control
+    ('index-DEADBEEF.js') correctly reports false — so it discriminates
+    rather than always passing.
+  - that test caught a real bug in my first draft: [System.IO.File]::
+    ReadAllBytes resolves against the PROCESS working directory, not
+    PowerShell's location, so the relative path threw
+    DirectoryNotFoundException. Now uses Convert-Path.
+
+NOT DONE: neither workflow has run on GitHub yet — nothing is pushed.
+  First real run is the actual proof.

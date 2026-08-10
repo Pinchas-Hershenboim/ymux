@@ -1,0 +1,117 @@
+# Windows x64 build — produces the MSI, the NSIS setup exe, and the bare
+# app.exe as artifacts. Mirrors build-macos-intel.yml.
+#
+# Goes through app/scripts/build-release.ps1 rather than calling
+# `npm run tauri build` directly. That wrapper is not optional: it sets the
+# --remap-path-prefix RUSTFLAGS that scrub the build machine's $HOME out of
+# panic-location strings baked in by `file!()` macros, which `strip =
+# "symbols"` cannot remove. It also deletes the stale app.exe first, because
+# Cargo would otherwise reuse an incremental artifact compiled without the
+# remap. See docs/RELEASING.md.
+#
+# Publishing stays manual (RELEASING.md step 4) — this workflow builds and
+# uploads, it does not create a GitHub Release.
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The bundled Linux CLI is cross-compiled to static musl and
+          # shipped inside the installer; rust-lld links it, so no external
+          # toolchain is needed. build-linux-cli.ps1 would add the target
+          # itself, but doing it here keeps the cache key honest.
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install frontend deps
+        working-directory: app
+        run: npm ci
+
+      # Runs build:linux-cli (stages winmux-cli.exe, winmux-linux-x64,
+      # remote-manifest.json) then build:frontend, then the Tauri bundler.
+      - name: Build release bundles
+        working-directory: app
+        shell: pwsh
+        run: ./scripts/build-release.ps1
+
+      # The failure that shipped a broken exe by hand on 2026-08-09:
+      # `cargo build --release` links fine but leaves the binary in dev
+      # mode, loading devUrl (localhost:1420) at startup, so every window
+      # is an ERR_CONNECTION_REFUSED page. Going through the Tauri CLI is
+      # supposed to prevent that — this asserts it actually did, instead of
+      # trusting that the build "succeeded".
+      #
+      # The test is that THIS build's hashed asset filename is inside the
+      # binary. Note `localhost:1420` is embedded either way (the whole
+      # config is), so its presence proves nothing.
+      - name: Assert the frontend is embedded
+        working-directory: app
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "src-tauri/target/release/app.exe")) { throw "app.exe was not produced" }
+          # Convert-Path, not the relative string: .NET APIs resolve against
+          # the process working directory, which is not PowerShell's location.
+          $exe = Convert-Path "src-tauri/target/release/app.exe"
+          $asset = (Get-ChildItem dist/assets -Filter *.js | Select-Object -First 1).Name
+          if (-not $asset) { throw "no built JS asset in dist/assets to check against" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $text  = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text.Contains($asset)) {
+            Write-Host "OK: production build — '$asset' is embedded"
+          } else {
+            throw "DEV-MODE BINARY: '$asset' is not embedded. It would load devUrl at startup and show ERR_CONNECTION_REFUSED on any machine without a dev server."
+          }
+
+      - name: Checksums
+        working-directory: app/src-tauri/target/release
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Include *.msi, *-setup.exe -Path bundle |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name }
+          "{0}  app.exe" -f (Get-FileHash app.exe -Algorithm SHA256).Hash.ToLower()
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmux-windows-msi
+          path: app/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload NSIS setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmux-windows-nsis
+          path: app/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      # Handy for a quick smoke test without running an installer.
+      - name: Upload bare exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmux-windows-exe
+          path: app/src-tauri/target/release/app.exe
+          if-no-files-found: error
