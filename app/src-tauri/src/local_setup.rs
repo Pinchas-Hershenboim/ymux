@@ -411,15 +411,32 @@ pub(crate) fn clean_wsl_output(bytes: &[u8]) -> String {
 }
 
 /// Run a script inside a distro via `wsl.exe [-d <distro>] [-u <user>]
-/// -- sh -lc <script>` and return (exit_code, merged stdout+stderr).
-/// `script` must be a static string or built exclusively with
-/// `winmux_core::shell_quote` for interpolated values (same discipline
-/// as the remote tmux path).
+/// -- sh -s`, feeding the script on **stdin**, and return (exit_code,
+/// merged stdout+stderr). `script` must be a static string or built
+/// exclusively with `winmux_core::shell_quote` for interpolated values
+/// (same discipline as the remote tmux path).
+///
+/// The script goes in on stdin rather than as an argv element because
+/// passing it as an argument is not safe here: something between
+/// `wsl.exe` and the distro expands the text once before our shell sees
+/// it. Measured on 2026-08-10 against Ubuntu/WSL2:
+///
+///   sh -lc "X=hello; echo [$X]"   ->  []          (argv)
+///   sh -s   <<< same script       ->  [hello]     (stdin)
+///
+/// `$HOME` survived (it exists in the expanding context too) and `$0`
+/// came back as `/bin/bash`, which is what gave the mechanism away. The
+/// practical effect was that EVERY shell variable a script assigned read
+/// back empty — so `CreateWslUser` ran `useradd` with an empty username
+/// and wrote `default=` (empty) into /etc/wsl.conf, which then made WSL
+/// call getpwnam("") on every invocation and silently fall back to root.
+/// That one line is the origin of the whole WSL setup saga.
 pub(crate) async fn wsl_exec(
     distro: Option<&str>,
     user: Option<&str>,
     script: &str,
 ) -> Result<(i32, String), String> {
+    use tokio::io::AsyncWriteExt;
     let mut c = wsl_cmd();
     if let Some(d) = distro {
         if !d.is_empty() {
@@ -429,8 +446,30 @@ pub(crate) async fn wsl_exec(
     if let Some(u) = user {
         c.arg("-u").arg(u);
     }
-    c.arg("--").arg("sh").arg("-lc").arg(script);
-    let out = c.output().await.map_err(|e| format!("wsl.exe spawn: {e}"))?;
+    // `-s` reads the program from stdin; `-l` still gives a login shell.
+    c.arg("--").arg("sh").arg("-ls");
+    c.stdin(std::process::Stdio::piped());
+    c.stdout(std::process::Stdio::piped());
+    c.stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("wsl.exe spawn: {e}"))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "wsl stdin unavailable".to_string())?;
+        stdin
+            .write_all(script.as_bytes())
+            .await
+            .map_err(|e| format!("script write: {e}"))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("script close: {e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("wsl.exe wait: {e}"))?;
     let mut text = clean_wsl_output(&out.stdout);
     let err = clean_wsl_output(&out.stderr);
     if !err.is_empty() {

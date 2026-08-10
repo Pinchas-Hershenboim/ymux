@@ -1574,3 +1574,61 @@ SCANNED for the same swallow pattern in the other generated scripts:
   explicitly, so the status does propagate.
 
 cargo test 266/0.
+
+=== 2026-08-10 — ROOT CAUSE of the whole WSL saga: wsl_exec lost every shell variable ===
+
+Yossi re-ran the wizard on the repaired distro and CreateWslUser now
+failed LOUDLY: "Step 'CreateWslUser' failed (exit 1) — EXISTS " followed
+by "could not determine the linux username". That is yesterday's guard
+working: $U was empty, and instead of writing garbage the step stopped.
+
+But why was $U empty when `id -nu 1000` returns mlastudent371 by hand?
+
+MEASURED, isolating one construct at a time through the exact transport
+std::process::Command uses (no cmd.exe re-parsing in between):
+    id -nu 1000                  -> mlastudent371     ok
+    echo A[$(id -nu 1000)]B      -> A[mlastudent371]B ok
+    X=$(id -nu 1000); echo [$X]  -> []                BROKEN
+    X=hello;          echo [$X]  -> []                BROKEN
+    echo [$HOME]                 -> [/root]           ok
+    echo [$0]                    -> [/bin/bash]       <- the tell
+
+Something between wsl.exe and the distro expands the script text ONCE
+before our shell sees it. $HOME survives because it exists in the
+expanding context too; $0 comes back as /bin/bash, i.e. that context is a
+bash. Any variable the script itself assigns is expanded before it is
+ever set, so it reads back empty.
+
+THIS IS THE ORIGIN OF EVERYTHING:
+  - `useradd -m -u 1000 -s /bin/bash "$U"` ran with an EMPTY username,
+    failed, and the old code swallowed the status -> no user was created,
+    while the step reported success.
+  - `printf '\n[user]\ndefault=%s\n' "$U"` wrote a literal `default=`
+    with no value -> exactly the /etc/wsl.conf we found.
+  - WSL then called getpwnam("") on every invocation, failed, and fell
+    back to root -> the CLI deploy wrote under one HOME and verified
+    under /root -> "SHA MISMATCH got " with an empty hash.
+  Three separate symptoms across two days, one line of cause.
+
+FIX: wsl_exec now feeds the script on STDIN (`sh -ls`) instead of passing
+  it as an argv element. Proven on the same probe:
+    argv  : X=hello; echo [$X] -> []
+    stdin : X=hello; echo [$X] -> [hello]
+  and the real CreateWslUser script over the new transport returns
+    EXISTS mlastudent371 / wsl.conf default already mlastudent371 /
+    VERIFIED user=mlastudent371 default=mlastudent371   exit 0
+
+  wsl_pipe_to_file's stage 1 keeps its argv script deliberately — its
+  stdin is the file-bytes channel. That script assigns no variables; it
+  only uses "$HOME" and $(dirname ...), both of which survive expansion
+  with identical results.
+
+NOT A CODE BUG, worth recording: the same run also failed
+  InstallLocalHooks with "bundled winmux-cli.exe not found (dev build
+  without staged resources?)". That is because the bare app.exe artifact
+  was run standalone — the CLI is bundled by the installer, not carried
+  by the exe. I had recommended the bare exe as the quick way to test;
+  for anything touching setup, the MSI is the artifact to use.
+
+cargo test 266/0. The live proof above is the real verification — this
+interaction cannot be unit-tested.
