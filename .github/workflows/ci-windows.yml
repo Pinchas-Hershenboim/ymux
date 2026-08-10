@@ -28,14 +28,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      # GitHub's Windows runners leave PSModulePath pointing only at the
-      # PowerShell 7 module dirs. `npm run build:linux-cli` spawns Windows
-      # PowerShell 5.1, which then cannot autoload
-      # Microsoft.PowerShell.Utility — so Get-FileHash is undefined and
-      # build-linux-cli.ps1 dies at its first hash, AFTER a full musl
-      # cross-build has already succeeded. Restoring the 5.1 module path
-      # fixes it here without touching the script, which works fine
-      # locally.
+      # Belt-and-braces so the value reaching Windows PowerShell 5.1 is
+      # explicit rather than whatever the runner image happens to set.
+      # The actual fix for the Get-FileHash failure is `shell: cmd` on the
+      # steps that shell out to it — see the Stage CLI resources step.
       PSModulePath: C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules
     steps:
       - uses: actions/checkout@v4
@@ -66,28 +62,25 @@ jobs:
       # Stages winmux-cli.exe + winmux-linux-x64 + remote-manifest.json.
       # The musl cross-build links with rust-lld (see src-tauri/.cargo/
       # config.toml), so no external linker is needed on a Windows runner.
-      # Fail loudly and early if the PSModulePath workaround above ever
-      # stops being enough — otherwise the symptom is a missing cmdlet
-      # four minutes into a cross-build.
+      # Fails in seconds if the cmdlet is unreachable, rather than four
+      # minutes into a musl cross-build. Must use the same shell as the
+      # step below or it does not prove anything.
       - name: Check Windows PowerShell can autoload its own cmdlets
         shell: cmd
-        run: powershell -NoProfile -Command "if (-not (Get-Command Get-FileHash -EA SilentlyContinue)) { Write-Error 'Get-FileHash unavailable in Windows PowerShell — PSModulePath is wrong, build-linux-cli.ps1 will fail'; exit 1 }; 'Get-FileHash OK'"
+        run: powershell -NoProfile -Command "if (-not (Get-Command Get-FileHash -EA SilentlyContinue)) { Write-Error 'Get-FileHash unavailable — build-linux-cli.ps1 will fail'; exit 1 }; 'Get-FileHash OK'"
 
-      # TEMPORARY: the job-level PSModulePath fixes a directly-spawned
-      # powershell (the step above passes) but NOT the one npm spawns, so
-      # the environment differs somewhere between them. Print both before
-      # guessing again.
-      - name: Diagnose the PowerShell env npm actually provides
-        working-directory: app
-        shell: cmd
-        run: |
-          echo --- PSModulePath as the shell sees it ---
-          echo %PSModulePath%
-          echo --- PSModulePath as npm passes it to scripts ---
-          npm run env | findstr /I PSModulePath
-
+      # `shell: cmd` is load-bearing. The default shell for `run:` on
+      # Windows runners is pwsh (PowerShell 7), and pwsh rewrites
+      # PSModulePath for its children to its own module dirs. npm inherits
+      # that and passes it to the Windows PowerShell 5.1 that
+      # build:linux-cli spawns, which then cannot autoload
+      # Microsoft.PowerShell.Utility — so Get-FileHash is undefined and the
+      # script dies at its first hash, AFTER the cross-build has already
+      # succeeded. Measured: identical PSModulePath via cmd works, via pwsh
+      # does not. Keeping pwsh out of the chain is the fix.
       - name: Stage CLI resources
         working-directory: app
+        shell: cmd
         run: npm run build:linux-cli
 
       - name: cargo test

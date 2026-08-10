@@ -27,11 +27,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      # Same reason as ci-windows.yml: the runner's PSModulePath omits the
-      # Windows PowerShell 5.1 module dirs, so the 5.1 instance that
-      # `npm run build:linux-cli` spawns (via build-release.ps1 ->
-      # npm run tauri build -> beforeBuildCommand) cannot autoload
-      # Microsoft.PowerShell.Utility and Get-FileHash is undefined.
+      # Explicit rather than inherited; see ci-windows.yml. The real fix
+      # for the Get-FileHash failure is keeping pwsh out of the chain —
+      # see the build step.
       PSModulePath: C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules
     steps:
       - uses: actions/checkout@v4
@@ -60,10 +58,17 @@ jobs:
 
       # Runs build:linux-cli (stages winmux-cli.exe, winmux-linux-x64,
       # remote-manifest.json) then build:frontend, then the Tauri bundler.
+      #
+      # `shell: cmd` invoking Windows PowerShell, NOT `shell: pwsh`: pwsh
+      # rewrites PSModulePath for everything it spawns, and several links
+      # down this chain (build-release.ps1 -> npm run tauri build ->
+      # beforeBuildCommand -> build:linux-cli) sits a Windows PowerShell
+      # 5.1 that then cannot autoload Get-FileHash. Same failure as
+      # ci-windows.yml documents.
       - name: Build release bundles
         working-directory: app
-        shell: pwsh
-        run: ./scripts/build-release.ps1
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-release.ps1
 
       # The failure that shipped a broken exe by hand on 2026-08-09:
       # `cargo build --release` links fine but leaves the binary in dev
