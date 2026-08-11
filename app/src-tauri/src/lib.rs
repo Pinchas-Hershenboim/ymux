@@ -1812,7 +1812,14 @@ fn spawn_local_pty(
     cmd.env("CLAUDE_CODE_FORCE_HYPERLINKS", "1");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM", "xterm-256color");
-    tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink env vars");
+    // winmux-tools (issue #4): tag the local pane's shell so claude-hook
+    // invocations (pre-tool-use gating, the chrome Ticker's user-prompt-submit
+    // / stop) pass the CLI's env-gate. Remote panes get this via the ssh
+    // channel / tmux set-environment; local panes had no equivalent, so every
+    // winmux-cli hook silently env-gated (main.rs `WINMUX_PANE_ID unset`) and
+    // the Ticker never fired outside manual injection.
+    cmd.env("WINMUX_PANE_ID", &pane_id);
+    tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + WINMUX_PANE_ID env vars");
     let mut child = pair
         .slave
         .spawn_command(cmd)
