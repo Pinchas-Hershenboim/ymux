@@ -5718,8 +5718,7 @@ async fn pane_list_tmux_sessions(
             })
     };
     if let Some(distro) = wsl_distro {
-        let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
-        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, script)
+        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, TMUX_LIST_SCRIPT)
             .await
             .unwrap_or((-1, String::new()));
         return Ok(parse_tmux_sessions(&text));
@@ -5774,15 +5773,24 @@ async fn pane_list_tmux_sessions(
 /// The `tmux list-sessions` half of `pane_list_tmux_sessions`, split out so the
 /// Phase 80 restore probe can reuse it over a handle it opened itself instead
 /// of one belonging to a live pane.
+/// tmux listing plus the session-meta side-car, in ONE round trip.
+///
+/// Phase 81: the same call also fetches the server-side session-meta map
+/// (Claude titles / labels / origins written by the Linux CLI). A missing
+/// file leaves an empty segment after the marker → no metadata, which is
+/// exactly the pre-81 behaviour, so `parse_tmux_sessions` degrades cleanly.
+/// The Phase 80 restore probe reuses this and ignores the meta segment.
+///
+/// Shared by the SSH and WSL paths deliberately. The WSL branch used to
+/// carry its own copy WITHOUT the meta segment, so a WSL tmux picker showed
+/// bare session names while an SSH one showed Claude titles — a difference
+/// nobody chose. One const means the format string cannot drift again.
+const TMUX_LIST_SCRIPT: &str = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
+
 async fn list_tmux_sessions_via_handle(
     handle: &client::Handle<SshClient>,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
-    // Phase 81: same roundtrip also fetches the server-side session-meta
-    // map (Claude titles / labels / origins written by the Linux CLI).
-    // Missing file → empty segment after the marker → no metadata, which
-    // is exactly the pre-81 behaviour. The Phase 80 restore probe reuses this
-    // helper and simply ignores the extra meta segment.
-    let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
+    let script = TMUX_LIST_SCRIPT;
     use russh::ChannelMsg;
     let mut ch = handle
         .channel_open_session()
@@ -5916,6 +5924,18 @@ async fn pane_probe_tmux_sessions(
             port,
             key_path,
         }) => (host, user, port, key_path),
+        // A WSL pane answers without any handshake — wsl.exe reaches the
+        // distro's tmux server cold. Returning Ok(None) here (the old `_`
+        // arm) meant "couldn't ask", and the restore loop correctly left
+        // such panes alone — so a WSL pane carrying its OWN connection
+        // inside a connection-less workspace could never restore.
+        Some(Connection::Wsl { distro }) => {
+            let (_code, text) =
+                local_setup::wsl_exec(distro.as_deref(), None, TMUX_LIST_SCRIPT)
+                    .await
+                    .unwrap_or((-1, String::new()));
+            return Ok(Some(parse_tmux_sessions(&text)));
+        }
         _ => return Ok(None),
     };
 

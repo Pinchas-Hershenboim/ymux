@@ -72,8 +72,9 @@ import {
   findPane,
   hasSftp,
   isRemoteConn,
-  isRemoteEffective,
   isRemoteWorkspace,
+  paneCaps,
+  wsCaps,
   paneKindOf,
   pruneLayout,
   type Connection,
@@ -1643,10 +1644,19 @@ function App() {
     void refreshPersistence();
   };
 
-  // Phase 80: session restore (SSH only, for now) — on app start, re-attach the ACTIVE
-  // workspace's terminal panes to the tmux sessions they were on when the app
-  // last closed, so the user lands back in their conversations instead of a
-  // grid of [Connect] buttons.
+  // Phase 80: session restore — on app start, re-attach the ACTIVE workspace's
+  // terminal panes to the tmux sessions they were on when the app last closed,
+  // so the user lands back in their conversations instead of a grid of
+  // [Connect] buttons.
+  //
+  // SSH *and* WSL. The gate is `caps.tmuxPersistence`, not "is it SSH": a WSL
+  // pane keeps its tmux session across an app restart exactly like a remote
+  // one does. The hints were already being recorded for WSL by
+  // refreshPersistence (pane_persistence_list reports WSL tmux names too) —
+  // the restore loop was simply throwing them away.
+  //
+  // WSL restores WITHOUT the auth gate below: `wsl.exe` answers from cold, so
+  // there is no handle to open and no prompt to throw. That is `sessionBound`.
   //
   // Why this works at all: closing a pane/app DETACHES tmux, never kills it
   // (DECISIONS "DD"), so the remote sessions are still alive. All we're
@@ -1747,7 +1757,7 @@ function App() {
 
     const candidates: { paneId: string; tmux: string }[] = [];
     let seenTerminals = 0;
-    let skippedLocal = 0;
+    let skippedNoTmux = 0;
     let skippedLive = 0;
     let skippedNoHint = 0;
     let skippedNotTerminal = 0;
@@ -1764,8 +1774,8 @@ function App() {
         continue;
       }
       seenTerminals++;
-      if (!isRemoteEffective(pane, ws.connection)) {
-        skippedLocal++;
+      if (!paneCaps(pane, ws.connection).tmuxPersistence) {
+        skippedNoTmux++;
         continue;
       }
       if (paneToSession.has(paneId)) {
@@ -1778,7 +1788,7 @@ function App() {
     }
     restoreLog(
       `workspace=${wsId} terminals=${seenTerminals} candidates=${candidates.length} ` +
-        `(skipped: not-a-terminal=${skippedNotTerminal} local=${skippedLocal} ` +
+        `(skipped: not-a-terminal=${skippedNotTerminal} no-tmux=${skippedNoTmux} ` +
         `already-connected=${skippedLive} no-remembered-session=${skippedNoHint})`,
     );
     // no-remembered-session on a FIRST run with this build is expected: the
@@ -1786,18 +1796,27 @@ function App() {
     // come back to until the app has been closed once with a session attached.
     if (candidates.length === 0) return;
 
-    // The liveness check runs only for a workspace that declares its OWN SSH
-    // connection. Both commands below are workspace-scoped:
-    // `workspace_ensure_connected` reads `workspace.connection` and no-ops
-    // without one, and `pane_list_tmux_sessions` needs a live workspace-level
-    // handle. A workspace whose PANES each carry their own connection (what
-    // `isRemoteEffective` exists for) has neither at boot — so gating on it
-    // meant that whole setup silently never restored. Now it re-attaches
-    // directly and the pane's own connection does the authenticating.
+    // The liveness check runs for a workspace that declares its own
+    // tmux-capable connection. Both commands below are workspace-scoped:
+    // `workspace_ensure_connected` reads `workspace.connection`, and
+    // `pane_list_tmux_sessions` answers at the workspace level. A workspace
+    // whose PANES each carry their own connection (what `paneCaps` exists
+    // for) has neither at boot — so gating on it meant that whole setup
+    // silently never restored. Now it re-attaches directly and the pane's own
+    // connection does the authenticating.
+    //
+    // WSL takes this same path: `pane_list_tmux_sessions` already has a WSL
+    // branch that shells out through wsl_exec and needs no handle, and
+    // `workspace_ensure_connected` returns Ok(()) for any non-SSH connection —
+    // so the call below is a harmless no-op rather than a special case. That
+    // is why `sessionBound` gates only the ensure-connected call.
+    const wsc = wsCaps(ws);
     let alive: Set<string> | null = null;
-    if (isRemoteWorkspace(ws)) {
+    if (wsc.tmuxPersistence) {
       try {
-        await invoke("workspace_ensure_connected", { workspaceId: ws.id });
+        if (wsc.sessionBound) {
+          await invoke("workspace_ensure_connected", { workspaceId: ws.id });
+        }
       } catch (e) {
         restoreLog(`abort: ensure_connected failed — ${String(e)}`);
         return;
@@ -1811,15 +1830,20 @@ function App() {
         restoreLog(`abort: list_tmux_sessions failed — ${String(e)}`);
         return;
       }
-      // An EMPTY list is ambiguous: it also means "no live SSH handle" (the
+      // An EMPTY list is ambiguous: on SSH it also means "no live handle" (the
       // command returns Ok([]) rather than erroring — password-auth workspaces
-      // land here). Treat it as "can't tell" and keep every hint, so a
-      // workspace that merely needs a prompt today still restores tomorrow.
+      // land here), and on WSL it is what a wsl_exec failure degrades to.
+      // Treat it as "can't tell" and keep every hint, so a workspace that
+      // merely needs a prompt — or a distro that was asleep — still restores
+      // tomorrow. Erring this way is deliberate: attaching on a guess would
+      // have `tmux new-session -A` CREATE an empty session under the
+      // remembered name, destroying the very hint we came back for.
       if (sessions.length === 0) {
         restoreLog(
-          "abort: server reported 0 tmux sessions — ambiguous (this is also what " +
-            "'no live SSH handle' looks like, e.g. a password-auth workspace the " +
-            "headless connect can't open). Hints kept, nothing restored.",
+          "abort: reported 0 tmux sessions — ambiguous (also what 'no live SSH " +
+            "handle' looks like, e.g. a password-auth workspace the headless " +
+            "connect can't open, or a WSL distro that failed to answer). " +
+            "Hints kept, nothing restored.",
         );
         return;
       }
