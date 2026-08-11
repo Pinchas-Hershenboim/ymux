@@ -28,6 +28,7 @@ mod remote_bootstrap;
 mod rpc_server;
 mod settings;
 mod stt;
+mod tickets;
 mod tray;
 mod updater;
 // Phase 51.C: `mod tunnel` moved to its own crate winmux-tunnel.
@@ -7222,6 +7223,10 @@ pub fn run() {
             workspace_browser::workspace_browser_eval,
             workspace_browser::workspace_browser_close,
             workspace_browser::workspace_browser_resize,
+            tickets::tickets_list,
+            tickets::tickets_create,
+            tickets::tickets_update,
+            tickets::tickets_delete,
             ssh_key_offer_dismiss,
             // beta.3 (netfree, Track 1b): frontend calls this when the user
             // clicks "בטל" on the reconnect toast.
