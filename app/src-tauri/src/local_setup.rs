@@ -648,6 +648,14 @@ pub(crate) struct WslInspect {
     /// embedded manifest sha.
     pub winmux_cli_state: Option<String>,
     pub tmux_conf_ok: Option<bool>,
+    /// Is the `claude` BINARY runnable inside the distro?
+    ///
+    /// This used to probe `[ -d "$HOME/.claude" ]`, which is the wrong
+    /// question twice over: `winmux setup-hooks` creates that directory
+    /// itself, so after one wizard run the field read `true` on a distro
+    /// with no Claude Code at all — and the install step that depends on it
+    /// would then skip forever. `command -v claude` is what the user
+    /// actually experiences when they type `claude`.
     pub claude_inside: Option<bool>,
     pub hooks_version_inside: Option<String>,
 }
@@ -819,7 +827,7 @@ async fn inspect_wsl(distro_override: Option<&str>) -> WslInspect {
 echo "TMUX $(command -v tmux >/dev/null 2>&1 && echo yes || echo no)"
 if [ -f "$HOME/.winmux/bin/winmux-linux-x64" ]; then echo "CLI $(sha256sum "$HOME/.winmux/bin/winmux-linux-x64" | cut -d' ' -f1)"; else echo "CLI missing"; fi
 if [ -f "$HOME/.winmux/tmux.conf" ]; then echo "CONF $(sha256sum "$HOME/.winmux/tmux.conf" | cut -d' ' -f1)"; else echo "CONF missing"; fi
-echo "CLAUDE $([ -d "$HOME/.claude" ] && echo yes || echo no)"
+echo "CLAUDE $(command -v claude >/dev/null 2>&1 && echo yes || echo no)"
 echo "HOOKSV $(sed -n 's/.*"hooks_version"[: ]*"\([^"]*\)".*/\1/p' "$HOME/.claude/settings.json" 2>/dev/null | head -1)"
 "#;
     let probe = tokio::time::timeout(
@@ -1152,6 +1160,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 | "InstallTmuxInWsl"
                 | "DeployWinmuxCliToWsl"
                 | "DeployTmuxConfToWsl"
+                | "InstallClaudeCodeInWsl"
                 // Was missing: it ran against a non-existent distro after
                 // a broken chain and — being the last card — ended the
                 // run on a green check.
@@ -1539,6 +1548,58 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 match deploy.await {
                     Ok(out) => Ok(out),
                     Err(e) => Err(ProvisioningError::Generic(e)),
+                }
+            }
+            "InstallClaudeCodeInWsl" => {
+                // The gap Yossi hit: the chain installed tmux, the CLI, the
+                // tmux conf and winmux's Claude HOOKS into the distro — but
+                // never Claude Code itself. `claude: command not found` in a
+                // brand-new WSL pane, with hooks registered for an agent that
+                // was not there.
+                //
+                // provisioning.rs:823 already does this for a remote host with
+                // the official installer; this is the same thing one transport
+                // over. Not `-u root`: the installer puts its binary and state
+                // under $HOME, and root's $HOME is not the user's.
+                //
+                // curl is not guaranteed on a minimal image (Ubuntu's WSL
+                // rootfs has it, other distros may not), so ensure it as root
+                // first — same package-manager ladder as InstallTmuxInWsl.
+                let ensure_curl = "if command -v curl >/dev/null 2>&1; then echo 'curl present'; \
+                                   elif command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl; \
+                                   elif command -v dnf >/dev/null 2>&1; then dnf -y install curl; \
+                                   elif command -v yum >/dev/null 2>&1; then yum -y install curl; \
+                                   elif command -v apk >/dev/null 2>&1; then apk add curl; \
+                                   else echo 'no known package manager'; exit 1; fi";
+                // Idempotent: an existing install short-circuits, so re-running
+                // the wizard costs one `command -v`.
+                let install = "if command -v claude >/dev/null 2>&1; then echo \"claude already installed: $(command -v claude)\"; exit 0; fi; \
+                               curl -fsSL https://claude.ai/install.sh | bash; \
+                               for d in \"$HOME/.local/bin\" \"$HOME/.claude/bin\"; do [ -d \"$d\" ] && PATH=\"$d:$PATH\"; done; \
+                               if command -v claude >/dev/null 2>&1; then echo \"claude installed: $(command -v claude)\"; \
+                               else echo 'installer finished but claude is still not on PATH'; exit 1; fi";
+                let run = async {
+                    let (code, out) =
+                        wsl_exec(distro.as_deref(), Some("root"), ensure_curl).await?;
+                    if code != 0 {
+                        return Ok::<_, String>((code, out));
+                    }
+                    wsl_exec(distro.as_deref(), None, install).await
+                };
+                // The installer downloads a release; 10 minutes matches the
+                // tmux step's allowance for a slow mirror.
+                match tokio::time::timeout(std::time::Duration::from_secs(600), run).await {
+                    Ok(Ok((0, out))) => Ok(out),
+                    Ok(Ok((code, out))) => Err(ProvisioningError::StepFailed {
+                        step: kind.into(),
+                        exit_code: code,
+                        stderr: out,
+                    }),
+                    Ok(Err(e)) => Err(ProvisioningError::Generic(e)),
+                    Err(_) => Err(ProvisioningError::Generic(
+                        "Claude Code install timed out — check the distro's network and retry"
+                            .into(),
+                    )),
                 }
             }
             "InstallHooksInWsl" => {

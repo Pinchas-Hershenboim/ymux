@@ -522,6 +522,7 @@
   "localSetup.step.InstallTmuxInWsl": "Установка tmux в WSL",
   "localSetup.step.DeployWinmuxCliToWsl": "Развёртывание winmux CLI в WSL",
   "localSetup.step.DeployTmuxConfToWsl": "Развёртывание конфигурации tmux",
+  "localSetup.step.InstallClaudeCodeInWsl": "Установка Claude Code внутри WSL",
   "localSetup.step.InstallHooksInWsl": "Установка хуков Claude внутри WSL",
   "localSetup.wsl.title": "Постоянная среда (WSL + tmux)",
   "localSetup.wsl.group": "Настроить постоянную среду tmux через WSL",
