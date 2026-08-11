@@ -27,6 +27,7 @@ import {
   IconFolder,
   IconGlobe,
   IconActivity,
+  IconBug,
   IconGitCompare,
 } from "./icons";
 import { createNarrow } from "./useNarrow";
@@ -37,6 +38,7 @@ import { CommandPalette, type Command } from "./CommandPalette";
 import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
 import { TicketModal } from "./TicketModal";
+import { TicketsPanel } from "./TicketsPanel";
 import { parseCapture, pendingCapture, setPendingCapture } from "./browserDevMode";
 import { FileManagerPane } from "./FileManagerPane";
 import { PanelSurface } from "./PanelSurface";
@@ -3071,6 +3073,16 @@ function App() {
                 <IconActivity />
                 <span class="ws-header-btn-label">{t("sidebar.insights.label")}</span>
               </button>
+              {/* Dev-Mode tickets. Local files, no connection needed —
+                  openPanel, not openPanelConnected. */}
+              <button
+                class="ws-header-btn"
+                title={t("sidebar.tickets.tooltip")}
+                onClick={() => openPanel("tickets")}
+              >
+                <IconBug />
+                <span class="ws-header-btn-label">{t("sidebar.tickets.label")}</span>
+              </button>
               {/* Feedback reorg: Notifications button lives at the header edge,
                   after Monitor. Moved here from the sidebar so all workspace
                   tools sit together. Badge shows the unread count. */}
@@ -3429,6 +3441,18 @@ function App() {
           const ws = activeWs();
           if (ws) setAddonsWin({ id: ws.id, name: ws.name });
         }}
+      />
+
+      {/* Dev-Mode tickets for the active workspace. Same drawer → float
+          → fullscreen lifecycle as the other side panels. */}
+      <TicketsPanel
+        surface={surfaceOf("tickets")}
+        workspaceId={file().active_workspace_id ?? undefined}
+        workspaceName={activeWs()?.name}
+        onClose={() => closePanel("tickets")}
+        onDrawer={() => openPanel("tickets")}
+        onFloat={() => floatPanel("tickets")}
+        onFullscreen={() => expandPanel("tickets")}
       />
 
       {/* Phase 68 (UX): per-workspace Add-ons window (from right-click). */}

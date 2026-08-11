@@ -346,6 +346,16 @@ pub async fn tickets_list(workspace_id: String) -> Result<Vec<Ticket>, String> {
     Ok(out)
 }
 
+/// Absolute path of a workspace's tickets folder, for "reveal in file
+/// manager". Created on demand so revealing works before the first
+/// ticket exists.
+#[tauri::command]
+pub async fn tickets_dir_path(workspace_id: String) -> Result<String, String> {
+    let dir = tickets_dir(&workspace_id)?;
+    ensure_dir(&dir)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub async fn tickets_create(workspace_id: String, data: NewTicket) -> Result<Ticket, String> {
     let dir = tickets_dir(&workspace_id)?;
