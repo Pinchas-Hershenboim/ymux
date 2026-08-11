@@ -25,6 +25,17 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-11 — Browser Dev Mode + Tickets (v2): LIVE SMOKE PENDING
+- **Context:** the feature existed already — 13 commits ending at `aefbba4` (Phase 54) — but **no branch contained them**; they were unreachable objects one `git gc` from gone. Rescued to `browser-dev-mode-tickets` (archive only). Yossi's call: do not restore Phase 54, redo tickets as a clean add-on that does not touch the existing browser. Rebuilt on `browser-tickets-v2` (5 commits, `3025f5e`..`7f7445b`). See PROGRESS.txt 2026-08-11.
+- **Why Phase 54 never worked:** its inspect script wrote the capture to `localStorage.__winmux_ticket__` in the child webview and nothing ever read it — one occurrence of that key in the tree, the write. No IPC existed to read it back.
+- **The one open risk:** the new bridge sends the capture as `location.href = "winmux-ticket:<base64url>"` and intercepts it in `on_navigation`. **Unverified live:** whether WebView2 fires `on_navigation` for an *unregistered* scheme. If it does not, the fallback is `on_web_resource_request` against a sentinel URL — same shape, one function swap. Nothing else in the chain is speculative; the Rust and TS sides are unit-tested.
+- **Smoke:** Browser → pick a port → Go → 🐞 Dev Mode → right-click an element → modal → save → Tickets panel lists it. Until that runs, this is "compiles, untested" per CLAUDE.md.
+
+### Decided at the same time (no separate thread needed)
+- **Tickets do NOT extend the Workspace schema.** Phase 54 added `dev_mode` + `project_path` to the struct (workspaces.json migration + 4 initializers + provisioning + rpc_server). Replaced with localStorage for the flag (the pattern BrowserWindow already uses for geometry/port/path/tabs) and `<config_dir>/tickets/<workspace_id>/` for storage. Side benefit: works for remote workspaces whose `cwd` is on another machine, and removes the SFTP folder picker and its `dialog:allow-open`.
+- **Phase 54's browser tabs are dead.** `main` shipped its own (`0d4e9a4`) two hours after `aefbba4` on the same day. Main's version wins; the archive's is not being ported.
+- **Capture is right-click**, not the archive's hover + left-click, which made the page unusable while Dev Mode was armed.
+
 ### 2026-07-17 — Redesign fidelity pass: LIVE SMOKE PENDING (rest closed)
 - **Context:** Yossi asked for a refinement pass on the shipped redesign themes: canvas fidelity, per-direction ANSI, secondary screens. Done on worktree branch `claude/winmux-redesign-13049b` (commits `9815835`, `fe60d57`, `83735a3`) — see PROGRESS.txt 2026-07-17 entry.
 - **The 2026-07-15 open sub-questions are now all closed:** (1) dark variants — exist since `c6276e6`, ANSI now per-direction (`fe60d57`); (2) structural-chrome depth — canvas-fidelity + secondary-surface passes landed; (3) fonts — soft apply (custom user font wins) since `96947f7`.

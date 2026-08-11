@@ -1632,3 +1632,94 @@ NOT A CODE BUG, worth recording: the same run also failed
 
 cargo test 266/0. The live proof above is the real verification — this
 interaction cannot be unit-tested.
+
+================================================================================
+2026-08-11  Browser Dev Mode + Tickets (v2) — branch browser-tickets-v2
+================================================================================
+
+FOUND FIRST (this is the headline): the feature was already built and then
+  LOST. 13 commits ending at aefbba4 ("Phase 54") implemented tickets +
+  dev mode + browser tabs + popout, ~2267 lines. No branch contained them
+  — `git branch -a --contains aefbba4` returned empty. They survived only
+  as unreachable objects and would have been collected by `git gc`.
+  Rescued to branch `browser-dev-mode-tickets` (archive, do not build on).
+
+WHY PHASE 54 NEVER WORKED — the capture went nowhere. Its inspect script
+  wrote the captured element to `localStorage.__winmux_ticket__` inside
+  the child webview, and NOTHING read it back. One occurrence of that key
+  in the whole tree: the write. `workspace_browser_eval` returns
+  Result<(), String> (fire-and-forget) and the child webview was built as
+  a bare `WebviewBuilder::new(label, External(url))` — no IPC, no
+  initialization_script. So there was no channel back at all. The only
+  path to the modal was manualCapture(), which opened a ticket with
+  selector/xpath/html all EMPTY.
+
+DECISION (Yossi): do NOT restore Phase 54. Don't touch the existing
+  browser. Re-do tickets as a clean add-on; salvage only tickets.rs /
+  TicketModal / TicketsPanel. Phase 54's browser tabs are superseded by
+  main's own (0d4e9a4, landed 2h AFTER aefbba4 the same day).
+
+WHAT SHIPPED (5 commits on browser-tickets-v2, off origin/main 9bd44bc):
+  3025f5e  tickets.rs + 4 commands, storage at
+           <config_dir>/tickets/<workspace_id>/ticket-*.json
+  3f9b36e  winmux-ticket: navigation bridge  <- the gap, closed
+  873e060  Dev Mode toggle + right-click capture
+  59cdae3  capture modal wired to browser:ticket-captured
+  7f7445b  tickets panel on the shared PanelSurface shell
+
+THE BRIDGE (the part that was missing). Tauri 2.10.3's WebviewBuilder has
+  no on_ipc — verified against the vendored crate source, not from
+  memory. What it does have is on_navigation(Fn(&Url) -> bool). So:
+    script:  location.href = "winmux-ticket:<base64url of JSON>"
+    rust:    on_navigation -> decode -> emit browser:ticket-captured
+                            -> return false (navigation never happens)
+  Every other URL returns true, i.e. the exact pre-existing code path.
+  ONE line added to the builder; no initialization_script, so ordinary
+  pages get zero injection.
+
+  Scheme is used WITHOUT "//" on purpose. Probed both forms:
+    winmux-ticket://AAAA  -> host_str=Some("AAAA")  path=""   <- lost
+    winmux-ticket:AAAA    -> host_str=None          path="AAAA"
+  The handler reads path(), so the authority form would have silently
+  dropped every capture. (A first draft of the code comment claimed the
+  "//" form corrupts base64 case — probed it, that is FALSE for
+  non-special schemes. Comment and test now state the real mechanism.)
+
+NO WORKSPACE SCHEMA CHANGE. Phase 54 added dev_mode + project_path to the
+  Workspace struct = workspaces.json migration + 4 initializers +
+  provisioning.rs + rpc_server.rs. Dropped entirely:
+    dev_mode     -> localStorage, the same pattern BrowserWindow already
+                    uses for geometry/port/path/tabs
+    project_path -> unnecessary; tickets live in config_dir like
+                    settings.json. Also works for remote workspaces whose
+                    cwd is on another machine, and kills the SFTP folder
+                    picker + the dialog:allow-open it needed.
+
+BLAST RADIUS ON THE EXISTING BROWSER: BrowserWindow.tsx +43/-1, and the
+  single deletion is its icons import line. Tabs, port+path, navigation,
+  geometry, show/hide untouched. All Dev Mode behaviour lives in the new
+  browserDevMode.ts.
+
+right-click (contextmenu), not Phase 54's hover+left-click — left-click
+  made the page unusable while Dev Mode was armed.
+
+Selector generation rewritten: walks up until querySelectorAll returns
+  exactly one node, adding :nth-of-type on sibling collisions. The
+  archive emitted `div.a.b.c` and hoped.
+
+Dropped the archive's export: it opened a save dialog, discarded the
+  path, then used a browser download-anchor. Replaced with Copy as
+  Markdown (clipboard) + reveal folder via revealItemInDir — both already
+  covered by opener:default, no new capability.
+
+VERIFIED: 186 Rust lib tests (14 new: 8 tickets, 6 bridge), tsc clean,
+  vite build clean, i18n 1026 keys x 4 locales zero drift.
+NOT VERIFIED: nothing has run live. The open risk is whether WebView2
+  fires on_navigation for an unregistered scheme — if it does not, the
+  fallback is on_web_resource_request against a sentinel URL. Smoke steps
+  are in the session report; per CLAUDE.md this stays "compiles,
+  untested" until Yossi runs it.
+
+Note for whoever picks this up: the worktree needed
+  app/src-tauri/resources/winmux-cli.exe staged before any cargo step
+  (gitignored). Copied it from the main checkout rather than rebuilding.
