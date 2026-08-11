@@ -25,6 +25,7 @@
 // Dev Mode off — normal browsing never carries any of it.
 
 import { invoke } from "@tauri-apps/api/core";
+import { createSignal } from "solid-js";
 import { createLogger } from "./logger";
 
 const log = createLogger("TICKETS");
@@ -85,6 +86,18 @@ export function parseCapture(value: unknown): ElementCapture | null {
   const xpath = str("xpath");
   if (!selector && !xpath) return null;
   return { url: str("url"), xpath, selector, html: str("html"), style };
+}
+
+/** The capture awaiting a description, or null when no ticket modal is
+ *  open. Module-level so App.tsx can fold it into `anyModalOpen()` (the
+ *  native browser webview paints above HTML and must be hidden while the
+ *  modal is up) without the browser component having to route it. */
+const [pendingCapture, setPendingCapture] = createSignal<PendingCapture | null>(null);
+export { pendingCapture, setPendingCapture };
+
+export interface PendingCapture {
+  workspaceId: string;
+  capture: ElementCapture;
 }
 
 /** Cap on captured markup. Keeps the sentinel URL small and bounds how
