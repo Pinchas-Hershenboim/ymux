@@ -237,8 +237,12 @@ fn decode_data_url_png(data_url: &str) -> Result<Vec<u8>, String> {
     base64_decode(b64)
 }
 
-/// Minimal base64 decoder — one caller, don't want to pull in a crate.
-fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+/// Minimal base64 decoder — didn't want to pull in a crate for this.
+/// Accepts both the standard (`+/`) and URL-safe (`-_`) alphabets and
+/// tolerates missing padding, so the browser bridge can hand us
+/// base64url straight out of the page. Shared with
+/// `workspace_browser`'s `winmux-ticket:` navigation bridge.
+pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     fn idx(b: u8) -> Result<u32, String> {
         match b {
             b'A'..=b'Z' => Ok(u32::from(b - b'A')),
