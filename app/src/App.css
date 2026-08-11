@@ -5467,6 +5467,16 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   cursor: pointer;
 }
 .bw-port-btn:hover { color: var(--w-text, #e6edf3); }
+/* Dev Mode toggle. Sits at the end of the port bar; the lit state has
+   to read at a glance because while it's on, right-click in the page is
+   taken over by the element picker. Matches the picker's overlay hue. */
+.bw-devmode-btn { margin-inline-start: 2px; }
+.bw-devmode-btn.active {
+  color: #e0567a;
+  border-color: #e0567a;
+  background: rgba(224, 86, 122, 0.12);
+}
+.bw-devmode-btn.active:hover { color: #e0567a; }
 .bw-port-server {
   flex: 0 0 auto;
   font-size: 12px;
