@@ -5773,6 +5773,28 @@ async fn pane_list_tmux_sessions(
 /// The `tmux list-sessions` half of `pane_list_tmux_sessions`, split out so the
 /// Phase 80 restore probe can reuse it over a handle it opened itself instead
 /// of one belonging to a live pane.
+/// Read the system clipboard as text, host-side.
+///
+/// Why this exists at all: in the terminal, Copy worked and Paste silently
+/// did nothing. `navigator.clipboard.writeText` is allowed in WebView2, but
+/// `readText` sits behind a clipboard-read permission the host has to grant
+/// and Tauri does not — so the promise rejected, and the only handler was a
+/// `console.warn` nobody sees. Reading here sidesteps the web permission
+/// model entirely.
+///
+/// Returns an empty string when the clipboard holds no text (an image, or
+/// nothing) — that is not an error, and the caller simply pastes nothing.
+#[tauri::command]
+fn clipboard_read_text() -> Result<String, String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| format!("clipboard open: {e}"))?;
+    match cb.get_text() {
+        Ok(t) => Ok(t),
+        // arboard reports "nothing here" as an error; the UI wants "".
+        Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+        Err(e) => Err(format!("clipboard read: {e}")),
+    }
+}
+
 /// tmux listing plus the session-meta side-car, in ONE round trip.
 ///
 /// Phase 81: the same call also fetches the server-side session-meta map
@@ -7182,6 +7204,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            clipboard_read_text,
             // Phase 68.B: add-on framework commands.
             addons::addon_list,
             addons::addon_install,

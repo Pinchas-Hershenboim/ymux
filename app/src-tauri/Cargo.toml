@@ -112,6 +112,13 @@ sysinfo = "0.32"
 bollard = { version = "0.17", default-features = false }
 # Direct dep for `StreamExt` on bollard's stats stream.
 futures-util = "0.3"
+# Reading the system clipboard. WebView2 allows navigator.clipboard.WRITE
+# but gates READ behind a permission the host has to grant, which Tauri
+# does not by default — so Copy worked in the terminal and Paste silently
+# rejected. A host-side read sidesteps the web permission entirely.
+# arboard rather than hand-rolled Win32: the same crate Tauri's own
+# clipboard plugin uses, and it keeps the macOS port working too.
+arboard = "3"
 
 # Font install (per-user, no admin): open the downloaded .ttf with the shell
 # for the guided fallback. Already in the tree via tauri-plugin-opener, so

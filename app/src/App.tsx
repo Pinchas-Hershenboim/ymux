@@ -44,6 +44,7 @@ import {
   TerminalInstance,
   copyTerminalSelection,
   pasteIntoActiveTerminal,
+  readClipboardText,
   setCtrlCCopyOnSelect,
   setMirrorArrowsRtl,
 } from "./terminalInstance";
@@ -2166,7 +2167,10 @@ function App() {
     }
     if (matches(e, sc.paste)) {
       e.preventDefault();
-      navigator.clipboard.readText().then((text) => {
+      // readClipboardText, not navigator.clipboard.readText: WebView2 denies
+      // clipboard READ (while allowing write), so this shortcut silently did
+      // nothing. Host-side read via the Rust command instead.
+      readClipboardText().then((text) => {
         if (text) pasteIntoActiveTerminal(text);
       }).catch((err) => log.warn("paste failed", err));
       return;
