@@ -27,6 +27,7 @@ import {
   IconFolder,
   IconGlobe,
   IconActivity,
+  IconBug,
   IconGitCompare,
 } from "./icons";
 import { createNarrow } from "./useNarrow";
@@ -36,6 +37,9 @@ import { SshKeyOfferModal } from "./SshKeyOfferModal";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
+import { TicketModal } from "./TicketModal";
+import { TicketsPanel } from "./TicketsPanel";
+import { parseCapture, pendingCapture, setPendingCapture } from "./browserDevMode";
 import { FileManagerPane } from "./FileManagerPane";
 import { PanelSurface } from "./PanelSurface";
 import type { Geometry } from "./floatingWindow";
@@ -480,7 +484,10 @@ function App() {
   // current rect once `anyModalOpen()` flips back to false.
   const anyModalOpen = () =>
     showSetup() !== false || editingWorkspace() !== null || showNotes() ||
-    showSettings() || showPalette() || showPortsWindow() || installingUpdate();
+    showSettings() || showPalette() || showPortsWindow() || installingUpdate() ||
+    // Dev-Mode ticket modal — same reason as the rest: the native
+    // Browser Webview paints above HTML and must be hidden for it.
+    pendingCapture() !== null;
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -2436,6 +2443,21 @@ function App() {
     // pane's terminal (input + resize) if its session is still live. If the
     // popout closed *because* of pty:exit, the exit handler above already
     // cleared the maps, so this is a no-op.
+    // Dev Mode: an element was right-clicked in a workspace Browser.
+    // The payload crossed a JSON boundary from an untrusted page, so it
+    // is narrowed before anything opens (see parseCapture).
+    unlistens.push(
+      await listen<unknown>("browser:ticket-captured", (e) => {
+        const raw = e.payload;
+        if (typeof raw !== "object" || raw === null) return;
+        const o = raw as Record<string, unknown>;
+        const wsId = typeof o.workspace_id === "string" ? o.workspace_id : "";
+        const capture = parseCapture(o.capture);
+        if (!wsId || !capture) return;
+        setPendingCapture({ workspaceId: wsId, capture });
+      }),
+    );
+
     unlistens.push(
       await listen<string>("popout:closed", (e) => {
         const sid = e.payload;
@@ -3112,6 +3134,16 @@ function App() {
                 <IconActivity />
                 <span class="ws-header-btn-label">{t("sidebar.insights.label")}</span>
               </button>
+              {/* Dev-Mode tickets. Local files, no connection needed —
+                  openPanel, not openPanelConnected. */}
+              <button
+                class="ws-header-btn"
+                title={t("sidebar.tickets.tooltip")}
+                onClick={() => openPanel("tickets")}
+              >
+                <IconBug />
+                <span class="ws-header-btn-label">{t("sidebar.tickets.label")}</span>
+              </button>
               {/* Feedback reorg: Notifications button lives at the header edge,
                   after Monitor. Moved here from the sidebar so all workspace
                   tools sit together. Badge shows the unread count. */}
@@ -3474,6 +3506,18 @@ function App() {
         }}
       />
 
+      {/* Dev-Mode tickets for the active workspace. Same drawer → float
+          → fullscreen lifecycle as the other side panels. */}
+      <TicketsPanel
+        surface={surfaceOf("tickets")}
+        workspaceId={file().active_workspace_id ?? undefined}
+        workspaceName={activeWs()?.name}
+        onClose={() => closePanel("tickets")}
+        onDrawer={() => openPanel("tickets")}
+        onFloat={() => floatPanel("tickets")}
+        onFullscreen={() => expandPanel("tickets")}
+      />
+
       {/* Phase 68 (UX): per-workspace Add-ons window (from right-click). */}
       <AddonsWindow
         open={!!addonsWin()}
@@ -3561,6 +3605,23 @@ function App() {
           return startForward(id, remotePort);
         }}
       />
+
+      {/* Dev Mode ticket capture. Opened by browser:ticket-captured;
+          folded into anyModalOpen() above so the Browser Webview is
+          hidden while it's up (it would otherwise paint over this). */}
+      <Show when={pendingCapture()}>
+        {(pc) => (
+          <TicketModal
+            workspaceId={pc().workspaceId}
+            capture={pc().capture}
+            onClose={() => setPendingCapture(null)}
+            onSaved={() => {
+              setPendingCapture(null);
+              flashSummaryToast("ok", t("browser.dev.captured"));
+            }}
+          />
+        )}
+      </Show>
 
       {/* Phase 58: voice-input recording indicator + error toast.
           Floating top-right, dismissible only by stopping the

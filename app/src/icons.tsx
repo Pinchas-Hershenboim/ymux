@@ -20,6 +20,7 @@ import {
   Ban,
   Bell,
   Bot,
+  Bug,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -99,6 +100,7 @@ export const IconBadgePlus = mk(BadgePlus);
 export const IconBan = mk(Ban);
 export const IconBell = mk(Bell);
 export const IconBot = mk(Bot);
+export const IconBug = mk(Bug);
 export const IconCheck = mk(Check);
 export const IconChevronDown = mk(ChevronDown);
 export const IconChevronLeft = mk(ChevronLeft);
