@@ -277,6 +277,12 @@ function App() {
   const [paneStatus, setPaneStatus] = createSignal<Record<string, PaneStatus>>({});
   // Live pane status text (e.g. "bootstrapping winmux…") set by backend events.
   const [paneStatusText, setPaneStatusText] = createSignal<Record<string, string>>({});
+  // issue #4 (winmux-tools chrome Ticker): per-pane agent turn timing. The
+  // backend emits pane:agent-run only on turn start/end; the label ticks
+  // locally off `pulseTick` (see agentRunLabel). startedAt=null → no live turn.
+  const [agentRuns, setAgentRuns] = createSignal<
+    Record<string, { startedAt: number | null; avgMs: number | null }>
+  >({});
   // cmux-A A1: pane_ids that received an OSC 9/99/777 notification and
   // haven't been focused since. Drives the amber pulse ring on the pane
   // + the sidebar aggregate badge. Cleared when the pane is focused.
@@ -965,6 +971,12 @@ function App() {
   const [pulseTick, setPulseTick] = createSignal(0);
   const pulseTimer = setInterval(() => setPulseTick((n) => n + 1), 250);
   onCleanup(() => clearInterval(pulseTimer));
+  // issue #4: a reactive wall-clock the Ticker label reads through, so the
+  // "M:SS" elapsed re-renders every pulse without any per-second backend event.
+  const agentClockMs = (): number => {
+    void pulseTick();
+    return Date.now();
+  };
   // Re-evaluate on tick — the closure reads pulseTick() so Solid tracks the dep.
   const activeHookWorkspaceIdsReactive = (): Set<string> => {
     void pulseTick();
@@ -2654,6 +2666,27 @@ function App() {
         setPaneStatusText(next);
       })
     );
+    // issue #4: per-pane agent turn timing for the chrome Ticker.
+    unlistens.push(
+      await listen<{
+        pane_id: string;
+        started_at: number | null;
+        avg_ms: number | null;
+        running: boolean;
+      }>("pane:agent-run", (e) => {
+        const next = { ...agentRuns() };
+        if (!e.payload.running && e.payload.avg_ms == null) {
+          // session-end / full clear
+          delete next[e.payload.pane_id];
+        } else {
+          next[e.payload.pane_id] = {
+            startedAt: e.payload.running ? e.payload.started_at : null,
+            avgMs: e.payload.avg_ms,
+          };
+        }
+        setAgentRuns(next);
+      })
+    );
     // Live refresh when an external mutation happens (RPC over named pipe).
     unlistens.push(
       await listen("workspaces:changed", () => {
@@ -3215,6 +3248,8 @@ function App() {
                     pendingHostTrust={pendingHostTrust()}
                     paneStatus={paneStatus()}
                     paneStatusText={paneStatusText()}
+                    agentRuns={agentRuns()}
+                    agentClockMs={agentClockMs}
                     panePersistence={panePersistence()}
                     ensureTerm={ensureTerm}
                     onFocus={(pid) => {

@@ -1721,3 +1721,157 @@ STILL NOT VERIFIED LIVE (both unrelated to WSL):
     Command Prompt, which only gets `chcp 65001` and has no PTY test.
   - Phase 81 transfer bar. WSL now gives a possible SFTP target
     (`sudo apt install openssh-server`).
+
+[2026-08-10] winmux-tools Half A — modular statuslines + session Ticker (issue #4)
+==================================================================
+TASK: GitHub issue #4 (Dina) — "ETA per Claude session" so she can decide
+  whether to go do dishes or stay. Yossi widened it: build winmux-tools/,
+  a modular home split into skills/ + statuslines/, decomposing the sabra
+  statusline monolith so components install/toggle independently.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+HALF A (this commit) — statuslines, pure JS, no winmux build needed:
+  A winmux-tools/statuslines/compose.js        (single statusLine command;
+      runs enabled modules from ./config, joins output)
+  A winmux-tools/statuslines/modules/model-dir.js   (model + cwd)
+  A winmux-tools/statuslines/modules/ctx-meter.js   (ctx bar; extracted verbatim)
+  A winmux-tools/statuslines/modules/sabra-badge.js (🌵 badge; extracted verbatim)
+  A winmux-tools/statuslines/modules/turn-ticker.js (⏱ elapsed + rolling avg)
+  A winmux-tools/statuslines/hooks/turn-state.js    (start/end/session-end;
+      per-session state at ~/.claude/winmux-tools/turn-state/<sid>.json)
+  A winmux-tools/statuslines/config
+  A winmux-tools/README.md
+
+DESIGN: turn boundaries from UserPromptSubmit(start)+Stop(end) — fires in
+  EVERY permission mode, unlike pre-tool-use which winmux-cli short-circuits
+  in acceptEdits/bypass (cli/src/main.rs:2153-2177). total_duration_ms is
+  whole-session incl. idle, so it can't express "this turn" — hence the
+  state file. Turns <2s (text-only) excluded from the average.
+
+VERIFIED (node, real runs):
+  - Composer parity: ctx-meter+model-dir+sabra-badge output is BYTE-IDENTICAL
+    to the original ~/.claude/sabra/statusline.js on the same payload.
+  - Ticker lifecycle: ⏱ counts mid-turn; avg appears after a completed turn;
+    a <2s turn does NOT move the average; session-end clears state.
+
+REMAINING (per approved plan C:\Users\...\plans\precious-sparking-iverson.md):
+  - Half A chrome ticker: winmux backend UserPromptSubmit hook + per-pane
+    agent_runs state + pane:agent-run event; frontend ticking label.
+  - Half B: skills registry + per-workspace deploy (model on addons.rs).
+  - statusLine deploy via apply_to_settings merge-writer (must preserve the
+    user's manual sabra statusLine/UserPromptSubmit entries).
+------------------------------------------------------------------
+
+[2026-08-10] winmux-tools Half A — chrome Ticker (winmux backend + frontend)
+==================================================================
+TASK: second surface for the issue #4 Ticker — a live per-pane label in the
+  winmux chrome (not just Claude's statusline), visible across panes.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+BACKEND:
+  M cli/src/hooks.rs                  (bundled spec: register UserPromptSubmit;
+      BUNDLED_CLAUDE_VERSION 1.2.0 -> 1.3.0)
+  M hooks/claude-code.json            (UserPromptSubmit event; version 1.3.0;
+      _notes entry)
+  M src/lib.rs                        (AgentRunState {turn_started_at, sum_ms,
+      count} + methods avg_ms/started_at_ms/record_turn; AppState.agent_runs;
+      emit_agent_run_event helper; 2 unit tests)
+  M src/rpc_server.rs                 (feed.push state machine: user-prompt-submit
+      = turn start [OFF the feed, early return]; stop = fold+emit; session-end
+      = clear+emit; emits pane:agent-run)
+FRONTEND:
+  M src/App.tsx                       (agentRuns signal + pane:agent-run listener
+      + agentClockMs reactive clock from pulseTick; pass to LayoutView)
+  M src/LayoutView.tsx                (thread agentRun + agentClockMs to PaneView)
+  M src/PaneView.tsx                  (agentRunLabel "⏱ M:SS · avg Ns" in header)
+  M src/App.css                       (.pane-agent-run, tabular-nums, right-pinned)
+
+DESIGN: turn-start = UserPromptSubmit (fires in every permission mode);
+  turn-end = Stop (already wired). user-prompt-submit is kept off the feed
+  (no card/toast) — it only updates agent_runs + emits pane:agent-run. The
+  frontend ticks M:SS locally off the 250ms pulseTick, so the backend emits
+  only on turn start/end, never per second.
+
+VERIFIED: cargo check --workspace clean (1 pre-existing unrelated warning in
+  insights_local.rs); tsc --noEmit clean; cargo test agent_run 2/2 pass
+  (avg excludes <2s turns, means the rest; started_at_ms).
+NOT VERIFIED LIVE: app.exe is running (blocks a real build/link here), so the
+  end-to-end wiring (hook -> RPC -> event -> label) is COMPILES-ONLY. Needs a
+  live winmux run on Yossi's machine + re-run setup-hooks (v1.3.0) to emit
+  UserPromptSubmit. The statusline Ticker (prior commit) IS fully node-verified
+  and shares the identical timing logic.
+
+REMAINING: Half B (skills registry + per-workspace deploy, model on addons.rs);
+  statusLine deploy via apply_to_settings; wire winmux setup to deploy
+  winmux-tools/ + point statusLine at compose.js (preserving sabra's entries).
+------------------------------------------------------------------
+2026-08-10 20:36 UTC — Half B: winmux-tools skills registry (Rust backend only)
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+BACKEND:
+  A app/src-tauri/src/skills.rs        (new module — 4 Tauri commands:
+      skills_list, skill_install, skill_uninstall, skills_installed.
+      Source registry: config_dir()/winmux-tools/skills/<name>/ [missing dir
+      = empty, not an error]. Local install = recursive fs copy into
+      dirs::home_dir()/.claude/skills/<name>/. Remote install = mkdir -p over
+      SSH exec() + per-file sftp_upload() into $HOME/.claude/skills/<name>/,
+      $HOME resolved via addons::remote_home(). Uninstall = rm -rf local dir
+      or remote `rm -rf`. skills_installed lists dir names under the
+      workspace's ~/.claude/skills/ [local: read_dir; remote: `ls -1`].
+      SkillInfo{name,files} derives Serialize + ts_rs::TS, same export
+      pattern as claude_usage::ModelUsage. valid_skill_name() whitelists
+      [A-Za-z0-9._-] and rejects "", ".", ".." before `name` ever reaches a
+      path join or a remote shell string — Rule #3 (name is user-influenced
+      and lands in `mkdir -p`/`rm -rf`). 2 unit tests on the validator
+      covering traversal + shell-metacharacter payloads.)
+  M app/src-tauri/src/addons.rs        (sftp_upload, remote_home: private ->
+      pub(crate) so skills.rs can reuse them; no behavior change)
+  M app/src-tauri/src/lib.rs           (mod skills; + 4 commands registered
+      in invoke_handler next to the addon_*/insights_* block)
+
+Frontend: NOT touched (out of scope for this half — frontend is being
+  written against this exact command contract in parallel).
+
+VERIFIED (real runs, not just compile):
+  - `cargo check --workspace` from app/src-tauri: clean. Only the two
+    pre-existing warnings noted in the task (ts-rs serde-attribute parse
+    warnings on unrelated structs, and the unused `Duration` import in
+    insights_local.rs) — no new warnings or errors from this change.
+  - `cargo test --lib skills::` : 3/3 pass — the 2 validator unit tests plus
+    ts-rs's auto-generated `export_bindings_skillinfo` test, which also
+    confirms app/src/bindings/SkillInfo.ts was written correctly
+    ({ name: string, files: number }).
+  - `cargo test --lib addons::` : 3/3 pass, unchanged — confirms making
+    sftp_upload/remote_home pub(crate) didn't disturb addons.rs.
+NOT VERIFIED LIVE: app.exe was running per task constraints, so no real
+  install/uninstall against a live local or SSH workspace was exercised —
+  compile + unit-test verified only, as scoped by this task.
+
+REMAINING (tracked in the Half A entry above, unchanged): statusLine deploy
+  via apply_to_settings; wire winmux setup to deploy winmux-tools/ + point
+  statusLine at compose.js. Frontend half of the skills registry (Settings UI
+  calling skills_list/skill_install/skill_uninstall/skills_installed) is a
+  separate in-flight task, not part of this change.
+------------------------------------------------------------------
+
+[2026-08-10] winmux-tools Half B — skills registry UI (frontend)
+==================================================================
+TASK: frontend for the skills registry (backend landed in bc505d2 via
+  implementer-tester). Settings panel to install/uninstall skills per-workspace.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+  A app/src/WinmuxToolsTab.tsx   (skills list + per-workspace install/uninstall,
+      modeled on AddonsTab; drives skills_list/skill_install/skill_uninstall/
+      skills_installed)
+  M app/src/SettingsModal.tsx    (import + render WinmuxToolsTab next to AddonsTab)
+
+VERIFIED: tsc --noEmit clean (caught + fixed a Set<unknown> inference bug).
+  app.exe now CLOSED (Yossi closed it) → running cargo build (dev link) +
+  vite build to confirm the whole thing links and bundles.
+
+REMAINING: B3 statusLine deploy (apply_to_settings merge-writer to point each
+  env's statusLine at compose.js + wire turn-state hooks, preserving sabra's
+  entries) — deferred/follow-up. Live end-to-end (ticker turn-timing with a
+  real Claude session; skill install onto a workspace) best verified in the
+  running app.
+------------------------------------------------------------------

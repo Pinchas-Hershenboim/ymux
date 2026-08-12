@@ -1,0 +1,10 @@
+# winmux-tools statusline config — edit by hand.
+# MODULES = comma-separated module names (in render order), from ./modules/.
+# Drop a name to hide it; reorder to rearrange the status line.
+MODULES=ctx-meter,model-dir,sabra-badge,turn-ticker
+
+# Per-module toggles (also readable from ~/.claude/sabra.conf for the legacy ones):
+#   SABRA_CTX=0        hide the context meter
+#   SABRA_CTX_STYLE=compact   show "42%" instead of the bar
+#   SABRA_BADGE=0      hide the 🌵 sabra badge
+#   WINMUX_TICKER=0    hide the session ticker

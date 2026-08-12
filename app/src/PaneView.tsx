@@ -108,6 +108,9 @@ interface Props {
   pendingHostTrust: HostTrustPending | null;
   status: { msg: string; err: boolean } | undefined;
   statusText?: string;
+  // issue #4: this pane's agent turn timing + a reactive clock for the Ticker.
+  agentRun?: { startedAt: number | null; avgMs: number | null };
+  agentClockMs?: () => number;
   // Phase 11.A: when this pane is bound to a tmux session, the name. Used
   // to render the "T" badge and to enable "Kill session" in the menu.
   tmuxSession?: string | null;
@@ -275,6 +278,25 @@ export function PaneView(p: Props) {
     if (sec < 3600) return `${Math.floor(sec / 60)}m`;
     if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
     return `${Math.floor(sec / 86400)}d`;
+  };
+  // issue #4: the Ticker label for this pane, e.g. "⏱ 3:10 · avg 40s".
+  // Live elapsed ticks off agentClockMs() (reactive via pulseTick); avg is
+  // fixed per turn. Empty string when the pane has no agent-run state.
+  const clockMMSS = (sec: number): string =>
+    `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  const agentRunLabel = (): string => {
+    const run = p.agentRun;
+    if (!run) return "";
+    const parts: string[] = [];
+    if (run.startedAt != null) {
+      const clock = p.agentClockMs?.() ?? Date.now();
+      parts.push(`⏱ ${clockMMSS(Math.max(0, Math.floor((clock - run.startedAt) / 1000)))}`);
+    }
+    if (run.avgMs != null) {
+      const a = Math.round(run.avgMs / 1000);
+      parts.push(`avg ${a < 60 ? `${a}s` : clockMMSS(a)}`);
+    }
+    return parts.join(" · ");
   };
   const loadNcSessions = async () => {
     setNcSessionsLoading(true);
@@ -893,6 +915,9 @@ export function PaneView(p: Props) {
         </Show>
         <Show when={p.statusText}>
           <span class="pane-status-text">{p.statusText}</span>
+        </Show>
+        <Show when={agentRunLabel()}>
+          <span class="pane-agent-run">{agentRunLabel()}</span>
         </Show>
         <button
           class="pane-btn"

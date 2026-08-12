@@ -1250,6 +1250,49 @@ async fn dispatch(
                     .unwrap_or("?")
             ));
 
+            // ── issue #4 (winmux-tools chrome Ticker): per-pane turn timing ──
+            // turn-start = UserPromptSubmit, turn-end = Stop, cleared on
+            // SessionEnd. UserPromptSubmit fires in EVERY permission mode
+            // (pre-tool-use does not — the CLI short-circuits it in
+            // acceptEdits/bypass), so it's the reliable turn boundary. It's
+            // kept OFF the feed entirely: it updates agent_runs, emits
+            // pane:agent-run, and returns before any FeedItem/toast is made.
+            // `stop`/`session-end` update the timing too but fall through to
+            // their existing handling below.
+            if let Some(pane) = pane_id.as_deref() {
+                match subkind.as_str() {
+                    "user-prompt-submit" => {
+                        let (started, avg) = {
+                            let mut runs = state.agent_runs.lock().unwrap();
+                            let e = runs.entry(pane.to_string()).or_default();
+                            e.turn_started_at = Some(SystemTime::now());
+                            (e.started_at_ms(), e.avg_ms())
+                        };
+                        crate::emit_agent_run_event(app, pane, started, avg);
+                        return Ok(json!({ "request_id": req_id, "decision": "passive" }));
+                    }
+                    "stop" => {
+                        let avg = {
+                            let mut runs = state.agent_runs.lock().unwrap();
+                            let e = runs.entry(pane.to_string()).or_default();
+                            if let Some(start) = e.turn_started_at.take() {
+                                if let Ok(d) = SystemTime::now().duration_since(start) {
+                                    e.record_turn(d.as_millis());
+                                }
+                            }
+                            e.avg_ms()
+                        };
+                        // started_at = None clears the live timer; avg persists.
+                        crate::emit_agent_run_event(app, pane, None, avg);
+                    }
+                    "session-end" => {
+                        state.agent_runs.lock().unwrap().remove(pane);
+                        crate::emit_agent_run_event(app, pane, None, None);
+                    }
+                    _ => {}
+                }
+            }
+
             let blocking = matches!(kind.as_str(), "permission_request");
 
             // ── Phase 66 (66.D): 3-state policy engine ──────────────────
