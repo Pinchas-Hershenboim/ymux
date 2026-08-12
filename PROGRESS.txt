@@ -1811,3 +1811,50 @@ NOT VERIFIED: nothing has run live. The open risk is whether WebView2
 Note for whoever picks this up: the worktree needed
   app/src-tauri/resources/winmux-cli.exe staged before any cargo step
   (gitignored). Copied it from the main checkout rather than rebuilding.
+
+--------------------------------------------------------------------------------
+2026-08-11 (later, same session)  CORRECTION: tickets DO belong to a project
+--------------------------------------------------------------------------------
+
+The entry above says "project_path -> unnecessary" and stores everything
+app-local. That was wrong and Yossi caught it: "why did you give up on the
+folder — how can this be associated with the specific project in a smarter
+way?" A ticket not attached to a repo is orphaned metadata; you cannot hand
+it to Claude Code in the right project, which is the entire point of
+capturing an element.
+
+What I conflated: Phase 54's problem was NOT "associate with a project", it
+was WHERE it put the field. `project_path` on the Workspace struct is what
+forced the workspaces.json migration + 4 initializers + provisioning.rs +
+rpc_server.rs + the SFTP folder picker. Putting it on the TICKET gets the
+association with zero schema movement. Both goals were always available.
+
+Fixed in c66703c. resolve_project() ladder, most specific first:
+  1. explicit override (localStorage, per workspace)
+  2. git_worktree
+  3. git root walked UP from cwd   <- the "smarter" part
+  4. cwd
+  5. nothing -> app-local
+Rung 3 matters: a pane usually sits in a subdir, so raw cwd would scatter
+tickets across subfolders of one repo. No git-root walker existed —
+diff_pane.rs:40 only checks `cwd/.git` without climbing — so it is new.
+
+Phase 54 opened a folder BROWSER for information the app already had. The
+workspace carries git_worktree + cwd + connection; asking was the bug.
+
+Write target by connection:
+  Local -> <project>/.winmux-tickets/
+  Wsl   -> same via \wsl.localhost\<distro>\... when that share resolves;
+           there is no path-translation helper in the tree, so this is new
+           and degrades to app-local when the share is not reachable
+  Ssh   -> app-local (project is on another machine); SFTP write deferred
+Every fallback still records project_path, so a ticket is attributable even
+when it could not be co-located.
+
+The modal calls tickets_resolve_project BEFORE saving and shows the
+destination on every capture — writing into a user's repo is never silent,
+and a fallback shows its reason. .gitignore is never touched.
+
+191 Rust tests (5 new: git walk from subdir, worktree .git-as-a-FILE,
+not-a-repo, WSL translation declining). tsc + vite clean. i18n 1027 x 4.
+Still NOT verified live — same open risk as before (on_navigation).
