@@ -1400,18 +1400,26 @@ async fn dispatch(
             {
                 let s = settings::load_from_disk().unwrap_or_default();
                 if hook_toast_enabled(&s.notifications, &s.hook_notifications, &subkind) {
+                    // beta.3 Fix 1: sound-gated by hook_notifications.
+                    let sound = hook_toast_should_sound(&s.hook_notifications, &subkind);
                     // v0.4.4: `stop` fires at the END OF EVERY TURN, so a toast
                     // per turn would be noise when the user is already watching
                     // winmux (they see the feed card + sidebar highlight).
-                    // Suppress the stop toast when the main window is focused;
-                    // still toast when winmux is in the background ("your turn"
-                    // while you're doing something else). SessionEnd (rare)
-                    // always toasts.
-                    let suppress_stop = subkind == "stop"
-                        && app
-                            .get_webview_window("main")
-                            .and_then(|w| w.is_focused().ok())
-                            .unwrap_or(false);
+                    // Historically we suppressed the stop toast whenever the main
+                    // window was focused — but that silently overrode an explicit
+                    // stop-SOUND opt-in: the user ticks "play a sound on Stop" and
+                    // then hears nothing while watching winmux. The OS couples a
+                    // native toast with its sound (no sound-only banner), so honor
+                    // the opt-in: if a Stop sound was requested, fire the full
+                    // notification even when focused. Only keep suppressing the
+                    // focused-window Stop toast when NO sound was requested, so the
+                    // anti-noise default still holds for everyone else. SessionEnd
+                    // (rare) always toasts.
+                    let main_focused = app
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_focused().ok())
+                        .unwrap_or(false);
+                    let suppress_stop = subkind == "stop" && main_focused && !sound;
                     if !suppress_stop {
                         // beta.3 Fix 2: resolve workspace name for the toast body.
                         let ws_name =
@@ -1422,8 +1430,6 @@ async fn dispatch(
                             &ws_name,
                             &s.i18n.language,
                         );
-                        // beta.3 Fix 1: sound-gated by hook_notifications.
-                        let sound = hook_toast_should_sound(&s.hook_notifications, &subkind);
                         show_toast_with_sound(&tt, &tb, sound);
                     }
                 }

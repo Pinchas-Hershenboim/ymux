@@ -1751,3 +1751,13 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    NOT safe to nuke: browser-tickets-v2 (ahead 10, touched today —
    possibly a live session), claude/winmux-github-issue-4-9233e2 (ahead
    7), wsl-parity (ahead 3). Left for Yossi to decide (merge/abandon).
+
+[2026-08-12 21:57 +0300] #2 follow-up — stop sound honored when focused (Yossi approved).
+   feed.push suppressed the stop toast+sound whenever the main window was
+   focused, silently overriding an explicit sound_types=[stop] opt-in — so
+   Yossi (who ticked stop-sound) heard nothing while watching winmux. OS
+   couples toast+sound (no sound-only native banner), so: suppress_stop now
+   = stop && focused && !sound. Opted-in stop-sound → full notification even
+   focused; no opt-in → anti-noise suppression unchanged. File:
+   rpc_server.rs. STILL needs live verify (build branch, run a turn with
+   winmux both focused and backgrounded).
