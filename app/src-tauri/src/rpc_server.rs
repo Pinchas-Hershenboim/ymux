@@ -1216,10 +1216,23 @@ async fn dispatch(
                 .get("pane_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            // The CLI hook push only carries `pane_id` (it has no cheap way to
+            // know the workspace). Derive the workspace from the pane when the
+            // client didn't send one — otherwise every hook feed item lands
+            // with workspace_id=None and the sidebar "something happened over
+            // there" pulse (App.tsx activeHookWorkspaceIds, which skips items
+            // with no workspace_id) can never fire on Stop. Mirrors how the
+            // pane.* handlers already resolve a pane's workspace.
             let workspace_id = params
                 .get("workspace_id")
                 .and_then(|v| v.as_str())
-                .map(String::from);
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .or_else(|| {
+                    pane_id.as_deref().and_then(|p| {
+                        find_workspace_for_pane(&state.workspaces.lock().unwrap(), p)
+                    })
+                });
             let title = params
                 .get("title")
                 .and_then(|v| v.as_str())
@@ -1291,16 +1304,16 @@ async fn dispatch(
                     ));
                     match verdict.decision {
                         winmux_policy::Decision::Auto => {
-                            push_policy_audit(
-                                state,
-                                app,
-                                &req_id,
-                                "policy-auto",
-                                &format!("✓ {tool_name}"),
-                                &verdict.reason,
-                                pane_id.clone(),
-                                workspace_id.clone(),
-                            );
+                            // Auto is the 99% common case (every safe Bash /
+                            // Write / Edit). Pushing a passive "✓ matched no
+                            // risky pattern" audit item for each one floods the
+                            // feed — a single session produced 300 unread dots,
+                            // which read as "winmux keeps asking me to ack
+                            // things". The forensic trail already lives in
+                            // debug.log (the log_debug line above), so DON'T
+                            // surface Auto in the feed. Block still audits
+                            // (rare + security-relevant). See FOLLOWUPS if an
+                            // opt-in audit view is ever wanted.
                             return Ok(json!({
                                 "request_id": req_id,
                                 "decision": "allow",

@@ -1721,3 +1721,33 @@ STILL NOT VERIFIED LIVE (both unrelated to WSL):
     Command Prompt, which only gets `chcp 65001` and has no PTY test.
   - Phase 81 transfer bar. WSL now gives a possible SFTP target
     (`sudo apt install openssh-server`).
+
+────────────────────────────────────────────────────────────────────
+[2026-08-12 20:39 +0300] Hooks feed-flood + Stop-pulse fixes (branch claude/hooks-animation-worktrees-6345b2)
+Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "too many worktrees".
+
+#1 FEED FLOOD (the real "never-ending hooks"): rpc_server.rs feed.push
+   pushed a passive audit item for EVERY Decision::Auto (safe Bash/Write/
+   Edit). One session = 300 "✓ matched no risky pattern" unread dots that
+   read as "winmux keeps asking me to ack things". Removed the Auto audit
+   push (the forensic trail already lives in debug.log via log_debug).
+   Block still audits (rare + security-relevant). policy_enabled was ON
+   the whole time — this was noise, never real blocking.
+   File: app/src-tauri/src/rpc_server.rs (Decision::Auto arm).
+
+#2 STOP PULSE DEAD PATH: hook feed items never carried workspace_id (CLI
+   push sends pane_id only; feed.push read workspace_id from params only,
+   never derived it). App.tsx activeHookWorkspaceIds skips items with no
+   workspace_id, so the sidebar "something happened over there" amber
+   pulse could NEVER fire on Stop. feed.push now derives workspace_id
+   from pane_id via find_workspace_for_pane when the client omits it
+   (mirrors the pane.* handlers). File: app/src-tauri/src/rpc_server.rs.
+   NOTE: pane-BORDER pulse is a separate OSC 9/99/777 path (Claude Code's
+   terminal bell) — untouched. NOT VERIFIED LIVE yet (needs a real winmux
+   pane running Claude + this build). cargo check -p winmux = clean.
+
+#3 WORKTREES: removed backlog-follow-up-review-5840fe (detached @
+   origin/main, clean — pure junk). Remaining 3 carry UNMERGED commits,
+   NOT safe to nuke: browser-tickets-v2 (ahead 10, touched today —
+   possibly a live session), claude/winmux-github-issue-4-9233e2 (ahead
+   7), wsl-parity (ahead 3). Left for Yossi to decide (merge/abandon).
