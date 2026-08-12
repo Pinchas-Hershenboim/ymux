@@ -6,12 +6,20 @@
 //! description. All CRUD flows through the four Tauri commands at the
 //! bottom.
 //!
-//! Storage is app-local, NOT project-local: tickets live under
-//! `<config_dir>/tickets/<workspace_id>/<ticket-id>.json`, alongside
-//! `settings.json` and `workspaces.json`. That deliberately avoids
-//! adding a `project_path` to the `Workspace` schema (which would mean
-//! a `workspaces.json` migration) and keeps tickets working for remote
-//! workspaces whose `cwd` lives on another machine.
+//! Tickets belong to a PROJECT, not just to a workspace — the whole
+//! point is to hand one to Claude Code inside the right repo. So when
+//! the workspace's project is reachable from this machine they are
+//! written to `<project>/.winmux-tickets/`; otherwise they fall back to
+//! `<config_dir>/tickets/<workspace_id>/` and still record the project
+//! path as metadata, so nothing is ever orphaned.
+//!
+//! The project is DERIVED, not asked for (see `resolve_project`). The
+//! workspace already carries everything needed: `git_worktree`, `cwd`
+//! and `connection`. Phase 54 put a `project_path` on the `Workspace`
+//! struct and made the user pick a folder through an SFTP browser —
+//! that meant a workspaces.json migration and a dialog for something
+//! the app already knew. Here `project_path` lives on the TICKET
+//! instead: every ticket is self-describing and no schema moves.
 //!
 //! Writes are atomic (`<name>.<pid>.tmp` then rename) per Rule #7 —
 //! never a partial ticket on disk.
@@ -28,8 +36,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{config_dir, log_debug, log_info, log_warn};
 
-/// Directory under `config_dir()` holding every workspace's tickets.
+/// Directory under `config_dir()` holding tickets that could not be
+/// written into their project (remote workspace, folder missing).
 const TICKETS_DIRNAME: &str = "tickets";
+
+/// Folder created inside a project to hold its tickets. Dot-prefixed so
+/// it sorts out of the way; committing it or gitignoring it is the
+/// user's call — we never touch their .gitignore.
+const PROJECT_DIRNAME: &str = ".winmux-tickets";
 
 #[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
@@ -67,10 +81,36 @@ pub struct Ticket {
     #[serde(default = "default_status")]
     pub status: String,
     pub workspace_id: String,
+    /// Project this ticket belongs to, as an absolute path. Recorded
+    /// even when the ticket had to be stored app-locally (remote
+    /// workspace), so it is always attributable to a repo. `None` only
+    /// when the workspace has no cwd and no worktree at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     /// Placeholder for a later auto-fix hand-off (Claude Code hint).
     /// Always serialized so the schema is stable.
     #[serde(default)]
     pub source_hint: Option<String>,
+}
+
+/// Where a workspace's tickets live, and why. Returned to the frontend
+/// so the capture modal can show the destination BEFORE saving — writing
+/// into someone's repo should never be a surprise.
+#[derive(Clone, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct ProjectResolution {
+    /// Absolute project root, when one could be derived.
+    pub project_path: Option<String>,
+    /// Directory tickets are actually written to.
+    pub tickets_dir: String,
+    /// True when `tickets_dir` is inside the project (the good case);
+    /// false when we fell back to app-local storage.
+    pub in_project: bool,
+    /// Which rung of the ladder produced `project_path`, for the UI to
+    /// explain itself: "override" | "worktree" | "git" | "cwd" | "none".
+    pub source: String,
+    /// Why we fell back, when `in_project` is false. Empty otherwise.
+    pub fallback_reason: String,
 }
 
 fn default_status() -> String {
@@ -110,19 +150,175 @@ fn valid_ws_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// `<config_dir>/tickets/<workspace_id>/`.
-fn tickets_dir(workspace_id: &str) -> Result<PathBuf, String> {
+/// App-local fallback: `<config_dir>/tickets/<workspace_id>/`.
+fn fallback_dir(workspace_id: &str) -> Result<PathBuf, String> {
     if !valid_ws_id(workspace_id) {
         return Err(format!("invalid workspace id {workspace_id:?}"));
     }
     Ok(config_dir()?.join(TICKETS_DIRNAME).join(workspace_id))
 }
 
-fn ticket_json_path(workspace_id: &str, id: &str) -> Result<PathBuf, String> {
+/// Walk up from `start` looking for a `.git` entry (file or directory —
+/// a worktree's `.git` is a file). Bounded so a pathological path can't
+/// spin. Returns the repo root, not the `.git` itself.
+fn git_root_of(start: &Path) -> Option<PathBuf> {
+    let mut cur = start;
+    for _ in 0..64 {
+        if cur.join(".git").exists() {
+            return Some(cur.to_path_buf());
+        }
+        cur = cur.parent()?;
+    }
+    None
+}
+
+/// Translate a WSL path to its Windows UNC form so tickets can be
+/// written into a WSL project from the Windows side. Only returns a
+/// path that actually exists — if the distro isn't running or the share
+/// isn't reachable, the caller falls back to app-local storage rather
+/// than failing the save.
+#[cfg(windows)]
+fn wsl_unc_path(distro: Option<&str>, linux_path: &str) -> Option<PathBuf> {
+    if !linux_path.starts_with('/') {
+        return None;
+    }
+    // Without an explicit distro we can't build a share name; the
+    // default-distro case falls back to app-local.
+    let distro = distro?;
+    let rel = linux_path.trim_start_matches('/').replace('/', "\\");
+    let unc = PathBuf::from(format!("\\\\wsl.localhost\\{distro}\\{rel}"));
+    if unc.exists() {
+        return Some(unc);
+    }
+    // Older Windows builds expose the same share as \\wsl$\<distro>.
+    let legacy = PathBuf::from(format!("\\\\wsl$\\{distro}\\{rel}"));
+    legacy.exists().then_some(legacy)
+}
+
+#[cfg(not(windows))]
+fn wsl_unc_path(_distro: Option<&str>, _linux_path: &str) -> Option<PathBuf> {
+    None
+}
+
+/// Derive the project for a workspace. Ladder, most-specific first:
+///   1. explicit override (the user pointed us somewhere)
+///   2. `git_worktree`
+///   3. git root walked up from `cwd` — a pane usually sits in a subdir
+///   4. `cwd` itself
+///   5. nothing
+///
+/// Whether we can WRITE there is a separate question, answered by the
+/// connection: Local is on this machine, Wsl may be via the UNC share,
+/// Ssh never is.
+fn resolve_project(
+    state: &crate::AppState,
+    workspace_id: &str,
+    override_path: Option<&str>,
+) -> Result<ProjectResolution, String> {
+    let fallback = fallback_dir(workspace_id)?;
+    let fallback_s = fallback.to_string_lossy().to_string();
+
+    // Snapshot what we need and drop the lock — no I/O while holding it.
+    let (cwd, worktree, conn) = {
+        let file = state.workspaces.lock().map_err(|e| e.to_string())?;
+        let ws = file
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| format!("no workspace {workspace_id}"))?;
+        (ws.cwd.clone(), ws.git_worktree.clone(), ws.connection.clone())
+    };
+
+    let override_path = override_path.map(str::trim).filter(|s| !s.is_empty());
+
+    let (project, source) = if let Some(o) = override_path {
+        (Some(PathBuf::from(o)), "override")
+    } else if let Some(wt) = worktree {
+        (Some(wt), "worktree")
+    } else if let Some(c) = cwd.as_deref().filter(|s| !s.is_empty()) {
+        match git_root_of(Path::new(c)) {
+            Some(root) => (Some(root), "git"),
+            None => (Some(PathBuf::from(c)), "cwd"),
+        }
+    } else {
+        (None, "none")
+    };
+
+    let Some(project) = project else {
+        return Ok(ProjectResolution {
+            project_path: None,
+            tickets_dir: fallback_s,
+            in_project: false,
+            source: source.to_string(),
+            fallback_reason: "workspace has no project folder".to_string(),
+        });
+    };
+    let project_s = project.to_string_lossy().to_string();
+
+    // Can we reach it from this machine?
+    let (writable, reason) = match &conn {
+        Some(winmux_types::Connection::Ssh { host, .. }) => (
+            None,
+            format!("project is on {host} — stored locally, still linked"),
+        ),
+        Some(winmux_types::Connection::Wsl { distro }) => {
+            match wsl_unc_path(distro.as_deref(), &project_s) {
+                Some(unc) => (Some(unc), String::new()),
+                None => (
+                    None,
+                    "WSL project not reachable from Windows — stored locally".to_string(),
+                ),
+            }
+        }
+        // Local, or a workspace with no connection recorded yet.
+        _ => {
+            if project.is_dir() {
+                (Some(project.clone()), String::new())
+            } else {
+                (None, "project folder not found on disk".to_string())
+            }
+        }
+    };
+
+    Ok(match writable {
+        Some(root) => ProjectResolution {
+            project_path: Some(project_s),
+            tickets_dir: root.join(PROJECT_DIRNAME).to_string_lossy().to_string(),
+            in_project: true,
+            source: source.to_string(),
+            fallback_reason: String::new(),
+        },
+        None => ProjectResolution {
+            project_path: Some(project_s),
+            tickets_dir: fallback_s,
+            in_project: false,
+            source: source.to_string(),
+            fallback_reason: reason,
+        },
+    })
+}
+
+/// Directory the tickets of a workspace live in, per `resolve_project`.
+fn tickets_dir(
+    state: &crate::AppState,
+    workspace_id: &str,
+    override_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(
+        resolve_project(state, workspace_id, override_path)?.tickets_dir,
+    ))
+}
+
+fn ticket_json_path(
+    state: &crate::AppState,
+    workspace_id: &str,
+    override_path: Option<&str>,
+    id: &str,
+) -> Result<PathBuf, String> {
     if !valid_id(id) {
         return Err(format!("invalid ticket id {id:?}"));
     }
-    Ok(tickets_dir(workspace_id)?.join(format!("{id}.json")))
+    Ok(tickets_dir(state, workspace_id, override_path)?.join(format!("{id}.json")))
 }
 
 fn png_filename_for(id: &str) -> String {
@@ -293,13 +489,12 @@ pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 
 // ─── listing ────────────────────────────────────────────────────────
 
-fn list_dir(workspace_id: &str) -> Result<Vec<Ticket>, String> {
-    let dir = tickets_dir(workspace_id)?;
+fn list_dir(dir: &Path) -> Result<Vec<Ticket>, String> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    let iter = fs::read_dir(&dir).map_err(|e| format!("read_dir {:?}: {e}", dir))?;
+    let iter = fs::read_dir(dir).map_err(|e| format!("read_dir {:?}: {e}", dir))?;
     for entry in iter {
         let entry = match entry {
             Ok(e) => e,
@@ -335,10 +530,31 @@ fn list_dir(workspace_id: &str) -> Result<Vec<Ticket>, String> {
 }
 
 // ─── Tauri commands ─────────────────────────────────────────────────
+//
+// Every command takes an optional `project_override`. It is the user's
+// per-workspace escape hatch (kept in localStorage on the frontend, so
+// no schema moves) and is fed through the same `resolve_project` ladder
+// as everything else — the frontend never picks the directory itself.
+
+/// Where this workspace's tickets go, and why. The capture modal calls
+/// this before saving so the destination is visible up front.
+#[tauri::command]
+pub async fn tickets_resolve_project(
+    state: tauri::State<'_, crate::AppState>,
+    workspace_id: String,
+    project_override: Option<String>,
+) -> Result<ProjectResolution, String> {
+    resolve_project(&state, &workspace_id, project_override.as_deref())
+}
 
 #[tauri::command]
-pub async fn tickets_list(workspace_id: String) -> Result<Vec<Ticket>, String> {
-    let out = list_dir(&workspace_id)?;
+pub async fn tickets_list(
+    state: tauri::State<'_, crate::AppState>,
+    workspace_id: String,
+    project_override: Option<String>,
+) -> Result<Vec<Ticket>, String> {
+    let dir = tickets_dir(&state, &workspace_id, project_override.as_deref())?;
+    let out = list_dir(&dir)?;
     log_debug(
         "TICKETS",
         &format!("list ws={} count={}", workspace_id, out.len()),
@@ -346,19 +562,28 @@ pub async fn tickets_list(workspace_id: String) -> Result<Vec<Ticket>, String> {
     Ok(out)
 }
 
-/// Absolute path of a workspace's tickets folder, for "reveal in file
-/// manager". Created on demand so revealing works before the first
-/// ticket exists.
+/// Absolute path of the tickets folder, for "reveal in file manager".
+/// Created on demand so revealing works before the first ticket exists.
 #[tauri::command]
-pub async fn tickets_dir_path(workspace_id: String) -> Result<String, String> {
-    let dir = tickets_dir(&workspace_id)?;
+pub async fn tickets_dir_path(
+    state: tauri::State<'_, crate::AppState>,
+    workspace_id: String,
+    project_override: Option<String>,
+) -> Result<String, String> {
+    let dir = tickets_dir(&state, &workspace_id, project_override.as_deref())?;
     ensure_dir(&dir)?;
     Ok(dir.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-pub async fn tickets_create(workspace_id: String, data: NewTicket) -> Result<Ticket, String> {
-    let dir = tickets_dir(&workspace_id)?;
+pub async fn tickets_create(
+    state: tauri::State<'_, crate::AppState>,
+    workspace_id: String,
+    project_override: Option<String>,
+    data: NewTicket,
+) -> Result<Ticket, String> {
+    let resolved = resolve_project(&state, &workspace_id, project_override.as_deref())?;
+    let dir = PathBuf::from(&resolved.tickets_dir);
     ensure_dir(&dir)?;
     let id = make_ticket_id();
 
@@ -383,21 +608,25 @@ pub async fn tickets_create(workspace_id: String, data: NewTicket) -> Result<Tic
         description: data.description,
         status: default_status(),
         workspace_id: workspace_id.clone(),
+        // Recorded even when we stored app-locally, so the ticket still
+        // points at the repo it is about.
+        project_path: resolved.project_path.clone(),
         source_hint: None,
     };
     let json = serde_json::to_vec_pretty(&ticket).map_err(|e| format!("serialize ticket: {e}"))?;
-    write_atomic(&ticket_json_path(&workspace_id, &id)?, &json)?;
+    write_atomic(&dir.join(format!("{id}.json")), &json)?;
 
-    // Rule #1: lengths, never the captured markup or the selector text.
+    // Rule #1: lengths and routing, never the captured markup.
     log_info(
         "TICKETS",
         &format!(
-            "created id={} ws={} selector_len={} html_len={} shot={}",
+            "created id={} ws={} in_project={} src={} selector_len={} html_len={}",
             id,
             workspace_id,
+            resolved.in_project,
+            resolved.source,
             ticket.element.selector.len(),
-            ticket.element.html.len(),
-            ticket.screenshot_path.is_some()
+            ticket.element.html.len()
         ),
     );
     Ok(ticket)
@@ -405,14 +634,16 @@ pub async fn tickets_create(workspace_id: String, data: NewTicket) -> Result<Tic
 
 #[tauri::command]
 pub async fn tickets_update(
+    state: tauri::State<'_, crate::AppState>,
     workspace_id: String,
+    project_override: Option<String>,
     id: String,
     status: String,
 ) -> Result<(), String> {
     if status != "open" && status != "resolved" {
         return Err(format!("invalid status {status:?}"));
     }
-    let path = ticket_json_path(&workspace_id, &id)?;
+    let path = ticket_json_path(&state, &workspace_id, project_override.as_deref(), &id)?;
     let text = fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
     let mut ticket: Ticket =
         serde_json::from_str(&text).map_err(|e| format!("parse ticket {id}: {e}"))?;
@@ -427,13 +658,22 @@ pub async fn tickets_update(
 }
 
 #[tauri::command]
-pub async fn tickets_delete(workspace_id: String, id: String) -> Result<(), String> {
-    let path = ticket_json_path(&workspace_id, &id)?;
+pub async fn tickets_delete(
+    state: tauri::State<'_, crate::AppState>,
+    workspace_id: String,
+    project_override: Option<String>,
+    id: String,
+) -> Result<(), String> {
+    let dir = tickets_dir(&state, &workspace_id, project_override.as_deref())?;
+    if !valid_id(&id) {
+        return Err(format!("invalid ticket id {id:?}"));
+    }
     // Also drop the sibling screenshot, if any.
-    let png = tickets_dir(&workspace_id)?.join(png_filename_for(&id));
+    let png = dir.join(png_filename_for(&id));
     if png.exists() {
         let _ = fs::remove_file(&png);
     }
+    let path = dir.join(format!("{id}.json"));
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("remove {:?}: {e}", path))?;
     }
@@ -481,6 +721,51 @@ mod tests {
         assert!(!valid_ws_id("a/b"));
         assert!(!valid_ws_id("a.b"));
         assert!(!valid_ws_id(""));
+    }
+
+    #[test]
+    fn git_root_walks_up_from_a_subdir() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        let deep = root.join("app").join("src").join("components");
+        fs::create_dir_all(&deep).unwrap();
+        // A pane sitting three levels in must still resolve to the repo
+        // root — this is the whole reason we walk instead of using cwd.
+        assert_eq!(git_root_of(&deep).as_deref(), Some(root));
+        assert_eq!(git_root_of(root).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn git_root_finds_worktree_dot_git_file() {
+        // In a linked worktree `.git` is a FILE, not a directory.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        fs::write(root.join(".git"), "gitdir: /somewhere/.git/worktrees/x").unwrap();
+        let sub = root.join("src");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(git_root_of(&sub).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn git_root_is_none_outside_a_repo() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let deep = tmp.path().join("a").join("b");
+        fs::create_dir_all(&deep).unwrap();
+        // tempdir lives under the system temp root, which is not a repo.
+        assert!(git_root_of(&deep).is_none());
+    }
+
+    #[test]
+    fn wsl_unc_rejects_relative_and_missing_distro() {
+        // Non-absolute linux path is never translatable.
+        assert!(wsl_unc_path(Some("Ubuntu"), "home/u/p").is_none());
+        // Default distro (None) has no share name to build.
+        assert!(wsl_unc_path(None, "/home/u/p").is_none());
+        // A distro that cannot exist resolves to a path that does not
+        // exist, so translation declines rather than handing back a
+        // bogus destination.
+        assert!(wsl_unc_path(Some("no-such-distro-zzz"), "/home/u/p").is_none());
     }
 
     #[test]

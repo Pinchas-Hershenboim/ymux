@@ -17,6 +17,13 @@ screenshot_path: string | null, description: string,
  */
 status: string, workspace_id: string, 
 /**
+ * Project this ticket belongs to, as an absolute path. Recorded
+ * even when the ticket had to be stored app-locally (remote
+ * workspace), so it is always attributable to a repo. `None` only
+ * when the workspace has no cwd and no worktree at all.
+ */
+project_path: string | null, 
+/**
  * Placeholder for a later auto-fix hand-off (Claude Code hint).
  * Always serialized so the schema is stable.
  */

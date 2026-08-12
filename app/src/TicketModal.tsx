@@ -1,9 +1,10 @@
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createResource, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
-import { IconBug, IconClose } from "./icons";
-import type { ElementCapture } from "./browserDevMode";
+import { IconBug, IconClose, IconWarning } from "./icons";
+import { loadProjectOverride, type ElementCapture } from "./browserDevMode";
 import type { Ticket } from "./bindings/Ticket";
+import type { ProjectResolution } from "./bindings/ProjectResolution";
 
 // Finalizes a captured element into a ticket on disk.
 //
@@ -26,6 +27,18 @@ export function TicketModal(p: Props) {
   const [error, setError] = createSignal<string | null>(null);
   const [showHtml, setShowHtml] = createSignal(false);
 
+  // Resolve the destination BEFORE saving and show it. Writing into
+  // someone's repo should never be a surprise, and when we cannot (a
+  // remote workspace) the reason has to be visible, not silent.
+  const [dest] = createResource(
+    () => p.workspaceId,
+    (ws) =>
+      invoke<ProjectResolution>("tickets_resolve_project", {
+        workspaceId: ws,
+        projectOverride: loadProjectOverride(ws),
+      }),
+  );
+
   // Esc closes. Captured on the window so it wins over the page-level
   // shortcut handler, and stopped so it doesn't also reach it.
   onMount(() => {
@@ -46,6 +59,7 @@ export function TicketModal(p: Props) {
     try {
       const created = await invoke<Ticket>("tickets_create", {
         workspaceId: p.workspaceId,
+        projectOverride: loadProjectOverride(p.workspaceId),
         data: {
           url: p.capture.url,
           element: {
@@ -148,6 +162,34 @@ export function TicketModal(p: Props) {
               autofocus
             />
           </div>
+
+          {/* Destination. Shown for every save, not just the fallback —
+              the project association is the point of the ticket. */}
+          <Show when={dest()}>
+            {(d) => (
+              <div class="ticket-modal-field">
+                <span class="ticket-modal-label">
+                  {t("tickets.modal.project")}
+                </span>
+                <Show
+                  when={d().in_project}
+                  fallback={
+                    <div class="ticket-modal-fallback">
+                      <IconWarning size={13} />
+                      <div>
+                        <div>{d().fallback_reason}</div>
+                        <code class="ticket-modal-code">{d().tickets_dir}</code>
+                      </div>
+                    </div>
+                  }
+                >
+                  <code class="ticket-modal-code" title={d().tickets_dir}>
+                    {d().tickets_dir}
+                  </code>
+                </Show>
+              </div>
+            )}
+          </Show>
 
           <Show when={error()}>
             <div class="ticket-modal-err" role="alert">

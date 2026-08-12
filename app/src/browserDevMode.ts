@@ -52,6 +52,35 @@ export function saveDevMode(workspaceId: string, on: boolean): void {
   }
 }
 
+/** Per-workspace project override for tickets. Empty/absent means "let
+ *  the backend derive it" — which is the normal case. Kept here (not on
+ *  the Workspace schema) for the same reason as the Dev Mode flag: no
+ *  workspaces.json migration for a per-machine preference. The backend
+ *  still owns the resolution ladder; this is only the top rung. */
+const PROJECT_OVERRIDE_KEY = (workspaceId: string) =>
+  `winmux.tickets-project.${workspaceId}`;
+
+export function loadProjectOverride(workspaceId: string): string | null {
+  try {
+    const v = localStorage.getItem(PROJECT_OVERRIDE_KEY(workspaceId));
+    return v && v.trim() ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveProjectOverride(workspaceId: string, path: string | null): void {
+  try {
+    if (path && path.trim()) {
+      localStorage.setItem(PROJECT_OVERRIDE_KEY(workspaceId), path.trim());
+    } else {
+      localStorage.removeItem(PROJECT_OVERRIDE_KEY(workspaceId));
+    }
+  } catch {
+    /* private mode / quota */
+  }
+}
+
 /** Shape the injected script produces, and therefore the shape the Rust
  *  bridge round-trips to `browser:ticket-captured`. */
 export interface ElementCapture {

@@ -4,6 +4,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { t } from "./i18n";
 import { IconBug, IconCheck, IconRefresh, IconTrash, IconFolder } from "./icons";
 import { PanelSurface } from "./PanelSurface";
+import { loadProjectOverride } from "./browserDevMode";
 import { createLogger } from "./logger";
 import type { Surface } from "./panels";
 import type { Ticket } from "./bindings/Ticket";
@@ -46,7 +47,12 @@ export function TicketsPanel(p: Props) {
     setLoading(true);
     setError(null);
     try {
-      setItems(await invoke<Ticket[]>("tickets_list", { workspaceId: ws }));
+      setItems(
+        await invoke<Ticket[]>("tickets_list", {
+          workspaceId: ws,
+          projectOverride: loadProjectOverride(ws),
+        }),
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -74,6 +80,7 @@ export function TicketsPanel(p: Props) {
     try {
       await invoke("tickets_update", {
         workspaceId: tk.workspace_id,
+        projectOverride: loadProjectOverride(tk.workspace_id),
         id: tk.id,
         status: next,
       });
@@ -85,7 +92,11 @@ export function TicketsPanel(p: Props) {
 
   const deleteOne = async (tk: Ticket) => {
     try {
-      await invoke("tickets_delete", { workspaceId: tk.workspace_id, id: tk.id });
+      await invoke("tickets_delete", {
+        workspaceId: tk.workspace_id,
+        projectOverride: loadProjectOverride(tk.workspace_id),
+        id: tk.id,
+      });
       if (selectedId() === tk.id) setSelectedId(null);
       await load();
     } catch (e) {
@@ -106,6 +117,7 @@ export function TicketsPanel(p: Props) {
       `- Status: **${tk.status}**`,
       `- Created: ${tk.created}`,
       `- URL: ${tk.url}`,
+      ...(tk.project_path ? [`- Project: ${tk.project_path}`] : []),
       "",
       "## Description",
       "",
@@ -146,7 +158,10 @@ export function TicketsPanel(p: Props) {
     const ws = p.workspaceId;
     if (!ws) return;
     try {
-      const dir = await invoke<string>("tickets_dir_path", { workspaceId: ws });
+      const dir = await invoke<string>("tickets_dir_path", {
+        workspaceId: ws,
+        projectOverride: loadProjectOverride(ws),
+      });
       await revealItemInDir(dir);
     } catch (e) {
       log.warn("reveal tickets dir failed", e);

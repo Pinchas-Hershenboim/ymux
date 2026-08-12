@@ -439,6 +439,7 @@
   "tickets.modal.title": "New ticket",
   "tickets.modal.url": "Page",
   "tickets.modal.selector": "Element",
+  "tickets.modal.project": "Saved to",
   "tickets.modal.description": "What's wrong?",
   "tickets.modal.descPlaceholder": "Describe the problem with this element…",
   "tickets.modal.save": "Create ticket",

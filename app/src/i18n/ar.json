@@ -439,6 +439,7 @@
   "tickets.modal.title": "تذكرة جديدة",
   "tickets.modal.url": "الصفحة",
   "tickets.modal.selector": "العنصر",
+  "tickets.modal.project": "يُحفظ في",
   "tickets.modal.description": "ما المشكلة؟",
   "tickets.modal.descPlaceholder": "صف المشكلة في هذا العنصر…",
   "tickets.modal.save": "إنشاء تذكرة",

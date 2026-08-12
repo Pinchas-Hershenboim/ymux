@@ -439,6 +439,7 @@
   "tickets.modal.title": "כרטיס חדש",
   "tickets.modal.url": "עמוד",
   "tickets.modal.selector": "אלמנט",
+  "tickets.modal.project": "נשמר אל",
   "tickets.modal.description": "מה הבעיה?",
   "tickets.modal.descPlaceholder": "תאר את הבעיה באלמנט הזה…",
   "tickets.modal.save": "צור כרטיס",

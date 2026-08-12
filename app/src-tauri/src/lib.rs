@@ -7224,6 +7224,7 @@ pub fn run() {
             workspace_browser::workspace_browser_close,
             workspace_browser::workspace_browser_resize,
             tickets::tickets_list,
+            tickets::tickets_resolve_project,
             tickets::tickets_dir_path,
             tickets::tickets_create,
             tickets::tickets_update,
