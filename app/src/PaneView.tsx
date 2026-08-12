@@ -3,7 +3,7 @@ import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
-import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective } from "./types";
+import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
 import { createLogger } from "./logger";
@@ -208,6 +208,11 @@ export function PaneView(p: Props) {
   // connection first (set on wired Terminal panes), then fall back to
   // the workspace's canonical connection so SSH-only menu items
   // (tmux) show up from FM / Browser / Chat panes too.
+  // What the pane's effective target CAN DO (own connection > workspace).
+  const caps = () => paneCaps(p.pane, p.workspaceConnection);
+  // Kept for the genuinely SSH-only bits — the SFTP directory picker, which
+  // has no WSL backend yet. Do not reach for this to answer "does it have
+  // tmux" or "can I exec there"; that is what `caps()` is for.
   const isSsh = () => isRemoteEffective(p.pane, p.workspaceConnection);
   const isTmux = () => !!p.tmuxSession;
   // Phase 12.B Smart Connect — the "open in directory" text-input fallback
@@ -456,11 +461,17 @@ export function PaneView(p: Props) {
       void loadNcSessions();
     }
   });
-  // v0.4.4-beta.2: SMART [Connect]. Arm SSH headlessly → probe tmux → branch:
-  // live sessions → picker; otherwise a plain regular shell. Local (non-SSH)
-  // workspaces have no tmux, so they connect straight away.
+  // v0.4.4-beta.2: SMART [Connect]. Arm the target headlessly → probe tmux →
+  // branch: live sessions → picker; otherwise a plain regular shell. A target
+  // with no tmux (a Windows shell) connects straight away.
+  //
+  // Gated on tmuxPersistence, not "is it SSH". A WSL pane keeps tmux sessions
+  // like a remote one, and the old `!isSsh()` branch connected it with
+  // `persistent: false` — i.e. no tmux at all. That silently defeated session
+  // restore at the source: there was never a session left behind to come back
+  // to, no matter what the restore loop did on the next boot.
   const smartConnect = async () => {
-    if (!isSsh()) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
+    if (!caps().tmuxPersistence) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
     setConnectProbing(true);
     try {
       // Idempotent, PTY-free, tmux-free; no-ops on password-auth (can't prompt
@@ -473,7 +484,12 @@ export function PaneView(p: Props) {
       if (list.length > 0) {
         setTmuxPick(list);
       } else {
-        p.onConnect(p.pane.pane_id, { persistent: false });
+        // Omit `persistent` rather than forcing false: the backend applies
+        // the target's own default (SSH false, WSL true — pane_connect).
+        // Forcing false here meant a fresh WSL pane came up WITHOUT tmux, so
+        // nothing was ever left behind and the next boot had nothing to
+        // restore. SSH behaviour is unchanged — its default is false anyway.
+        p.onConnect(p.pane.pane_id, {});
       }
     } finally {
       setConnectProbing(false);
@@ -484,7 +500,9 @@ export function PaneView(p: Props) {
   const pickTmuxSession = (name: string | null) => {
     setTmuxPick(null);
     if (name) p.onConnect(p.pane.pane_id, { persistent: true, tmuxSession: name });
-    else p.onConnect(p.pane.pane_id, { persistent: false });
+    // "None of these" → the target's default persistence, same reasoning as
+    // smartConnect above.
+    else p.onConnect(p.pane.pane_id, {});
   };
   // Translate the modal's choices into a single ConnectOpts and connect.
   const submitNewConn = () => {

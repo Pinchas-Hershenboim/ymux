@@ -522,6 +522,7 @@
   "localSetup.step.InstallTmuxInWsl": "تثبيت tmux في WSL",
   "localSetup.step.DeployWinmuxCliToWsl": "نشر winmux CLI في WSL",
   "localSetup.step.DeployTmuxConfToWsl": "نشر إعدادات tmux",
+  "localSetup.step.InstallClaudeCodeInWsl": "تثبيت Claude Code داخل WSL",
   "localSetup.step.InstallHooksInWsl": "تثبيت خطافات Claude داخل WSL",
   "localSetup.wsl.title": "بيئة دائمة (WSL + tmux)",
   "localSetup.wsl.group": "إعداد بيئة tmux دائمة عبر WSL",

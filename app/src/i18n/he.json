@@ -522,6 +522,7 @@
   "localSetup.step.InstallTmuxInWsl": "התקנת tmux ב-WSL",
   "localSetup.step.DeployWinmuxCliToWsl": "פריסת ה-CLI של winmux ל-WSL",
   "localSetup.step.DeployTmuxConfToWsl": "פריסת תצורת ה-tmux",
+  "localSetup.step.InstallClaudeCodeInWsl": "התקנת Claude Code בתוך WSL",
   "localSetup.step.InstallHooksInWsl": "התקנת hooks של Claude בתוך WSL",
   "localSetup.wsl.title": "סביבה מתמידה (WSL + tmux)",
   "localSetup.wsl.group": "הקמת סביבת tmux מתמידה דרך WSL",
