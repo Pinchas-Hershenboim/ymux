@@ -440,6 +440,8 @@
   "tickets.modal.url": "עמוד",
   "tickets.modal.selector": "אלמנט",
   "tickets.modal.project": "נשמר אל",
+  "tickets.modal.shot.include": "צרף צילום מסך",
+  "tickets.modal.shot.alt": "צילום מסך של האלמנט שנלכד",
   "tickets.modal.description": "מה הבעיה?",
   "tickets.modal.descPlaceholder": "תאר את הבעיה באלמנט הזה…",
   "tickets.modal.save": "צור כרטיס",

@@ -26,6 +26,9 @@ export function TicketModal(p: Props) {
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [showHtml, setShowHtml] = createSignal(false);
+  // The snapshot is taken at right-click time, before this modal exists,
+  // so the choice here is whether to KEEP it — not whether to take it.
+  const [includeShot, setIncludeShot] = createSignal(true);
 
   // Resolve the destination BEFORE saving and show it. Writing into
   // someone's repo should never be a surprise, and when we cannot (a
@@ -68,7 +71,7 @@ export function TicketModal(p: Props) {
             html: p.capture.html,
             style: p.capture.style,
           },
-          screenshot_data_url: null,
+          screenshot_data_url: includeShot() ? p.capture.shot : null,
           description: description(),
         },
       });
@@ -117,6 +120,30 @@ export function TicketModal(p: Props) {
               {p.capture.selector || "—"}
             </code>
           </div>
+
+          <Show when={p.capture.shot}>
+            {(shot) => (
+              <div class="ticket-modal-field">
+                <label class="ticket-modal-check">
+                  <input
+                    type="checkbox"
+                    checked={includeShot()}
+                    onChange={(e) => setIncludeShot(e.currentTarget.checked)}
+                  />
+                  {t("tickets.modal.shot.include")}
+                </label>
+                <Show when={includeShot()}>
+                  {/* Rendered by the page, so it can be anything — it is
+                      only ever shown as an image, never executed. */}
+                  <img
+                    class="ticket-modal-shot"
+                    src={shot()}
+                    alt={t("tickets.modal.shot.alt")}
+                  />
+                </Show>
+              </div>
+            )}
+          </Show>
 
           <Show when={p.capture.html}>
             <div class="ticket-modal-field">

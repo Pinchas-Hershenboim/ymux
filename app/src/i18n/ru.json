@@ -440,6 +440,8 @@
   "tickets.modal.url": "Страница",
   "tickets.modal.selector": "Элемент",
   "tickets.modal.project": "Сохранится в",
+  "tickets.modal.shot.include": "Приложить скриншот",
+  "tickets.modal.shot.alt": "Скриншот захваченного элемента",
   "tickets.modal.description": "В чём проблема?",
   "tickets.modal.descPlaceholder": "Опишите проблему с этим элементом…",
   "tickets.modal.save": "Создать тикет",

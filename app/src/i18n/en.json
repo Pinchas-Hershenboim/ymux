@@ -440,6 +440,8 @@
   "tickets.modal.url": "Page",
   "tickets.modal.selector": "Element",
   "tickets.modal.project": "Saved to",
+  "tickets.modal.shot.include": "Attach screenshot",
+  "tickets.modal.shot.alt": "Screenshot of the captured element",
   "tickets.modal.description": "What's wrong?",
   "tickets.modal.descPlaceholder": "Describe the problem with this element…",
   "tickets.modal.save": "Create ticket",

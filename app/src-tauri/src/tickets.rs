@@ -650,6 +650,34 @@ pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Standard-alphabet base64 WITH padding — the inverse of
+/// `base64_decode`, used to hand a stored PNG back to the webview as a
+/// `data:` URL. Kept here for the same reason as the decoder: one
+/// caller, not worth a crate.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPH: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let v = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPH[(v >> 18) as usize & 63] as char);
+        out.push(ALPH[(v >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(ALPH[(v >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPH[v as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 // ─── listing ────────────────────────────────────────────────────────
 
 fn list_dir(dir: &Path) -> Result<Vec<Ticket>, String> {
@@ -795,6 +823,38 @@ pub async fn tickets_create(
     Ok(ticket)
 }
 
+/// Hand a stored screenshot back as a `data:image/png;base64,…` URL.
+///
+/// The PNG is not served over the asset protocol because for a remote
+/// workspace it does not live on this machine at all — reading it
+/// through the same path as the JSON is what makes local and remote
+/// behave identically. `Ok(None)` = this ticket has no screenshot.
+#[tauri::command]
+pub async fn tickets_screenshot(
+    workspace_id: String,
+    project_override: Option<String>,
+    id: String,
+) -> Result<Option<String>, String> {
+    let _ = &project_override;
+    if !valid_id(&id) {
+        return Err(format!("invalid ticket id {id:?}"));
+    }
+    let dir = fallback_dir(&workspace_id)?;
+    let path = dir.join(png_filename_for(&id));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|e| format!("read screenshot {id}: {e}"))?;
+    log_debug(
+        "TICKETS",
+        &format!("screenshot id={id} ws={workspace_id} bytes={}", bytes.len()),
+    );
+    Ok(Some(format!(
+        "data:image/png;base64,{}",
+        base64_encode(&bytes)
+    )))
+}
+
 #[tauri::command]
 pub async fn tickets_update(
     state: tauri::State<'_, crate::AppState>,
@@ -852,6 +912,31 @@ mod tests {
     fn base64_roundtrip_small() {
         let decoded = base64_decode("aGVsbG8gd29ybGQ").unwrap();
         assert_eq!(decoded, b"hello world");
+    }
+
+    #[test]
+    fn base64_encode_round_trips_through_the_decoder() {
+        // Covers every padding case (len % 3 == 0, 1, 2) plus binary
+        // bytes, since this carries PNG data.
+        for raw in [
+            &b""[..],
+            &b"a"[..],
+            &b"ab"[..],
+            &b"abc"[..],
+            &b"abcd"[..],
+            &[0u8, 255, 128, 1, 2, 3][..],
+        ] {
+            let enc = base64_encode(raw);
+            assert_eq!(enc.len() % 4, 0, "padded output must be 4-aligned");
+            let back = base64_decode(&enc).expect("decodes");
+            assert_eq!(back, raw, "round trip failed for {raw:?}");
+        }
+    }
+
+    #[test]
+    fn base64_encode_matches_a_known_vector() {
+        assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
+        assert_eq!(base64_encode(b"hi"), "aGk=");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { t } from "./i18n";
@@ -29,6 +29,29 @@ interface Props {
 }
 
 type Filter = "open" | "resolved" | "all";
+
+/// Screenshots are fetched on demand, not with the list: a list of
+/// tickets each carrying an inline PNG would be megabytes over the IPC
+/// bridge for a panel where most rows are collapsed.
+function TicketShot(p: { workspaceId: string; ticketId: string }) {
+  const [src] = createResource(
+    () => [p.workspaceId, p.ticketId] as const,
+    ([ws, id]) =>
+      invoke<string | null>("tickets_screenshot", {
+        workspaceId: ws,
+        projectOverride: loadProjectOverride(ws),
+        id,
+      }).catch((e) => {
+        log.warn("screenshot fetch failed", e);
+        return null;
+      }),
+  );
+  return (
+    <Show when={src()}>
+      {(url) => <img class="tk-detail-shot" src={url()} alt={t("tickets.modal.shot.alt")} />}
+    </Show>
+  );
+}
 
 export function TicketsPanel(p: Props) {
   const [items, setItems] = createSignal<Ticket[]>([]);
@@ -297,6 +320,12 @@ export function TicketsPanel(p: Props) {
                           <span class="tk-detail-k">XPath</span>
                           <code class="tk-detail-v">{tk.element.xpath}</code>
                         </div>
+                        <Show when={tk.screenshot_path}>
+                          <TicketShot
+                            workspaceId={tk.workspace_id}
+                            ticketId={tk.id}
+                          />
+                        </Show>
                         {/* Text, never innerHTML — untrusted page markup. */}
                         <pre class="tk-detail-html">{tk.element.html}</pre>
                         <button
