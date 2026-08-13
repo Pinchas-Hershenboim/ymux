@@ -32,6 +32,7 @@ mod stt;
 mod tickets;
 mod tray;
 mod updater;
+mod worktrees;
 // Phase 51.C: `mod tunnel` moved to its own crate winmux-tunnel.
 // Existing crate::tunnel::* callsites still resolve via this alias.
 use winmux_tunnel as tunnel;
@@ -4863,13 +4864,8 @@ fn workspace_create_worktree(
 ) -> Result<WorkspacesFile, String> {
     // Sanitize the branch name for filesystem use. git itself allows
     // a wider set, but we own the directory naming so we constrain it.
-    let safe_branch: String = branch_name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/' { c } else { '-' })
-        .collect();
-    if safe_branch.is_empty() || safe_branch.starts_with('-') || safe_branch.contains("..") {
-        return Err("invalid branch name".to_string());
-    }
+    // Shared with the project-folder path so there is one rule.
+    let safe_branch = worktrees::sanitize_branch_name(&branch_name)?;
     if base_branch.trim().is_empty() {
         return Err("base branch is required".to_string());
     }
@@ -4896,7 +4892,7 @@ fn workspace_create_worktree(
     }
     // Replace forward slashes in the branch with hyphens for the
     // directory name so feature/foo doesn't create nested dirs.
-    let dir_branch = safe_branch.replace('/', "-");
+    let dir_branch = worktrees::branch_dir_component(&safe_branch);
     let root = config_dir()?.join("worktrees");
     std::fs::create_dir_all(&root).map_err(|e| format!("create worktrees root: {e}"))?;
     let target = root.join(format!("{workspace_id}-{dir_branch}"));
@@ -7392,6 +7388,8 @@ pub fn run() {
             workspace_delete,
             workspace_set_active,
             workspace_create_worktree,
+            worktrees::project_folder_list_worktrees,
+            worktrees::project_folder_create_worktree,
             workspace_split,
             workspace_close_pane,
             workspace_set_split_ratio,
