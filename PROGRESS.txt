@@ -1767,7 +1767,7 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    error — Hook JSON output validation failed" in a winmux pane. Root
    cause: winmux-cli claude-hook user-prompt-submit, when WINMUX_PANE_ID
    is set and the desktop is UP, fell through the rpc-ok match to the
-   legacy  arm and PRINTED the raw RPC payload ({"decision":"passive",
+   legacy _ arm and PRINTED the raw RPC payload ({"decision":"passive",
    "request_id":...}) — not a valid Claude Code hook-output shape. Only
    manifested once the desktop was running (down → rpc-error → exit 3, no
    print). The user-prompt-submit hook is ORPHANED: the current bundled
