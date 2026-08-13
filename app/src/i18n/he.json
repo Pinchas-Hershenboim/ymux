@@ -101,6 +101,7 @@
   "pane.tooltip.split_down": "פצל למטה (Ctrl+Shift+E)",
   "pane.tooltip.close": "סגור פאנל (Ctrl+Shift+W)",
   "pane.tooltip.popout": "פתח בחלון נפרד",
+  "pane.tooltip.more_actions": "פעולות נוספות",
   "pane.popout.detached": "[נפתח בחלון נפרד — הקלט מגיע לשם; כאן תצוגה בלבד]",
   "pane.popout.reattached": "[חזר לחלון הראשי]",
   "pane.tooltip.edit_meta": "ערוך כותרת / הערה",

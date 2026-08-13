@@ -101,6 +101,7 @@
   "pane.tooltip.split_down": "تقسيم لأسفل (Ctrl+Shift+E)",
   "pane.tooltip.close": "إغلاق اللوحة (Ctrl+Shift+W)",
   "pane.tooltip.popout": "فتح في نافذة",
+  "pane.tooltip.more_actions": "إجراءات أخرى",
   "pane.popout.detached": "[تم الفصل في نافذة — الإدخال يذهب إلى النافذة المنفصلة؛ هنا عرض فقط]",
   "pane.popout.reattached": "[أُعيد الإرفاق بالنافذة الرئيسية]",
   "pane.tooltip.edit_meta": "تحرير العنوان / التعليق",

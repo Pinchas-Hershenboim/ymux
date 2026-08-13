@@ -1,4 +1,5 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -799,6 +800,260 @@ export function PaneView(p: Props) {
     return cls.join(" ");
   };
 
+  // ── header overflow (priority+ pattern) ──────────────────────────────
+  // The header is a no-wrap flex row and `.pane` is `overflow:hidden`, so
+  // with many panes open the right-hand buttons used to be silently
+  // clipped — no hint they existed. Every button now lives in this array;
+  // `visibleCount()` decides how many render inline and the rest fall into
+  // a chevron menu. `close` deliberately stays OUT of the array (rendered
+  // after the chevron) so the one action you can't afford to lose never
+  // moves.
+  type HeaderAction = {
+    id: string;
+    /** inline tooltip */
+    title: string;
+    /** label in the overflow menu */
+    label: string;
+    icon: () => JSX.Element;
+    active?: boolean;
+    run?: () => void;
+    /** custom inline form (used by the disconnect split-button) */
+    render?: () => JSX.Element;
+    /** what this becomes inside the menu when it overflows */
+    menuItems?: { label: string; danger?: boolean; run: () => void }[];
+  };
+
+  const [visibleCount, setVisibleCount] = createSignal(99);
+  const [showOverflow, setShowOverflow] = createSignal(false);
+  let headerRef: HTMLDivElement | undefined;
+
+  const actions = createMemo<HeaderAction[]>(() => {
+    const list: HeaderAction[] = [];
+    if (p.pane.annotation) {
+      list.push({
+        id: "annot",
+        title: t("pane.tooltip.show_annotation"),
+        label: t("pane.tooltip.show_annotation"),
+        icon: () => <IconInfo size={14} />,
+        // NOTE: deliberately does not read showAnnot() — `actions()` is a
+        // memo and any signal it reads rebuilds the whole button row.
+        run: () => setShowAnnot(!showAnnot()),
+      });
+    }
+    list.push({
+      id: "meta",
+      title: t("pane.tooltip.edit_meta"),
+      label: t("pane.tooltip.edit_meta"),
+      icon: () => <IconPencil size={14} />,
+      run: openMeta,
+    });
+    if (p.isConnected) {
+      // Atomic item: the inline form keeps the existing power+caret
+      // split-button (and its own menu) untouched; in the overflow menu
+      // it expands into its two entries instead.
+      list.push({
+        id: "disc",
+        title: isTmux() ? t("pane.tooltip.detach") : t("pane.tooltip.disconnect"),
+        label: isTmux() ? t("common.detach") : t("common.disconnect"),
+        icon: () => <IconPower size={14} />,
+        render: () => renderDiscButton(),
+        menuItems: [
+          {
+            label: isTmux() ? t("common.detach") : t("common.disconnect"),
+            run: () => p.onDisconnect(p.pane.pane_id),
+          },
+          ...(isTmux()
+            ? [{
+                label: t("common.kill_session"),
+                danger: true,
+                run: () => p.onKillSession(p.pane.pane_id),
+              }]
+            : []),
+        ],
+      });
+    }
+    list.push({
+      id: "bidi",
+      title:
+        t(p.pane.smart_bidi === true ? "pane.smartBidi.on" : "pane.smartBidi.off")
+        + " — " + t("pane.smartBidi.hint"),
+      label: t(p.pane.smart_bidi === true ? "pane.smartBidi.on" : "pane.smartBidi.off"),
+      icon: () => <IconArrowLeftRight size={14} />,
+      active: p.pane.smart_bidi === true,
+      run: () => {
+        const next = !(p.pane.smart_bidi === true);
+        void invoke("pane_set_smart_bidi", {
+          workspaceId: p.workspaceId,
+          paneId: p.pane.pane_id,
+          enabled: next,
+        }).catch((err) => log.error("pane_set_smart_bidi failed", err));
+      },
+    });
+    list.push({
+      id: "maximize",
+      title: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
+      label: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
+      icon: () => (p.isMaximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />),
+      active: p.isMaximized,
+      run: () => {
+        window.dispatchEvent(
+          new CustomEvent("winmux:pane-maximize", {
+            detail: { paneId: p.pane.pane_id },
+          }),
+        );
+      },
+    });
+    list.push({
+      id: "split-h",
+      title: t("pane.tooltip.split_right"),
+      label: t("pane.tooltip.split_right"),
+      icon: () => <IconColumns size={14} />,
+      run: () => p.onSplit(p.pane.pane_id, "horizontal"),
+    });
+    list.push({
+      id: "split-v",
+      title: t("pane.tooltip.split_down"),
+      label: t("pane.tooltip.split_down"),
+      icon: () => <IconRows size={14} />,
+      run: () => p.onSplit(p.pane.pane_id, "vertical"),
+    });
+    if (p.isConnected) {
+      list.push({
+        id: "popout",
+        title: t("pane.tooltip.popout"),
+        label: t("pane.tooltip.popout"),
+        icon: () => <IconExternalLink size={14} />,
+        run: () => void p.onPopOut(p.pane.pane_id),
+      });
+    }
+    return list;
+  });
+
+  const hiddenActions = createMemo(() => actions().slice(visibleCount()));
+
+  // Sum of the laid-out children + gaps. Deliberately NOT `scrollWidth`:
+  // in an RTL header the run overflows towards the inline start, and
+  // scrollWidth's behaviour there is the historically messy corner of the
+  // API. Summing offsetWidth is direction-agnostic and exact — once the
+  // flex items are at min-content, the sum exceeds clientWidth by however
+  // much is being clipped. The absolutely-positioned dropdowns live inside
+  // `position:relative` wrappers, so they contribute nothing here.
+  const contentWidth = (el: HTMLElement): number => {
+    const kids = el.children;
+    if (kids.length === 0) return 0;
+    const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+    let w = gap * (kids.length - 1);
+    for (let i = 0; i < kids.length; i++) w += (kids[i] as HTMLElement).offsetWidth;
+    return w;
+  };
+
+  // Shrink until the header stops overflowing. Solid applies signal writes
+  // to the DOM synchronously, so each setVisibleCount is reflected in the
+  // next measurement. The loop is self-correcting: as soon as n < total the
+  // chevron renders and adds its own width to the measure. Bounded by
+  // actions().length (<= 8), and only ever runs from rAF.
+  const fit = () => {
+    const el = headerRef;
+    if (!el) return;
+    let n = actions().length;
+    setVisibleCount(n);
+    while (n > 0 && contentWidth(el) > el.clientWidth + 1) {
+      n -= 1;
+      setVisibleCount(n);
+    }
+  };
+
+  let fitFrame = 0;
+  const scheduleFit = () => {
+    if (fitFrame) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = 0;
+      fit();
+    });
+  };
+
+  onMount(() => {
+    if (!headerRef) return;
+    const ro = new ResizeObserver(scheduleFit);
+    ro.observe(headerRef);
+    onCleanup(() => {
+      ro.disconnect();
+      if (fitFrame) cancelAnimationFrame(fitFrame);
+    });
+  });
+
+  // Re-fit when anything that occupies header width appears or
+  // disappears without a resize event: the action set itself
+  // (connect/disconnect, annotation, pop-out) and the non-action badges.
+  // `agentRunLabel()` is deliberately NOT tracked — it ticks every second
+  // and its width is fixed by `font-variant-numeric: tabular-nums`.
+  createEffect(() => {
+    actions().length;
+    !!p.statusText;
+    isTmux();
+    p.isMaximized && (p.backgroundPaneCount ?? 0) > 0;
+    scheduleFit();
+  });
+
+  // Close the overflow menu on an outside click or Escape.
+  createEffect(() => {
+    if (!showOverflow()) return;
+    const onDocDown = (e: MouseEvent) => {
+      const t2 = e.target as HTMLElement | null;
+      if (t2?.closest(".pane-overflow-wrap")) return;
+      setShowOverflow(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowOverflow(false);
+    };
+    document.addEventListener("mousedown", onDocDown, true);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDocDown, true);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+
+  const renderDiscButton = () => (
+    <div class="pane-disc-wrap">
+      <button
+        class="pane-btn"
+        title={isTmux() ? t("pane.tooltip.detach") : t("pane.tooltip.disconnect")}
+        onClick={() => p.onDisconnect(p.pane.pane_id)}
+      >
+        <IconPower size={14} />
+      </button>
+      <button
+        class="pane-btn pane-disc-caret"
+        title={t("pane.tooltip.kill_session")}
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowDiscMenu(!showDiscMenu());
+        }}
+      >
+        <IconChevronDown size={13} />
+      </button>
+      <Show when={showDiscMenu()}>
+        <div
+          class="pane-disc-menu"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowDiscMenu(false);
+          }}
+        >
+          <button onClick={() => p.onDisconnect(p.pane.pane_id)}>
+            {isTmux() ? t("common.detach") : t("common.disconnect")}
+          </button>
+          <Show when={isTmux()}>
+            <button class="danger" onClick={() => p.onKillSession(p.pane.pane_id)}>
+              {t("common.kill_session")}
+            </button>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+
   return (
     <div
       ref={(el) => (paneRef = el)}
@@ -847,6 +1102,7 @@ export function PaneView(p: Props) {
       </Show>
       <div
         class="pane-header"
+        ref={(el) => (headerRef = el)}
         onPointerDown={(e) => {
           // beta.3 (pane-dragdrop) Fix 1: the whole header is the drag
           // surface (was just the title span — too small to hit).
@@ -901,34 +1157,15 @@ export function PaneView(p: Props) {
                   : "—")
           } />
         </span>
-        <Show when={p.pane.annotation}>
-          <button
-            class="pane-btn"
-            title={t("pane.tooltip.show_annotation")}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowAnnot(!showAnnot());
-            }}
-          >
-            <IconInfo size={14} />
-          </button>
-        </Show>
         <Show when={p.statusText}>
           <span class="pane-status-text">{p.statusText}</span>
         </Show>
         <Show when={agentRunLabel()}>
           <span class="pane-agent-run">{agentRunLabel()}</span>
         </Show>
-        <button
-          class="pane-btn"
-          title={t("pane.tooltip.edit_meta")}
-          onClick={(e) => {
-            e.stopPropagation();
-            openMeta();
-          }}
-        >
-          <IconPencil size={14} />
-        </button>
+        {/* Badges are not actions — they never move into the overflow
+            menu. They sit between the title and the button run so the
+            fitted button row starts at a stable offset. */}
         <Show when={isTmux()}>
           <span
             class="pane-tmux-badge"
@@ -937,68 +1174,8 @@ export function PaneView(p: Props) {
             T
           </span>
         </Show>
-        <Show when={p.isConnected}>
-          <div class="pane-disc-wrap">
-            <button
-              class="pane-btn"
-              title={isTmux() ? t("pane.tooltip.detach") : t("pane.tooltip.disconnect")}
-              onClick={() => p.onDisconnect(p.pane.pane_id)}
-            >
-              <IconPower size={14} />
-            </button>
-            <button
-              class="pane-btn pane-disc-caret"
-              title={t("pane.tooltip.kill_session")}
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowDiscMenu(!showDiscMenu());
-              }}
-            >
-              <IconChevronDown size={13} />
-            </button>
-            <Show when={showDiscMenu()}>
-              <div
-                class="pane-disc-menu"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowDiscMenu(false);
-                }}
-              >
-                <button onClick={() => p.onDisconnect(p.pane.pane_id)}>
-                  {isTmux() ? t("common.detach") : t("common.disconnect")}
-                </button>
-                <Show when={isTmux()}>
-                  <button class="danger" onClick={() => p.onKillSession(p.pane.pane_id)}>
-                    {t("common.kill_session")}
-                  </button>
-                </Show>
-              </div>
-            </Show>
-          </div>
-        </Show>
-        {/* Phase 52 (BiDi 33B): per-pane opt-in PTY-stream bidi filter.
-            Default off; click toggles via pane_set_smart_bidi. ⇆ glyph
-            picked from "left right arrow" since the filter swaps RTL
-            isolates around Latin runs. */}
-        <button
-          class={`pane-btn ${p.pane.smart_bidi === true ? "active" : ""}`}
-          title={t(p.pane.smart_bidi === true ? "pane.smartBidi.on" : "pane.smartBidi.off") + " — " + t("pane.smartBidi.hint")}
-          onClick={(e) => {
-            e.stopPropagation();
-            const next = !(p.pane.smart_bidi === true);
-            void invoke("pane_set_smart_bidi", {
-              workspaceId: p.workspaceId,
-              paneId: p.pane.pane_id,
-              enabled: next,
-            }).catch((err) => log.error("pane_set_smart_bidi failed", err));
-          }}
-        >
-          <IconArrowLeftRight size={14} />
-        </button>
-        {/* Phase 65.T: focus/zoom badge + toggle. The badge shows how
-            many panes keep running in the background while this one is
-            focused. The button dispatches the same winmux:pane-maximize
-            event as double-click / Ctrl+Shift+M. */}
+        {/* Phase 65.T: focus/zoom badge. Shows how many panes keep
+            running in the background while this one is focused. */}
         <Show when={p.isMaximized && (p.backgroundPaneCount ?? 0) > 0}>
           <span
             class="pane-bg-badge"
@@ -1009,35 +1186,72 @@ export function PaneView(p: Props) {
             <IconMaximize size={13} /> {p.backgroundPaneCount}
           </span>
         </Show>
-        <button
-          class={`pane-btn ${p.isMaximized ? "active" : ""}`}
-          title={p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus")}
-          onClick={(e) => {
-            e.stopPropagation();
-            window.dispatchEvent(
-              new CustomEvent("winmux:pane-maximize", {
-                detail: { paneId: p.pane.pane_id },
-              }),
-            );
-          }}
-        >
-          {p.isMaximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
-        </button>
-        <button class="pane-btn" title="Split right (Ctrl+Shift+D)" onClick={() => p.onSplit(p.pane.pane_id, "horizontal")}><IconColumns size={14} /></button>
-        <button class="pane-btn" title="Split down (Ctrl+Shift+E)" onClick={() => p.onSplit(p.pane.pane_id, "vertical")}><IconRows size={14} /></button>
-        {/* Unshipped-fivefer (#4): pop this terminal into its own window.
-            Only meaningful for a live session — hidden until connected. */}
-        <Show when={p.isConnected}>
-          <button
-            class="pane-btn"
-            title={t("pane.tooltip.popout")}
-            onClick={(e) => {
-              e.stopPropagation();
-              void p.onPopOut(p.pane.pane_id);
-            }}
-          >
-            <IconExternalLink size={14} />
-          </button>
+        {/* Fitted button run — see `actions()` / `fit()` above. */}
+        <For each={actions().slice(0, visibleCount())}>
+          {(a) => (
+            <Show
+              when={!a.render}
+              fallback={a.render?.()}
+            >
+              <button
+                class={`pane-btn ${a.active ? "active" : ""}`}
+                title={a.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  a.run?.();
+                }}
+              >
+                {a.icon()}
+              </button>
+            </Show>
+          )}
+        </For>
+        <Show when={hiddenActions().length > 0}>
+          <div class="pane-overflow-wrap">
+            <button
+              class="pane-btn pane-overflow-btn"
+              title={t("pane.tooltip.more_actions")}
+              aria-haspopup="menu"
+              aria-expanded={showOverflow()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowOverflow(!showOverflow());
+              }}
+            >
+              <IconChevronDown size={14} />
+            </button>
+            <Show when={showOverflow()}>
+              <div
+                class="pane-disc-menu pane-overflow-menu"
+                role="menu"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowOverflow(false);
+                }}
+              >
+                <For each={hiddenActions()}>
+                  {(a) => (
+                    <Show
+                      when={!a.menuItems}
+                      fallback={
+                        <For each={a.menuItems!}>
+                          {(mi) => (
+                            <button class={mi.danger ? "danger" : ""} onClick={() => mi.run()}>
+                              {a.icon()} {mi.label}
+                            </button>
+                          )}
+                        </For>
+                      }
+                    >
+                      <button class={a.active ? "active" : ""} onClick={() => a.run?.()}>
+                        {a.icon()} {a.label}
+                      </button>
+                    </Show>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
         </Show>
         <button class="pane-btn pane-close" title={t("pane.tooltip.close")} onClick={() => p.onClose(p.pane.pane_id)}><IconClose size={14} /></button>
       </div>

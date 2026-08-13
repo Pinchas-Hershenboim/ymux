@@ -1032,6 +1032,11 @@ body {
   font-family: var(--w-font-mono);
   color: var(--w-text-dim);
   flex-shrink: 0;
+  /* The button run is fitted in JS (PaneView `fit()`), which measures
+     scrollWidth vs clientWidth — so the header must clip, not spill.
+     Without this the overflowing buttons were silently cut off by
+     `.pane { overflow: hidden }` with no hint they existed. */
+  overflow: hidden;
   /* beta.3 (pane-dragdrop) Fix 1: the whole header is the drag surface. */
   cursor: grab;
 }
@@ -1044,6 +1049,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--w-text-dim);
+  /* Keep a readable stub of the title instead of collapsing to zero —
+     the fitter starts moving buttons into the overflow menu once the
+     title has shrunk this far. */
+  min-width: 4ch;
 }
 
 .pane-status-text {
@@ -3979,6 +3988,21 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
      primary disc button regardless of writing direction. */
   margin-inline-start: -2px;
 }
+/* The overflow menu reuses the disconnect dropdown's chrome verbatim —
+   same position/shadow/hover rules, already logical-property safe for
+   RTL. Only the icon+label row layout is added below. */
+.pane-overflow-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.pane-overflow-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.pane-overflow-menu button.active { color: var(--w-accent); }
 .pane-disc-menu {
   position: absolute;
   top: 100%;

@@ -101,6 +101,7 @@
   "pane.tooltip.split_down": "Split down (Ctrl+Shift+E)",
   "pane.tooltip.close": "Close pane (Ctrl+Shift+W)",
   "pane.tooltip.popout": "Pop out to window",
+  "pane.tooltip.more_actions": "More actions",
   "pane.popout.detached": "[popped out — input goes to the detached window; mirror only here]",
   "pane.popout.reattached": "[reattached to main window]",
   "pane.tooltip.edit_meta": "Edit title / annotation",
