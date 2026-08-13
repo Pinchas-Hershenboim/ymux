@@ -137,6 +137,46 @@ export interface PendingCapture {
   capture: ElementCapture;
 }
 
+/** Render a capture as Markdown.
+ *
+ *  Shared by the modal's "copy for later" path (when there is nowhere to
+ *  write) and by the panel's copy action, so a ticket reads the same
+ *  whether it was saved or only copied. `TicketsPanel` adds the fields a
+ *  saved ticket has and a fresh capture does not (id, status, dates). */
+export function captureToMarkdown(capture: ElementCapture, description: string): string {
+  let style = "{}";
+  try {
+    style = JSON.stringify(capture.style, null, 2);
+  } catch {
+    /* keep "{}" */
+  }
+  return [
+    "# Ticket (not saved)",
+    "",
+    `- URL: ${capture.url}`,
+    "",
+    "## Description",
+    "",
+    description.trim() || "_(none)_",
+    "",
+    "## Element",
+    "",
+    `- Selector: \`${capture.selector}\``,
+    `- XPath: \`${capture.xpath}\``,
+    "",
+    "```html",
+    capture.html,
+    "```",
+    "",
+    "## Computed style",
+    "",
+    "```json",
+    style,
+    "```",
+    "",
+  ].join("\n");
+}
+
 /** Cap on captured markup. Keeps the sentinel URL small and bounds how
  *  much page content can land in a ticket file. */
 const HTML_MAX = 4096;

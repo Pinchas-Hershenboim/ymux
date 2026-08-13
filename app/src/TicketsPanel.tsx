@@ -8,6 +8,7 @@ import { loadProjectOverride } from "./browserDevMode";
 import { createLogger } from "./logger";
 import type { Surface } from "./panels";
 import type { Ticket } from "./bindings/Ticket";
+import type { ProjectResolution } from "./bindings/ProjectResolution";
 
 const log = createLogger("TICKETS");
 
@@ -177,10 +178,25 @@ export function TicketsPanel(p: Props) {
     }
   };
 
+  // Reveal only means something for a path this machine can open. For an
+  // SSH workspace the folder is on the host, so revealItemInDir would be
+  // handed a POSIX path and either fail or open something wrong — copy
+  // the path instead. (Mounting the File Manager pane there is the nicer
+  // answer; noted as a follow-up rather than built here.)
   const revealFolder = async () => {
     const ws = p.workspaceId;
     if (!ws) return;
     try {
+      const res = await invoke<ProjectResolution>("tickets_resolve_project", {
+        workspaceId: ws,
+        projectOverride: loadProjectOverride(ws),
+      });
+      if (res.transport === "ssh") {
+        await navigator.clipboard.writeText(res.tickets_dir);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+        return;
+      }
       const dir = await invoke<string>("tickets_dir_path", {
         workspaceId: ws,
         projectOverride: loadProjectOverride(ws),

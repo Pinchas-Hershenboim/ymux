@@ -6891,3 +6891,27 @@ body.winmux-dragging .pane-conn {
   user-select: none;
 }
 .ticket-modal-check input { cursor: pointer; }
+
+/* Project-override row in the capture modal. A plain text field, not a
+   folder browser: the backend derives the project and this only exists
+   for when it derives wrongly. */
+.ticket-modal-override { display: flex; gap: 6px; margin-top: 4px; }
+.ticket-modal-override-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--w-bg, #0d1117);
+  border: 1px solid var(--w-border, #21262d);
+  border-radius: 4px;
+  color: var(--w-text, #e6edf3);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  direction: ltr;
+  text-align: start;
+}
+.ticket-modal-override-input:focus {
+  outline: none;
+  border-color: var(--w-accent, #58a6ff);
+}
+/* Host prefix on a remote destination — "srv-01:/home/y/proj/…" */
+.ticket-modal-host { color: var(--w-accent, #58a6ff); font-weight: 600; }

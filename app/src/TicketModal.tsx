@@ -2,7 +2,12 @@ import { createResource, createSignal, onCleanup, onMount, Show } from "solid-js
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
 import { IconBug, IconClose, IconWarning } from "./icons";
-import { loadProjectOverride, type ElementCapture } from "./browserDevMode";
+import {
+  captureToMarkdown,
+  loadProjectOverride,
+  saveProjectOverride,
+  type ElementCapture,
+} from "./browserDevMode";
 import type { Ticket } from "./bindings/Ticket";
 import type { ProjectResolution } from "./bindings/ProjectResolution";
 
@@ -29,11 +34,16 @@ export function TicketModal(p: Props) {
   // The snapshot is taken at right-click time, before this modal exists,
   // so the choice here is whether to KEEP it — not whether to take it.
   const [includeShot, setIncludeShot] = createSignal(true);
+  const [copied, setCopied] = createSignal(false);
+  const [editingDest, setEditingDest] = createSignal(false);
+  const [overrideDraft, setOverrideDraft] = createSignal(
+    loadProjectOverride(p.workspaceId) ?? "",
+  );
 
   // Resolve the destination BEFORE saving and show it. Writing into
   // someone's repo should never be a surprise, and when we cannot (a
   // remote workspace) the reason has to be visible, not silent.
-  const [dest] = createResource(
+  const [dest, { refetch: refetchDest }] = createResource(
     () => p.workspaceId,
     (ws) =>
       invoke<ProjectResolution>("tickets_resolve_project", {
@@ -55,6 +65,29 @@ export function TicketModal(p: Props) {
     window.addEventListener("keydown", onKey, true);
     onCleanup(() => window.removeEventListener("keydown", onKey, true));
   });
+
+  /// Nothing was written, so hand the user their work back rather than
+  /// losing the description they just typed. For an SSH workspace the
+  /// browser only renders through the tunnel, and the tunnel is a channel
+  /// on the SSH session — so this is only reachable when a session drops
+  /// after the page has loaded.
+  const copyForLater = async () => {
+    try {
+      await navigator.clipboard.writeText(
+        captureToMarkdown(p.capture, description()),
+      );
+      setCopied(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const applyOverride = (value: string | null) => {
+    saveProjectOverride(p.workspaceId, value);
+    setOverrideDraft(value ?? "");
+    setEditingDest(false);
+    void refetchDest();
+  };
 
   const save = async () => {
     setSaving(true);
@@ -190,16 +223,18 @@ export function TicketModal(p: Props) {
             />
           </div>
 
-          {/* Destination. Shown for every save, not just the fallback —
-              the project association is the point of the ticket. */}
+          {/* Destination. Shown for every save — the project the
+              ticket belongs to is the point, and writing into someone's
+              repo must never be a surprise. */}
           <Show when={dest()}>
             {(d) => (
               <div class="ticket-modal-field">
                 <span class="ticket-modal-label">
                   {t("tickets.modal.project")}
                 </span>
+
                 <Show
-                  when={d().in_project}
+                  when={d().writable}
                   fallback={
                     <div class="ticket-modal-fallback">
                       <IconWarning size={13} />
@@ -211,8 +246,62 @@ export function TicketModal(p: Props) {
                   }
                 >
                   <code class="ticket-modal-code" title={d().tickets_dir}>
+                    <Show when={d().host_label}>
+                      <span class="ticket-modal-host">{d().host_label}:</span>{" "}
+                    </Show>
                     {d().tickets_dir}
                   </code>
+                </Show>
+
+                {/* The override — rung 1 of the backend's ladder. A text
+                    field on purpose: Phase 54 was reverted for making the
+                    user browse an SFTP tree for something the app can
+                    derive, and this only exists for when it derives
+                    wrongly. */}
+                <Show
+                  when={editingDest()}
+                  fallback={
+                    <button
+                      class="ticket-modal-disclose"
+                      onClick={() => setEditingDest(true)}
+                    >
+                      {t("tickets.override.change")}
+                    </button>
+                  }
+                >
+                  <div class="ticket-modal-override">
+                    <input
+                      class="ticket-modal-override-input"
+                      type="text"
+                      value={overrideDraft()}
+                      placeholder={
+                        d().transport === "local"
+                          ? t("tickets.override.placeholderLocal")
+                          : t("tickets.override.placeholderPosix")
+                      }
+                      onInput={(e) => setOverrideDraft(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          applyOverride(overrideDraft());
+                        }
+                        e.stopPropagation();
+                      }}
+                    />
+                    <button
+                      class="ticket-modal-cancel"
+                      onClick={() => applyOverride(overrideDraft())}
+                    >
+                      {t("common.apply")}
+                    </button>
+                    <button
+                      class="ticket-modal-cancel"
+                      onClick={() => applyOverride(null)}
+                      title={t("tickets.override.clear")}
+                    >
+                      {t("tickets.override.clear")}
+                    </button>
+                  </div>
                 </Show>
               </div>
             )}
@@ -233,13 +322,31 @@ export function TicketModal(p: Props) {
           >
             {t("common.cancel")}
           </button>
-          <button
-            class="ticket-modal-save"
-            disabled={saving() || !description().trim()}
-            onClick={() => void save()}
+
+          {/* Nowhere to write. Offering a Save that cannot work — or
+              quietly writing somewhere the agent will never look — is
+              exactly what this feature is trying to stop doing. */}
+          <Show
+            when={dest() && !dest()!.writable}
+            fallback={
+              <button
+                class="ticket-modal-save"
+                disabled={saving() || !description().trim()}
+                onClick={() => void save()}
+              >
+                {saving() ? t("common.saving") : t("tickets.modal.save")}
+              </button>
+            }
           >
-            {saving() ? t("common.saving") : t("tickets.modal.save")}
-          </button>
+            <button class="ticket-modal-cancel" onClick={() => void refetchDest()}>
+              {t("tickets.action.retry")}
+            </button>
+            <button class="ticket-modal-save" onClick={() => void copyForLater()}>
+              {copied()
+                ? t("tickets.action.copied")
+                : t("tickets.action.copyForLater")}
+            </button>
+          </Show>
         </div>
       </div>
     </div>
