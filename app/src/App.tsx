@@ -936,24 +936,33 @@ function App() {
   // change; the cutoff is recomputed each read). Blocking items are already
   // caught by `waitingWorkspaceIds` — this only adds the passive stream.
   const HOOK_PULSE_WINDOW_MS = 4_000;
+  // Notification routing — the subkinds that "require something from you".
+  // These get the OS sound (via the retained toast) + a blink (sidebar row +
+  // pane border) + a Notification-Center entry with the workspace name.
+  // Everything else is quiet history in the Notification Center only.
+  // `pre-tool-use` normally arrives as a BLOCKING permission card (handled by
+  // the blocking branch + `waitingWorkspaceIds`), so the pulse path effectively
+  // fires for stop/notification; listing it here is harmless + future-proof.
+  const MEANINGFUL_SUBKINDS = new Set(["stop", "notification", "pre-tool-use"]);
+  // Sidebar pulse source, decoupled from feedItems(): passive `stop` no longer
+  // lands in the feed, so we track {workspace_id -> last-meaningful-ts} here.
+  // Decoupling also fixes the old FEED_AUTO_DISMISS_MS(3s) < window(4s) bug that
+  // cut the pulse short.
+  const [meaningfulPulses, setMeaningfulPulses] = createSignal<Map<string, number>>(new Map());
+  const pulseWorkspace = (wsId: string) =>
+    setMeaningfulPulses((prev) => {
+      const now = Date.now();
+      const n = new Map(prev);
+      n.set(wsId, now);
+      // Bound growth: drop entries already past the window.
+      for (const [k, ts] of n) if (now - ts > HOOK_PULSE_WINDOW_MS) n.delete(k);
+      return n;
+    });
   const activeHookWorkspaceIds = (): Set<string> => {
     const s = new Set<string>();
     const now = Date.now();
-    const passiveSubkinds = new Set([
-      "pre-tool-use",
-      "stop",
-      "notification",
-      "session-end",
-      "post-tool-use",
-      "subagent-stop",
-      "user-prompt-submit",
-      "pre-compact",
-    ]);
-    for (const it of feedItems()) {
-      if (!it.workspace_id) continue;
-      if (!passiveSubkinds.has(it.subkind)) continue;
-      if (now - it.created_ms > HOOK_PULSE_WINDOW_MS) continue;
-      s.add(it.workspace_id);
+    for (const [wsId, ts] of meaningfulPulses()) {
+      if (now - ts <= HOOK_PULSE_WINDOW_MS) s.add(wsId);
     }
     return s;
   };
@@ -2419,24 +2428,42 @@ function App() {
     // Initial feed load.
     try {
       const items = await invoke<FeedItem[]>("feed_list");
-      // Show most recent first.
-      setFeedItems([...items].reverse());
-      // Auto-dismiss already-resolved items so we don't show stale verdicts.
-      for (const it of items) {
-        if (it.state !== "pending") scheduleFeedDismiss(it.request_id);
-      }
+      // The live feed now carries ONLY actionable blocking permission cards;
+      // passive hooks (stop / notification / …) live in the Notification
+      // Center. Re-hydrate just the still-pending permission requests so a
+      // restart doesn't resurrect stale passive cards.
+      setFeedItems(
+        items.filter((i) => i.kind === "permission_request" && i.state === "pending").reverse(),
+      );
     } catch (e) {
       log.warn("feed_list failed", e);
     }
     // Phase 6.5 feed events.
     unlistens.push(
       await listen<FeedItem>("feed:item-added", (e) => {
-        setFeedItems((prev) => [e.payload, ...prev.filter((i) => i.request_id !== e.payload.request_id)]);
-        if (e.payload.state !== "pending") scheduleFeedDismiss(e.payload.request_id);
-        // #1 fix: feed items (Claude hooks / permissions / passive) are the
-        // stream the user actually sees — mirror them into the Notification
-        // Center too (it previously only tapped OSC + RPC notifications).
-        pushNotif(feedToNotif(e.payload));
+        const f = e.payload;
+        const isBlocking = f.kind === "permission_request" && f.state === "pending";
+        const isMeaningful = !isBlocking && MEANINGFUL_SUBKINDS.has(f.subkind);
+        // BLOCKING permission asks are the ONLY items that get a transient
+        // live-feed card — they're actionable (allow/deny) and drive the
+        // waiting red-dot highlight. Passive hooks never touch the feed.
+        if (isBlocking) {
+          setFeedItems((prev) => [f, ...prev.filter((i) => i.request_id !== f.request_id)]);
+        }
+        // Every hook is recorded in the Notification Center history; feedToNotif
+        // carries the workspace_id so the entry shows which workspace it's from.
+        pushNotif(feedToNotif(f));
+        // MEANINGFUL passive events ("your turn" / "Claude asked") blink the
+        // sidebar workspace row + the pane border, without cluttering the feed.
+        if (isMeaningful) {
+          if (f.workspace_id) pulseWorkspace(f.workspace_id);
+          const pid = f.pane_id;
+          if (pid) {
+            addPaneNotified(pid);
+            // Focused pane: brief one-shot flash, then auto-clear (mirrors OSC).
+            if (activePaneId() === pid) setTimeout(() => clearPaneNotified(pid), 2000);
+          }
+        }
       })
     );
     unlistens.push(
@@ -2462,25 +2489,13 @@ function App() {
       await listen<{ pane_id: string; title: string; body: string; kind: string }>(
         "osc-notification",
         (e) => {
-          const { title, body, kind } = e.payload;
+          const { title, body } = e.payload;
           const hasTitle = title.trim().length > 0;
-          const item: FeedItem = {
-            request_id:
-              (globalThis.crypto?.randomUUID?.() ?? `osc-${Date.now()}-${Math.random()}`),
-            kind: "notification",
-            subkind: kind,
-            pane_id: e.payload.pane_id,
-            workspace_id: null,
-            title: hasTitle ? title : body,
-            summary: hasTitle ? body : "",
-            payload: e.payload,
-            state: "passive",
-            created_ms: Date.now(),
-            blocking: false,
-          };
-          setFeedItems((prev) => [item, ...prev]);
-          scheduleFeedDismiss(item.request_id);
-          // #1: also record it in the Notification Center timeline.
+          // OSC 9/99/777 notifications are passive: they no longer get a
+          // transient feed card (the live feed carries only blocking permission
+          // asks). They still land in the Notification Center and pulse the
+          // originating pane border below.
+          // #1: record it in the Notification Center timeline.
           pushNotif({
             id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
             title: hasTitle ? title : body,
@@ -3292,6 +3307,7 @@ function App() {
               });
             }}
             onMarkRead={markNotifRead}
+            workspaceName={(id) => file().workspaces.find((w) => w.id === id)?.name}
           />
         )}
       />

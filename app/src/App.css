@@ -1754,6 +1754,17 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 }
 .notif-item-kind { text-transform: capitalize; }
 .notif-item-jump { color: var(--w-accent); }
+/* Workspace-attribution chip on a notification: which workspace it came from. */
+.notif-item-ws {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--w-surface-2, rgba(127, 127, 127, 0.16));
+  color: var(--w-text-dim, var(--w-text-faint));
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .notif-item-dot {
   width: 8px;
   height: 8px;
