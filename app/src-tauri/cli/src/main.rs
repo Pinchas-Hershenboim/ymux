@@ -2385,7 +2385,9 @@ async fn real_main() -> ExitCode {
                             println!("{}", serde_json::to_string(&out).unwrap_or_default());
                             return ExitCode::SUCCESS;
                         }
-                        "notification" | "session-start" | "session-end" | "stop" => {
+                        "notification" | "session-start" | "session-end" | "stop"
+                        | "user-prompt-submit" | "post-tool-use" | "subagent-stop"
+                        | "pre-compact" => {
                             // Passive lifecycle hooks: silent ack. exit 0, no
                             // stdout — Claude Code does not need a structured
                             // response for these.
@@ -2453,7 +2455,9 @@ async fn real_main() -> ExitCode {
                             print_pre_tool_use(decision, Some(&reason));
                             return ExitCode::SUCCESS;
                         }
-                        "notification" | "session-start" | "session-end" | "stop" => {
+                        "notification" | "session-start" | "session-end" | "stop"
+                        | "user-prompt-submit" | "post-tool-use" | "subagent-stop"
+                        | "pre-compact" => {
                             return ExitCode::SUCCESS;
                         }
                         _ => {

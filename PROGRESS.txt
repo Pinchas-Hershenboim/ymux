@@ -2053,3 +2053,53 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    focused; no opt-in → anti-noise suppression unchanged. File:
    rpc_server.rs. STILL needs live verify (build branch, run a turn with
    winmux both focused and backgrounded).
+
+[2026-08-13 14:58 +0300] #1b — orphaned user-prompt-submit hook emitted invalid JSON.
+   Surfaced while live-testing the new app.exe: "UserPromptSubmit hook
+   error — Hook JSON output validation failed" in a winmux pane. Root
+   cause: winmux-cli claude-hook user-prompt-submit, when WINMUX_PANE_ID
+   is set and the desktop is UP, fell through the rpc-ok match to the
+   legacy _ arm and PRINTED the raw RPC payload ({"decision":"passive",
+   "request_id":...}) — not a valid Claude Code hook-output shape. Only
+   manifested once the desktop was running (down → rpc-error → exit 3, no
+   print). The user-prompt-submit hook is ORPHANED: the current bundled
+   spec (hooks.rs) only registers PreToolUse/SessionEnd/Stop, but Yossi's
+   settings.json still carried an older user-prompt-submit winmux entry
+   that setup-hooks never removes (it only replaces its own per-event
+   entries for events IN the spec).
+   FIX A (immediate, effective now): removed the orphaned user-prompt-submit
+     winmux hook from ~/.claude/settings.json (backup:
+     settings.json.bak.pre-ups-fix.*). Now aligned to the current spec —
+     winmux hooks only on PreToolUse/SessionEnd/Stop.
+   FIX B (source, prevents recurrence): cli/src/main.rs — user-prompt-submit
+     + post-tool-use + subagent-stop + pre-compact now silent-ack in BOTH
+     the rpc-ok and rpc-error match arms instead of raw-printing. Needs a
+     winmux-cli.exe rebuild+redeploy to reach Yossi's deployed CLI
+     (C:\Users\...\winmux-cli.exe); FIX A is what stops it today.
+   cargo check -p winmux (CLI) = clean.
+   NOTE: Yossi must restart the Claude session in the test pane for the
+   settings.json hook change to take effect.
+
+[QUIET-MODE] notification routing rewrite (frontend only, plan keen-drifting-acorn)
+   2026-08-13 15:35 +0300. Yossi wanted, on Claude stop: sound+blink for meaningful events only,
+   quiet Notification-Center record WITH workspace name, and NO in-winmux feed
+   clutter (the Windows toast is fine — he controls it via Windows). Root design
+   flaw: feedToNotif throws away subkind and lumps everything into "agent", and
+   every hook produced 3 signals (Win toast + transient feed card + notif center).
+   Also both pulses were dead: sidebar pulse read feedItems() (broke once stop
+   left the feed) with a 3s-dismiss < 4s-window bug; pane-border pulse only ever
+   fired from OSC bells, never from a Claude stop.
+   CHANGES (all app/src, zero backend):
+   - MEANINGFUL_SUBKINDS = {stop, notification, pre-tool-use}. App.tsx.
+   - feed:item-added: 3-way route. BLOCKING (permission_request+pending) → feed
+     card (only these). ALL → Notification Center. MEANINGFUL passive → pulse
+     sidebar (pulseWorkspace) + pane border (addPaneNotified). Quiet subkinds →
+     notif center only.
+   - Decoupled sidebar pulse into meaningfulPulses Map<ws,ts> (own 4s window via
+     pulseTick) — fixes the 3s<4s cut-short bug.
+   - feed_list startup seed filtered to permission_request+pending only.
+   - OSC notifications: dropped their transient feed card (kept notif center +
+     pane pulse) so the feed carries ONLY blocking cards.
+   - NotificationCenter: new workspaceName resolver prop → .notif-item-ws chip.
+   NOT VERIFIED LIVE yet — build + run per plan. Windows "sound only first time"
+   left as a to-verify (likely notify_rust coalescing identical titles).

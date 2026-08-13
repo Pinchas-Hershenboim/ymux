@@ -38,6 +38,9 @@ interface Props {
    *  notifications) — the App side resolves the workspace from the pane. */
   onJump: (workspaceId: string | null, paneId?: string | null) => void;
   onMarkRead: (id: number) => void;
+  /** Resolve a workspace id to its display name for the meta-row chip.
+   *  Returns undefined for unknown/deleted workspaces (the chip is hidden). */
+  workspaceName?: (id: string) => string | undefined;
 }
 
 // Header controls (mark-all-read + clear) for whichever surface hosts the
@@ -145,6 +148,9 @@ export function NotificationCenter(p: Props) {
                   </Show>
                   <div class="notif-item-meta">
                     <span class="notif-item-kind">{t(`notif.filter.${n.kind}`) || n.kind}</span>
+                    <Show when={n.workspace_id && p.workspaceName?.(n.workspace_id)}>
+                      <span class="notif-item-ws">{p.workspaceName!(n.workspace_id!)}</span>
+                    </Show>
                     <span class="notif-item-time">{relTime(n.timestamp_ms)}</span>
                     <Show when={n.workspace_id}>
                       <span class="notif-item-jump">↗ {t("notif.jump")}</span>
