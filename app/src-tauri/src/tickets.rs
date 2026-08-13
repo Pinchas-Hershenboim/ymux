@@ -158,6 +158,169 @@ fn fallback_dir(workspace_id: &str) -> Result<PathBuf, String> {
     Ok(config_dir()?.join(TICKETS_DIRNAME).join(workspace_id))
 }
 
+// ─── remote command builders + parsers (pure, unit-tested) ──────────
+//
+// These build the shell one-liners the SSH backend runs, and parse what
+// comes back. They are pure fn(&str)->String / fn(&str)->T on purpose:
+// the shell-quoting here is the Rule #3 boundary for the whole tickets
+// feature, so it has to be testable without a server.
+
+/// Join a POSIX directory and a basename. `dir` is validated absolute by
+/// `remote_project_dir`; `name` is always a `valid_id`-derived filename.
+fn posix_join(dir: &str, name: &str) -> String {
+    format!("{}/{}", dir.trim_end_matches('/'), name)
+}
+
+/// `<project>/.winmux-tickets` for an absolute POSIX project path.
+fn remote_project_dir(project: &str) -> Result<String, String> {
+    let p = project.trim_end_matches('/');
+    if !p.starts_with('/') {
+        return Err(format!("remote project path must be absolute: {project:?}"));
+    }
+    if p.contains('\\') {
+        return Err(format!("remote project path must be POSIX: {project:?}"));
+    }
+    Ok(format!("{p}/{PROJECT_DIRNAME}"))
+}
+
+fn q(s: &str) -> String {
+    winmux_core::shell_quote(s)
+}
+
+/// `git -C <cwd> rev-parse --show-toplevel`. One round trip, and it
+/// resolves a linked worktree to that worktree's root, which is what we
+/// want — unlike walking, which would be N SFTP round trips.
+fn cmd_git_root(cwd: &str) -> String {
+    format!("git -C {} rev-parse --show-toplevel 2>/dev/null", q(cwd))
+}
+
+fn cmd_mkdir_p(dir: &str) -> String {
+    format!("mkdir -p {}", q(dir))
+}
+
+/// `mv -f` is rename(2): an atomic REPLACE. This is the only way to
+/// overwrite an existing ticket — SFTP's rename fails when the
+/// destination exists (russh-sftp negotiates no posix-rename).
+fn cmd_mv_into_place(tmp: &str, dst: &str) -> String {
+    format!("mv -f {} {}", q(tmp), q(dst))
+}
+
+/// One round trip for the whole listing. `tr -d` rather than
+/// `base64 -w0` so BSD/macOS remotes work too; base64 so a CRLF-
+/// translating server cannot corrupt the JSON framing.
+fn cmd_list_json_b64(dir: &str) -> String {
+    format!(
+        "d={}; [ -d \"$d\" ] || exit 0; for f in \"$d\"/*.json; do [ -f \"$f\" ] || continue; printf '%s\\t' \"${{f##*/}}\"; base64 \"$f\" | tr -d '\\n'; printf '\\n'; done",
+        q(dir)
+    )
+}
+
+fn cmd_rm_f(paths: &[String]) -> String {
+    let mut out = String::from("rm -f");
+    for p in paths {
+        out.push(' ');
+        out.push_str(&q(p));
+    }
+    out
+}
+
+/// `None` = not a repo / no git / unusable output. Never an error: the
+/// caller falls back to the `cwd` rung, which is correct behaviour for a
+/// project that simply is not under git.
+fn parse_git_root(out: &str, code: i32) -> Option<String> {
+    if code != 0 {
+        return None;
+    }
+    let first = out.lines().next()?.trim_end_matches('\r').trim();
+    (first.starts_with('/')).then(|| first.to_string())
+}
+
+/// Cap on the bulk-list payload. Tickets are a few KB each; anything
+/// past this is a misconfigured directory, not a ticket list.
+const LIST_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// Parse `name	<base64>` lines. Bad lines are skipped with a warning
+/// naming only the FILENAME — never the contents (Rule #1).
+fn parse_list_b64(out: &str) -> Vec<(String, Vec<u8>)> {
+    let mut res = Vec::new();
+    for line in out.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, b64)) = line.split_once('\t') else {
+            log_warn("TICKETS", "skipping a list line with no separator");
+            continue;
+        };
+        if !name.ends_with(".json") {
+            continue;
+        }
+        if b64.is_empty() {
+            log_warn(
+                "TICKETS",
+                &format!("skip {name}: empty payload (no base64 on the remote?)"),
+            );
+            continue;
+        }
+        match base64_decode(b64) {
+            Ok(bytes) => res.push((name.to_string(), bytes)),
+            Err(e) => log_warn("TICKETS", &format!("skip {name}: base64: {e}")),
+        }
+    }
+    res
+}
+
+/// Map a `\wsl.localhost\<distro>\...` (or legacy `\wsl$\...`) path back
+/// to the Linux path the agent inside the distro sees.
+///
+/// The two forms must NOT be conflated: `project_path` on a ticket has to
+/// be the LINUX path (that is what Claude Code sees), while the store has
+/// to be the UNC path (that is what std::fs can open).
+fn wsl_linux_from_unc(unc: &Path, distro: &str) -> Option<String> {
+    let s = unc.to_string_lossy().replace('/', "\\");
+    for prefix in [
+        format!("\\\\wsl.localhost\\{distro}\\"),
+        format!("\\\\wsl$\\{distro}\\"),
+    ] {
+        if let Some(rest) = s.strip_prefix(&prefix) {
+            return Some(format!("/{}", rest.replace('\\', "/")));
+        }
+    }
+    None
+}
+
+/// Rungs 1-5 of the project ladder. No I/O — `git_root` is supplied by
+/// the caller because where it comes from is transport-specific (a local
+/// walk, a walk over the WSL share, or `git rev-parse` over SSH).
+///
+/// Returns (project, which rung). The override is rung 1 and is NEVER
+/// discarded here; whether it is reachable is a separate question the
+/// caller answers with a transport.
+fn pick_project(
+    override_path: Option<&str>,
+    worktree: Option<&str>,
+    cwd: Option<&str>,
+    git_root: Option<&str>,
+) -> (Option<String>, &'static str) {
+    let clean = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(o) = override_path.and_then(clean) {
+        return (Some(o), "override");
+    }
+    if let Some(w) = worktree.and_then(clean) {
+        return (Some(w), "worktree");
+    }
+    if let Some(g) = git_root.and_then(clean) {
+        return (Some(g), "git");
+    }
+    if let Some(c) = cwd.and_then(clean) {
+        return (Some(c), "cwd");
+    }
+    (None, "none")
+}
+
 /// Walk up from `start` looking for a `.git` entry (file or directory —
 /// a worktree's `.git` is a file). Bounded so a pathological path can't
 /// spin. Returns the repo root, not the `.git` itself.
@@ -766,6 +929,251 @@ mod tests {
         // exist, so translation declines rather than handing back a
         // bogus destination.
         assert!(wsl_unc_path(Some("no-such-distro-zzz"), "/home/u/p").is_none());
+    }
+
+    // ─── Rule #3 regression guard ───────────────────────────────────
+    //
+    // Every remote command interpolates a caller-controlled path. If a
+    // metacharacter ever escapes the quoting, these fail. This is the
+    // highest-value test in the module.
+
+    /// Paths that would be catastrophic if the quoting broke.
+    fn nasty_paths() -> Vec<String> {
+        vec![
+            "/home/u/my project".to_string(),
+            "/home/u/it's".to_string(),
+            "/home/u/x; rm -rf /".to_string(),
+            "/home/u/$(id)".to_string(),
+            "/home/u/`id`".to_string(),
+            "/home/u/x&&whoami".to_string(),
+            "/home/u/x|tee /tmp/pwn".to_string(),
+            "/home/u/new\nline".to_string(),
+            "/home/u/$HOME".to_string(),
+            "/home/u/*".to_string(),
+        ]
+    }
+
+    /// Everything after the first quote must live inside single quotes,
+    /// with the only escape being the '"'"'\''"'"' idiom shell_quote emits.
+    fn assert_neutralized(cmd: &str, raw: &str) {
+        let quoted = winmux_core::shell_quote(raw);
+        assert!(
+            cmd.contains(&quoted),
+            "path was not shell-quoted into the command.\n  cmd={cmd}\n  want={quoted}"
+        );
+        // The raw form must never appear unquoted next to a metachar.
+        for meta in [";", "&&", "|", "$(", "`"] {
+            if raw.contains(meta) {
+                let bare = format!(" {raw}");
+                assert!(
+                    !cmd.contains(&bare),
+                    "raw path with {meta:?} leaked into {cmd}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmd_builders_quote_every_hostile_path() {
+        for raw in nasty_paths() {
+            assert_neutralized(&cmd_git_root(&raw), &raw);
+            assert_neutralized(&cmd_mkdir_p(&raw), &raw);
+            assert_neutralized(&cmd_list_json_b64(&raw), &raw);
+            assert_neutralized(&cmd_rm_f(&[raw.clone()]), &raw);
+            let dst = format!("{raw}/t.json");
+            let mv = cmd_mv_into_place(&format!("{dst}.tmp"), &dst);
+            assert_neutralized(&mv, &dst);
+        }
+    }
+
+    #[test]
+    fn cmd_rm_f_quotes_each_path_separately() {
+        let cmd = cmd_rm_f(&["/a/x.json".to_string(), "/a/x; reboot.png".to_string()]);
+        assert!(cmd.starts_with("rm -f "));
+        assert!(cmd.contains(&winmux_core::shell_quote("/a/x.json")));
+        assert!(cmd.contains(&winmux_core::shell_quote("/a/x; reboot.png")));
+        assert!(!cmd.contains("; reboot.png'") || cmd.matches("'").count() >= 4);
+    }
+
+    #[test]
+    fn cmd_list_uses_portable_base64() {
+        let cmd = cmd_list_json_b64("/p/.winmux-tickets");
+        // -w0 is GNU-only; BSD/macOS remotes need the tr form.
+        assert!(!cmd.contains("-w0"), "must not depend on GNU base64");
+        assert!(cmd.contains("tr -d"));
+        // A missing directory must be a clean exit, not an error.
+        assert!(cmd.contains("|| exit 0"));
+    }
+
+    // ─── parse_git_root ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_git_root_accepts_a_clean_path() {
+        assert_eq!(
+            parse_git_root("/home/u/proj\n", 0).as_deref(),
+            Some("/home/u/proj")
+        );
+    }
+
+    #[test]
+    fn parse_git_root_tolerates_crlf() {
+        assert_eq!(
+            parse_git_root("/home/u/proj\r\n", 0).as_deref(),
+            Some("/home/u/proj")
+        );
+    }
+
+    #[test]
+    fn parse_git_root_rejects_failure_and_junk() {
+        // not a repo
+        assert!(parse_git_root("fatal: not a git repository", 128).is_none());
+        // git missing -> shell reports 127
+        assert!(parse_git_root("", 127).is_none());
+        // success but empty
+        assert!(parse_git_root("", 0).is_none());
+        // success but not an absolute POSIX path (never trust it)
+        assert!(parse_git_root("C:/proj", 0).is_none());
+        assert!(parse_git_root("relative/path", 0).is_none());
+    }
+
+    // ─── parse_list_b64 ─────────────────────────────────────────────
+
+    fn b64u(bytes: &[u8]) -> String {
+        const ALPH: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let v = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+            out.push(ALPH[(v >> 18) as usize & 63] as char);
+            out.push(ALPH[(v >> 12) as usize & 63] as char);
+            if chunk.len() > 1 { out.push(ALPH[(v >> 6) as usize & 63] as char); }
+            if chunk.len() > 2 { out.push(ALPH[v as usize & 63] as char); }
+        }
+        out
+    }
+
+    #[test]
+    fn parse_list_b64_reads_a_good_line() {
+        let payload = b"{\"id\":\"ticket-1\"}";
+        let line = format!("ticket-1.json\t{}", b64u(payload));
+        let got = parse_list_b64(&line);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "ticket-1.json");
+        assert_eq!(got[0].1, payload);
+    }
+
+    #[test]
+    fn parse_list_b64_skips_malformed_lines_without_failing_the_batch() {
+        let good = format!("ok.json\t{}", b64u(b"{}"));
+        let out = [
+            "no-separator-here",           // no tab
+            "notes.txt\tYWJj",             // not .json
+            "empty.json\t",                // no base64 binary on the remote
+            "bad.json\t!!!!not-base64!!!!", // garbage
+            &good,
+            "",                            // blank
+        ]
+        .join("\n");
+        let got = parse_list_b64(&out);
+        // One bad file must not lose the rest of the list.
+        assert_eq!(got.len(), 1, "only the good line should survive");
+        assert_eq!(got[0].0, "ok.json");
+    }
+
+    #[test]
+    fn parse_list_b64_tolerates_crlf_from_the_remote() {
+        let line = format!("a.json\t{}\r", b64u(b"{}"));
+        assert_eq!(parse_list_b64(&line).len(), 1);
+    }
+
+    // ─── posix paths ────────────────────────────────────────────────
+
+    #[test]
+    fn remote_project_dir_requires_an_absolute_posix_path() {
+        assert_eq!(
+            remote_project_dir("/home/u/proj").unwrap(),
+            "/home/u/proj/.winmux-tickets"
+        );
+        // trailing slash must not double up
+        assert_eq!(
+            remote_project_dir("/home/u/proj/").unwrap(),
+            "/home/u/proj/.winmux-tickets"
+        );
+        assert!(remote_project_dir("proj").is_err());
+        // A Windows path on an SSH workspace is a user mistake worth naming.
+        assert!(remote_project_dir("C:\\proj").is_err());
+    }
+
+    #[test]
+    fn posix_join_does_not_double_the_separator() {
+        assert_eq!(posix_join("/a/b", "c.json"), "/a/b/c.json");
+        assert_eq!(posix_join("/a/b/", "c.json"), "/a/b/c.json");
+    }
+
+    // ─── WSL path translation ───────────────────────────────────────
+
+    #[test]
+    fn wsl_unc_and_linux_round_trip() {
+        for prefix in ["wsl.localhost", "wsl$"] {
+            let unc = std::path::PathBuf::from(format!(
+                "\\\\{prefix}\\Ubuntu\\home\\u\\proj"
+            ));
+            assert_eq!(
+                wsl_linux_from_unc(&unc, "Ubuntu").as_deref(),
+                Some("/home/u/proj"),
+                "{prefix} form must map back to the Linux path"
+            );
+        }
+    }
+
+    #[test]
+    fn wsl_linux_from_unc_rejects_another_distro() {
+        let unc = std::path::PathBuf::from(format!(
+            "\\\\wsl.localhost\\Debian\\home\\u"
+        ));
+        assert!(wsl_linux_from_unc(&unc, "Ubuntu").is_none());
+    }
+
+    // ─── the ladder (bug #1 lives here) ─────────────────────────────
+
+    #[test]
+    fn pick_project_prefers_the_override_above_everything() {
+        // THE regression guard for the bug where an override was silently
+        // discarded on SSH workspaces.
+        let (p, src) = pick_project(
+            Some("/srv/chosen"),
+            Some("/srv/worktree"),
+            Some("/srv/cwd"),
+            Some("/srv/gitroot"),
+        );
+        assert_eq!(p.as_deref(), Some("/srv/chosen"));
+        assert_eq!(src, "override");
+    }
+
+    #[test]
+    fn pick_project_ladder_order() {
+        let cases: Vec<(Option<&str>, Option<&str>, Option<&str>, Option<&str>, &str, &str)> = vec![
+            (None, Some("/w"), Some("/c"), Some("/g"), "/w", "worktree"),
+            (None, None, Some("/c"), Some("/g"), "/g", "git"),
+            (None, None, Some("/c"), None, "/c", "cwd"),
+        ];
+        for (o, w, c, g, want, want_src) in cases {
+            let (p, src) = pick_project(o, w, c, g);
+            assert_eq!(p.as_deref(), Some(want));
+            assert_eq!(src, want_src);
+        }
+        let (p, src) = pick_project(None, None, None, None);
+        assert!(p.is_none());
+        assert_eq!(src, "none");
+    }
+
+    #[test]
+    fn pick_project_treats_blank_strings_as_absent() {
+        // workspace_update writes "" to clear cwd, so empties must not
+        // win a rung and produce a path of "".
+        let (p, src) = pick_project(Some("  "), Some(""), Some("/c"), None);
+        assert_eq!(p.as_deref(), Some("/c"));
+        assert_eq!(src, "cwd");
     }
 
     #[test]
