@@ -31,10 +31,16 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
+use russh::client::Handle as SshHandle;
 use serde::{Deserialize, Serialize};
 
-use crate::{config_dir, log_debug, log_info, log_warn};
+use crate::file_manager::{
+    pick_ssh_handle_for_workspace, remote_exec, remote_read_bytes, remote_write_bytes,
+};
+use crate::{config_dir, log_debug, log_info, log_warn, SshClient};
 
 /// Directory under `config_dir()` holding tickets that could not be
 /// written into their project (remote workspace, folder missing).
@@ -111,6 +117,16 @@ pub struct ProjectResolution {
     pub source: String,
     /// Why we fell back, when `in_project` is false. Empty otherwise.
     pub fallback_reason: String,
+    /// Which machine `tickets_dir` names: "local" | "wsl" | "ssh".
+    pub transport: String,
+    /// Host for ssh, distro for wsl, empty for local — so the UI can say
+    /// "srv-01:/home/y/proj/.winmux-tickets" rather than a bare path.
+    pub host_label: String,
+    /// True iff a write would succeed right now. When false the UI must
+    /// not present Save as an ordinary action.
+    pub writable: bool,
+    /// "ok" | "disconnected" | "no_project" | "unreachable".
+    pub status: String,
 }
 
 fn default_status() -> String {
@@ -373,15 +389,245 @@ fn wsl_unc_path(_distro: Option<&str>, _linux_path: &str) -> Option<PathBuf> {
 /// Whether we can WRITE there is a separate question, answered by the
 /// connection: Local is on this machine, Wsl may be via the UNC share,
 /// Ssh never is.
-fn resolve_project(
+/// Where a workspace's ticket files physically live.
+///
+/// `Remote` carries a live SSH handle, so it cannot be constructed
+/// without an authenticated session — "can we write there" is answered
+/// by the type rather than by a later check. That is what killed the old
+/// hardcoded `Connection::Ssh => unwritable` gate, and with it the bug
+/// where a user's explicit project override was discarded on SSH.
+///
+/// The handle is the SAME one the browser's port-forward already rides
+/// on (`open_auto_forward` resolves it identically). SSH multiplexes, so
+/// the SFTP and exec channels here cost no extra connection and no extra
+/// authentication.
+enum Store {
+    /// Reachable with std::fs — Local, and WSL through the
+    /// \\wsl.localhost share.
+    Native(PathBuf),
+    /// A POSIX directory on the workspace's SSH host.
+    Remote {
+        dir: String,
+        handle: Arc<SshHandle<SshClient>>,
+    },
+}
+
+/// One resolve answers both "where do tickets go" and "can I write".
+struct Resolved {
+    /// `None` => nothing is writable right now; `view.status` says why.
+    store: Option<Store>,
+    view: ProjectResolution,
+}
+
+/// Resolve is on the capture modal's critical path — a hung `git` on the
+/// remote must not hang the UI.
+const REMOTE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Ticket reads/writes are small but cross a network.
+const REMOTE_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn with_timeout<T>(
+    d: Duration,
+    label: &str,
+    f: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    match tokio::time::timeout(d, f).await {
+        Ok(r) => r,
+        Err(_) => Err(format!("{label} timed out after {}s", d.as_secs())),
+    }
+}
+
+impl Store {
+    async fn ensure_dir(&self) -> Result<(), String> {
+        match self {
+            Store::Native(p) => ensure_dir(p),
+            Store::Remote { dir, handle } => {
+                let (out, code) = with_timeout(
+                    REMOTE_IO_TIMEOUT,
+                    "remote mkdir",
+                    remote_exec(handle, &cmd_mkdir_p(dir)),
+                )
+                .await?;
+                if code != 0 {
+                    return Err(format!("mkdir -p {dir} failed (exit {code}): {out}"));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Atomic replace. Rule #7.
+    ///
+    /// Remotely this is a `.tmp` write followed by `mv -f`, NOT an SFTP
+    /// rename: russh-sftp negotiates no posix-rename extension, so its
+    /// rename is raw SSH_FXP_RENAME and FAILS when the destination
+    /// exists — which is every ticket update. `mv -f` is rename(2), so
+    /// a reader never sees a partial file. It does not give durability
+    /// across a server power loss; SFTP exposes no fsync we can rely on.
+    async fn write_atomic_named(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            Store::Native(p) => write_atomic(&p.join(name), bytes),
+            Store::Remote { dir, handle } => {
+                let dst = posix_join(dir, name);
+                let tmp = format!("{dst}.{}.tmp", std::process::id());
+                with_timeout(
+                    REMOTE_IO_TIMEOUT,
+                    "remote write",
+                    remote_write_bytes(handle, &tmp, bytes),
+                )
+                .await?;
+                let (out, code) = with_timeout(
+                    REMOTE_IO_TIMEOUT,
+                    "remote mv",
+                    remote_exec(handle, &cmd_mv_into_place(&tmp, &dst)),
+                )
+                .await?;
+                if code != 0 {
+                    // Never leave a dead .tmp lying in the user's repo.
+                    let _ = remote_exec(handle, &cmd_rm_f(&[tmp])).await;
+                    return Err(format!("mv into place failed (exit {code}): {out}"));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn read_named(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Store::Native(p) => {
+                let path = p.join(name);
+                if !path.exists() {
+                    return Ok(None);
+                }
+                fs::read(&path)
+                    .map(Some)
+                    .map_err(|e| format!("read {name}: {e}"))
+            }
+            Store::Remote { dir, handle } => {
+                let path = posix_join(dir, name);
+                match with_timeout(
+                    REMOTE_IO_TIMEOUT,
+                    "remote read",
+                    remote_read_bytes(handle, &path),
+                )
+                .await
+                {
+                    Ok(b) => Ok(Some(b)),
+                    // A missing file is not an error to the caller; SFTP
+                    // gives us no clean not-found discriminant, so treat
+                    // any read failure of an optional file as absent and
+                    // log it (filename only, Rule #1).
+                    Err(e) => {
+                        log_debug("TICKETS", &format!("remote read {name}: {e}"));
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every `*.json` in the directory, as (filename, bytes). A missing
+    /// directory is an empty list, not an error.
+    async fn list_json(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        match self {
+            Store::Native(p) => {
+                if !p.exists() {
+                    return Ok(Vec::new());
+                }
+                let mut out = Vec::new();
+                let iter = fs::read_dir(p).map_err(|e| format!("read_dir {:?}: {e}", p))?;
+                for entry in iter {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(e) => {
+                            log_warn("TICKETS", &format!("skip dir entry: {e}"));
+                            continue;
+                        }
+                    };
+                    let path = entry.path();
+                    if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let name = path
+                        .file_name()
+                        .and_then(|x| x.to_str())
+                        .unwrap_or("<unnamed>")
+                        .to_string();
+                    match fs::read(&path) {
+                        Ok(b) => out.push((name, b)),
+                        Err(e) => log_warn("TICKETS", &format!("skip {name}: read: {e}")),
+                    }
+                }
+                Ok(out)
+            }
+            Store::Remote { dir, handle } => {
+                // ONE round trip for the whole listing — see
+                // cmd_list_json_b64.
+                let (out, code) = with_timeout(
+                    REMOTE_IO_TIMEOUT,
+                    "remote list",
+                    remote_exec(handle, &cmd_list_json_b64(dir)),
+                )
+                .await?;
+                if code != 0 {
+                    return Err(format!("remote list failed (exit {code}): {out}"));
+                }
+                if out.len() > LIST_MAX_BYTES {
+                    return Err(format!(
+                        "remote ticket listing is {} bytes, over the {LIST_MAX_BYTES} cap",
+                        out.len()
+                    ));
+                }
+                Ok(parse_list_b64(&out))
+            }
+        }
+    }
+
+    async fn remove_named(&self, names: &[String]) -> Result<(), String> {
+        match self {
+            Store::Native(p) => {
+                for n in names {
+                    let path = p.join(n);
+                    if path.exists() {
+                        fs::remove_file(&path).map_err(|e| format!("remove {n}: {e}"))?;
+                    }
+                }
+                Ok(())
+            }
+            Store::Remote { dir, handle } => {
+                let paths: Vec<String> = names.iter().map(|n| posix_join(dir, n)).collect();
+                let (out, code) = with_timeout(
+                    REMOTE_IO_TIMEOUT,
+                    "remote rm",
+                    remote_exec(handle, &cmd_rm_f(&paths)),
+                )
+                .await?;
+                if code != 0 {
+                    return Err(format!("remote rm failed (exit {code}): {out}"));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Derive the project for a workspace and pick a transport for it.
+///
+/// Two independent questions, in order:
+///   1. WHICH directory is the project  -> `pick_project` (pure)
+///   2. HOW do we reach it              -> the connection
+///
+/// Keeping them separate is what fixes the override bug: rung 1 is the
+/// user's explicit choice and no transport may silently overrule it.
+async fn resolve(
     state: &crate::AppState,
     workspace_id: &str,
     override_path: Option<&str>,
-) -> Result<ProjectResolution, String> {
+) -> Result<Resolved, String> {
     let fallback = fallback_dir(workspace_id)?;
     let fallback_s = fallback.to_string_lossy().to_string();
 
-    // Snapshot what we need and drop the lock — no I/O while holding it.
+    // Snapshot under the lock, then drop it — MutexGuard is not Send and
+    // everything below this point awaits.
     let (cwd, worktree, conn) = {
         let file = state.workspaces.lock().map_err(|e| e.to_string())?;
         let ws = file
@@ -389,99 +635,268 @@ fn resolve_project(
             .iter()
             .find(|w| w.id == workspace_id)
             .ok_or_else(|| format!("no workspace {workspace_id}"))?;
-        (ws.cwd.clone(), ws.git_worktree.clone(), ws.connection.clone())
+        (
+            ws.cwd.clone(),
+            ws.git_worktree.clone(),
+            ws.connection.clone(),
+        )
     };
+    let worktree_s = worktree.map(|w| w.to_string_lossy().to_string());
+    let ov = override_path.map(str::trim).filter(|x| !x.is_empty());
 
-    let override_path = override_path.map(str::trim).filter(|s| !s.is_empty());
-
-    let (project, source) = if let Some(o) = override_path {
-        (Some(PathBuf::from(o)), "override")
-    } else if let Some(wt) = worktree {
-        (Some(wt), "worktree")
-    } else if let Some(c) = cwd.as_deref().filter(|s| !s.is_empty()) {
-        match git_root_of(Path::new(c)) {
-            Some(root) => (Some(root), "git"),
-            None => (Some(PathBuf::from(c)), "cwd"),
-        }
-    } else {
-        (None, "none")
-    };
-
-    let Some(project) = project else {
-        return Ok(ProjectResolution {
+    let no_project = |source: &str| Resolved {
+        store: None,
+        view: ProjectResolution {
             project_path: None,
-            tickets_dir: fallback_s,
+            tickets_dir: fallback_s.clone(),
             in_project: false,
             source: source.to_string(),
-            fallback_reason: "workspace has no project folder".to_string(),
-        });
+            fallback_reason: "this workspace has no project folder".to_string(),
+            transport: "local".to_string(),
+            host_label: String::new(),
+            writable: false,
+            status: "no_project".to_string(),
+        },
     };
-    let project_s = project.to_string_lossy().to_string();
 
-    // Can we reach it from this machine?
-    let (writable, reason) = match &conn {
-        Some(winmux_types::Connection::Ssh { host, .. }) => (
-            None,
-            format!("project is on {host} — stored locally, still linked"),
-        ),
-        Some(winmux_types::Connection::Wsl { distro }) => {
-            match wsl_unc_path(distro.as_deref(), &project_s) {
-                Some(unc) => (Some(unc), String::new()),
-                None => (
-                    None,
-                    "WSL project not reachable from Windows — stored locally".to_string(),
-                ),
+    match conn {
+        // ── SSH: the project lives on the host, and so must the tickets.
+        Some(winmux_types::Connection::Ssh { ref host, .. }) => {
+            let handle = pick_ssh_handle_for_workspace(state, workspace_id);
+            // An override for an SSH workspace has to be a remote POSIX
+            // path. Saying so beats a baffling remote mkdir error.
+            if let Some(o) = ov {
+                if !o.starts_with('/') {
+                    return Err(format!(
+                        "this workspace is on {host}, so the ticket folder must be an absolute \
+                         POSIX path on that host (got {o:?})"
+                    ));
+                }
             }
-        }
-        // Local, or a workspace with no connection recorded yet.
-        _ => {
-            if project.is_dir() {
-                (Some(project.clone()), String::new())
+            let Some(handle) = handle else {
+                // Intended destination, computed without touching the
+                // network, so the UI can still name it.
+                let (project, source) =
+                    pick_project(ov, worktree_s.as_deref(), cwd.as_deref(), None);
+                return Ok(Resolved {
+                    store: None,
+                    view: ProjectResolution {
+                        tickets_dir: project
+                            .as_deref()
+                            .and_then(|p| remote_project_dir(p).ok())
+                            .unwrap_or_else(|| fallback_s.clone()),
+                        project_path: project,
+                        in_project: false,
+                        source: source.to_string(),
+                        fallback_reason: format!("not connected to {host}"),
+                        transport: "ssh".to_string(),
+                        host_label: host.clone(),
+                        writable: false,
+                        status: "disconnected".to_string(),
+                    },
+                });
+            };
+
+            // Only ask git when no worktree/override already decided it.
+            let git_root = if ov.is_some() || worktree_s.is_some() {
+                None
             } else {
-                (None, "project folder not found on disk".to_string())
-            }
+                match cwd.as_deref().filter(|c| c.starts_with('/')) {
+                    None => None,
+                    Some(c) => {
+                        match with_timeout(
+                            REMOTE_RESOLVE_TIMEOUT,
+                            "remote git rev-parse",
+                            remote_exec(&handle, &cmd_git_root(c)),
+                        )
+                        .await
+                        {
+                            Ok((out, code)) => parse_git_root(&out, code),
+                            // A broken channel must not silently resolve
+                            // to a DIFFERENT project.
+                            Err(e) => {
+                                return Ok(Resolved {
+                                    store: None,
+                                    view: ProjectResolution {
+                                        project_path: None,
+                                        tickets_dir: fallback_s.clone(),
+                                        in_project: false,
+                                        source: "none".to_string(),
+                                        fallback_reason: format!("{host}: {e}"),
+                                        transport: "ssh".to_string(),
+                                        host_label: host.clone(),
+                                        writable: false,
+                                        status: "unreachable".to_string(),
+                                    },
+                                })
+                            }
+                        }
+                    }
+                }
+            };
+
+            let (project, source) = pick_project(
+                ov,
+                worktree_s.as_deref(),
+                cwd.as_deref(),
+                git_root.as_deref(),
+            );
+            let Some(project) = project else {
+                return Ok(no_project(source));
+            };
+            let dir = remote_project_dir(&project)?;
+            Ok(Resolved {
+                view: ProjectResolution {
+                    project_path: Some(project),
+                    tickets_dir: dir.clone(),
+                    in_project: true,
+                    source: source.to_string(),
+                    fallback_reason: String::new(),
+                    transport: "ssh".to_string(),
+                    host_label: host.clone(),
+                    writable: true,
+                    status: "ok".to_string(),
+                },
+                store: Some(Store::Remote { dir, handle }),
+            })
         }
-    };
 
-    Ok(match writable {
-        Some(root) => ProjectResolution {
-            project_path: Some(project_s),
-            tickets_dir: root.join(PROJECT_DIRNAME).to_string_lossy().to_string(),
-            in_project: true,
-            source: source.to_string(),
-            fallback_reason: String::new(),
-        },
-        None => ProjectResolution {
-            project_path: Some(project_s),
-            tickets_dir: fallback_s,
-            in_project: false,
-            source: source.to_string(),
-            fallback_reason: reason,
-        },
-    })
-}
+        // ── WSL: reachable from Windows through the UNC share.
+        Some(winmux_types::Connection::Wsl { ref distro }) => {
+            let label = distro.clone().unwrap_or_default();
+            // Translate BEFORE walking. git_root_of runs on the Windows
+            // side, and a Linux path never exists there — walking first
+            // is why tickets used to land in a SUBDIRECTORY of the repo
+            // instead of its root.
+            let start_linux = ov.map(str::to_string).or_else(|| {
+                worktree_s
+                    .clone()
+                    .or_else(|| cwd.clone())
+                    .filter(|c| c.starts_with('/'))
+            });
+            let unc = start_linux
+                .as_deref()
+                .and_then(|lin| wsl_unc_path(distro.as_deref(), lin));
+            let Some(unc) = unc else {
+                let (project, source) =
+                    pick_project(ov, worktree_s.as_deref(), cwd.as_deref(), None);
+                return Ok(Resolved {
+                    store: None,
+                    view: ProjectResolution {
+                        project_path: project,
+                        tickets_dir: fallback_s.clone(),
+                        in_project: false,
+                        source: source.to_string(),
+                        fallback_reason:
+                            "the WSL project is not reachable from Windows right now".to_string(),
+                        transport: "wsl".to_string(),
+                        host_label: label,
+                        writable: false,
+                        status: "unreachable".to_string(),
+                    },
+                });
+            };
+            // Now the walk happens on a path that actually exists.
+            let root_unc = git_root_of(&unc).unwrap_or(unc);
+            // project_path must be the LINUX path (what the agent inside
+            // the distro sees); the store must be the UNC path (what
+            // std::fs can open). Conflating them IS the bug.
+            let linux = distro
+                .as_deref()
+                .and_then(|d| wsl_linux_from_unc(&root_unc, d))
+                .or(start_linux);
+            let source = if ov.is_some() {
+                "override"
+            } else if worktree_s.is_some() {
+                "worktree"
+            } else {
+                "git"
+            };
+            Ok(Resolved {
+                view: ProjectResolution {
+                    project_path: linux,
+                    tickets_dir: root_unc.join(PROJECT_DIRNAME).to_string_lossy().to_string(),
+                    in_project: true,
+                    source: source.to_string(),
+                    fallback_reason: String::new(),
+                    transport: "wsl".to_string(),
+                    host_label: label,
+                    writable: true,
+                    status: "ok".to_string(),
+                },
+                store: Some(Store::Native(root_unc.join(PROJECT_DIRNAME))),
+            })
+        }
 
-/// Directory the tickets of a workspace live in, per `resolve_project`.
-fn tickets_dir(
-    state: &crate::AppState,
-    workspace_id: &str,
-    override_path: Option<&str>,
-) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(
-        resolve_project(state, workspace_id, override_path)?.tickets_dir,
-    ))
-}
-
-fn ticket_json_path(
-    state: &crate::AppState,
-    workspace_id: &str,
-    override_path: Option<&str>,
-    id: &str,
-) -> Result<PathBuf, String> {
-    if !valid_id(id) {
-        return Err(format!("invalid ticket id {id:?}"));
+        // ── Local, or a workspace with no connection recorded yet.
+        _ => {
+            let git_root = if ov.is_some() || worktree_s.is_some() {
+                None
+            } else {
+                cwd.as_deref()
+                    .and_then(|c| git_root_of(Path::new(c)))
+                    .map(|p| p.to_string_lossy().to_string())
+            };
+            let (project, source) = pick_project(
+                ov,
+                worktree_s.as_deref(),
+                cwd.as_deref(),
+                git_root.as_deref(),
+            );
+            let Some(project) = project else {
+                return Ok(no_project(source));
+            };
+            let root = PathBuf::from(&project);
+            if !root.is_dir() {
+                return Ok(Resolved {
+                    store: None,
+                    view: ProjectResolution {
+                        project_path: Some(project),
+                        tickets_dir: fallback_s.clone(),
+                        in_project: false,
+                        source: source.to_string(),
+                        fallback_reason: "the project folder was not found on disk".to_string(),
+                        transport: "local".to_string(),
+                        host_label: String::new(),
+                        writable: false,
+                        status: "unreachable".to_string(),
+                    },
+                });
+            }
+            let dir = root.join(PROJECT_DIRNAME);
+            Ok(Resolved {
+                view: ProjectResolution {
+                    project_path: Some(project),
+                    tickets_dir: dir.to_string_lossy().to_string(),
+                    in_project: true,
+                    source: source.to_string(),
+                    fallback_reason: String::new(),
+                    transport: "local".to_string(),
+                    host_label: String::new(),
+                    writable: true,
+                    status: "ok".to_string(),
+                },
+                store: Some(Store::Native(dir)),
+            })
+        }
     }
-    Ok(tickets_dir(state, workspace_id, override_path)?.join(format!("{id}.json")))
+}
+
+/// The store, or a clear error naming why there isn't one. Used by every
+/// mutating command — nothing is ever written to a silent fallback.
+fn require_store(r: &Resolved) -> Result<&Store, String> {
+    r.store.as_ref().ok_or_else(|| {
+        let v = &r.view;
+        if v.status == "disconnected" {
+            format!(
+                "{} — this ticket belongs in {} on that host. Open a terminal pane for this \
+                 workspace and try again.",
+                v.fallback_reason, v.tickets_dir
+            )
+        } else {
+            v.fallback_reason.clone()
+        }
+    })
 }
 
 fn png_filename_for(id: &str) -> String {
@@ -678,64 +1093,31 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-// ─── listing ────────────────────────────────────────────────────────
-
-fn list_dir(dir: &Path) -> Result<Vec<Ticket>, String> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    let iter = fs::read_dir(dir).map_err(|e| format!("read_dir {:?}: {e}", dir))?;
-    for entry in iter {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                log_warn("TICKETS", &format!("skip dir entry: {e}"));
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        // Filenames only — never the file body (Rule #1).
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("<unnamed>")
-            .to_string();
-        let text = match fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) => {
-                log_warn("TICKETS", &format!("skip {name}: read: {e}"));
-                continue;
-            }
-        };
-        match serde_json::from_str::<Ticket>(&text) {
-            Ok(t) => out.push(t),
-            Err(e) => log_warn("TICKETS", &format!("skip {name}: parse: {e}")),
-        }
-    }
-    out.sort_by(|a, b| b.created.cmp(&a.created));
-    Ok(out)
-}
 
 // ─── Tauri commands ─────────────────────────────────────────────────
 //
-// Every command takes an optional `project_override`. It is the user's
-// per-workspace escape hatch (kept in localStorage on the frontend, so
-// no schema moves) and is fed through the same `resolve_project` ladder
-// as everything else — the frontend never picks the directory itself.
+// Every command takes an optional `project_override`: the user's
+// per-workspace escape hatch, kept in localStorage on the frontend so no
+// schema moves. It is fed through the same `resolve` ladder as
+// everything else — the frontend never picks the directory itself.
 
 /// Where this workspace's tickets go, and why. The capture modal calls
-/// this before saving so the destination is visible up front.
+/// this before saving, so the destination is visible up front.
 #[tauri::command]
 pub async fn tickets_resolve_project(
     state: tauri::State<'_, crate::AppState>,
     workspace_id: String,
     project_override: Option<String>,
 ) -> Result<ProjectResolution, String> {
-    resolve_project(&state, &workspace_id, project_override.as_deref())
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    log_debug(
+        "TICKETS",
+        &format!(
+            "resolve ws={} transport={} status={} src={}",
+            workspace_id, r.view.transport, r.view.status, r.view.source
+        ),
+    );
+    Ok(r.view)
 }
 
 #[tauri::command]
@@ -744,8 +1126,20 @@ pub async fn tickets_list(
     workspace_id: String,
     project_override: Option<String>,
 ) -> Result<Vec<Ticket>, String> {
-    let dir = tickets_dir(&state, &workspace_id, project_override.as_deref())?;
-    let out = list_dir(&dir)?;
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    // Listing a workspace we cannot reach is an empty list, not an
+    // error: the panel should open and explain itself, not throw.
+    let Some(store) = r.store.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (name, bytes) in store.list_json().await? {
+        match serde_json::from_slice::<Ticket>(&bytes) {
+            Ok(t) => out.push(t),
+            Err(e) => log_warn("TICKETS", &format!("skip {name}: parse: {e}")),
+        }
+    }
+    out.sort_by(|a, b| b.created.cmp(&a.created));
     log_debug(
         "TICKETS",
         &format!("list ws={} count={}", workspace_id, out.len()),
@@ -753,17 +1147,23 @@ pub async fn tickets_list(
     Ok(out)
 }
 
-/// Absolute path of the tickets folder, for "reveal in file manager".
-/// Created on demand so revealing works before the first ticket exists.
+/// Absolute path of the tickets folder, for "reveal" / "copy path".
+///
+/// The directory is created best-effort: revealing is navigational, and
+/// it should not start failing because a remote is momentarily down.
 #[tauri::command]
 pub async fn tickets_dir_path(
     state: tauri::State<'_, crate::AppState>,
     workspace_id: String,
     project_override: Option<String>,
 ) -> Result<String, String> {
-    let dir = tickets_dir(&state, &workspace_id, project_override.as_deref())?;
-    ensure_dir(&dir)?;
-    Ok(dir.to_string_lossy().to_string())
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    if let Some(store) = r.store.as_ref() {
+        if let Err(e) = store.ensure_dir().await {
+            log_debug("TICKETS", &format!("ensure_dir (best effort): {e}"));
+        }
+    }
+    Ok(r.view.tickets_dir)
 }
 
 #[tauri::command]
@@ -773,9 +1173,9 @@ pub async fn tickets_create(
     project_override: Option<String>,
     data: NewTicket,
 ) -> Result<Ticket, String> {
-    let resolved = resolve_project(&state, &workspace_id, project_override.as_deref())?;
-    let dir = PathBuf::from(&resolved.tickets_dir);
-    ensure_dir(&dir)?;
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    let store = require_store(&r)?;
+    store.ensure_dir().await?;
     let id = make_ticket_id();
 
     let mut screenshot_rel: Option<String> = None;
@@ -783,7 +1183,7 @@ pub async fn tickets_create(
         match decode_data_url_png(url) {
             Ok(bytes) => {
                 let name = png_filename_for(&id);
-                write_atomic(&dir.join(&name), &bytes)?;
+                store.write_atomic_named(&name, &bytes).await?;
                 screenshot_rel = Some(name);
             }
             Err(e) => log_warn("TICKETS", &format!("screenshot decode skipped: {e}")),
@@ -799,25 +1199,26 @@ pub async fn tickets_create(
         description: data.description,
         status: default_status(),
         workspace_id: workspace_id.clone(),
-        // Recorded even when we stored app-locally, so the ticket still
-        // points at the repo it is about.
-        project_path: resolved.project_path.clone(),
+        project_path: r.view.project_path.clone(),
         source_hint: None,
     };
     let json = serde_json::to_vec_pretty(&ticket).map_err(|e| format!("serialize ticket: {e}"))?;
-    write_atomic(&dir.join(format!("{id}.json")), &json)?;
+    store
+        .write_atomic_named(&format!("{id}.json"), &json)
+        .await?;
 
-    // Rule #1: lengths and routing, never the captured markup.
+    // Rule #1: routing and lengths, never the captured markup.
     log_info(
         "TICKETS",
         &format!(
-            "created id={} ws={} in_project={} src={} selector_len={} html_len={}",
+            "created id={} ws={} transport={} src={} selector_len={} html_len={} shot={}",
             id,
             workspace_id,
-            resolved.in_project,
-            resolved.source,
+            r.view.transport,
+            r.view.source,
             ticket.element.selector.len(),
-            ticket.element.html.len()
+            ticket.element.html.len(),
+            ticket.screenshot_path.is_some()
         ),
     );
     Ok(ticket)
@@ -825,26 +1226,27 @@ pub async fn tickets_create(
 
 /// Hand a stored screenshot back as a `data:image/png;base64,…` URL.
 ///
-/// The PNG is not served over the asset protocol because for a remote
-/// workspace it does not live on this machine at all — reading it
-/// through the same path as the JSON is what makes local and remote
-/// behave identically. `Ok(None)` = this ticket has no screenshot.
+/// Not the asset protocol: for a remote workspace the PNG does not live
+/// on this machine at all, and routing it through the same Store as the
+/// JSON is what makes local and remote behave identically.
+/// `Ok(None)` = this ticket has no screenshot.
 #[tauri::command]
 pub async fn tickets_screenshot(
+    state: tauri::State<'_, crate::AppState>,
     workspace_id: String,
     project_override: Option<String>,
     id: String,
 ) -> Result<Option<String>, String> {
-    let _ = &project_override;
     if !valid_id(&id) {
         return Err(format!("invalid ticket id {id:?}"));
     }
-    let dir = fallback_dir(&workspace_id)?;
-    let path = dir.join(png_filename_for(&id));
-    if !path.exists() {
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    let Some(store) = r.store.as_ref() else {
         return Ok(None);
-    }
-    let bytes = fs::read(&path).map_err(|e| format!("read screenshot {id}: {e}"))?;
+    };
+    let Some(bytes) = store.read_named(&png_filename_for(&id)).await? else {
+        return Ok(None);
+    };
     log_debug(
         "TICKETS",
         &format!("screenshot id={id} ws={workspace_id} bytes={}", bytes.len()),
@@ -866,13 +1268,23 @@ pub async fn tickets_update(
     if status != "open" && status != "resolved" {
         return Err(format!("invalid status {status:?}"));
     }
-    let path = ticket_json_path(&state, &workspace_id, project_override.as_deref(), &id)?;
-    let text = fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
+    if !valid_id(&id) {
+        return Err(format!("invalid ticket id {id:?}"));
+    }
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    let store = require_store(&r)?;
+    let name = format!("{id}.json");
+    let bytes = store
+        .read_named(&name)
+        .await?
+        .ok_or_else(|| format!("ticket {id} not found"))?;
     let mut ticket: Ticket =
-        serde_json::from_str(&text).map_err(|e| format!("parse ticket {id}: {e}"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse ticket {id}: {e}"))?;
     ticket.status = status.clone();
     let json = serde_json::to_vec_pretty(&ticket).map_err(|e| format!("serialize ticket: {e}"))?;
-    write_atomic(&path, &json)?;
+    // NOTE: remotely this replaces an EXISTING file, which is the case
+    // SFTP rename cannot do. See Store::write_atomic_named.
+    store.write_atomic_named(&name, &json).await?;
     log_info(
         "TICKETS",
         &format!("update id={id} ws={workspace_id} status={status}"),
@@ -887,19 +1299,15 @@ pub async fn tickets_delete(
     project_override: Option<String>,
     id: String,
 ) -> Result<(), String> {
-    let dir = tickets_dir(&state, &workspace_id, project_override.as_deref())?;
     if !valid_id(&id) {
         return Err(format!("invalid ticket id {id:?}"));
     }
-    // Also drop the sibling screenshot, if any.
-    let png = dir.join(png_filename_for(&id));
-    if png.exists() {
-        let _ = fs::remove_file(&png);
-    }
-    let path = dir.join(format!("{id}.json"));
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| format!("remove {:?}: {e}", path))?;
-    }
+    let r = resolve(&state, &workspace_id, project_override.as_deref()).await?;
+    let store = require_store(&r)?;
+    // JSON + the sibling screenshot, in one operation.
+    store
+        .remove_named(&[format!("{id}.json"), png_filename_for(&id)])
+        .await?;
     log_info("TICKETS", &format!("delete id={id} ws={workspace_id}"));
     Ok(())
 }
