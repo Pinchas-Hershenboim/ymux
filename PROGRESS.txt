@@ -1722,7 +1722,6 @@ STILL NOT VERIFIED LIVE (both unrelated to WSL):
   - Phase 81 transfer bar. WSL now gives a possible SFTP target
     (`sudo apt install openssh-server`).
 
-<<<<<<< HEAD
 [2026-08-10] winmux-tools Half A — modular statuslines + session Ticker (issue #4)
 ==================================================================
 TASK: GitHub issue #4 (Dina) — "ETA per Claude session" so she can decide
