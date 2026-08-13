@@ -1761,3 +1761,29 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    focused; no opt-in → anti-noise suppression unchanged. File:
    rpc_server.rs. STILL needs live verify (build branch, run a turn with
    winmux both focused and backgrounded).
+
+[2026-08-13 14:58 +0300] #1b — orphaned user-prompt-submit hook emitted invalid JSON.
+   Surfaced while live-testing the new app.exe: "UserPromptSubmit hook
+   error — Hook JSON output validation failed" in a winmux pane. Root
+   cause: winmux-cli claude-hook user-prompt-submit, when WINMUX_PANE_ID
+   is set and the desktop is UP, fell through the rpc-ok match to the
+   legacy  arm and PRINTED the raw RPC payload ({"decision":"passive",
+   "request_id":...}) — not a valid Claude Code hook-output shape. Only
+   manifested once the desktop was running (down → rpc-error → exit 3, no
+   print). The user-prompt-submit hook is ORPHANED: the current bundled
+   spec (hooks.rs) only registers PreToolUse/SessionEnd/Stop, but Yossi's
+   settings.json still carried an older user-prompt-submit winmux entry
+   that setup-hooks never removes (it only replaces its own per-event
+   entries for events IN the spec).
+   FIX A (immediate, effective now): removed the orphaned user-prompt-submit
+     winmux hook from ~/.claude/settings.json (backup:
+     settings.json.bak.pre-ups-fix.*). Now aligned to the current spec —
+     winmux hooks only on PreToolUse/SessionEnd/Stop.
+   FIX B (source, prevents recurrence): cli/src/main.rs — user-prompt-submit
+     + post-tool-use + subagent-stop + pre-compact now silent-ack in BOTH
+     the rpc-ok and rpc-error match arms instead of raw-printing. Needs a
+     winmux-cli.exe rebuild+redeploy to reach Yossi's deployed CLI
+     (C:\Users\...\winmux-cli.exe); FIX A is what stops it today.
+   cargo check -p winmux (CLI) = clean.
+   NOTE: Yossi must restart the Claude session in the test pane for the
+   settings.json hook change to take effect.
