@@ -166,6 +166,23 @@ fn valid_ws_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// First tmux session name recorded for this workspace, if any. Headless
+/// sessions (the ones `workspace_ensure_connected` makes to back the file
+/// manager) carry `None`; only pane-backed ones name a session.
+fn tmux_session_for_workspace(state: &crate::AppState, workspace_id: &str) -> Option<String> {
+    let sessions = state.core.sessions.lock().ok()?;
+    for sess in sessions.values() {
+        if let crate::Session::Ssh(s) = sess {
+            if s.workspace_id == workspace_id {
+                if let Some(t) = s.tmux_session.as_ref() {
+                    return Some(t.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// App-local fallback: `<config_dir>/tickets/<workspace_id>/`.
 fn fallback_dir(workspace_id: &str) -> Result<PathBuf, String> {
     if !valid_ws_id(workspace_id) {
@@ -240,9 +257,25 @@ fn cmd_rm_f(paths: &[String]) -> String {
     out
 }
 
-/// `None` = not a repo / no git / unusable output. Never an error: the
-/// caller falls back to the `cwd` rung, which is correct behaviour for a
-/// project that simply is not under git.
+/// Ask tmux where the workspace's pane actually is.
+///
+/// An SSH workspace very often has NO recorded `cwd` — the user connects
+/// and `cd`s inside the pane, and nothing writes that back to
+/// workspaces.json. Observed live: a real workspace with `cwd: ""` and
+/// `git_worktree: ""`, which made the whole ladder resolve to nothing and
+/// dropped the ticket into the app-local fallback. The pane's live
+/// directory is the project the user is actually working in.
+fn cmd_tmux_pane_cwd(session: &str) -> String {
+    format!(
+        "tmux display-message -p -t {} '#{{pane_current_path}}' 2>/dev/null",
+        q(session)
+    )
+}
+
+/// `None` = no usable path. Never an error: the caller falls back to the
+/// next rung, which is correct for a project that simply is not under
+/// git. Shared with the tmux probe, which prints the same shape — an
+/// exit code plus a single absolute path line.
 fn parse_git_root(out: &str, code: i32) -> Option<String> {
     if code != 0 {
         return None;
@@ -684,20 +717,27 @@ async fn resolve(
     let worktree_s = worktree.map(|w| w.to_string_lossy().to_string());
     let ov = override_path.map(str::trim).filter(|x| !x.is_empty());
 
-    let no_project = |source: &str| Resolved {
+    // A workspace with nothing to derive from. `transport` must still be
+    // truthful — reporting "local" for an SSH workspace made the UI say
+    // the wrong thing about where the ticket would have gone.
+    let no_project_on = |source: &str, transport: &str, host: &str| Resolved {
         store: None,
         view: ProjectResolution {
             project_path: None,
             tickets_dir: fallback_s.clone(),
             in_project: false,
             source: source.to_string(),
-            fallback_reason: "this workspace has no project folder".to_string(),
-            transport: "local".to_string(),
-            host_label: String::new(),
+            fallback_reason:
+                "no project folder for this workspace — set one below, or cd into the project \
+                 in a terminal pane"
+                    .to_string(),
+            transport: transport.to_string(),
+            host_label: host.to_string(),
             writable: false,
             status: "no_project".to_string(),
         },
     };
+    let no_project = |source: &str| no_project_on(source, "local", "");
 
     match conn {
         // ── SSH: the project lives on the host, and so must the tickets.
@@ -737,11 +777,47 @@ async fn resolve(
                 });
             };
 
+            // Where to start looking on the host. The workspace's own
+            // `cwd` is preferred, but for SSH it is very often EMPTY —
+            // the user connects and `cd`s inside the pane, and nothing
+            // writes that back to workspaces.json. Observed live on a
+            // real workspace: cwd "" and git_worktree "", so the ladder
+            // resolved to nothing and the ticket fell into the app-local
+            // fallback. Asking tmux where the pane actually is recovers
+            // the project the user is genuinely working in.
+            let mut start_dir = cwd
+                .as_deref()
+                .filter(|c| c.starts_with('/'))
+                .map(str::to_string);
+            let mut pane_cwd_used = false;
+            if start_dir.is_none() && ov.is_none() && worktree_s.is_none() {
+                if let Some(sess) = tmux_session_for_workspace(state, workspace_id) {
+                    if let Ok((out, code)) = with_timeout(
+                        REMOTE_RESOLVE_TIMEOUT,
+                        "remote tmux pane cwd",
+                        remote_exec(&handle, &cmd_tmux_pane_cwd(&sess)),
+                    )
+                    .await
+                    {
+                        // Same output shape as git rev-parse: exit code
+                        // plus one absolute path line.
+                        start_dir = parse_git_root(&out, code);
+                        pane_cwd_used = start_dir.is_some();
+                        if pane_cwd_used {
+                            log_debug(
+                                "TICKETS",
+                                &format!("ws={workspace_id} using tmux pane cwd as the start dir"),
+                            );
+                        }
+                    }
+                }
+            }
+
             // Only ask git when no worktree/override already decided it.
             let git_root = if ov.is_some() || worktree_s.is_some() {
                 None
             } else {
-                match cwd.as_deref().filter(|c| c.starts_with('/')) {
+                match start_dir.as_deref() {
                     None => None,
                     Some(c) => {
                         match with_timeout(
@@ -778,11 +854,18 @@ async fn resolve(
             let (project, source) = pick_project(
                 ov,
                 worktree_s.as_deref(),
-                cwd.as_deref(),
+                start_dir.as_deref(),
                 git_root.as_deref(),
             );
             let Some(project) = project else {
-                return Ok(no_project(source));
+                return Ok(no_project_on(source, "ssh", host));
+            };
+            // Name the pane as the source so the UI can explain where the
+            // path came from when it did not come from the workspace.
+            let source = if source == "cwd" && pane_cwd_used {
+                "pane"
+            } else {
+                source
             };
             let dir = remote_project_dir(&project)?;
             Ok(Resolved {
@@ -1511,6 +1594,7 @@ mod tests {
     fn cmd_builders_quote_every_hostile_path() {
         for raw in nasty_paths() {
             assert_neutralized(&cmd_git_root(&raw), &raw);
+            assert_neutralized(&cmd_tmux_pane_cwd(&raw), &raw);
             assert_neutralized(&cmd_mkdir_p(&raw), &raw);
             assert_neutralized(&cmd_list_json_b64(&raw), &raw);
             assert_neutralized(&cmd_rm_f(&[raw.clone()]), &raw);
@@ -1527,6 +1611,18 @@ mod tests {
         assert!(cmd.contains(&winmux_core::shell_quote("/a/x.json")));
         assert!(cmd.contains(&winmux_core::shell_quote("/a/x; reboot.png")));
         assert!(!cmd.contains("; reboot.png'") || cmd.matches("'").count() >= 4);
+    }
+
+    #[test]
+    fn cmd_tmux_pane_cwd_asks_for_the_pane_path() {
+        let cmd = cmd_tmux_pane_cwd("winmux-p_abc_1");
+        // The tmux format literal must survive Rust's brace escaping.
+        assert!(
+            cmd.contains("'#{pane_current_path}'"),
+            "tmux format was mangled: {cmd}"
+        );
+        assert!(cmd.contains("display-message -p -t"));
+        assert!(cmd.contains(&winmux_core::shell_quote("winmux-p_abc_1")));
     }
 
     #[test]
