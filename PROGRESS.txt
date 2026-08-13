@@ -1858,3 +1858,99 @@ and a fallback shows its reason. .gitignore is never touched.
 191 Rust tests (5 new: git walk from subdir, worktree .git-as-a-FILE,
 not-a-repo, WSL translation declining). tsc + vite clean. i18n 1027 x 4.
 Still NOT verified live — same open risk as before (on_navigation).
+
+--------------------------------------------------------------------------------
+2026-08-12  Tickets land on the machine the agent runs on (SSH/WSL/Local)
+--------------------------------------------------------------------------------
+
+Yossi: "למה תיקיית הכרטיסים היא מקומית ולא על השרת - הרי הסוכן קוד יושב על
+השרת". Correct, and the previous entry's design was wrong: an SSH workspace
+silently wrote to %APPDATA% and kept the remote path as metadata only. Claude
+Code runs in the project dir ON THE SERVER; a ticket it cannot see is not a
+ticket.
+
+Six commits: 4f58002, 95c0f31, 76ec575, 12cf043, e0c32d6 (+ this).
+
+THE CORE: a `Store` enum in tickets.rs whose Remote arm CARRIES a live SSH
+  handle, so it cannot be constructed without an authenticated session.
+  "Can we write there" is answered by the TYPE, not by a later check. That
+  deleted the hardcoded `Connection::Ssh => unwritable` gate and, with it,
+  three bugs at once.
+
+NO SECOND SSH CONNECTION — this was Yossi's question and it is worth
+  recording. `open_auto_forward` (lib.rs:3473), which builds the browser's
+  port-forward, resolves its session with `find_ssh_handle_for_workspace`,
+  the SAME lookup tickets now use, then opens a `direct-tcpip` CHANNEL on it
+  (lib.rs:3500). SSH multiplexes: the forward is one channel, an exec is a
+  second, SFTP is a third — one TCP connection, one login. lib.rs:2813 even
+  notes clones of the Arc<Handle> may open channels concurrently. So if the
+  browser is showing a tunnelled page, the handle to write the ticket is
+  already there, and no `workspace_ensure_connected` call is needed (it is
+  not a valid predicate anyway: lib.rs:5303 returns Ok(()) for password-auth
+  hosts and unknown host keys without connecting).
+
+THE LANDMINE, found by design review and verified against the crate source:
+  **SFTP rename CANNOT overwrite.** russh-sftp 2.1.1's `Extensions`
+  (client/session.rs:10-20) detects only hardlink/fsync/statvfs/limits — no
+  posix-rename — so `SftpSession::rename` is raw SSH_FXP_RENAME, which fails
+  when the destination exists. `tickets_update` rewrites an existing
+  <id>.json, so a pure-SFTP implementation would have passed every create
+  test and failed every update. Remote atomic write is therefore
+  `remote_write_bytes(<dst>.<pid>.tmp)` + `mv -f` over an exec channel, with
+  the tmp cleaned up if the mv fails so nothing dead is left in the repo.
+  `mv -f` is rename(2) => never a partial file; it is NOT durability across a
+  server power loss, and the comment says so rather than pretending.
+
+THREE BUGS DIED IN `resolve`:
+  1. project_override was applied then discarded for SSH — the escape hatch
+     could not rescue the one case it existed for. The ladder (`pick_project`)
+     is now pure and runs BEFORE a transport is chosen.
+  2. WSL always missed the git rung: `git_root_of` runs on the Windows side
+     and a Linux path never exists there, so tickets landed in a SUBDIRECTORY
+     of the repo. Now the UNC translation happens BEFORE the walk, and
+     project_path (Linux, what the agent sees) is a different variable from
+     the store (UNC, what std::fs opens). Conflating them WAS the bug.
+  3. tickets_dir_path hard-failed if mkdir failed; revealing a folder is
+     navigational and is now best-effort.
+
+LISTING IS ONE EXEC, not readdir + N reads: tens of tickets x 3 SFTP round
+  trips at 50ms RTT is a multi-second panel load. `name<TAB><base64>` per
+  line. base64 is NOT about screenshots (Yossi asked) — it is framing: ticket
+  descriptions are free text that can contain tabs/newlines, `remote_exec`
+  merges stderr into stdout (ChannelMsg::ExtendedData), and from_utf8_lossy
+  would silently corrupt bytes. base64 makes a stray stderr line fail the
+  tab-split and get skipped instead of poisoning a ticket. `tr -d` not
+  `base64 -w0`, which is GNU-only and breaks on BSD/macOS remotes.
+
+SCREENSHOT un-stubbed (76ec575) via SVG foreignObject — no library injected,
+  which html2canvas would have meant (~200KB of third-party code into the
+  user's page per capture). The non-obvious part: a node cloned into
+  foreignObject inherits NOTHING from the document's stylesheets, so computed
+  styles are inlined by hand or the result is unstyled black text. Everything
+  degrades to null (tainted canvas, >400 nodes, >1000x700, >512KB, 1.5s
+  timeout) rather than to a wrong ticket; the capture itself is never lost.
+
+NOT CONNECTED => clipboard, not a fallback file. Yossi's call and better than
+  what I planned: for an SSH workspace the browser only renders through the
+  tunnel, so this is only reachable when a session drops after the page
+  loaded. No Save button, no orphan file, no sync engine — Retry + "copy for
+  later" so the typed description survives. Removed two fields I had designed
+  (allow_local_fallback, stored_local_fallback).
+
+TESTS: 209 lib tests, 22 of them new pure-layer tests written BEFORE any I/O
+  existed. The Rule #3 guard feeds every command builder paths with a space,
+  quote, `;rm -rf /`, `$(id)`, backticks, `&&`, `|`, newline, glob — and I
+  mutation-checked it by removing shell_quote from cmd_mkdir_p, which made it
+  fail as intended. A security test that cannot fail is theatre.
+
+PROCESS NOTE worth remembering: shell heredocs silently ate backslashes twice
+  — once mangling Rust string literals (`'\r'` became a literal CR inside a
+  char literal) and once writing INVALID JSON into all four locale files. The
+  JSON case was caught only because the drift check parses every file. Fix
+  both times: write the patch as a script FILE and build backslashes with
+  chr(92). Do not pipe backslash-bearing content through a heredoc.
+
+STILL NOT VERIFIED LIVE. Nothing in the remote path has touched a real server.
+  Smoke list is in docs/DECISIONS.md; the one that matters most is
+  tickets_update, because it is the mv -f-over-existing case that SFTP rename
+  cannot do — smoke only create and the bug ships.
