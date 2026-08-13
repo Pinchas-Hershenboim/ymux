@@ -334,6 +334,126 @@ body {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
+/* ── project folders + worktrees ─────────────────────────────────────
+   A collapsible sub-tree under a workspace row: pinned repo paths on
+   the workspace's host, each listing its git worktrees. Indentation is
+   logical (`margin-inline-start`) so the tree reads correctly in RTL.
+   Deliberately quieter than the workspace rows above it — this is
+   navigation, not state. */
+.pf-list {
+  display: flex;
+  flex-direction: column;
+  margin-inline-start: 14px;
+  border-inline-start: 1px solid var(--w-border);
+  padding-inline-start: 4px;
+}
+.pf-row,
+.wt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--w-r-sm);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--w-fs-sm);
+  color: var(--w-text-dim);
+  transition: background 80ms ease, color 80ms ease;
+}
+.pf-row:hover,
+.wt-row:hover { background: var(--w-surface-hi); color: var(--w-text); }
+.pf-chevron,
+.pf-icon,
+.wt-icon { display: flex; flex-shrink: 0; opacity: 0.75; }
+.pf-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Row buttons stay out of the way until the row is hovered — the tree
+   is scanned far more often than it is edited. */
+.pf-btn {
+  background: transparent;
+  border: none;
+  color: var(--w-text-faint);
+  padding: 0 3px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  font-size: var(--w-fs-xs);
+  transition: opacity 80ms ease, color 80ms ease, background 80ms ease;
+}
+.pf-row:hover .pf-btn { opacity: 1; }
+.pf-btn:hover { color: var(--w-text); background: var(--w-surface); }
+.pf-btn:focus-visible { opacity: 1; }
+
+.pf-children {
+  display: flex;
+  flex-direction: column;
+  margin-inline-start: 16px;
+}
+.wt-branch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+.wt-row.main .wt-branch { color: var(--w-text); }
+.wt-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: end;
+  color: var(--w-text-faint);
+  font-size: var(--w-fs-xs);
+}
+.wt-flag { flex-shrink: 0; font-size: var(--w-fs-xs); }
+.wt-row.prunable .wt-branch { text-decoration: line-through; opacity: 0.7; }
+
+.pf-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  font-size: var(--w-fs-xs);
+  color: var(--w-text-faint);
+  /* A git error can be long; wrap instead of clipping it to nothing. */
+  overflow-wrap: anywhere;
+}
+.pf-hint.pf-error { color: var(--w-error); }
+
+.pf-new-wt {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: var(--w-text-faint);
+  padding: 3px 6px;
+  border-radius: var(--w-r-sm);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--w-fs-xs);
+  text-align: start;
+  transition: background 80ms ease, color 80ms ease;
+}
+.pf-new-wt:hover { background: var(--w-surface-hi); color: var(--w-text); }
+
+/* Path field + optional native browse button, on one line. Paths are
+   logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
+.pf-modal-row { display: flex; gap: 8px; align-items: center; }
+.pf-modal-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  direction: ltr;
+  text-align: start;
+}
+.pf-modal .pane-meta-title { direction: ltr; text-align: start; }
+
 .ws-name {
   flex: 1;
   white-space: nowrap;

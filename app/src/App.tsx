@@ -38,6 +38,7 @@ import { CommandPalette, type Command } from "./CommandPalette";
 import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
 import { TicketModal } from "./TicketModal";
+import { ProjectFolderModal, type ProjectFolderModalMode } from "./ProjectFolderModal";
 import { TicketsPanel } from "./TicketsPanel";
 import { parseCapture, pendingCapture, setPendingCapture } from "./browserDevMode";
 import { FileManagerPane } from "./FileManagerPane";
@@ -87,6 +88,7 @@ import {
   type EnvVar,
   type FeedItem,
   type ForwardRow,
+  type WorktreeEntry,
   type FeedResolvedEvent,
   type LayoutNode,
   type Note,
@@ -366,6 +368,10 @@ function App() {
   // Monitor's open/drawer/float state now lives in the unified `panels`
   // registry (see panels.ts) under the "monitor" id.
   const [addonsWin, setAddonsWin] = createSignal<{ id: string; name: string } | null>(null);
+  // Project folders: the pin dialog and the new-worktree dialog share
+  // one modal, discriminated by `kind`.
+  const [projectFolderModal, setProjectFolderModal] =
+    createSignal<ProjectFolderModalMode | null>(null);
   // Phase 35 (#1.3): command palette (Ctrl+Shift+P).
   const [showPalette, setShowPalette] = createSignal(false);
   // Phase 36 (#2.2): live auto port-forwards (all workspaces).
@@ -487,7 +493,7 @@ function App() {
     showSettings() || showPalette() || showPortsWindow() || installingUpdate() ||
     // Dev-Mode ticket modal — same reason as the rest: the native
     // Browser Webview paints above HTML and must be hidden for it.
-    pendingCapture() !== null;
+    pendingCapture() !== null || projectFolderModal() !== null;
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -1266,6 +1272,62 @@ function App() {
     if (!ws?.layout) return;
     for (const paneId of collectPanes(ws.layout)) {
       await disconnectPane(paneId);
+    }
+  };
+
+  // ─── project folders ────────────────────────────────────────────────────
+
+  /** Reload the workspaces file after a project-folder mutation. */
+  const reloadWorkspaces = async () => {
+    const f = await invoke<WorkspacesFile>("workspaces_load");
+    updateFile(f);
+  };
+
+  /**
+   * Open a terminal pane rooted at `path` — the "open session here"
+   * action on a worktree row.
+   *
+   * Splits the workspace's active pane and connects the NEW one with a
+   * cwd override; every piece of that already exists. The new pane is
+   * identified by diffing the layout's pane ids across the split rather
+   * than by guessing at the tree shape, which keeps this correct
+   * regardless of how `workspace_split` arranges the node.
+   */
+  const openSessionAt = async (workspaceId: string, path: string) => {
+    try {
+      if (file().active_workspace_id !== workspaceId) {
+        await handleSetActive(workspaceId);
+      }
+      const ws = file().workspaces.find((w) => w.id === workspaceId);
+      if (!ws) return;
+      const before = new Set(ws.layout ? collectPanes(ws.layout) : []);
+      const anchor = (activePaneId() && before.has(activePaneId()!))
+        ? activePaneId()!
+        : [...before][0];
+      if (!anchor) {
+        log.error("openSessionAt: workspace has no pane to split", workspaceId);
+        return;
+      }
+      const f = await invoke<WorkspacesFile>("workspace_split", {
+        workspaceId,
+        paneId: anchor,
+        direction: "horizontal",
+        paneKind: "terminal",
+        browserUrl: null,
+      });
+      updateFile(f);
+      const after = f.workspaces.find((w) => w.id === workspaceId);
+      const fresh = after?.layout
+        ? collectPanes(after.layout).find((id) => !before.has(id))
+        : undefined;
+      if (!fresh) {
+        log.error("openSessionAt: split produced no new pane", workspaceId);
+        return;
+      }
+      setActivePaneId(fresh);
+      await connectPane(fresh, { cwdOverride: path });
+    } catch (e) {
+      log.error("openSessionAt failed", e);
     }
   };
 
@@ -3023,10 +3085,52 @@ function App() {
             else if (action === "addons") {
               const ws = file().workspaces.find((w) => w.id === id);
               setAddonsWin({ id, name: ws?.name ?? "" });
+            } else if (action === "add_project_folder") {
+              const ws = file().workspaces.find((w) => w.id === id);
+              setProjectFolderModal({
+                kind: "pin",
+                workspaceId: id,
+                connection: ws?.connection ?? null,
+              });
             }
             // Phase 65.Q removed the "add_machine" action — joining an
             // existing server is handled by the main wizard (R).
           }}
+          // ── project folders ───────────────────────────────────────
+          onProjectFolderSetCollapsed={(workspaceId, folderId, isCollapsed) => {
+            void (async () => {
+              try {
+                const f = await invoke<WorkspacesFile>("workspace_project_folder_update", {
+                  workspaceId,
+                  folderId,
+                  name: null,
+                  isCollapsed,
+                });
+                updateFile(f);
+              } catch (e) { log.error("workspace_project_folder_update failed", e); }
+            })();
+          }}
+          onProjectFolderRemove={(workspaceId, folderId) => {
+            void (async () => {
+              try {
+                const f = await invoke<WorkspacesFile>("workspace_project_folder_remove", {
+                  workspaceId,
+                  folderId,
+                });
+                updateFile(f);
+              } catch (e) { log.error("workspace_project_folder_remove failed", e); }
+            })();
+          }}
+          onProjectFolderNewWorktree={(workspaceId, folder) =>
+            setProjectFolderModal({ kind: "worktree", workspaceId, folder })
+          }
+          // Rejection is meaningful here — the Sidebar renders git's own
+          // message (bad path, no live SSH session) rather than an empty
+          // list, which would read as "this repo has no worktrees".
+          onListWorktrees={(workspaceId, path) =>
+            invoke<WorktreeEntry[]>("project_folder_list_worktrees", { workspaceId, path })
+          }
+          onOpenSessionAt={(workspaceId, path) => void openSessionAt(workspaceId, path)}
           allForwards={portForwards()}
           onOpenPorts={(workspaceId) => {
             // Badge click: activate that workspace, then open the
@@ -3625,6 +3729,18 @@ function App() {
       {/* Dev Mode ticket capture. Opened by browser:ticket-captured;
           folded into anyModalOpen() above so the Browser Webview is
           hidden while it's up (it would otherwise paint over this). */}
+      {/* Project folders: pin a repo path, or create a worktree inside
+          one. Folded into anyModalOpen() for the same Webview reason. */}
+      <Show when={projectFolderModal()}>
+        {(m) => (
+          <ProjectFolderModal
+            mode={m()}
+            onClose={() => setProjectFolderModal(null)}
+            onDone={() => void reloadWorkspaces()}
+          />
+        )}
+      </Show>
+
       <Show when={pendingCapture()}>
         {(pc) => (
           <TicketModal
