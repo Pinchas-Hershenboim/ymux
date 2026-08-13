@@ -379,6 +379,46 @@ fn wsl_unc_path(_distro: Option<&str>, _linux_path: &str) -> Option<PathBuf> {
     None
 }
 
+/// Reachability probe for a WSL project path, with one retry pass.
+///
+/// Measured against a live distro rather than assumed. What is actually
+/// established:
+///   - The share is robust in the normal case: `\\wsl.localhost\<d>\home`
+///     resolved even immediately after `wsl --terminate`, because the
+///     Windows-side redirector starts the distro on access.
+///   - It nevertheless returned false for `\tmp` and `\home` twice during
+///     testing while the distro reported Running. The mechanism was NOT
+///     pinned down, so this deliberately does not claim one.
+///
+/// A miss is therefore not trustworthy on its own, and being wrong is
+/// expensive: the ticket silently lands in the app-local fallback instead
+/// of in the project — the exact behaviour this change exists to remove.
+/// So a miss warms the distro and re-probes. Cheap by construction: none
+/// of it runs unless the first probe already failed.
+/// `local_setup.rs:1016` records the same unease about `\\wsl$` being
+/// "flaky on cold distros".
+///
+/// Unrelated trap, found the hard way while testing this: WSL wipes /tmp
+/// whenever the distro stops, and a vanished path is indistinguishable
+/// from a dead share. Do not keep anything there you expect to persist.
+async fn wsl_unc_reachable(distro: Option<&str>, linux_path: &str) -> Option<PathBuf> {
+    if let Some(p) = wsl_unc_path(distro, linux_path) {
+        return Some(p);
+    }
+    log_debug(
+        "TICKETS",
+        "WSL share missed on first probe — warming the distro and retrying",
+    );
+    let _ = crate::local_setup::wsl_exec(distro, None, "true").await;
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if let Some(p) = wsl_unc_path(distro, linux_path) {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Derive the project for a workspace. Ladder, most-specific first:
 ///   1. explicit override (the user pointed us somewhere)
 ///   2. `git_worktree`
@@ -774,9 +814,10 @@ async fn resolve(
                     .or_else(|| cwd.clone())
                     .filter(|c| c.starts_with('/'))
             });
-            let unc = start_linux
-                .as_deref()
-                .and_then(|lin| wsl_unc_path(distro.as_deref(), lin));
+            let unc = match start_linux.as_deref() {
+                Some(lin) => wsl_unc_reachable(distro.as_deref(), lin).await,
+                None => None,
+            };
             let Some(unc) = unc else {
                 let (project, source) =
                     pick_project(ov, worktree_s.as_deref(), cwd.as_deref(), None);
@@ -1604,6 +1645,58 @@ mod tests {
     }
 
     // ─── WSL path translation ───────────────────────────────────────
+
+    /// End-to-end over a REAL WSL distro, not a mock: translate a Linux
+    /// path to UNC, walk up to the repo root the way `resolve` does, and
+    /// map that root back to the Linux path the agent inside the distro
+    /// sees. This is the exact chain that made tickets land in a
+    /// SUBDIRECTORY instead of the repo root.
+    ///
+    /// Uses `wsl_unc_reachable`, not the bare `wsl_unc_path`, because
+    /// that is what `resolve` calls — and because a bare probe fails on a
+    /// cold distro, which is how the warm-and-retry got written in the
+    /// first place. Running this immediately after the distro has gone
+    /// idle is the interesting case.
+    ///
+    /// Ignored by default — needs a distro named Ubuntu. Set up with:
+    ///   wsl -d Ubuntu -- bash -lc 'mkdir -p ~/wmx-tk/app/src/components
+    ///     && cd ~/wmx-tk && git init -q'
+    /// then: cargo test --lib wsl_live -- --ignored --nocapture
+    /// The fixture lives under $HOME, not /tmp: WSL wipes /tmp whenever
+    /// the distro stops, which it does constantly, and a vanished
+    /// fixture looks exactly like a broken share.
+    #[test]
+    #[ignore = "needs a live WSL distro; see the doc comment"]
+    #[cfg(windows)]
+    fn wsl_live_subdir_resolves_to_the_repo_root() {
+        const DISTRO: &str = "Ubuntu";
+        const SUBDIR: &str = "/home/mlastudent371/wmx-tk/app/src/components";
+        const ROOT: &str = "/home/mlastudent371/wmx-tk";
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let unc = rt
+            .block_on(wsl_unc_reachable(Some(DISTRO), SUBDIR))
+            .expect("the WSL share must resolve the subdir after warming");
+        println!("subdir UNC = {}", unc.display());
+
+        // The fix: walk the TRANSLATED path. Walking the Linux path on
+        // the Windows side always missed, which is why the ticket used to
+        // be written into the subdirectory.
+        let root_unc = git_root_of(&unc).expect("walking up must find the repo root");
+        println!("root   UNC = {}", root_unc.display());
+        assert!(
+            root_unc.join(".git").exists(),
+            "the found root must actually contain .git"
+        );
+        assert_ne!(root_unc, unc, "must climb ABOVE the subdir");
+
+        // project_path has to be the LINUX path — that is what Claude
+        // Code on the other side of the share sees.
+        let linux = wsl_linux_from_unc(&root_unc, DISTRO)
+            .expect("the repo root must map back to a Linux path");
+        println!("root Linux = {linux}");
+        assert_eq!(linux, ROOT);
+    }
 
     #[test]
     fn wsl_unc_and_linux_round_trip() {
