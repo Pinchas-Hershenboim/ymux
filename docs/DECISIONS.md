@@ -25,6 +25,16 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-13 — Project folders + worktrees: LIVE SMOKE PENDING
+- **Context:** Yossi wanted a way to pin a project directory that lives **on a server** under a workspace in the sidebar ("like the groups logic"), and — since the SSH connection is already open — to see that folder's git worktrees so "what exists and what doesn't" is obvious at a glance. One action per worktree row: open a session there. Implemented on `claude/pane-overflow-project-folders-a7353c` (commits `568c905`, `4138d33`, `74472be`), see PROGRESS.txt 2026-08-13.
+- **Decided at the same time (Yossi's calls, no separate thread needed):**
+  - **The folder lives on the WORKSPACE, not as a global entity.** `Vec<ProjectFolder>` on `Workspace`, serde-defaulted and `skip_serializing_if = "Vec::is_empty"` so an existing workspaces.json round-trips byte-identical. A global project entity with an FK back to the workspace was the alternative — rejected as more code and one more thing to keep in sync, for no gain: the folder has no meaning apart from the host its workspace points at.
+  - **"Open session here" = a new pane in the current workspace**, connected with `cwdOverride`. A whole new workspace per worktree was the alternative; it isolates better but accumulates sidebar rows fast. The entire pipe (`workspace_split` → `connectPane { cwdOverride }`) already existed, so this cost zero schema.
+  - **No polling.** A scan is `git worktree list --porcelain` over the SSH connection — hundreds of ms. It fires on expand and on an explicit ⟳, and the result sticks. Background refresh was offered and declined.
+  - **Worktree creation is in scope, including over SSH.** `project_folder_create_worktree` runs on any transport. The pre-existing `workspace_create_worktree` is local-only AND re-anchors the whole workspace's cwd — a different job — so it was left alone rather than generalized.
+- **A failed scan surfaces git's own message, never an empty list.** "No worktrees" and "you aren't connected" are different facts; collapsing them would make a disconnected workspace look like an empty repo.
+- **Open risk / smoke:** nothing here has run live. Pin a folder on an SSH workspace → expand → real worktree list; click a row → new pane, verify with `pwd`; create a worktree from a branch → appears after the refresh; **disconnected** workspace → clear error, no stuck spinner; bad path → git's message. Also the byte-identical round-trip against a real workspaces.json. Until that runs this is "compiles, untested" per Rule #14.
+
 ### 2026-08-11 — Browser Dev Mode + Tickets (v2): LIVE SMOKE PENDING
 - **Context:** the feature existed already — 13 commits ending at `aefbba4` (Phase 54) — but **no branch contained them**; they were unreachable objects one `git gc` from gone. Rescued to `browser-dev-mode-tickets` (archive only). Yossi's call: do not restore Phase 54, redo tickets as a clean add-on that does not touch the existing browser. Rebuilt on `browser-tickets-v2` (5 commits, `3025f5e`..`7f7445b`). See PROGRESS.txt 2026-08-11.
 - **Why Phase 54 never worked:** its inspect script wrote the capture to `localStorage.__winmux_ticket__` in the child webview and nothing ever read it — one occurrence of that key in the tree, the write. No IPC existed to read it back.

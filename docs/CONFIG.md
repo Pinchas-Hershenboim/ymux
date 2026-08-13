@@ -44,6 +44,19 @@ type Workspace = {
   // legacy field — folded into layout on load if present
   connection?: Connection;
   layout?: LayoutNode;
+  // Repo paths pinned to this workspace. Resolved on the workspace's
+  // OWN host — usually the server behind its SSH connection — which is
+  // why the sidebar can list each one's git worktrees without opening
+  // anything new. Elided entirely when empty, so a file that never
+  // pinned one round-trips byte-identical.
+  project_folders?: ProjectFolder[];
+};
+
+type ProjectFolder = {
+  id: string;                            // "pf_<hex_nanos>"
+  name: string;                          // label; defaults to the path basename
+  path: string;                          // absolute, on the workspace's host
+  is_collapsed?: boolean;                // persisted sidebar state
 };
 
 type Connection =

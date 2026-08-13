@@ -2103,3 +2103,83 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    - NotificationCenter: new workspaceName resolver prop → .notif-item-ws chip.
    NOT VERIFIED LIVE yet — build + run per plan. Windows "sound only first time"
    left as a to-verify (likely notify_rust coalescing identical titles).
+
+[PANE-OVERFLOW + PROJECT-FOLDERS] two features, plan functional-bouncing-ritchie
+   2026-08-13 ~17:00 +0300. Branch claude/pane-overflow-project-folders-a7353c
+   (worktree pane-overflow-project-folders-0fd4f0). 5 commits:
+   6ee80f6, 568c905, 4138d33, 74472be, + docs.
+
+   FEATURE 1 — pane header overflow (6ee80f6)
+   Yossi: with many panes open the header buttons vanish. Cause: .pane-header is
+   a no-wrap flex row, .pane-btn can't shrink below its 14px SVG, and
+   .pane { overflow:hidden } clipped the overflow silently. Up to 9 buttons x
+   ~34px ~= 306px of buttons.
+   FIX: buttons moved into an actions() memo; a fitter decides how many render
+   inline and the rest fall into a chevron dropdown. `close` stays outside the
+   array and is always visible. Badges (tmux T, bg-count, status, agent-run) are
+   not actions and never move.
+   MEASUREMENT: sum of children offsetWidth + gaps, NOT scrollWidth — an RTL
+   header overflows towards the inline start, where scrollWidth is the messy
+   corner of the API. Verified in a throwaway Chromium harness served through
+   vite: 7 widths x LTR/RTL, identical convergence, 0-8 iterations, no residual
+   overflow above ~115px (below that even title+chevron+close can't fit; the
+   floor degrades to clipping the title stub, and a pane that narrow is
+   unusable anyway).
+   fit() runs from rAF only (never inside the effect that writes the signal, or
+   it loops), on ResizeObserver ticks and when the action set / a badge changes.
+   agentRunLabel is deliberately NOT tracked — ticks every second, fixed width
+   via tabular-nums.
+   The disconnect split-button stays one atomic item: unchanged inline, expands
+   to Detach / Kill session inside the menu. Zero behaviour change, only
+   position. Also wired pane.tooltip.split_right/down, which were hardcoded
+   English despite the keys existing in all 4 locales.
+
+   FEATURE 2 — project folders + worktrees (568c905, 4138d33, 74472be)
+   Yossi's framing: a project folder is a directory on a SERVER he works on
+   often; pin it under the workspace in the sidebar like the groups logic, and
+   since we already hold an SSH connection, listing its worktrees is the cheap
+   way to see "what exists and what doesn't". One action per worktree: open a
+   session there.
+   MODEL (his call, from AskUserQuestion): Vec<ProjectFolder> on Workspace (not
+   a global entity); open-session-here = new pane in the current workspace via
+   cwdOverride; scan on expand + manual refresh, no polling; worktree creation
+   IS in scope including over SSH.
+   - worktrees.rs: parse_worktree_porcelain + transport dispatch on Connection
+     (local arg-array / wsl_exec / exec channel on the workspace's LIVE ssh
+     handle via pick_ssh_handle). No live handle = explicit "connect a pane
+     first", never an empty list — an empty list reads as "no worktrees", a
+     different and misleading claim. Rule #3: wsl/ssh are shell strings by
+     construction, so every value goes through winmux_core::shell_quote; a test
+     asserts a path carrying `'; rm -rf /` stays inert.
+     sanitize_branch_name lifted OUT of workspace_create_worktree (was inline)
+     so both worktree paths share one rule.
+   - Schema: ProjectFolder{id,name,path,is_collapsed}, serde-defaulted,
+     skip_serializing_if=Vec::is_empty so an existing workspaces.json
+     round-trips byte-identical (test asserts the key is elided). 5 Workspace
+     initializers + 3 test literals updated.
+   - Commands: workspace_project_folder_add/update/remove (remove only unpins —
+     winmux didn't create the directory), project_folder_list_worktrees,
+     project_folder_create_worktree.
+   - UI: collapsible sub-tree under the workspace row; lazy scan driven by ONE
+     effect so every path to "open" is covered (click, freshly pinned, restart
+     with it open). Failed scan shows git's own message. Open-session-here finds
+     the new pane by diffing pane ids across the split rather than guessing the
+     tree shape. ProjectFolderModal serves both dialogs; pinning validates via
+     project_folder_list_worktrees first so a bad path fails with git's message
+     instead of landing a dead row; the worktree target dir is suggested and
+     shown BEFORE confirming. No remote folder picker exists, so ssh/wsl type
+     the path and only Local gets the native browse button.
+
+   KNOWN ts-rs 8 WART (docs/DECISIONS.md): it ignores multi-key serde attrs, so
+   the generated TS types project_folders as REQUIRED even though the backend
+   elides it. types.ts carries the warning; frontend must read
+   `w.project_folders ?? []`.
+
+   VALIDATION: cargo test --workspace green (207 + 94, 14 new); tsc clean; vite
+   build clean. NOT VERIFIED LIVE — no Tauri build was run, so per Rule #14 this
+   is "compiles, untested". Live smoke still owed: see FOLLOWUPS P1.
+
+   WORKTREE ENV (both gitignored, no repo impact): this worktree had no
+   node_modules (junctioned to the main checkout) and no
+   resources/winmux-cli.exe (copied from the main checkout) — the latter is
+   exactly the pre-existing FOLLOWUPS P3.
