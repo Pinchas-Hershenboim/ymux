@@ -17,6 +17,13 @@ export type { LayoutNode } from "./bindings/LayoutNode";
 export type { Workspace } from "./bindings/Workspace";
 // cmux-A A2: sidebar collapsible groups.
 export type { WorkspaceGroup } from "./bindings/WorkspaceGroup";
+// Repo paths pinned to a workspace, plus the git worktrees under them.
+// CAUTION: ts-rs 8 ignores multi-key serde attrs, so it types
+// `Workspace.project_folders` as required even though the backend
+// elides the key when empty. Always read it as `w.project_folders ?? []`
+// (see docs/DECISIONS.md, the ts-rs serde-attr note).
+export type { ProjectFolder } from "./bindings/ProjectFolder";
+export type { WorktreeEntry } from "./bindings/WorktreeEntry";
 export type { FeedItem } from "./bindings/FeedItem";
 export type { FeedItemState } from "./bindings/FeedItemState";
 export type { ClaudeUsage } from "./bindings/ClaudeUsage";

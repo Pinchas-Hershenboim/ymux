@@ -1754,6 +1754,7 @@ fn finalize_wsl_workspace(
         claude_separate_account: false,
         group_id: None,
         sort_order: None,
+        project_folders: Vec::new(),
     };
     let id_out = ws.id.clone();
     {

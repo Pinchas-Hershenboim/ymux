@@ -2,5 +2,6 @@
 import type { Connection } from "./Connection";
 import type { EnvVar } from "./EnvVar";
 import type { LayoutNode } from "./LayoutNode";
+import type { ProjectFolder } from "./ProjectFolder";
 
-export type Workspace = { id: string, name: string, color: string | null, emoji: string | null, cwd: string | null, connection: Connection | null, layout: LayoutNode | null, setup_command: string | null, teardown_command: string | null, env: Array<EnvVar>, auto_port_forward: boolean, last_active_at: bigint, git_worktree: string | null, claude_separate_account: boolean, group_id: string | null, sort_order: number | null, };
+export type Workspace = { id: string, name: string, color: string | null, emoji: string | null, cwd: string | null, connection: Connection | null, layout: LayoutNode | null, setup_command: string | null, teardown_command: string | null, env: Array<EnvVar>, auto_port_forward: boolean, last_active_at: bigint, git_worktree: string | null, claude_separate_account: boolean, group_id: string | null, sort_order: number | null, project_folders: Array<ProjectFolder>, };

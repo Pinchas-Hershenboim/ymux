@@ -284,8 +284,8 @@ struct PtyExitEvent {
 // own derive — `cargo test` still regenerates `app/src/bindings/*.ts`
 // since the export_to path resolves to the same on-disk location.
 pub(crate) use winmux_types::{
-    BrowserState, Connection, DiffSource, EnvVar, LayoutNode, PaneKind, SplitDirection, Workspace,
-    WorkspaceGroup,
+    BrowserState, Connection, DiffSource, EnvVar, LayoutNode, PaneKind, ProjectFolder,
+    SplitDirection, Workspace, WorkspaceGroup,
 };
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -2602,6 +2602,7 @@ async fn provision_existing_install_key(
         // cmux-A A2: fresh workspaces default to ungrouped.
         group_id: None,
         sort_order: None,
+        project_folders: Vec::new(),
     };
     {
         let mut file = state.workspaces.lock().map_err(|e| e.to_string())?;
@@ -3800,6 +3801,7 @@ fn workspace_create(
         // cmux-A A2: fresh workspaces default to ungrouped.
         group_id: None,
         sort_order: None,
+        project_folders: Vec::new(),
     };
     {
         let mut file = state.workspaces.lock().unwrap();
@@ -3979,6 +3981,146 @@ fn live_ssh_connection_for_workspace(
 
 // Phase 51.B1: first_terminal_connection + backfill_terminal_connections
 // moved to winmux-core.
+
+// ─── project folder commands ────────────────────────────────────────
+//
+// A project folder is a repo path pinned to a workspace. It carries no
+// connection of its own — everything resolves on the workspace's host,
+// which is why listing its worktrees costs nothing extra (see
+// `worktrees.rs`). These three only touch workspaces.json; the git side
+// lives in `project_folder_list_worktrees` / `_create_worktree`.
+
+fn new_project_folder_id() -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("pf_{:x}", t)
+}
+
+/// Last path component, used as the default label. Handles both
+/// separators because a Local workspace path is Windows-shaped and an
+/// SSH one is not.
+fn path_basename(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+#[tauri::command]
+fn workspace_project_folder_add(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    path: String,
+    name: Option<String>,
+) -> Result<WorkspacesFile, String> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err("project path is required".to_string());
+    }
+    let label = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| {
+            let b = path_basename(&path);
+            if b.is_empty() { path.clone() } else { b }
+        });
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let ws = file
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        // Pinning the same path twice is a no-op, not an error — the
+        // user's intent ("I want this available") is already satisfied.
+        if ws.project_folders.iter().any(|f| f.path == path) {
+            return Err("this folder is already pinned".to_string());
+        }
+        ws.project_folders.push(ProjectFolder {
+            id: new_project_folder_id(),
+            name: label,
+            path,
+            is_collapsed: false,
+        });
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
+#[tauri::command]
+fn workspace_project_folder_update(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    folder_id: String,
+    name: Option<String>,
+    is_collapsed: Option<bool>,
+) -> Result<WorkspacesFile, String> {
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let ws = file
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        let folder = ws
+            .project_folders
+            .iter_mut()
+            .find(|f| f.id == folder_id)
+            .ok_or_else(|| "project folder not found".to_string())?;
+        if let Some(n) = name {
+            let trimmed = n.trim();
+            if trimmed.is_empty() {
+                return Err("folder name is required".to_string());
+            }
+            folder.name = trimmed.to_string();
+        }
+        if let Some(c) = is_collapsed {
+            folder.is_collapsed = c;
+        }
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
+/// Unpin a project folder. Deliberately does NOT touch the directory —
+/// winmux never put it there.
+#[tauri::command]
+fn workspace_project_folder_remove(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    folder_id: String,
+) -> Result<WorkspacesFile, String> {
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let ws = file
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        ws.project_folders.retain(|f| f.id != folder_id);
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    Ok(state.workspaces.lock().unwrap().clone())
+}
 
 // ─── cmux-A A2: workspace group commands ────────────────────────────
 
@@ -7388,6 +7530,9 @@ pub fn run() {
             workspace_delete,
             workspace_set_active,
             workspace_create_worktree,
+            workspace_project_folder_add,
+            workspace_project_folder_update,
+            workspace_project_folder_remove,
             worktrees::project_folder_list_worktrees,
             worktrees::project_folder_create_worktree,
             workspace_split,
@@ -7807,6 +7952,7 @@ mod migration_tests {
             claude_separate_account: false,
             group_id: None,
             sort_order: None,
+            project_folders: Vec::new(),
         }
     }
 
@@ -7875,6 +8021,7 @@ mod migration_tests {
             claude_separate_account: false,
             group_id: None,
             sort_order: None,
+            project_folders: Vec::new(),
         }
     }
 
@@ -7964,6 +8111,7 @@ mod migration_tests {
                 claude_separate_account: false,
                 group_id: None,
                 sort_order: None,
+                project_folders: Vec::new(),
             }],
             ..Default::default()
         };

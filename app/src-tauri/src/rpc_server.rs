@@ -596,6 +596,7 @@ async fn dispatch(
                 // cmux-A A2: RPC-created workspaces default to ungrouped.
                 group_id: None,
                 sort_order: None,
+                project_folders: Vec::new(),
             };
             let cloned = ws.clone();
             {
