@@ -1954,3 +1954,71 @@ STILL NOT VERIFIED LIVE. Nothing in the remote path has touched a real server.
   Smoke list is in docs/DECISIONS.md; the one that matters most is
   tickets_update, because it is the mv -f-over-existing case that SFTP rename
   cannot do — smoke only create and the bug ships.
+
+--------------------------------------------------------------------------------
+2026-08-13  Dev-Mode tickets: LIVE SMOKE on Windows — the bridge WORKS
+--------------------------------------------------------------------------------
+
+Built through the Tauri CLI (Rule #13: verified index-DiQMKBr1.js is embedded in
+app.exe), launched it, Yossi drove the browser. Results:
+
+CLOSED — the open risk since this branch started:
+  on_navigation DOES fire for the unregistered `winmux-ticket:` scheme in
+  WebView2. The capture modal opened with the element filled in (a <pre>, 74
+  chars of HTML). The on_web_resource_request fallback is NOT needed. This was
+  the gate on everything else in the feature.
+
+FOUND LIVE — two bugs the unit tests could not have caught:
+  1. The SSH workspace resolved to "no project folder" and fell into
+     %APPDATA%\winmux\tickets\<ws>\ — the exact behaviour this branch exists to
+     remove. Root cause: I assumed an SSH workspace carries a `cwd`. It does
+     not. workspaces.json had cwd:"" and git_worktree:"" — the user connects and
+     `cd`s inside the pane, and nothing writes that back.
+     FIX (6612554): when cwd is empty, ask tmux where the pane actually is
+     (`tmux display-message -p -t <session> '#{pane_current_path}'`) and start
+     the git walk there. Verified against the live host: returns
+     /home/runner/club, which is a real git repo. Chain is now
+       no cwd -> pane cwd -> git root -> /home/runner/club/.winmux-tickets
+  2. The no-project branch hardcoded transport "local", so an SSH workspace was
+     described to the UI as local — visible in the screenshot as a bare Windows
+     path with no host. Now reports the real transport + host.
+
+VERIFIED against the live server (161.97.93.172) by running the exact command
+shapes the Rust builds, over ssh:
+  git rev-parse from a SUBDIR   -> /home/runner/wmx-smoke   (the git rung)
+  mkdir -p                       -> ok
+  mv -f to a fresh name          -> ok (create)
+  mv -f OVER AN EXISTING FILE    -> ok, content changed open->resolved (update)
+  bulk base64 listing            -> two `name<TAB>b64` lines, decoded fine
+  missing directory              -> exit 0, no output
+Fixture removed afterwards.
+
+VERIFIED for WSL: new #[ignore]d live test drives the real distro —
+/home/<u>/wmx-tk/app/src/components -> UNC -> walk up -> repo root -> back to
+/home/<u>/wmx-tk. That is the subdirectory bug proven fixed against reality.
+
+STILL NOT VERIFIED — do not claim these:
+  - No ticket has actually been written to the server yet. Checked after the
+    smoke: /home/runner/club/.winmux-tickets does not exist. So the russh-sftp
+    write, the mv -f through Store::write_atomic_named, tickets_list over the
+    remote, and tickets_update remain unexercised end-to-end. The command
+    SHAPES are proven; the Rust that issues them is not.
+  - Screenshot fidelity. In the smoke the preview rendered as an empty
+    checkerboard, i.e. a transparent PNG. A <pre> with no background is a
+    plausible reason, but it needs a coloured element to tell "correct" from
+    "foreignObject drew nothing".
+
+THREE CORRECTIONS I MADE TO MYSELF THIS SESSION (all were confident and wrong):
+  - "the WSL share dies on a cold distro" — no. \wsl.localhost\<d>\home
+    resolves even right after `wsl --terminate`. What actually happened: WSL
+    wipes /tmp on every distro stop and my test fixture lived there. A vanished
+    path is indistinguishable from a dead share. The retry stays (I did observe
+    two transient misses) but the comment now states observations, not a
+    mechanism I never established.
+  - The sftp-CLI rename test proved nothing about russh-sftp: the OpenSSH
+    client uses posix-rename@openssh.com and DID overwrite. russh-sftp does not
+    negotiate that extension (checked client/session.rs), so `mv -f` is still
+    required — but on crate-source evidence, not on that test.
+  - Earlier in the branch: "the // URL form corrupts base64 case". It does not;
+    the real reason for the opaque form is that the payload lands in host_str()
+    and path() comes back empty.
