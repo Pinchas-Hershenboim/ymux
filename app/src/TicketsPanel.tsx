@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { t } from "./i18n";
@@ -8,6 +8,7 @@ import { loadProjectOverride } from "./browserDevMode";
 import { createLogger } from "./logger";
 import type { Surface } from "./panels";
 import type { Ticket } from "./bindings/Ticket";
+import type { ProjectResolution } from "./bindings/ProjectResolution";
 
 const log = createLogger("TICKETS");
 
@@ -29,6 +30,29 @@ interface Props {
 }
 
 type Filter = "open" | "resolved" | "all";
+
+/// Screenshots are fetched on demand, not with the list: a list of
+/// tickets each carrying an inline PNG would be megabytes over the IPC
+/// bridge for a panel where most rows are collapsed.
+function TicketShot(p: { workspaceId: string; ticketId: string }) {
+  const [src] = createResource(
+    () => [p.workspaceId, p.ticketId] as const,
+    ([ws, id]) =>
+      invoke<string | null>("tickets_screenshot", {
+        workspaceId: ws,
+        projectOverride: loadProjectOverride(ws),
+        id,
+      }).catch((e) => {
+        log.warn("screenshot fetch failed", e);
+        return null;
+      }),
+  );
+  return (
+    <Show when={src()}>
+      {(url) => <img class="tk-detail-shot" src={url()} alt={t("tickets.modal.shot.alt")} />}
+    </Show>
+  );
+}
 
 export function TicketsPanel(p: Props) {
   const [items, setItems] = createSignal<Ticket[]>([]);
@@ -154,10 +178,25 @@ export function TicketsPanel(p: Props) {
     }
   };
 
+  // Reveal only means something for a path this machine can open. For an
+  // SSH workspace the folder is on the host, so revealItemInDir would be
+  // handed a POSIX path and either fail or open something wrong — copy
+  // the path instead. (Mounting the File Manager pane there is the nicer
+  // answer; noted as a follow-up rather than built here.)
   const revealFolder = async () => {
     const ws = p.workspaceId;
     if (!ws) return;
     try {
+      const res = await invoke<ProjectResolution>("tickets_resolve_project", {
+        workspaceId: ws,
+        projectOverride: loadProjectOverride(ws),
+      });
+      if (res.transport === "ssh") {
+        await navigator.clipboard.writeText(res.tickets_dir);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+        return;
+      }
       const dir = await invoke<string>("tickets_dir_path", {
         workspaceId: ws,
         projectOverride: loadProjectOverride(ws),
@@ -297,6 +336,12 @@ export function TicketsPanel(p: Props) {
                           <span class="tk-detail-k">XPath</span>
                           <code class="tk-detail-v">{tk.element.xpath}</code>
                         </div>
+                        <Show when={tk.screenshot_path}>
+                          <TicketShot
+                            workspaceId={tk.workspace_id}
+                            ticketId={tk.id}
+                          />
+                        </Show>
                         {/* Text, never innerHTML — untrusted page markup. */}
                         <pre class="tk-detail-html">{tk.element.html}</pre>
                         <button

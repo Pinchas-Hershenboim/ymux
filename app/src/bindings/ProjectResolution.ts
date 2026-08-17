@@ -27,4 +27,22 @@ source: string,
 /**
  * Why we fell back, when `in_project` is false. Empty otherwise.
  */
-fallback_reason: string, };
+fallback_reason: string, 
+/**
+ * Which machine `tickets_dir` names: "local" | "wsl" | "ssh".
+ */
+transport: string, 
+/**
+ * Host for ssh, distro for wsl, empty for local — so the UI can say
+ * "srv-01:/home/y/proj/.winmux-tickets" rather than a bare path.
+ */
+host_label: string, 
+/**
+ * True iff a write would succeed right now. When false the UI must
+ * not present Save as an ordinary action.
+ */
+writable: boolean, 
+/**
+ * "ok" | "disconnected" | "no_project" | "unreachable".
+ */
+status: string, };

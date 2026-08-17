@@ -89,6 +89,10 @@ export interface ElementCapture {
   selector: string;
   html: string;
   style: Record<string, unknown>;
+  /** PNG data-url of the element, or null when the snapshot could not be
+   *  taken (tainted canvas, zero-size element, too large, timeout). A
+   *  missing screenshot never blocks the capture. */
+  shot: string | null;
 }
 
 /** Payload of the `browser:ticket-captured` Tauri event. */
@@ -114,7 +118,11 @@ export function parseCapture(value: unknown): ElementCapture | null {
   const selector = str("selector");
   const xpath = str("xpath");
   if (!selector && !xpath) return null;
-  return { url: str("url"), xpath, selector, html: str("html"), style };
+  // Only accept a PNG data-url — the page could put anything here, and
+  // this string ends up in an <img src>.
+  const rawShot = typeof o.shot === "string" ? o.shot : "";
+  const shot = rawShot.startsWith("data:image/png;base64,") ? rawShot : null;
+  return { url: str("url"), xpath, selector, html: str("html"), style, shot };
 }
 
 /** The capture awaiting a description, or null when no ticket modal is
@@ -129,9 +137,62 @@ export interface PendingCapture {
   capture: ElementCapture;
 }
 
+/** Render a capture as Markdown.
+ *
+ *  Shared by the modal's "copy for later" path (when there is nowhere to
+ *  write) and by the panel's copy action, so a ticket reads the same
+ *  whether it was saved or only copied. `TicketsPanel` adds the fields a
+ *  saved ticket has and a fresh capture does not (id, status, dates). */
+export function captureToMarkdown(capture: ElementCapture, description: string): string {
+  let style = "{}";
+  try {
+    style = JSON.stringify(capture.style, null, 2);
+  } catch {
+    /* keep "{}" */
+  }
+  return [
+    "# Ticket (not saved)",
+    "",
+    `- URL: ${capture.url}`,
+    "",
+    "## Description",
+    "",
+    description.trim() || "_(none)_",
+    "",
+    "## Element",
+    "",
+    `- Selector: \`${capture.selector}\``,
+    `- XPath: \`${capture.xpath}\``,
+    "",
+    "```html",
+    capture.html,
+    "```",
+    "",
+    "## Computed style",
+    "",
+    "```json",
+    style,
+    "```",
+    "",
+  ].join("\n");
+}
+
 /** Cap on captured markup. Keeps the sentinel URL small and bounds how
  *  much page content can land in a ticket file. */
 const HTML_MAX = 4096;
+
+/** Snapshot limits. The PNG rides the same `winmux-ticket:` URL as the
+ *  rest of the capture, so it has to stay sane: oversized elements are
+ *  scaled down, and a data-url past the byte cap is dropped rather than
+ *  risking the navigation. */
+const SHOT_MAX_W = 1000;
+const SHOT_MAX_H = 700;
+const SHOT_MAX_BYTES = 512 * 1024;
+/** Give up on a snapshot that hasn't rasterized in this long. */
+const SHOT_TIMEOUT_MS = 1500;
+/** Stop inlining styles past this many nodes — a huge subtree would
+ *  produce an SVG bigger than the screenshot is worth. */
+const SHOT_MAX_NODES = 400;
 
 /** The injected inspect script.
  *
@@ -220,6 +281,82 @@ export function inspectScript(): string {
     return btoa(bin).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
   }
 
+  // ── element snapshot ────────────────────────────────────────────
+  // SVG <foreignObject> rasterization. No library is injected into the
+  // page. The catch is that a cloned node inside foreignObject inherits
+  // NOTHING from the document's stylesheets, so computed styles have to
+  // be inlined by hand — without that the snapshot is unstyled black
+  // text on transparent, which is worse than no snapshot.
+  //
+  // Known limits, all of which degrade to null rather than to a wrong
+  // ticket: cross-origin images/fonts taint the canvas and toDataURL
+  // throws; very large subtrees are skipped; anything slow times out.
+  var SHOT_PROPS = [
+    'display','position','width','height','margin','padding','border',
+    'border-radius','box-sizing','background-color','background-image',
+    'color','font','font-family','font-size','font-weight','font-style',
+    'line-height','letter-spacing','text-align','text-decoration',
+    'text-transform','white-space','vertical-align','opacity','overflow',
+    'flex-direction','justify-content','align-items','gap','list-style',
+    'box-shadow','outline','visibility'
+  ];
+
+  function inlineStyles(src, dst, budget){
+    if (budget.n > ${SHOT_MAX_NODES}) return;
+    budget.n++;
+    if (src.nodeType === 1 && dst.nodeType === 1) {
+      var cs = window.getComputedStyle(src);
+      var decl = '';
+      for (var i = 0; i < SHOT_PROPS.length; i++) {
+        var v = cs.getPropertyValue(SHOT_PROPS[i]);
+        if (v) decl += SHOT_PROPS[i] + ':' + v + ';';
+      }
+      dst.setAttribute('style', decl);
+      // Inputs don't serialize their live value into markup.
+      if (dst.tagName === 'INPUT' && 'value' in src) dst.setAttribute('value', src.value);
+    }
+    var sc = src.childNodes, dc = dst.childNodes;
+    for (var j = 0; j < sc.length && j < dc.length; j++) {
+      inlineStyles(sc[j], dc[j], budget);
+    }
+  }
+
+  function snapshot(el, done){
+    var finished = false;
+    function finish(v){ if (!finished) { finished = true; done(v); } }
+    setTimeout(function(){ finish(null); }, ${SHOT_TIMEOUT_MS});
+    try {
+      var r = el.getBoundingClientRect();
+      var w = Math.ceil(r.width), h = Math.ceil(r.height);
+      if (!w || !h) return finish(null);
+      var scale = Math.min(1, ${SHOT_MAX_W} / w, ${SHOT_MAX_H} / h);
+      var clone = el.cloneNode(true);
+      inlineStyles(el, clone, { n: 0 });
+      // Neutralize the element's own offset — we want it drawn at 0,0.
+      clone.style.margin = '0';
+      clone.style.position = 'static';
+      var xml = new XMLSerializer().serializeToString(clone);
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
+        + '<foreignObject x="0" y="0" width="100%" height="100%">'
+        + '<div xmlns="http://www.w3.org/1999/xhtml">' + xml + '</div>'
+        + '</foreignObject></svg>';
+      var img = new Image();
+      img.onload = function(){
+        try {
+          var c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(w * scale));
+          c.height = Math.max(1, Math.round(h * scale));
+          var ctx = c.getContext('2d');
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          var url = c.toDataURL('image/png');
+          finish(url.length > ${SHOT_MAX_BYTES} ? null : url);
+        } catch (e) { finish(null); }   // tainted canvas
+      };
+      img.onerror = function(){ finish(null); };
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    } catch (e) { finish(null); }
+  }
+
   function targetFrom(e){
     var el = e.target;
     if (!el || el.nodeType !== 1 || el.getAttribute('data-winmux-ticket-ui')) {
@@ -261,11 +398,19 @@ export function inspectScript(): string {
         font: cs.font || (cs.fontSize + ' ' + cs.fontFamily),
         display: cs.display,
         bbox: { x: r.left, y: r.top, w: r.width, h: r.height }
-      }
+      },
+      shot: null
     };
-    try {
-      location.href = 'winmux-ticket:' + b64url(JSON.stringify(payload));
-    } catch (err) { /* nothing we can surface from in here */ }
+    // Freeze the highlight while rasterizing so the click feels handled.
+    tip.textContent = 'winmux: capturing…';
+    // The snapshot is best-effort: it always calls back, and a null just
+    // means this ticket has no image. It must never lose the capture.
+    snapshot(el, function(shot){
+      payload.shot = shot;
+      try {
+        location.href = 'winmux-ticket:' + b64url(JSON.stringify(payload));
+      } catch (err) { /* nothing we can surface from in here */ }
+    });
   }
 
   document.addEventListener('mousemove', onMove, true);

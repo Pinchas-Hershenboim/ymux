@@ -69,4 +69,30 @@ Format:
   `browser-dev-mode-tickets`). Do not merge it wholesale — 4/5 of it is already
   in `main` and a full rebase would replay landed work.
 
+## workspace_fs — one exec/filesystem layer instead of six copies
+
+Found while putting tickets on the remote (2026-08-12). There is no
+abstraction for "do this in the workspace's filesystem". The same russh
+exec loop is hand-rolled **six** times — `addons.rs:71`, `claude_log.rs:113`
+(whose own comment admits it mirrors two others), `claude_summary.rs:60`,
+`provisioning.rs:1329`, `updater.rs:448`, `file_manager.rs:1464` — and the
+SSH handle picker **four** times (`addons.rs:38`, `claude_log.rs:87`,
+`claude_summary.rs:49`, `file_manager.rs:525`). `open_sftp` exists twice.
+
+Shape if picked up: a module owning (a) the handle/transport pickers,
+(b) one `exec(workspace_id, script) -> (code, stdout)` dispatching
+Local -> `Command`, Wsl -> `local_setup::wsl_exec`, Ssh -> the russh loop,
+and (c) the path translation that currently lives only in `tickets.rs`
+(`wsl_unc_path` / `wsl_linux_from_unc`).
+
+Deliberately NOT done with the tickets work: Yossi's instruction was to
+add tickets without touching what already works, and this touches a lot
+of working code. `tickets.rs::resolve` is the reference implementation of
+the dispatch if someone wants a starting point.
+
+Payoff is real though — it is what would fix the two FOLLOWUPS above
+(diff_pane on remote workspaces, addons misclassifying WSL) rather than
+patching each one separately.
+
+
 ## Done

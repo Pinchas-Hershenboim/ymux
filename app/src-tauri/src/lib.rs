@@ -7380,6 +7380,7 @@ pub fn run() {
             tickets::tickets_list,
             tickets::tickets_resolve_project,
             tickets::tickets_dir_path,
+            tickets::tickets_screenshot,
             tickets::tickets_create,
             tickets::tickets_update,
             tickets::tickets_delete,
