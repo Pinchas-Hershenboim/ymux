@@ -1697,3 +1697,36 @@ FILES:
   FOLLOWUPS.md — 3 P2 items (2026-08-10) moved to Done.
 RESULT: compiles-on-CI pending (Rule #17), untested live. Windows path
   unchanged (all new code behind cfg(not(windows)) / same defaults).
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 2
+TASK: full macOS adaptation of "new workspace → local" (both flavors) +
+  local terminal commands. Done via 4 parallel subagents on disjoint files.
+FILES:
+  app/src-tauri/src/local_setup.rs — per-OS step engine. mac: preflight
+    always ready; inspect = brew (in the `winget` slot), git/node/npm/claude/
+    codex/gemini probed on PATH + /opt/homebrew/bin,/usr/local/bin,~/.local/bin,
+    ~/.npm-global/bin,/usr/bin (Finder-launched app has a minimal PATH);
+    new `mac: Option<MacInspect{tmux, tmux_conf_ok}>`. Steps: brew install
+    git/node/tmux, claude via official install.sh, codex/gemini via npm -g,
+    DeployTmuxConfLocal → ~/.winmux/tmux.conf (tmp+rename), InstallLocalHooks
+    → clear error (CLI not bundled on mac). Persistence chain =
+    [InstallTmuxLocal, DeployTmuxConfLocal]; finalize_local_workspace creates
+    Connection::Local{shell:None}. Windows arms untouched, now cfg(windows).
+  app/src/bindings/LocalSetupInspect.ts, MacInspect.ts (new), LocalSetupResult.ts
+    (doc comment) — hand-synced with the Rust structs (ts-rs style).
+  app/src-tauri/src/lib.rs — unix local panes honor persistent/mode=tmux:
+    spawn_local_pty(tmux_name) + build_tmux_attach_script at 900ms (no WINMUX_*
+    exports — hooks bridge N/A), Session::Local.tmux_session set;
+    pane_list_tmux_sessions / pane_probe_tmux_sessions / pane_kill_session
+    work against the local tmux binary (which + /opt/homebrew/bin etc.);
+    shared TMUX_LIST_FORMAT/TMUX_META_MARKER consts; parser tests.
+  app/src/LocalSetupFlow.tsx, SetupWizard.tsx — mac UI: Homebrew label,
+    hooks checkbox hidden (+hint), tmux persistence group instead of WSL,
+    no username/elevation UI, brew-missing hint (brew.sh).
+  app/src/PaneView.tsx, App.tsx — mac-local Connect probes local tmux
+    sessions (picker), tmux/regular toggle in the new-connection modal,
+    startup restore includes mac-local tmux panes.
+  i18n/{en,he,ru,ar}.json — localSetup.mac.*, setup.local.new(.hint).posix,
+    step labels, connect.*.hintLocal (parity 1016 keys each).
+RESULT: compiles-on-CI pending, untested live. Known gap: hooks/CLI on mac.

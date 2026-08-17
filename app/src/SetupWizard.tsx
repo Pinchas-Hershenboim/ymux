@@ -53,9 +53,13 @@ interface Props {
   initialTarget?: Target;
 }
 
-// macOS port: the "existing shell" tile names the shells it will offer.
+// macOS port: the "existing shell" tile names the shells it will offer,
+// and the "smart setup" tile drops the WSL mention.
 const localExistingKey = () =>
   isWindows() ? "setup.local.existing" : "setup.local.existing.posix";
+const localNewKey = () => (isWindows() ? "setup.local.new" : "setup.local.new.posix");
+const localNewHintKey = () =>
+  isWindows() ? "setup.local.new.hint" : "setup.local.new.hint.posix";
 
 export function SetupWizard(p: Props) {
   const [target, setTarget] = createSignal<Target | null>(p.initialTarget ?? null);
@@ -119,7 +123,7 @@ export function SetupWizard(p: Props) {
       parts.push(
         tg === "server"
           ? t(fl === "new" ? "provisioning.mode.new" : "provisioning.mode.existing")
-          : t(fl === "new" ? "setup.local.new" : localExistingKey())
+          : t(fl === "new" ? localNewKey() : localExistingKey())
       );
     }
     const m = sshMethod();
@@ -261,8 +265,8 @@ export function SetupWizard(p: Props) {
                   active: flavor() === "new",
                   onPick: () => pickFlavor("new"),
                   icon: () => <IconSparkles size={14} />,
-                  label: t("setup.local.new"),
-                  hint: t("setup.local.new.hint"),
+                  label: t(localNewKey()),
+                  hint: t(localNewHintKey()),
                   radioGroup: "setup-flavor",
                 })}
               </div>

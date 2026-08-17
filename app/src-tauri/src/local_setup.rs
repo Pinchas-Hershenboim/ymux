@@ -12,6 +12,15 @@
 //! Everything here follows Rule #3: argv arrays only. Values interpolated
 //! into POSIX scripts run inside a distro go through
 //! `winmux_core::shell_quote` exclusively.
+//!
+//! macOS port: the same commands/events serve the mac wizard. There the
+//! `winget` slot describes Homebrew, the WSL chain is replaced by the
+//! tmux "persistence chain" (`InstallTmuxLocal` → `DeployTmuxConfLocal`),
+//! and the finalized workspace is `Connection::Local`. Windows-only
+//! machinery is `cfg(target_os = "windows")`; the unix step runner is
+//! `run_step_unix`. A Finder-launched app inherits a bare PATH
+//! (/usr/bin:/bin:/usr/sbin:/sbin), so every unix probe/spawn also
+//! consults `unix_tool_dirs()`.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -93,6 +102,8 @@ pub(crate) fn is_elevated() -> bool {
 /// argv array to hide behind (Rule #3). Nothing outside this shape is
 /// ever allowed through — the value comes from `wsl -l -v` parsing or a
 /// user field, so it is not trusted by construction.
+// Pure + unit-tested on every OS; only the Windows install path calls it.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn valid_distro_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -121,14 +132,27 @@ pub(crate) struct WslPreflight {
 /// UAC/reboot cost is stated up front instead of discovered by failing.
 #[tauri::command]
 pub(crate) async fn local_setup_preflight() -> Result<WslPreflight, String> {
-    let wsl = inspect_wsl(None).await;
-    let elevated = is_elevated();
-    let platform_ready = wsl.wsl_ready;
+    #[cfg(target_os = "windows")]
+    let pre = {
+        let wsl = inspect_wsl(None).await;
+        let elevated = is_elevated();
+        let platform_ready = wsl.wsl_ready;
+        WslPreflight {
+            platform_ready,
+            distro_present: !wsl.distros.is_empty(),
+            elevated,
+            needs_elevation: !platform_ready && !elevated,
+        }
+    };
+    // macOS/Linux: there is no platform to enable and nothing in the
+    // wizard needs elevation (Homebrew + native installers are per-user),
+    // so the gate is always open.
+    #[cfg(not(target_os = "windows"))]
     let pre = WslPreflight {
-        platform_ready,
-        distro_present: !wsl.distros.is_empty(),
-        elevated,
-        needs_elevation: !platform_ready && !elevated,
+        platform_ready: true,
+        distro_present: true,
+        elevated: is_elevated(),
+        needs_elevation: false,
     };
     log_info(
         "SETUP",
@@ -302,16 +326,10 @@ fn run_wsl_install_elevated(distro: &str) -> Result<(u32, String), ProvisioningE
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn run_wsl_install_elevated(_distro: &str) -> Result<(u32, String), ProvisioningError> {
-    Err(ProvisioningError::Generic(
-        "elevated WSL install is Windows-only".into(),
-    ))
-}
-
 /// Map a `wsl --install` exit code onto a structured error. Split out so
 /// the elevated and non-elevated paths classify identically, and unit
 /// tested — this is the logic that used to be an English substring match.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn classify_wsl_install(code: u32, output: &str) -> Result<(), ProvisioningError> {
     let low = output.to_lowercase();
     match code {
@@ -613,9 +631,42 @@ pub(crate) struct WslInspect {
     pub hooks_version_inside: Option<String>,
 }
 
+impl WslInspect {
+    /// No WSL at all — wsl.exe missing on Windows, or any non-Windows OS.
+    fn absent() -> Self {
+        Self {
+            wsl_present: false,
+            wsl_ready: false,
+            distros: Vec::new(),
+            default_distro: None,
+            tmux_installed: None,
+            winmux_cli_state: None,
+            tmux_conf_ok: None,
+            claude_inside: None,
+            hooks_version_inside: None,
+        }
+    }
+}
+
+// macOS-only detection the wizard's persistence chain is gated on.
+// (Plain `//` comments on purpose: the ts-rs binding was hand-written
+// and carries no doc blocks — keep the two in sync.)
+#[derive(Clone, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+#[cfg_attr(target_os = "windows", allow(dead_code))] // never constructed there
+pub(crate) struct MacInspect {
+    // tmux on PATH or in a canonical dir (Homebrew).
+    pub tmux: ToolStatus,
+    // `~/.winmux/tmux.conf` exists AND is byte-identical to the bundled
+    // conf (same embedded payload DeployTmuxConfToWsl ships).
+    pub tmux_conf_ok: bool,
+}
+
 #[derive(Clone, Serialize, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct LocalSetupInspect {
+    // Windows: winget. macOS/Linux: Homebrew (`brew`) — the package
+    // manager the InstallGit/InstallNodejs/InstallTmuxLocal steps use.
     pub winget: ToolStatus,
     pub git: ToolStatus,
     pub node: ToolStatus,
@@ -623,9 +674,12 @@ pub(crate) struct LocalSetupInspect {
     pub claude: ToolStatus,
     pub codex: ToolStatus,
     pub gemini: ToolStatus,
+    // Always `WslInspect::absent()` off Windows.
     pub wsl: WslInspect,
     pub local_hooks_version: Option<String>,
     pub local_claude_dir: bool,
+    // None on Windows, Some on macOS/Linux.
+    pub mac: Option<MacInspect>,
 }
 
 /// Probe one tool: PATH lookup over the candidate exe names (PATHEXT-
@@ -653,6 +707,13 @@ async fn probe_tool(candidates: &[&str], canonical: &[PathBuf]) -> ToolStatus {
     };
     let mut vc = hidden_cmd(&path.to_string_lossy());
     vc.arg("--version");
+    // npm/codex/gemini are `#!/usr/bin/env node` scripts — from a
+    // Finder-launched app node is not on PATH, so the probe would fail
+    // even though the tool is right there.
+    #[cfg(not(target_os = "windows"))]
+    {
+        vc.env("PATH", unix_path_env());
+    }
     let version = run_capture(vc, "version probe", 5)
         .await
         .ok()
@@ -670,36 +731,108 @@ async fn probe_tool(candidates: &[&str], canonical: &[PathBuf]) -> ToolStatus {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn program_files() -> PathBuf {
     PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into()))
 }
 
-fn user_profile() -> PathBuf {
-    PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into()))
+/// The user's home: %USERPROFILE% on Windows, $HOME elsewhere.
+fn home_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    PathBuf::from(home)
 }
+
+/// Exe names `probe_tool` tries on PATH for npm.
+#[cfg(target_os = "windows")]
+const NPM_CANDIDATES: &[&str] = &["npm.cmd", "npm.exe"];
+#[cfg(not(target_os = "windows"))]
+const NPM_CANDIDATES: &[&str] = &["npm"];
 
 /// Canonical install locations probed AFTER PATH — a tool winget just
 /// installed isn't on our process's (stale) PATH.
+#[cfg(target_os = "windows")]
 fn canonical_git() -> Vec<PathBuf> {
     vec![program_files().join("Git").join("cmd").join("git.exe")]
 }
+#[cfg(target_os = "windows")]
 fn canonical_node() -> Vec<PathBuf> {
     vec![program_files().join("nodejs").join("node.exe")]
 }
+#[cfg(target_os = "windows")]
 fn canonical_npm() -> Vec<PathBuf> {
     vec![program_files().join("nodejs").join("npm.cmd")]
 }
+#[cfg(target_os = "windows")]
 fn canonical_claude() -> Vec<PathBuf> {
     // The official install.ps1 target (verified against
     // code.claude.com/docs/en/setup).
-    vec![user_profile()
-        .join(".local")
-        .join("bin")
-        .join("claude.exe")]
+    vec![home_dir().join(".local").join("bin").join("claude.exe")]
+}
+
+// ─── unix (macOS first, Linux shares) canonical locations ───────────
+//
+// A Finder-launched GUI app gets PATH=/usr/bin:/bin:/usr/sbin:/sbin — no
+// Homebrew, no ~/.local/bin, no npm -g prefix. So on unix a PATH lookup
+// alone is NOT enough: every probe also checks these dirs, and every
+// spawn gets `unix_path_env()` so the child's own subprocesses (brew →
+// git/curl, npm → node) resolve too.
+
+/// Directories a wizard-installed tool lands in, most specific first.
+#[cfg(not(target_os = "windows"))]
+fn unix_tool_dirs() -> Vec<PathBuf> {
+    let home = home_dir();
+    vec![
+        PathBuf::from("/opt/homebrew/bin"),               // brew, Apple Silicon
+        PathBuf::from("/usr/local/bin"),                  // brew, Intel + node pkg
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),  // brew, Linux
+        home.join(".local").join("bin"),                  // claude native installer
+        home.join(".npm-global").join("bin"),             // npm -g with a user prefix
+        PathBuf::from("/usr/bin"),                        // git via Xcode CLT
+    ]
+}
+
+/// `<dir>/<name>` for every `unix_tool_dirs()` entry.
+#[cfg(not(target_os = "windows"))]
+fn unix_canonical(name: &str) -> Vec<PathBuf> {
+    unix_tool_dirs().into_iter().map(|d| d.join(name)).collect()
+}
+
+/// PATH for children we spawn on unix: the canonical dirs prepended to
+/// whatever we inherited. An env value, not a shell string (Rule #3).
+#[cfg(not(target_os = "windows"))]
+fn unix_path_env() -> std::ffi::OsString {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = unix_tool_dirs();
+    dirs.extend(std::env::split_paths(&inherited));
+    // join_paths only fails on a dir containing ':' — then keep what we had.
+    std::env::join_paths(dirs).unwrap_or(inherited)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn canonical_brew() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/opt/homebrew/bin/brew"),
+        PathBuf::from("/usr/local/bin/brew"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin/brew"),
+    ]
+}
+#[cfg(not(target_os = "windows"))]
+fn canonical_npm() -> Vec<PathBuf> {
+    unix_canonical("npm")
+}
+#[cfg(not(target_os = "windows"))]
+fn canonical_claude() -> Vec<PathBuf> {
+    // The official install.sh target (~/.local/bin/claude) plus the
+    // usual dirs a `npm i -g @anthropic-ai/claude-code` lands in.
+    unix_canonical("claude")
 }
 
 /// Parse `wsl -l -v` — the default distro carries a `*` marker (stable
 /// across Windows display languages, unlike `wsl --status` text).
+#[cfg(target_os = "windows")]
 fn parse_wsl_list_verbose(text: &str) -> (Vec<String>, Option<String>) {
     let mut distros = Vec::new();
     let mut default = None;
@@ -726,18 +859,10 @@ fn parse_wsl_list_verbose(text: &str) -> (Vec<String>, Option<String>) {
     (distros, default)
 }
 
+#[cfg(target_os = "windows")]
 async fn inspect_wsl(distro_override: Option<&str>) -> WslInspect {
-    let mut w = WslInspect {
-        wsl_present: crate::local_wizard::which("wsl.exe").is_some(),
-        wsl_ready: false,
-        distros: Vec::new(),
-        default_distro: None,
-        tmux_installed: None,
-        winmux_cli_state: None,
-        tmux_conf_ok: None,
-        claude_inside: None,
-        hooks_version_inside: None,
-    };
+    let mut w = WslInspect::absent();
+    w.wsl_present = crate::local_wizard::which("wsl.exe").is_some();
     if !w.wsl_present {
         return w;
     }
@@ -824,7 +949,7 @@ echo "HOOKSV $(sed -n 's/.*"hooks_version"[: ]*"\([^"]*\)".*/\1/p' "$HOME/.claud
 }
 
 fn local_hooks_version() -> Option<String> {
-    let p = user_profile().join(".claude").join("settings.json");
+    let p = home_dir().join(".claude").join("settings.json");
     let text = std::fs::read_to_string(p).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     v.get("winmux_meta")?
@@ -837,26 +962,115 @@ fn local_hooks_version() -> Option<String> {
 /// fails as a whole — each probe degrades independently.
 #[tauri::command]
 pub(crate) async fn local_setup_inspect(distro: Option<String>) -> Result<LocalSetupInspect, String> {
-    let winget = probe_tool(&["winget.exe"], &[]).await;
-    let git = probe_tool(&["git.exe"], &canonical_git()).await;
-    let node = probe_tool(&["node.exe"], &canonical_node()).await;
-    let npm = probe_tool(&["npm.cmd", "npm.exe"], &canonical_npm()).await;
-    let claude = probe_tool(&["claude.exe", "claude.cmd"], &canonical_claude()).await;
-    let codex = probe_tool(&["codex.cmd", "codex.exe"], &[]).await;
-    let gemini = probe_tool(&["gemini.cmd", "gemini.exe"], &[]).await;
-    let wsl = inspect_wsl(distro.as_deref()).await;
-    Ok(LocalSetupInspect {
-        winget,
-        git,
-        node,
-        npm,
-        claude,
-        codex,
-        gemini,
-        wsl,
-        local_hooks_version: local_hooks_version(),
-        local_claude_dir: user_profile().join(".claude").is_dir(),
-    })
+    #[cfg(target_os = "windows")]
+    let inspect = {
+        let winget = probe_tool(&["winget.exe"], &[]).await;
+        let git = probe_tool(&["git.exe"], &canonical_git()).await;
+        let node = probe_tool(&["node.exe"], &canonical_node()).await;
+        let npm = probe_tool(NPM_CANDIDATES, &canonical_npm()).await;
+        let claude = probe_tool(&["claude.exe", "claude.cmd"], &canonical_claude()).await;
+        let codex = probe_tool(&["codex.cmd", "codex.exe"], &[]).await;
+        let gemini = probe_tool(&["gemini.cmd", "gemini.exe"], &[]).await;
+        let wsl = inspect_wsl(distro.as_deref()).await;
+        LocalSetupInspect {
+            winget,
+            git,
+            node,
+            npm,
+            claude,
+            codex,
+            gemini,
+            wsl,
+            local_hooks_version: local_hooks_version(),
+            local_claude_dir: home_dir().join(".claude").is_dir(),
+            mac: None,
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let inspect = {
+        let _ = distro; // WSL-only input; nothing to target here.
+        // The `winget` slot carries Homebrew on unix (see the struct).
+        let winget = probe_tool(&["brew"], &canonical_brew()).await;
+        let git = probe_tool(&["git"], &unix_canonical("git")).await;
+        let node = probe_tool(&["node"], &unix_canonical("node")).await;
+        let npm = probe_tool(NPM_CANDIDATES, &canonical_npm()).await;
+        let claude = probe_tool(&["claude"], &canonical_claude()).await;
+        let codex = probe_tool(&["codex"], &unix_canonical("codex")).await;
+        let gemini = probe_tool(&["gemini"], &unix_canonical("gemini")).await;
+        let tmux = probe_tool(&["tmux"], &unix_canonical("tmux")).await;
+        LocalSetupInspect {
+            winget,
+            git,
+            node,
+            npm,
+            claude,
+            codex,
+            gemini,
+            wsl: WslInspect::absent(),
+            local_hooks_version: local_hooks_version(),
+            local_claude_dir: home_dir().join(".claude").is_dir(),
+            mac: Some(MacInspect {
+                tmux,
+                tmux_conf_ok: local_tmux_conf_ok(),
+            }),
+        }
+    };
+    Ok(inspect)
+}
+
+/// The bundled tmux.conf — the same embedded payload DeployTmuxConfToWsl
+/// pipes into a distro. Returns (bytes, manifest sha256).
+#[cfg(not(target_os = "windows"))]
+fn bundled_tmux_conf() -> Result<(Vec<u8>, String), String> {
+    let manifest = crate::remote_bootstrap::embedded_manifest()?;
+    let entry = manifest
+        .get("tmux-conf")
+        .ok_or_else(|| "manifest missing tmux-conf".to_string())?;
+    let bytes = crate::remote_bootstrap::embedded_payload(&entry.path)?;
+    Ok((bytes, entry.sha256.clone()))
+}
+
+/// Where the local (non-WSL) tmux reads our conf from — the same
+/// `~/.winmux/tmux.conf` the WSL/remote deploys use.
+#[cfg(not(target_os = "windows"))]
+fn local_tmux_conf_path() -> PathBuf {
+    home_dir().join(".winmux").join("tmux.conf")
+}
+
+/// True when `~/.winmux/tmux.conf` exists and is byte-identical to the
+/// bundled conf. Byte compare instead of a sha: both sides are in memory.
+#[cfg(not(target_os = "windows"))]
+fn local_tmux_conf_ok() -> bool {
+    let Ok((want, _)) = bundled_tmux_conf() else {
+        return false;
+    };
+    std::fs::read(local_tmux_conf_path())
+        .map(|have| have == want)
+        .unwrap_or(false)
+}
+
+/// Write the bundled tmux.conf to `~/.winmux/tmux.conf`. Atomic in the
+/// Rule #7 spirit: `.tmp` sibling then rename, so a crash mid-write
+/// never leaves tmux reading half a conf.
+#[cfg(not(target_os = "windows"))]
+fn deploy_tmux_conf_local() -> Result<String, String> {
+    let (bytes, sha) = bundled_tmux_conf()?;
+    let dest = local_tmux_conf_path();
+    let dir = dest
+        .parent()
+        .ok_or_else(|| "tmux.conf path has no parent dir".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let tmp = dest.with_file_name("tmux.conf.tmp");
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename into {}: {e}", dest.display()));
+    }
+    Ok(format!(
+        "wrote {} ({} bytes, sha256 {sha})",
+        dest.display(),
+        bytes.len()
+    ))
 }
 
 // ─── Install engine ──────────────────────────────────────────────────
@@ -893,6 +1107,10 @@ pub(crate) struct LocalSetupResult {
     pub skipped_steps: Vec<String>,
     /// True when the WSL chain ran and came out clean. When false with a
     /// non-empty `failed_steps`, no WSL workspace exists.
+    /// macOS: same flag, but the "chain" is the tmux persistence chain
+    /// (`InstallTmuxLocal` → `DeployTmuxConfLocal`) — true means it ran
+    /// clean; a Local workspace is still created when no chain step was
+    /// requested at all.
     pub wsl_chain_ok: bool,
 }
 
@@ -951,6 +1169,7 @@ pub(crate) async fn local_setup_start(
 
 /// Sanitize a Linux username: lowercase, [a-z0-9-], must start with a
 /// letter, max 32 chars. Falls back to "winmux" when nothing survives.
+#[cfg(target_os = "windows")]
 fn sanitize_linux_username(raw: &str) -> String {
     let mut out = String::new();
     for c in raw.to_lowercase().chars() {
@@ -976,6 +1195,7 @@ fn sanitize_linux_username(raw: &str) -> String {
 /// home), then sha-verify + atomically rename into place. stdin-pipe is
 /// the transport — `\\wsl$` UNC is flaky on cold distros and wrong for
 /// non-default users.
+#[cfg(target_os = "windows")]
 async fn wsl_pipe_to_file(
     distro: Option<&str>,
     bytes: &[u8],
@@ -1042,10 +1262,12 @@ async fn wsl_pipe_to_file(
 /// True when winget's exit code means "nothing to do" rather than a
 /// real failure (0x8A15002B: no applicable installer/upgrade found —
 /// typically "already installed").
+#[cfg(target_os = "windows")]
 fn winget_already_ok(code: i32) -> bool {
     code == 0x8A15_002Bu32 as i32
 }
 
+#[cfg(target_os = "windows")]
 async fn winget_install(id: &str) -> Result<(i32, String), String> {
     let mut c = hidden_cmd("winget");
     c.args([
@@ -1063,18 +1285,32 @@ async fn winget_install(id: &str) -> Result<(i32, String), String> {
 }
 
 async fn npm_install_global(pkg: &str) -> Result<(i32, String), String> {
-    let npm = probe_tool(&["npm.cmd", "npm.exe"], &canonical_npm()).await;
+    let npm = probe_tool(NPM_CANDIDATES, &canonical_npm()).await;
     let Some(path) = npm.path else {
         return Err("npm not found — enable the Node.js step first".into());
     };
     let mut c = hidden_cmd(&path);
     c.args(["install", "-g", pkg]);
+    // npm is a node script: without node on the child's PATH it dies at
+    // the shebang from a Finder-launched app.
+    #[cfg(not(target_os = "windows"))]
+    {
+        c.env("PATH", unix_path_env());
+    }
     run_capture(c, "npm install -g", 600).await
 }
 
-/// Resolve the bundled Windows CLI (winmux-cli.exe). Installed builds
-/// carry it under the Tauri resource dir; dev builds fall back to the
-/// path the build script stages it at.
+/// File name of the bundled host CLI under the Tauri resource dir.
+const WINMUX_CLI_NAME: &str = if cfg!(target_os = "windows") {
+    "winmux-cli.exe"
+} else {
+    "winmux-cli"
+};
+
+/// Resolve the bundled host CLI (winmux-cli.exe / winmux-cli). Installed
+/// builds carry it under the Tauri resource dir; dev builds fall back to
+/// the path the build script stages it at. None on a build that does not
+/// bundle it (the macOS bundle does not yet — see tauri.macos.conf.json).
 fn resolve_winmux_cli(app: &AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
     let candidates = app
@@ -1082,7 +1318,7 @@ fn resolve_winmux_cli(app: &AppHandle) -> Option<PathBuf> {
         .resource_dir()
         .ok()
         .into_iter()
-        .flat_map(|r| [r.join("resources").join("winmux-cli.exe"), r.join("winmux-cli.exe")])
+        .flat_map(|r| [r.join("resources").join(WINMUX_CLI_NAME), r.join(WINMUX_CLI_NAME)])
         .collect::<Vec<_>>();
     for c in candidates {
         if c.is_file() {
@@ -1092,34 +1328,181 @@ fn resolve_winmux_cli(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+// ─── unix step runner (macOS first, Linux shares) ────────────────────
+
+/// Map a captured (exit_code, output) onto the step result the loop
+/// expects: 0 → done with the output as the log, else StepFailed.
+#[cfg(not(target_os = "windows"))]
+fn step_outcome(kind: &str, r: Result<(i32, String), String>) -> Result<String, ProvisioningError> {
+    match r {
+        Ok((0, out)) => Ok(out),
+        Ok((code, out)) => Err(ProvisioningError::StepFailed {
+            step: kind.into(),
+            exit_code: code,
+            stderr: out,
+        }),
+        Err(e) => Err(ProvisioningError::Generic(e)),
+    }
+}
+
+/// `brew install <formula>` through the resolved brew binary. Homebrew
+/// itself is never installed here — its installer wants sudo and a TTY,
+/// neither of which a GUI app can offer; the user gets a clear pointer.
+/// `brew install` of an already-installed formula exits 0 with a
+/// warning, so no winget-style "already ok" code is needed.
+#[cfg(not(target_os = "windows"))]
+async fn brew_install(kind: &str, formula: &str) -> Result<String, ProvisioningError> {
+    let brew = probe_tool(&["brew"], &canonical_brew()).await;
+    let Some(path) = brew.path else {
+        return Err(ProvisioningError::Generic(
+            "Homebrew not installed — install it from https://brew.sh, then re-run this step"
+                .into(),
+        ));
+    };
+    let mut c = hidden_cmd(&path);
+    c.args(["install", formula]);
+    // No `brew update` first: it can take minutes and needs nothing we
+    // ship. PATH so brew's own children (git, curl, tar) resolve from a
+    // Finder-launched app.
+    c.env("HOMEBREW_NO_AUTO_UPDATE", "1");
+    c.env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
+    c.env("PATH", unix_path_env());
+    step_outcome(kind, run_capture(c, "brew install", 900).await)
+}
+
+/// One local-setup step on macOS/Linux. Same step-kind vocabulary as
+/// the Windows arms where the tool is the same (git/node/claude/codex/
+/// gemini/hooks); `InstallTmuxLocal` + `DeployTmuxConfLocal` replace
+/// the WSL chain. WSL kinds fail loudly — the mac UI never sends them.
+#[cfg(not(target_os = "windows"))]
+async fn run_step_unix(app: &AppHandle, kind: &str) -> Result<String, ProvisioningError> {
+    match kind {
+        "InstallGit" => brew_install(kind, "git").await,
+        "InstallNodejs" => brew_install(kind, "node").await,
+        "InstallTmuxLocal" => brew_install(kind, "tmux").await,
+        "InstallClaudeCode" => {
+            // Official native installer (verified against
+            // code.claude.com/docs/en/setup) — no sudo, auto-updates,
+            // lands at ~/.local/bin/claude. Static command string:
+            // Rule #3 satisfied (mirrors the Windows install.ps1 arm).
+            let mut c = hidden_cmd("/bin/bash");
+            c.args(["-c", "curl -fsSL https://claude.ai/install.sh | bash"]);
+            c.env("PATH", unix_path_env());
+            match run_capture(c, "claude install", 600).await {
+                Ok((0, out)) => {
+                    let installed = canonical_claude().iter().any(|p| p.is_file())
+                        || crate::local_wizard::which("claude").is_some();
+                    if installed {
+                        Ok(out)
+                    } else {
+                        Err(ProvisioningError::StepFailed {
+                            step: kind.into(),
+                            exit_code: 0,
+                            stderr: format!(
+                                "installer exited 0 but claude was not found\n{out}"
+                            ),
+                        })
+                    }
+                }
+                other => step_outcome(kind, other),
+            }
+        }
+        "InstallCodex" => step_outcome(kind, npm_install_global("@openai/codex").await),
+        "InstallGemini" => {
+            step_outcome(kind, npm_install_global("@google/gemini-cli@latest").await)
+        }
+        "InstallLocalHooks" => match resolve_winmux_cli(app) {
+            Some(cli) => {
+                let mut c = hidden_cmd(&cli.to_string_lossy());
+                c.args(["setup-hooks", "--agent", "claude", "--source", "bundled"]);
+                c.env("PATH", unix_path_env());
+                step_outcome(kind, run_capture(c, "setup-hooks", 120).await)
+            }
+            None => Err(ProvisioningError::Generic(
+                "winmux CLI is not bundled in the macOS build yet — hooks unavailable".into(),
+            )),
+        },
+        "DeployTmuxConfLocal" => deploy_tmux_conf_local().map_err(ProvisioningError::Generic),
+        "InstallWsl"
+        | "CreateWslUser"
+        | "EnsureDistroReady"
+        | "InstallTmuxInWsl"
+        | "DeployWinmuxCliToWsl"
+        | "DeployTmuxConfToWsl"
+        | "InstallHooksInWsl" => Err(ProvisioningError::StepFailed {
+            step: kind.into(),
+            exit_code: -1,
+            stderr: format!("{kind} is a Windows/WSL step — not available on macOS"),
+        }),
+        other => Err(ProvisioningError::Generic(format!(
+            "unknown local step {other:?}"
+        ))),
+    }
+}
+
+/// Windows chain: the WSL steps. Each assumes the distro state the
+/// previous one produced, so one failure invalidates all later ones.
+// Pure + unit-tested on every OS; only the Windows loop consults it.
+#[allow(dead_code)]
+pub(crate) fn is_wsl_chain(kind: &str) -> bool {
+    matches!(
+        kind,
+        "InstallWsl"
+            | "CreateWslUser"
+            | "EnsureDistroReady"
+            | "InstallTmuxInWsl"
+            | "DeployWinmuxCliToWsl"
+            | "DeployTmuxConfToWsl"
+            // Was missing: it ran against a non-existent distro after
+            // a broken chain and — being the last card — ended the
+            // run on a green check.
+            | "InstallHooksInWsl"
+    )
+}
+
+/// macOS chain: the tmux persistence steps. The workspace only survives
+/// an app restart once tmux is installed AND our conf is in place, so a
+/// failed install makes deploying the conf pointless.
+#[allow(dead_code)]
+pub(crate) fn is_persistence_chain(kind: &str) -> bool {
+    matches!(kind, "InstallTmuxLocal" | "DeployTmuxConfLocal")
+}
+
+/// The chain this OS runs — see `is_wsl_chain` / `is_persistence_chain`.
+fn is_chain_step(kind: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        is_wsl_chain(kind)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        is_persistence_chain(kind)
+    }
+}
+
+#[cfg(target_os = "windows")]
+const CHAIN_SKIPPED_MSG: &str = "skipped — an earlier WSL step failed";
+#[cfg(not(target_os = "windows"))]
+const CHAIN_SKIPPED_MSG: &str = "skipped — an earlier tmux step failed";
+
 async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input: LocalSetupInput) {
     // The distro the WSL-chain steps target. A fresh `wsl --install`
     // registers Ubuntu; an existing setup passes the inspect's default.
+    #[cfg(target_os = "windows")]
     let mut distro: Option<String> = input.distro.clone().filter(|s| !s.is_empty());
-    // WSL-chain health — decides whether we finalize a workspace.
+    // Chain health (WSL chain on Windows, tmux persistence chain on
+    // macOS) — decides whether we finalize a workspace.
     let mut chain_failed = false;
-    let mut ran_wsl_chain = false;
+    let mut ran_chain = false;
     let mut failed_steps: Vec<String> = Vec::new();
     let mut skipped_steps: Vec<String> = Vec::new();
 
     for (idx, step) in input.steps.iter().enumerate() {
         let kind = step.as_str();
         emit_step(&app, &run_id, idx, kind, "running", String::new(), None, None);
-        let is_wsl_chain = matches!(
-            kind,
-            "InstallWsl"
-                | "CreateWslUser"
-                | "EnsureDistroReady"
-                | "InstallTmuxInWsl"
-                | "DeployWinmuxCliToWsl"
-                | "DeployTmuxConfToWsl"
-                // Was missing: it ran against a non-existent distro after
-                // a broken chain and — being the last card — ended the
-                // run on a green check.
-                | "InstallHooksInWsl"
-        );
-        if is_wsl_chain {
-            ran_wsl_chain = true;
+        let is_chain = is_chain_step(kind);
+        if is_chain {
+            ran_chain = true;
             // A broken chain makes every later chain step meaningless —
             // skip them explicitly instead of cascading noise.
             if chain_failed {
@@ -1131,12 +1514,15 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                     kind,
                     "skipped",
                     String::new(),
-                    Some("skipped — an earlier WSL step failed".into()),
+                    Some(CHAIN_SKIPPED_MSG.into()),
                     None,
                 );
                 continue;
             }
         }
+        #[cfg(not(target_os = "windows"))]
+        let result: Result<String, ProvisioningError> = run_step_unix(&app, kind).await;
+        #[cfg(target_os = "windows")]
         let result: Result<String, ProvisioningError> = match kind {
             "InstallGit" => match winget_install("Git.Git").await {
                 Ok((code, out)) if code == 0 || winget_already_ok(code) => Ok(out),
@@ -1535,7 +1921,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 emit_step(&app, &run_id, idx, kind, "done", log, None, None);
             }
             Err(err) => {
-                if is_wsl_chain {
+                if is_chain {
                     chain_failed = true;
                 }
                 failed_steps.push(kind.to_string());
@@ -1567,34 +1953,51 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
         }
     }
 
-    // Finalize: create the WSL workspace when the chain came out clean.
+    // Finalize: create the workspace when the chain came out clean.
+    // Windows needs the WSL chain to have RUN (a WSL workspace without a
+    // distro is useless); macOS creates a Local workspace whenever no
+    // chain step failed — a run without the tmux steps is fine too.
+    let chain_ok = ran_chain && !chain_failed;
+    #[cfg(target_os = "windows")]
+    let finalize = input.create_workspace && chain_ok;
+    #[cfg(not(target_os = "windows"))]
+    let finalize = input.create_workspace && !chain_failed;
     let mut result = LocalSetupResult {
         run_id: run_id.clone(),
         workspace_id: None,
         workspace_name: None,
         failed_steps: failed_steps.clone(),
         skipped_steps,
-        wsl_chain_ok: ran_wsl_chain && !chain_failed,
+        wsl_chain_ok: chain_ok,
     };
     if !failed_steps.is_empty() {
         log_warn(
             "SETUP",
             &format!(
-                "local-setup[{run_id}] finished with {} failed step(s): {} — WSL workspace {}",
+                "local-setup[{run_id}] finished with {} failed step(s): {} — workspace {}",
                 failed_steps.len(),
                 failed_steps.join(", "),
-                if ran_wsl_chain && !chain_failed { "created" } else { "NOT created" }
+                if finalize { "created" } else { "NOT created" }
             ),
         );
     }
-    if input.create_workspace && ran_wsl_chain && !chain_failed {
-        match finalize_wsl_workspace(
+    if finalize {
+        #[cfg(target_os = "windows")]
+        let finalized = finalize_wsl_workspace(
             &state,
             &app,
             distro,
             input.workspace_name.clone(),
             input.workspace_cwd.clone(),
-        ) {
+        );
+        #[cfg(not(target_os = "windows"))]
+        let finalized = finalize_local_workspace(
+            &state,
+            &app,
+            input.workspace_name.clone(),
+            input.workspace_cwd.clone(),
+        );
+        match finalized {
             Ok((id, name)) => {
                 result.workspace_id = Some(id);
                 result.workspace_name = Some(name);
@@ -1608,6 +2011,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
 /// Create a fresh workspace with a single terminal pane on
 /// Connection::Wsl — the local twin of provisioning::finalize_workspace
 /// branch 2.
+#[cfg(target_os = "windows")]
 fn finalize_wsl_workspace(
     state: &AppState,
     app: &AppHandle,
@@ -1615,13 +2019,53 @@ fn finalize_wsl_workspace(
     workspace_name: Option<String>,
     cwd: Option<String>,
 ) -> Result<(String, String), String> {
-    use crate::{new_pane_id, new_workspace_id, persist, Connection, LayoutNode, PaneKind, Workspace};
+    let default_name = distro.clone().unwrap_or_else(|| "WSL".into());
+    finalize_workspace(
+        state,
+        app,
+        crate::Connection::Wsl { distro },
+        default_name,
+        workspace_name,
+        cwd,
+    )
+}
+
+/// macOS twin of `finalize_wsl_workspace`: a plain Local workspace (the
+/// tmux persistence chain, when it ran, only changes how its panes
+/// survive restarts — not the connection type).
+#[cfg(not(target_os = "windows"))]
+fn finalize_local_workspace(
+    state: &AppState,
+    app: &AppHandle,
+    workspace_name: Option<String>,
+    cwd: Option<String>,
+) -> Result<(String, String), String> {
+    finalize_workspace(
+        state,
+        app,
+        crate::Connection::Local { shell: None },
+        "Local".into(),
+        workspace_name,
+        cwd,
+    )
+}
+
+/// Shared tail of the two finalizers: build the workspace around `conn`,
+/// persist (atomically, via `persist`), notify the UI. Returns (id, name).
+fn finalize_workspace(
+    state: &AppState,
+    app: &AppHandle,
+    conn: crate::Connection,
+    default_name: String,
+    workspace_name: Option<String>,
+    cwd: Option<String>,
+) -> Result<(String, String), String> {
+    use crate::{new_pane_id, new_workspace_id, persist, LayoutNode, PaneKind, Workspace};
 
     let display_name = workspace_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| distro.clone().unwrap_or_else(|| "WSL".into()));
-    let conn = Connection::Wsl { distro };
+        .unwrap_or(default_name);
     let pane_id = new_pane_id();
     let layout = LayoutNode::Pane {
         pane_id,
@@ -1671,6 +2115,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn persistence_chain_is_exactly_the_mac_tmux_steps() {
+        // The mac loop uses this to decide what a failed InstallTmuxLocal
+        // must skip; a plain tool install must never be swept along.
+        assert!(is_persistence_chain("InstallTmuxLocal"));
+        assert!(is_persistence_chain("DeployTmuxConfLocal"));
+        for k in [
+            "InstallGit",
+            "InstallNodejs",
+            "InstallClaudeCode",
+            "InstallCodex",
+            "InstallGemini",
+            "InstallLocalHooks",
+            "InstallWsl",
+            "DeployTmuxConfToWsl",
+        ] {
+            assert!(!is_persistence_chain(k), "{k} is not a persistence-chain step");
+        }
+    }
+
+    #[test]
+    fn wsl_chain_and_persistence_chain_are_disjoint() {
+        for k in [
+            "InstallWsl",
+            "CreateWslUser",
+            "EnsureDistroReady",
+            "InstallTmuxInWsl",
+            "DeployWinmuxCliToWsl",
+            "DeployTmuxConfToWsl",
+            "InstallHooksInWsl",
+        ] {
+            assert!(is_wsl_chain(k), "{k} is a WSL-chain step");
+            assert!(!is_persistence_chain(k), "{k} must not be a persistence-chain step");
+        }
+        for k in ["InstallTmuxLocal", "DeployTmuxConfLocal", "InstallGit"] {
+            assert!(!is_wsl_chain(k), "{k} must not be a WSL-chain step");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_path_env_prepends_the_canonical_dirs() {
+        // A Finder-launched app inherits a bare PATH; brew/npm children
+        // must still see Homebrew + ~/.local/bin first.
+        let path = unix_path_env();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs.first(), Some(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+        assert!(dirs.contains(&home_dir().join(".local").join("bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_canonical_covers_every_tool_dir() {
+        let paths = unix_canonical("git");
+        assert_eq!(paths.len(), unix_tool_dirs().len());
+        assert!(paths.iter().all(|p| p.file_name().and_then(|n| n.to_str()) == Some("git")));
+        assert!(canonical_claude().contains(&home_dir().join(".local").join("bin").join("claude")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn linux_username_sanitized() {
         assert_eq!(sanitize_linux_username("Yossi Hezkel"), "yossihezkel");
         assert_eq!(sanitize_linux_username("123abc"), "abc");
@@ -1678,6 +2184,7 @@ mod tests {
         assert_eq!(sanitize_linux_username("a-b-c"), "a-b-c");
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn wsl_list_verbose_parses_default_marker() {
         let text = "  NAME            STATE           VERSION\n* Ubuntu          Running         2\n  docker-desktop  Stopped         2\n  Debian          Stopped         2\n";
@@ -1686,6 +2193,7 @@ mod tests {
         assert_eq!(default.as_deref(), Some("Ubuntu"));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn winget_no_upgrade_code_is_ok() {
         assert!(winget_already_ok(0x8A15_002Bu32 as i32));

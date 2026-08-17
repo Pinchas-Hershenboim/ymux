@@ -1712,6 +1712,11 @@ fn cleanup_session_maps(
 
 // ─── Local PTY spawn ─────────────────────────────────────────────────────────
 
+/// `tmux_name`: macOS/Linux only — when `Some`, the pane's local shell is
+/// wrapped in `tmux new-session -A -s <name>` ~900ms after spawn (the WSL
+/// twin of persistent SSH panes; see `spawn_wsl_pty`). Windows callers
+/// always pass `None` — a ConPTY local pane has no tmux, and the attach
+/// task below is compiled out on Windows.
 fn spawn_local_pty(
     state: &AppState,
     pane_id: String,
@@ -1720,6 +1725,7 @@ fn spawn_local_pty(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    tmux_name: Option<String>,
 ) -> Result<String, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -1829,10 +1835,66 @@ fn spawn_local_pty(
             writer,
             master: pair.master,
             killer,
-            tmux_session: None,
+            tmux_session: tmux_name.clone(),
             wsl_distro: None,
         }),
     );
+
+    // macOS port: persistent LOCAL panes — type the tmux attach-or-create
+    // script into the shell 900ms after spawn, exactly like the WSL/SSH
+    // paths (after env exports + setup_command at 500ms, before the
+    // smart-connect command at 1100ms). The shell is a login shell (`-l`
+    // above), so Homebrew's PATH is present and `command -v tmux`
+    // resolves. No WINMUX_* env injection (empty socket_addr): the local
+    // RPC bridge for hooks is not wired for mac panes yet, and
+    // build_tmux_attach_script skips the exports entirely when the
+    // address is empty. If tmux is missing the fallback echo leaves a
+    // plain shell.
+    #[cfg(not(windows))]
+    {
+        if let Some(name) = tmux_name {
+            // Only pass `-f ~/.winmux/tmux.conf` when the file actually exists
+            // locally — otherwise tmux prints a "No such file" cause into the
+            // pane on every attach. The local setup wizard writes it; until
+            // then the user's own ~/.tmux.conf applies.
+            let conf_present = dirs::home_dir()
+                .map(|h| h.join(".winmux").join("tmux.conf").is_file())
+                .unwrap_or(false);
+            let use_winmux_tmux_conf = state
+                .settings
+                .lock()
+                .ok()
+                .map(|s| s.terminal.use_winmux_tmux_config)
+                .unwrap_or(true)
+                && conf_present;
+            let sessions_clone = state.core.sessions.clone();
+            let id_clone = id.clone();
+            let pane_for_exec = pane_id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                crate::log_info("PTY", &format!(
+                    "tmux(local): new-session -A -s '{}' (pane {}, {} winmux conf)",
+                    name,
+                    pane_for_exec,
+                    if use_winmux_tmux_conf { "with" } else { "without" }
+                ));
+                let script = build_tmux_attach_script(
+                    &name,
+                    "",
+                    "",
+                    &pane_for_exec,
+                    use_winmux_tmux_conf,
+                    "[winmux] tmux not installed — falling back to plain shell",
+                );
+                let mut sessions = sessions_clone.lock().unwrap();
+                if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
+                    use std::io::Write as _;
+                    let _ = l.writer.write_all(script.as_bytes());
+                    let _ = l.writer.flush();
+                }
+            });
+        }
+    }
     Ok(id)
 }
 
@@ -5581,7 +5643,40 @@ async fn pane_connect(
 
     let session_id = match conn {
         Connection::Local { shell } => {
-            spawn_local_pty(&state, pane_id.clone(), &app, shell, cwd, cols, rows)?
+            // Windows local panes: ConPTY, never tmux — unchanged.
+            #[cfg(windows)]
+            let tmux_name: Option<String> = None;
+            // macOS port: local panes can be tmux-persistent like WSL/SSH
+            // ones. Default stays a plain shell (`persistent` unset →
+            // false); mode="tmux" forces it on, mode="plain" forces off.
+            #[cfg(not(windows))]
+            let tmux_name: Option<String> = {
+                let effective_persistent = match mode.as_deref() {
+                    Some("tmux") => true,
+                    Some("plain") => false,
+                    _ => persistent.unwrap_or(false),
+                };
+                if effective_persistent {
+                    Some(
+                        effective_tmux_name
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| sanitize_tmux_session_name(&pane_id)),
+                    )
+                } else {
+                    None
+                }
+            };
+            spawn_local_pty(
+                &state,
+                pane_id.clone(),
+                &app,
+                shell,
+                cwd,
+                cols,
+                rows,
+                tmux_name,
+            )?
         }
         // Phase 80: WSL panes default to PERSISTENT (tmux) — persistence
         // is the point of the smart local setup. mode="plain" still
@@ -5775,8 +5870,10 @@ async fn pane_list_tmux_sessions(
             })
     };
     if let Some(distro) = wsl_distro {
-        let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null || true";
-        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, script)
+        let script = format!(
+            "tmux list-sessions -F '{TMUX_LIST_FORMAT}' 2>/dev/null || true"
+        );
+        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, &script)
             .await
             .unwrap_or((-1, String::new()));
         return Ok(parse_tmux_sessions(&text));
@@ -5804,6 +5901,24 @@ async fn pane_list_tmux_sessions(
     let handle = match handle {
         Some(h) => h,
         None => {
+            // macOS port: a LOCAL workspace (explicit `Local` connection, or
+            // none — the codebase's "no connection = local" default) lists
+            // the sessions of the tmux server on this machine. Windows keeps
+            // the empty answer: local panes there are ConPTY, never tmux.
+            #[cfg(not(windows))]
+            {
+                let is_local = {
+                    let file = state.workspaces.lock().unwrap();
+                    file.workspaces
+                        .iter()
+                        .find(|w| w.id == workspace_id)
+                        .map(|w| matches!(w.connection, Some(Connection::Local { .. }) | None))
+                        .unwrap_or(false)
+                };
+                if is_local {
+                    return Ok(list_local_tmux_sessions().await);
+                }
+            }
             log_debug("SSH", &format!(
                 "pane_list_tmux_sessions: no live SSH handle for ws={workspace_id}, returning empty list"
             ));
@@ -5839,7 +5954,9 @@ async fn list_tmux_sessions_via_handle(
     // Missing file → empty segment after the marker → no metadata, which
     // is exactly the pre-81 behaviour. The Phase 80 restore probe reuses this
     // helper and simply ignores the extra meta segment.
-    let script = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
+    let script = format!(
+        "tmux list-sessions -F '{TMUX_LIST_FORMAT}' 2>/dev/null; printf '\\n{TMUX_META_MARKER}\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true"
+    );
     use russh::ChannelMsg;
     let mut ch = handle
         .channel_open_session()
@@ -5867,6 +5984,73 @@ async fn list_tmux_sessions_via_handle(
     Ok(parse_tmux_sessions(&String::from_utf8_lossy(&stdout)))
 }
 
+/// `tmux list-sessions -F` format shared by every list path (SSH, WSL,
+/// local unix) — one line per session, parsed by `parse_tmux_sessions`.
+const TMUX_LIST_FORMAT: &str =
+    "#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}";
+/// Separator between the session list and the appended session-meta JSON.
+const TMUX_META_MARKER: &str = "<<<WINMUX_META>>>";
+
+/// macOS/Linux: resolve the local tmux binary. A Finder-launched app
+/// inherits launchd's minimal PATH (no /opt/homebrew/bin), so the PATH
+/// lookup is backed by the canonical Homebrew (arm64 / intel), MacPorts
+/// and system locations.
+#[cfg(not(windows))]
+fn local_tmux_binary() -> Option<PathBuf> {
+    local_wizard::which("tmux").or_else(|| {
+        [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/opt/local/bin/tmux",
+            "/usr/bin/tmux",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+    })
+}
+
+/// macOS/Linux: run the local tmux binary with an argv array (Rule #3) and
+/// return (exit_code, stdout). `Err` only when tmux is absent or fails to
+/// spawn — a non-zero exit (e.g. `no server running`) is `Ok((1, ""))`.
+#[cfg(not(windows))]
+async fn local_tmux_output(args: &[&str]) -> Result<(Option<i32>, String), String> {
+    let tmux = local_tmux_binary().ok_or_else(|| "tmux not found on this machine".to_string())?;
+    let out = tokio::process::Command::new(&tmux)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("spawn {}: {e}", tmux.display()))?;
+    Ok((out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// macOS/Linux: sessions of the tmux server on this machine, joined with
+/// the local `~/.winmux/session-meta.json` when present. Missing tmux, no
+/// server running (`tmux` exits 1) or a spawn failure all yield an empty
+/// list — the picker then shows its "New session" line, never an error.
+#[cfg(not(windows))]
+async fn list_local_tmux_sessions() -> Vec<TmuxSessionInfo> {
+    let mut text = match local_tmux_output(&["list-sessions", "-F", TMUX_LIST_FORMAT]).await {
+        Ok((_code, stdout)) => stdout,
+        Err(e) => {
+            log_debug("PTY", &format!("list_local_tmux_sessions: {e} — returning empty list"));
+            return vec![];
+        }
+    };
+    if let Some(meta) = dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".winmux").join("session-meta.json")).ok())
+    {
+        text.push('\n');
+        text.push_str(TMUX_META_MARKER);
+        text.push('\n');
+        text.push_str(&meta);
+    }
+    parse_tmux_sessions(&text)
+}
+
 /// Phase 80: parse `tmux list-sessions -F '<name>|<created>|<attached>|
 /// <windows>|<last_attached>'` output — shared by the SSH and WSL list
 /// paths. Phase 81: the SSH script appends the server-side session-meta
@@ -5874,7 +6058,7 @@ async fn list_tmux_sessions_via_handle(
 /// claude_title / origin are joined onto the sessions. Garbled or absent
 /// JSON degrades to no metadata, never to an error.
 fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
-    let (list_text, meta_text) = match text.split_once("<<<WINMUX_META>>>") {
+    let (list_text, meta_text) = match text.split_once(TMUX_META_MARKER) {
         Some((a, b)) => (a, b),
         None => (text, ""),
     };
@@ -5973,6 +6157,10 @@ async fn pane_probe_tmux_sessions(
             port,
             key_path,
         }) => (host, user, port, key_path),
+        // macOS port: a local pane asks the tmux server on this machine —
+        // a definite answer (possibly "no sessions"), never "couldn't ask".
+        #[cfg(not(windows))]
+        Some(Connection::Local { .. }) => return Ok(Some(list_local_tmux_sessions().await)),
         _ => return Ok(None),
     };
 
@@ -6449,6 +6637,10 @@ async fn pane_kill_session(
     enum KillTarget {
         Ssh(Arc<client::Handle<SshClient>>, String),
         Wsl(Option<String>, String),
+        /// macOS port: a persistent LOCAL pane (no distro) — kill via the
+        /// local tmux binary.
+        #[cfg(not(windows))]
+        LocalUnix(String),
         None,
     }
     let target = {
@@ -6459,6 +6651,8 @@ async fn pane_kill_session(
                 None => KillTarget::None,
             },
             Some(Session::Local(l)) => match &l.tmux_session {
+                #[cfg(not(windows))]
+                Some(name) if l.wsl_distro.is_none() => KillTarget::LocalUnix(name.clone()),
                 Some(name) => KillTarget::Wsl(l.wsl_distro.clone(), name.clone()),
                 None => KillTarget::None,
             },
@@ -6466,6 +6660,17 @@ async fn pane_kill_session(
         }
     };
     match target {
+        #[cfg(not(windows))]
+        KillTarget::LocalUnix(name) => {
+            // Pure argv — tmux receives the name verbatim (Rule #3).
+            match local_tmux_output(&["kill-session", "-t", &name]).await {
+                Ok((Some(0), _)) => {}
+                Ok((code, _)) => log_warn("PTY", &format!(
+                    "pane_kill_session(local): tmux kill-session exited {code:?}"
+                )),
+                Err(e) => log_warn("PTY", &format!("pane_kill_session(local): {e}")),
+            }
+        }
         KillTarget::Ssh(handle, name) => {
             let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
             match handle.channel_open_session().await {
@@ -7968,6 +8173,64 @@ mod smart_connect_tests {
             build_smart_connect_script(ShellKind::Posix, "default", None, None, None),
             ""
         );
+    }
+}
+
+#[cfg(test)]
+mod tmux_list_parse_tests {
+    // Shared parser for every `tmux list-sessions -F` path (SSH, WSL and
+    // the macOS local server). Sample lines are exactly what tmux prints
+    // for TMUX_LIST_FORMAT.
+    use super::{parse_tmux_sessions, TMUX_LIST_FORMAT, TMUX_META_MARKER};
+
+    #[test]
+    fn format_has_five_pipe_separated_fields() {
+        assert_eq!(TMUX_LIST_FORMAT.split('|').count(), 5);
+        assert!(TMUX_LIST_FORMAT.starts_with("#{session_name}"));
+    }
+
+    #[test]
+    fn empty_and_no_server_output_parse_to_nothing() {
+        assert!(parse_tmux_sessions("").is_empty());
+        assert!(parse_tmux_sessions("\n").is_empty());
+        // Garbage lines with fewer than five fields are skipped, not errors.
+        assert!(parse_tmux_sessions("no server running on /tmp/tmux-501/default").is_empty());
+    }
+
+    #[test]
+    fn parses_lines_and_sorts_most_recent_first() {
+        let text = "winmux-a1b2|1700000000|0|1|1700000500\nmain|1700001000|1|3|1700002000\n";
+        let out = parse_tmux_sessions(text);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "main");
+        assert!(out[0].attached);
+        assert_eq!(out[0].windows, 3);
+        assert_eq!(out[0].last_attached, 1700002000);
+        assert_eq!(out[1].name, "winmux-a1b2");
+        assert!(!out[1].attached);
+        assert!(out[1].label.is_none());
+    }
+
+    #[test]
+    fn joins_session_meta_after_marker() {
+        let text = format!(
+            "main|1|0|1|2\nother|3|0|1|4\n{TMUX_META_MARKER}\n{{\"sessions\":{{\"main\":{{\"label\":\"Prod\",\"origin\":\"m1\"}}}}}}\n"
+        );
+        let out = parse_tmux_sessions(&text);
+        assert_eq!(out.len(), 2);
+        let main = out.iter().find(|s| s.name == "main").expect("main");
+        assert_eq!(main.label.as_deref(), Some("Prod"));
+        assert_eq!(main.origin.as_deref(), Some("m1"));
+        let other = out.iter().find(|s| s.name == "other").expect("other");
+        assert!(other.label.is_none());
+    }
+
+    #[test]
+    fn garbled_meta_degrades_to_no_metadata() {
+        let text = format!("main|1|0|1|2\n{TMUX_META_MARKER}\nnot json at all");
+        let out = parse_tmux_sessions(&text);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].label.is_none());
     }
 }
 

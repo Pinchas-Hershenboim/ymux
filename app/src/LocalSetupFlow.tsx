@@ -2,6 +2,7 @@ import { createSignal, For, Show, onMount, onCleanup, createMemo } from "solid-j
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { t } from "./i18n";
+import { isWindows } from "./platform";
 import { IconClose, IconCheck, IconCircle } from "./icons";
 import type { ProvisioningError, StepProgress, RunHandle } from "./provisioningTypes";
 
@@ -12,6 +13,13 @@ import type { ProvisioningError, StepProgress, RunHandle } from "./provisioningT
 // Code, and optionally provisions a PERSISTENT local environment: tmux
 // inside WSL + the winmux Linux CLI, then creates a `wsl` workspace whose
 // panes survive app restarts (NOT Windows restarts — the copy says so).
+//
+// macOS port: same three screens, branched on `isWindows()`. On mac the
+// inspect's `winget` slot carries Homebrew, the hooks checkbox is hidden
+// (the winmux CLI isn't bundled for mac yet), and the WSL group becomes a
+// two-step local tmux chain (`MAC_CHAIN`) that ends in a plain local
+// workspace. No username / elevation / reboot UI — preflight never asks
+// for elevation there. The Windows path is untouched.
 //
 // Backend contract (src-tauri/src/local_setup.rs): commands
 // `local_setup_inspect` / `local_setup_start`, events
@@ -29,10 +37,12 @@ interface Props {
   onClose: () => void;
 }
 
-// The Windows-side tool steps, in execution order. `needsWinget` rows are
-// disabled (with a hint) when winget itself is missing (LTSC/Server);
-// Claude Code deliberately does NOT depend on winget — its official
-// installer is a standalone PowerShell script.
+// The tool steps, in execution order (same kinds on both platforms).
+// `needsWinget` rows are disabled (with a hint) when the package manager
+// itself is missing — winget on Windows (LTSC/Server), Homebrew on mac
+// (the inspect reports brew in the `winget` slot there); Claude Code
+// deliberately does NOT depend on it — its official installer is a
+// standalone script on both platforms.
 const TOOL_ROWS: {
   step: string;
   tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini">;
@@ -59,9 +69,17 @@ const WSL_CHAIN = [
   "InstallHooksInWsl",
 ] as const;
 
+// The macOS persistence chain: tmux via Homebrew + the winmux tmux.conf,
+// then a plain local workspace. Same skip rule as WSL_CHAIN — the flow
+// only sends what the inspect says is missing.
+const MAC_CHAIN = ["InstallTmuxLocal", "DeployTmuxConfLocal"] as const;
+
 export function LocalSetupFlow(p: Props) {
   type FlowStep = "inspect" | "execute" | "done";
   const [step, setStep] = createSignal<FlowStep>("inspect");
+  // Resolved once before first render (platform.ts) — a plain boolean is
+  // enough, nothing here needs to react to it.
+  const mac = !isWindows();
 
   const [inspecting, setInspecting] = createSignal(true);
   const [inspectErr, setInspectErr] = createSignal<string | null>(null);
@@ -81,7 +99,7 @@ export function LocalSetupFlow(p: Props) {
   // The WSL persistent-environment group (tmux-backed panes).
   const [wslGroup, setWslGroup] = createSignal(true);
   const [wslUsername, setWslUsername] = createSignal("");
-  const [workspaceName, setWorkspaceName] = createSignal("WSL");
+  const [workspaceName, setWorkspaceName] = createSignal(mac ? "tmux" : "WSL");
   const [workspaceCwd, setWorkspaceCwd] = createSignal("");
 
   // Execute-step state (mirrors ProvisionNewServerFlow).
@@ -135,7 +153,12 @@ export function LocalSetupFlow(p: Props) {
       }
       setCheckedTools(pre);
       // Hooks only make sense when Claude Code exists or is being installed.
-      setInstallLocalHooks(r.claude.present || pre.has("InstallClaudeCode"));
+      // On mac the checkbox is hidden (no bundled CLI yet) — never send it.
+      setInstallLocalHooks(!mac && (r.claude.present || pre.has("InstallClaudeCode")));
+      // mac: tmux comes from Homebrew, so without brew AND without tmux
+      // the chain is guaranteed to fail — start it unchecked (and the
+      // group checkbox is disabled below) instead of failing mid-run.
+      if (mac && !r.winget.present && !r.mac?.tmux.present) setWslGroup(false);
       if (!wslUsername().trim() && r.wsl.default_distro) {
         // Existing distro → an existing user likely exists too; the
         // backend only creates one when OOBE never ran.
@@ -164,7 +187,13 @@ export function LocalSetupFlow(p: Props) {
       if (checkedTools().has(row.step)) steps.push(row.step);
     }
     if (installLocalHooks()) steps.push("InstallLocalHooks");
-    if (wslGroup() && r) {
+    if (wslGroup() && r && mac) {
+      for (const s of MAC_CHAIN) {
+        if (s === "InstallTmuxLocal" && r.mac?.tmux.present) continue;
+        if (s === "DeployTmuxConfLocal" && r.mac?.tmux_conf_ok) continue;
+        steps.push(s);
+      }
+    } else if (wslGroup() && r) {
       for (const s of WSL_CHAIN) {
         if (s === "InstallWsl" && r.wsl.wsl_ready && r.wsl.distros.length > 0) continue;
         if (s === "InstallTmuxInWsl" && r.wsl.tmux_installed === true) continue;
@@ -176,9 +205,14 @@ export function LocalSetupFlow(p: Props) {
     return steps;
   };
 
+  // mac: a machine that already has tmux + conf leaves the step list empty,
+  // yet the checked group still asks for the workspace — let that run go
+  // through (the backend then only creates the workspace).
+  const canStart = () => buildSteps().length > 0 || (mac && wslGroup());
+
   const startRun = async () => {
     const steps = buildSteps();
-    if (steps.length === 0) return;
+    if (!canStart()) return;
     // Installing the WSL platform needs admin. Say so — with the reboot
     // caveat — before a UAC dialog appears out of nowhere mid-run.
     if (
@@ -197,8 +231,8 @@ export function LocalSetupFlow(p: Props) {
       const handle = await invoke<RunHandle>("local_setup_start", {
         input: {
           steps,
-          distro: inspect()?.wsl.default_distro ?? null,
-          wsl_username: wslUsername().trim() || null,
+          distro: mac ? null : (inspect()?.wsl.default_distro ?? null),
+          wsl_username: mac ? null : (wslUsername().trim() || null),
           workspace_name: workspaceName().trim() || null,
           create_workspace: wslGroup(),
           workspace_cwd: workspaceCwd().trim() || null,
@@ -239,6 +273,12 @@ export function LocalSetupFlow(p: Props) {
   const wslStatusSummary = createMemo(() => {
     const r = inspect();
     if (!r) return "";
+    if (mac) {
+      const m = r.mac;
+      if (!m || !m.tmux.present) return t("localSetup.mac.tmux.none");
+      const ver = m.tmux.version ? ` ${m.tmux.version}` : "";
+      return `tmux ✓${ver} · ${m.tmux_conf_ok ? "conf ✓" : "conf ✗"}`;
+    }
     if (!r.wsl.wsl_ready || r.wsl.distros.length === 0) return t("localSetup.wsl.none");
     const d = r.wsl.default_distro ?? r.wsl.distros[0];
     const tmux = r.wsl.tmux_installed ? "tmux ✓" : "tmux ✗";
@@ -271,7 +311,9 @@ export function LocalSetupFlow(p: Props) {
 
               <h4 class="provisioning-h4">{t("localSetup.tools.title")}</h4>
               <Show when={!r().winget.present}>
-                <p class="settings-hint">{t("localSetup.hint.winget_missing")}</p>
+                <p class="settings-hint">
+                  {t(mac ? "localSetup.mac.brew_missing" : "localSetup.hint.winget_missing")}
+                </p>
               </Show>
               <div class="provisioning-steps">
                 <For each={TOOL_ROWS}>
@@ -298,38 +340,52 @@ export function LocalSetupFlow(p: Props) {
                     );
                   }}
                 </For>
-                <label class="provisioning-step-row">
-                  <input
-                    type="checkbox"
-                    checked={installLocalHooks()}
-                    disabled={!r().claude.present && !checkedTools().has("InstallClaudeCode")}
-                    onChange={() => setInstallLocalHooks(!installLocalHooks())}
-                  />
-                  <span>
-                    {t("localSetup.step.InstallLocalHooks")}
-                    <span class="provisioning-mode-hint">
-                      {" — "}
-                      {r().local_hooks_version
-                        ? `${t("localSetup.status.detected")} · v${r().local_hooks_version}`
-                        : t("localSetup.status.missing")}
+                {/* mac: the winmux CLI isn't bundled there yet, so hooks
+                    can't be installed — say so instead of a dead checkbox. */}
+                <Show
+                  when={!mac}
+                  fallback={
+                    <p class="settings-hint">{t("localSetup.mac.hooks_unavailable")}</p>
+                  }
+                >
+                  <label class="provisioning-step-row">
+                    <input
+                      type="checkbox"
+                      checked={installLocalHooks()}
+                      disabled={!r().claude.present && !checkedTools().has("InstallClaudeCode")}
+                      onChange={() => setInstallLocalHooks(!installLocalHooks())}
+                    />
+                    <span>
+                      {t("localSetup.step.InstallLocalHooks")}
+                      <span class="provisioning-mode-hint">
+                        {" — "}
+                        {r().local_hooks_version
+                          ? `${t("localSetup.status.detected")} · v${r().local_hooks_version}`
+                          : t("localSetup.status.missing")}
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                </Show>
               </div>
 
-              <h4 class="provisioning-h4">{t("localSetup.wsl.title")}</h4>
+              <h4 class="provisioning-h4">
+                {t(mac ? "localSetup.mac.tmux.title" : "localSetup.wsl.title")}
+              </h4>
               <label class="provisioning-step-row">
                 <input
                   type="checkbox"
                   checked={wslGroup()}
+                  disabled={mac && !r().winget.present && !r().mac?.tmux.present}
                   onChange={() => setWslGroup(!wslGroup())}
                 />
                 <span>
-                  {t("localSetup.wsl.group")}
+                  {t(mac ? "localSetup.mac.tmux.group" : "localSetup.wsl.group")}
                   <span class="provisioning-mode-hint"> — {wslStatusSummary()}</span>
                 </span>
               </label>
-              <p class="settings-hint">{t("localSetup.persistence_scope")}</p>
+              <p class="settings-hint">
+                {t(mac ? "localSetup.mac.persistence_scope" : "localSetup.persistence_scope")}
+              </p>
               <Show when={wslGroup()}>
                 {/* Stated up front: without an elevated token the WSL
                     feature enable cannot happen silently. */}
@@ -341,7 +397,7 @@ export function LocalSetupFlow(p: Props) {
                     <p class="prov-error-body">{t("localSetup.preflight.admin.body")}</p>
                   </div>
                 </Show>
-                <Show when={!r().wsl.wsl_ready || r().wsl.distros.length === 0}>
+                <Show when={!mac && (!r().wsl.wsl_ready || r().wsl.distros.length === 0)}>
                   <p class="settings-hint">{t("localSetup.hint.uac")}</p>
                   <label>
                     <span>{t("localSetup.field.wsl_username")}</span>
@@ -378,7 +434,7 @@ export function LocalSetupFlow(p: Props) {
                     <button onClick={p.onClose}>{t("common.cancel")}</button>
                     <button
                       class="primary"
-                      disabled={buildSteps().length === 0}
+                      disabled={!canStart()}
                       onClick={() => void startRun()}
                     >
                       {t("localSetup.btn.install")}
@@ -578,7 +634,13 @@ export function LocalSetupFlow(p: Props) {
               </p>
             </Show>
             <Show when={!result()!.wsl_chain_ok}>
-              <p class="prov-error-hint">{t("localSetup.done.failed.no_workspace")}</p>
+              <p class="prov-error-hint">
+                {t(
+                  mac
+                    ? "localSetup.mac.done.no_workspace"
+                    : "localSetup.done.failed.no_workspace"
+                )}
+              </p>
             </Show>
           </div>
         </Show>
@@ -591,7 +653,9 @@ export function LocalSetupFlow(p: Props) {
             </div>
           </div>
         </Show>
-        <p class="settings-hint">{t("localSetup.persistence_scope")}</p>
+        <p class="settings-hint">
+          {t(mac ? "localSetup.mac.persistence_scope" : "localSetup.persistence_scope")}
+        </p>
         <div class="modal-buttons">
           <Show
             when={result()?.workspace_id}

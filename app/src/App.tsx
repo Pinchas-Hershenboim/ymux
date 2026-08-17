@@ -63,6 +63,7 @@ import {
   type HooksOutdatedInfo,
 } from "./settings";
 import { applyI18nSettings, t } from "./i18n";
+import { isMac } from "./platform";
 import { buildShortcutTable, keyEq, matches, parseShortcut, type ParsedShortcut } from "./shortcuts";
 import { makeSttRecorder, type SttRecorder } from "./stt";
 import {
@@ -71,6 +72,7 @@ import {
   effectiveIdentity,
   findPane,
   hasSftp,
+  isLocalConn,
   isRemoteConn,
   isRemoteEffective,
   isRemoteWorkspace,
@@ -1764,7 +1766,13 @@ function App() {
         continue;
       }
       seenTerminals++;
-      if (!isRemoteEffective(pane, ws.connection)) {
+      // macOS port: a local pane on mac may sit in a LOCAL tmux session
+      // (pane_connect wraps the shell in tmux when persistent) — restorable
+      // like SSH. Windows-local / WSL panes stay skipped (no tmux persistence).
+      if (
+        !isRemoteEffective(pane, ws.connection) &&
+        !(isMac() && isLocalConn(pane.connection ?? ws.connection))
+      ) {
         skippedLocal++;
         continue;
       }
@@ -1843,15 +1851,21 @@ function App() {
     const aliveFor = async (paneId: string): Promise<Set<string> | null> => {
       if (alive) return alive; // workspace-level list already covers every pane
       const pane = ws.layout ? findPane(ws.layout, paneId) : null;
-      const key = JSON.stringify(pane?.connection ?? ws.connection ?? null);
+      const conn = pane?.connection ?? ws.connection ?? null;
+      const key = JSON.stringify(conn);
       const cached = probes.get(key);
       if (cached !== undefined) return cached;
       let result: Set<string> | null = null;
       try {
-        const list = await invoke<TmuxSessionInfo[] | null>(
-          "pane_probe_tmux_sessions",
-          { workspaceId: wsId, paneId },
-        );
+        // macOS local pane: ask the LOCAL tmux server directly (workspace-
+        // scoped, no SSH arming — `workspace_ensure_connected` is SSH-only).
+        // The answer is authoritative: [] really means "no live sessions".
+        const list = isMac() && isLocalConn(conn)
+          ? await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", { workspaceId: wsId })
+          : await invoke<TmuxSessionInfo[] | null>(
+              "pane_probe_tmux_sessions",
+              { workspaceId: wsId, paneId },
+            );
         // null = "couldn't ask" (not SSH, or the headless connect failed:
         // password-only, passphrase-locked, unknown host key, host down).
         // Distinct from [] = "asked, the host has no sessions".

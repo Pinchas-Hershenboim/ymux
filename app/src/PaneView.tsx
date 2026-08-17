@@ -3,7 +3,7 @@ import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
-import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective } from "./types";
+import { describeConnection, effectiveIdentity, isLocalConn, isRemoteConn, isRemoteEffective } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
 import { isMac } from "./platform";
@@ -210,6 +210,13 @@ export function PaneView(p: Props) {
   // the workspace's canonical connection so SSH-only menu items
   // (tmux) show up from FM / Browser / Chat panes too.
   const isSsh = () => isRemoteEffective(p.pane, p.workspaceConnection);
+  // macOS port: a LOCAL workspace on mac has a local tmux server too, so the
+  // tmux UX (Connect probe → picker, tmux/regular toggle) applies there as
+  // well. Windows-local and WSL stay on the plain path (backend decides).
+  // Single predicate — every tmux-only affordance gates on this, not on
+  // isSsh(); SSH-only commands (ensure_connected, SFTP, ports) keep isSsh().
+  const isMacLocal = () => isMac() && isLocalConn(p.pane.connection ?? p.workspaceConnection);
+  const hasTmux = () => isSsh() || isMacLocal();
   const isTmux = () => !!p.tmuxSession;
   // Phase 12.B Smart Connect — the "open in directory" text-input fallback
   // (local panes) still uses this small prompt.
@@ -458,15 +465,19 @@ export function PaneView(p: Props) {
     }
   });
   // v0.4.4-beta.2: SMART [Connect]. Arm SSH headlessly → probe tmux → branch:
-  // live sessions → picker; otherwise a plain regular shell. Local (non-SSH)
-  // workspaces have no tmux, so they connect straight away.
+  // live sessions → picker; otherwise a plain regular shell. Windows-local /
+  // WSL workspaces have no tmux picker, so they connect straight away.
+  // macOS-local: same probe against the LOCAL tmux server (no SSH arming —
+  // `workspace_ensure_connected` is SSH-only); any error → plain connect.
   const smartConnect = async () => {
-    if (!isSsh()) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
+    if (!hasTmux()) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
     setConnectProbing(true);
     try {
       // Idempotent, PTY-free, tmux-free; no-ops on password-auth (can't prompt
       // headlessly) — those simply yield an empty list and connect regular.
-      try { await invoke("workspace_ensure_connected", { workspaceId: p.workspaceId }); } catch { /* fall through */ }
+      if (isSsh()) {
+        try { await invoke("workspace_ensure_connected", { workspaceId: p.workspaceId }); } catch { /* fall through */ }
+      }
       let list: TmuxSessionInfo[] = [];
       try {
         list = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", { workspaceId: p.workspaceId });
@@ -1306,7 +1317,7 @@ export function PaneView(p: Props) {
                 <button class="feed-x" title={t("common.close")} onClick={() => setTmuxPick(null)}><IconClose size={14} /></button>
               </div>
               <div class="nc-body">
-                <p class="nc-hint">{t("connect.tmuxPick.hint")}</p>
+                <p class="nc-hint">{t(isMacLocal() ? "connect.tmuxPick.hintLocal" : "connect.tmuxPick.hint")}</p>
                 <div class="nc-resume-list">
                   <For each={tmuxPick()!}>
                     {(s) => {
@@ -1408,8 +1419,8 @@ export function PaneView(p: Props) {
                     </div>
                     <p class="nc-hint">
                       {ncType() === "tmux"
-                        ? t("connect.newConn.typeTmux.hint")
-                        : t("connect.newConn.typeRegular.hint")}
+                        ? t(isMacLocal() ? "connect.newConn.typeTmux.hintLocal" : "connect.newConn.typeTmux.hint")
+                        : t(isMacLocal() ? "connect.newConn.typeRegular.hintLocal" : "connect.newConn.typeRegular.hint")}
                     </p>
                   </div>
 
