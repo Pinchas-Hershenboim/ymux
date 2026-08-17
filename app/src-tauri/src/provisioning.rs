@@ -1080,7 +1080,8 @@ fn finalize_workspace(
         // cmux-A A2: newly-provisioned workspaces default to ungrouped.
         group_id: None,
         sort_order: None,
-        project_folders: Vec::new(),
+        project_folder_id: None,
+        worktree_path: None,
     };
     let id_out = ws.id.clone();
     {

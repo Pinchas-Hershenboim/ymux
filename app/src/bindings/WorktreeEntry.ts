@@ -7,7 +7,7 @@
  */
 export type WorktreeEntry = { 
 /**
- * Absolute path on the workspace's host.
+ * Absolute path on the project folder's host.
  */
 path: string, 
 /**

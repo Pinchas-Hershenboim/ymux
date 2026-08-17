@@ -362,22 +362,29 @@ pub struct Workspace {
     // user actually drags something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<i32>,
-    // Project folders pinned to this workspace: repo paths on the
-    // workspace's own host (usually the server behind its SSH
-    // connection) that the user works on regularly. The sidebar renders
-    // them under the workspace row and lists each one's git worktrees.
-    // `skip_serializing_if` keeps the key elided so a workspaces.json
-    // that never pinned one round-trips byte-identical.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub project_folders: Vec<ProjectFolder>,
+    // Binds this workspace to one worktree row of a project folder. Set
+    // together by `project_folder_open_worktree` and only by it; the
+    // sidebar matches on `worktree_path` to decide whether a scanned
+    // worktree already has a workspace or still needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 // ─── ProjectFolder ──────────────────────────────────────────────────
 //
-// A repo directory pinned to a workspace. It carries no connection of
-// its own — the path is resolved on whatever host the workspace points
-// at, which is what makes "list the worktrees" cheap: the SSH session
-// is already open.
+// A git repo directory the user works on regularly, rendered in the
+// sidebar as a collapsible section whose children are workspaces — one
+// per git worktree. Modelled on cmux's "Project Worktrees" view, where
+// a worktree materializes as a workspace you switch into rather than a
+// path shown under something else.
+//
+// It carries its OWN connection rather than borrowing a workspace's.
+// That is what makes the section standalone: the scan and every
+// workspace it spawns inherit the connection from here, so pinning a
+// server repo does not depend on some other workspace happening to
+// exist or happening to point at the same host.
 
 #[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "../../../../src/bindings/")]
@@ -386,11 +393,19 @@ pub struct ProjectFolder {
     /// Display label. Defaults to the path's basename at creation time;
     /// the user can rename it without moving anything.
     pub name: String,
-    /// Absolute path on the workspace's host.
+    /// Absolute path to the repo root, on `connection`'s host.
     pub path: String,
-    /// Persisted collapsed/open state of the worktree list.
+    /// How to reach the host. `None` = this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<Connection>,
+    /// Persisted collapsed/open state of the section.
     #[serde(default)]
     pub is_collapsed: bool,
+    /// 0-based sort key across project-folder sections. Same convention
+    /// as `WorkspaceGroup::sort_order` — absent until something is
+    /// actually reordered, so the file round-trips byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_order: Option<i32>,
 }
 
 // ─── cmux-A A2: WorkspaceGroup ──────────────────────────────────────
@@ -790,15 +805,15 @@ mod tests {
         assert!(!w.auto_port_forward);
         assert_eq!(w.last_active_at, 0);
         assert!(w.git_worktree.is_none());
-        assert!(w.project_folders.is_empty());
+        assert!(w.project_folder_id.is_none());
+        assert!(w.worktree_path.is_none());
     }
 
     #[test]
-    fn workspace_without_project_folders_round_trips_byte_identical() {
-        // The whole point of skip_serializing_if on project_folders: a
-        // workspaces.json written before this feature must come back out
-        // unchanged, so merely opening the app never rewrites the user's
-        // file with a pile of empty arrays.
+    fn workspace_without_worktree_binding_round_trips_byte_identical() {
+        // A workspaces.json written before project folders existed must
+        // come back out unchanged, so merely opening the app never
+        // rewrites the user's file with a pile of null keys.
         let raw = json!({
             "id": "w1",
             "name": "legacy",
@@ -806,33 +821,89 @@ mod tests {
             "auto_port_forward": false,
             "last_active_at": 0,
         });
-        let w: Workspace = serde_json::from_value(raw.clone()).unwrap();
+        let w: Workspace = serde_json::from_value(raw).unwrap();
         let back = serde_json::to_value(&w).unwrap();
-        assert!(
-            back.get("project_folders").is_none(),
-            "empty project_folders must be elided, got {back}"
-        );
+        for key in ["project_folder_id", "worktree_path"] {
+            assert!(back.get(key).is_none(), "{key} must be elided, got {back}");
+        }
     }
 
     #[test]
-    fn workspace_project_folders_round_trip() {
+    fn workspace_ignores_the_abandoned_inline_project_folders_key() {
+        // The first cut of this feature hung `project_folders` off the
+        // WORKSPACE. That shape shipped on a branch and never reached a
+        // release, but a file carrying it must still load rather than
+        // hard-error — serde ignores unknown keys, and this test pins
+        // that so nobody "helpfully" adds deny_unknown_fields later.
         let raw = json!({
             "id": "w1",
             "name": "srv",
             "project_folders": [
                 { "id": "pf_1", "name": "winmux", "path": "/home/y/src/winmux" },
-                { "id": "pf_2", "name": "api", "path": "/srv/api", "is_collapsed": true },
             ],
         });
         let w: Workspace = serde_json::from_value(raw).unwrap();
-        assert_eq!(w.project_folders.len(), 2);
-        assert_eq!(w.project_folders[0].path, "/home/y/src/winmux");
-        // is_collapsed defaults to false when the key is absent.
-        assert!(!w.project_folders[0].is_collapsed);
-        assert!(w.project_folders[1].is_collapsed);
+        assert_eq!(w.id, "w1");
+        assert!(w.project_folder_id.is_none());
         let back = serde_json::to_value(&w).unwrap();
-        let folders = back.get("project_folders").expect("kept when non-empty");
-        assert_eq!(folders.as_array().unwrap().len(), 2);
+        assert!(back.get("project_folders").is_none());
+    }
+
+    #[test]
+    fn workspace_worktree_binding_round_trips() {
+        let raw = json!({
+            "id": "w1",
+            "name": "feature/x",
+            "project_folder_id": "pf_1",
+            "worktree_path": "/home/y/src/winmux-feature-x",
+        });
+        let w: Workspace = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(w.project_folder_id.as_deref(), Some("pf_1"));
+        assert_eq!(w.worktree_path.as_deref(), Some("/home/y/src/winmux-feature-x"));
+        let back = serde_json::to_value(&w).unwrap();
+        assert_eq!(back["project_folder_id"], "pf_1");
+        assert_eq!(back["worktree_path"], "/home/y/src/winmux-feature-x");
+    }
+
+    // ── ProjectFolder ───────────────────────────────────────────────
+
+    #[test]
+    fn project_folder_minimal_load_and_elision() {
+        let raw = json!({ "id": "pf_1", "name": "winmux", "path": "/srv/winmux" });
+        let f: ProjectFolder = serde_json::from_value(raw).unwrap();
+        assert!(f.connection.is_none());
+        assert!(!f.is_collapsed);
+        assert!(f.sort_order.is_none());
+        let back = serde_json::to_value(&f).unwrap();
+        // Only the always-present keys survive an untouched folder.
+        assert!(back.get("connection").is_none());
+        assert!(back.get("sort_order").is_none());
+        assert_eq!(back["is_collapsed"], false);
+    }
+
+    #[test]
+    fn project_folder_carries_its_own_ssh_connection() {
+        // The whole point of the folder owning a connection: it resolves
+        // on its own host without borrowing some workspace's.
+        let f = ProjectFolder {
+            id: "pf_1".into(),
+            name: "winmux".into(),
+            path: "/home/runner/src/winmux".into(),
+            connection: Some(Connection::Ssh {
+                host: "203.0.113.5".into(),
+                user: "runner".into(),
+                port: 22,
+                key_path: None,
+            }),
+            is_collapsed: true,
+            sort_order: Some(0),
+        };
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["connection"]["type"], "ssh");
+        assert_eq!(v["connection"]["user"], "runner");
+        let back: ProjectFolder = serde_json::from_value(v).unwrap();
+        assert!(matches!(back.connection, Some(Connection::Ssh { .. })));
+        assert_eq!(back.sort_order, Some(0));
     }
 
     #[test]
@@ -870,7 +941,8 @@ mod tests {
             claude_separate_account: false,
             group_id: None,
             sort_order: None,
-            project_folders: Vec::new(),
+            project_folder_id: None,
+        worktree_path: None,
         };
         let v = serde_json::to_value(&w).unwrap();
         // Spot-check the wire format.

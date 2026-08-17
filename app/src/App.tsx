@@ -1523,6 +1523,28 @@ function App() {
     restoring?: boolean;
   };
 
+  /**
+   * `Workspace.cwd` is honored natively only by the Local and WSL spawn
+   * paths (`spawn_local_pty` sets `cmd.cwd`, `spawn_wsl_pty` passes
+   * `--cd`). The SSH arm of `pane_connect` never forwards it, so an SSH
+   * pane has always landed in `$HOME` and the workspace's cwd was
+   * silently inert — an SSH channel has no working-directory parameter
+   * to set, which is exactly what `cwdOverride` exists to paper over: it
+   * runs a `cd '<dir>'` through `build_smart_connect_script` once the
+   * shell is up.
+   *
+   * So for a remote workspace we default the override to the workspace's
+   * own cwd. Project folders depend on this — a worktree workspace is
+   * nothing but a cwd on a server — but the gap was never
+   * worktree-specific, and narrowing the fix to worktrees would leave
+   * every hand-set SSH cwd still quietly ignored.
+   */
+  const effectiveCwdOverride = (ws: Workspace, opts: ConnectOpts): string | null => {
+    if (opts.cwdOverride) return opts.cwdOverride;
+    if (!ws.cwd) return null;
+    return isRemoteWorkspace(ws) ? ws.cwd : null;
+  };
+
   const connectPane = async (paneId: string, opts: ConnectOpts = {}) => {
     const ws = activeWs();
     if (!ws) return;
@@ -1540,7 +1562,7 @@ function App() {
         acceptUnknownHost: opts.acceptUnknownHost ?? false,
         persistent: opts.persistent ?? false,
         mode: opts.mode ?? null,
-        cwdOverride: opts.cwdOverride ?? null,
+        cwdOverride: effectiveCwdOverride(ws, opts),
         cmd: opts.cmd ?? null,
         claudeArgs: opts.claudeArgs ?? null,
         tmuxSessionName: opts.tmuxSession ?? null,

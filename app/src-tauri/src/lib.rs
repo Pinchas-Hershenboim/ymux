@@ -302,6 +302,12 @@ struct WorkspacesFile {
     // one, keeping the persisted file backwards-compatible.
     #[serde(default)]
     groups: Vec<WorkspaceGroup>,
+    // Project-folder sections: a pinned git repo (usually on a server)
+    // whose children are workspaces, one per worktree. Sibling to
+    // `groups` in every way, including the `#[serde(default)]` that
+    // keeps a file without the key loading and round-tripping clean.
+    #[serde(default)]
+    project_folders: Vec<ProjectFolder>,
 }
 
 fn default_version() -> u32 {
@@ -528,6 +534,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
             active_workspace_id: None,
             workspaces: Vec::new(),
             groups: Vec::new(),
+            project_folders: Vec::new(),
         });
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
@@ -2602,7 +2609,8 @@ async fn provision_existing_install_key(
         // cmux-A A2: fresh workspaces default to ungrouped.
         group_id: None,
         sort_order: None,
-        project_folders: Vec::new(),
+        project_folder_id: None,
+        worktree_path: None,
     };
     {
         let mut file = state.workspaces.lock().map_err(|e| e.to_string())?;
@@ -3801,7 +3809,8 @@ fn workspace_create(
         // cmux-A A2: fresh workspaces default to ungrouped.
         group_id: None,
         sort_order: None,
-        project_folders: Vec::new(),
+        project_folder_id: None,
+        worktree_path: None,
     };
     {
         let mut file = state.workspaces.lock().unwrap();
@@ -3984,11 +3993,13 @@ fn live_ssh_connection_for_workspace(
 
 // ─── project folder commands ────────────────────────────────────────
 //
-// A project folder is a repo path pinned to a workspace. It carries no
-// connection of its own — everything resolves on the workspace's host,
-// which is why listing its worktrees costs nothing extra (see
-// `worktrees.rs`). These three only touch workspaces.json; the git side
-// lives in `project_folder_list_worktrees` / `_create_worktree`.
+// A project folder is a pinned git repo rendered as a sidebar section
+// whose children are workspaces — one per worktree (cmux's "Project
+// Worktrees" model). It lives at the file root beside `groups` and owns
+// its own connection, so it does not depend on any workspace existing.
+//
+// These touch workspaces.json only; the git side lives in
+// `project_folder_list_worktrees` / `_create_worktree` in worktrees.rs.
 
 fn new_project_folder_id() -> String {
     let t = std::time::SystemTime::now()
@@ -4011,12 +4022,12 @@ fn path_basename(path: &str) -> String {
 }
 
 #[tauri::command]
-fn workspace_project_folder_add(
+fn project_folder_add(
     state: State<'_, AppState>,
     app: AppHandle,
-    workspace_id: String,
     path: String,
     name: Option<String>,
+    connection: Option<Connection>,
 ) -> Result<WorkspacesFile, String> {
     let path = path.trim().to_string();
     if path.is_empty() {
@@ -4034,21 +4045,23 @@ fn workspace_project_folder_add(
             .workspaces
             .lock()
             .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        let ws = file
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)
-            .ok_or_else(|| "workspace not found".to_string())?;
-        // Pinning the same path twice is a no-op, not an error — the
-        // user's intent ("I want this available") is already satisfied.
-        if ws.project_folders.iter().any(|f| f.path == path) {
+        // Same path on the same host twice would render two identical
+        // sections listing the same worktrees. Different hosts, same
+        // path is legitimate and allowed.
+        if file
+            .project_folders
+            .iter()
+            .any(|f| f.path == path && conn_same_host(&f.connection, &connection))
+        {
             return Err("this folder is already pinned".to_string());
         }
-        ws.project_folders.push(ProjectFolder {
+        file.project_folders.push(ProjectFolder {
             id: new_project_folder_id(),
             name: label,
             path,
+            connection,
             is_collapsed: false,
+            sort_order: None,
         });
     }
     persist(&state)?;
@@ -4056,11 +4069,27 @@ fn workspace_project_folder_add(
     Ok(state.workspaces.lock().unwrap().clone())
 }
 
+/// Cheap host identity for the duplicate check. Two `None`s are the
+/// same host (this machine); SSH compares user@host:port, ignoring the
+/// key path since that is a credential, not an identity.
+fn conn_same_host(a: &Option<Connection>, b: &Option<Connection>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(Connection::Local { .. }), None) | (None, Some(Connection::Local { .. })) => true,
+        (Some(Connection::Local { .. }), Some(Connection::Local { .. })) => true,
+        (Some(Connection::Wsl { distro: x }), Some(Connection::Wsl { distro: y })) => x == y,
+        (
+            Some(Connection::Ssh { host: h1, user: u1, port: p1, .. }),
+            Some(Connection::Ssh { host: h2, user: u2, port: p2, .. }),
+        ) => h1 == h2 && u1 == u2 && p1 == p2,
+        _ => false,
+    }
+}
+
 #[tauri::command]
-fn workspace_project_folder_update(
+fn project_folder_update(
     state: State<'_, AppState>,
     app: AppHandle,
-    workspace_id: String,
     folder_id: String,
     name: Option<String>,
     is_collapsed: Option<bool>,
@@ -4070,12 +4099,7 @@ fn workspace_project_folder_update(
             .workspaces
             .lock()
             .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        let ws = file
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)
-            .ok_or_else(|| "workspace not found".to_string())?;
-        let folder = ws
+        let folder = file
             .project_folders
             .iter_mut()
             .find(|f| f.id == folder_id)
@@ -4096,13 +4120,18 @@ fn workspace_project_folder_update(
     Ok(state.workspaces.lock().unwrap().clone())
 }
 
-/// Unpin a project folder. Deliberately does NOT touch the directory —
-/// winmux never put it there.
+/// Unpin a project folder.
+///
+/// Deliberately touches NOTHING else: not the directory (winmux never
+/// created it) and not the workspaces that were opened from it. Those
+/// are real workspaces with real sessions; silently deleting them
+/// because a sidebar section went away would be destructive. They keep
+/// their `worktree_path` and simply return to the ungrouped list, so
+/// re-pinning the folder re-adopts them.
 #[tauri::command]
-fn workspace_project_folder_remove(
+fn project_folder_remove(
     state: State<'_, AppState>,
     app: AppHandle,
-    workspace_id: String,
     folder_id: String,
 ) -> Result<WorkspacesFile, String> {
     {
@@ -4110,12 +4139,115 @@ fn workspace_project_folder_remove(
             .workspaces
             .lock()
             .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        let ws = file
+        file.project_folders.retain(|f| f.id != folder_id);
+        for ws in file.workspaces.iter_mut() {
+            if ws.project_folder_id.as_deref() == Some(folder_id.as_str()) {
+                ws.project_folder_id = None;
+            }
+        }
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
+/// Open a worktree as its own workspace — the click target of a
+/// worktree row that has no workspace yet.
+///
+/// This is cmux's `new-workspace --cwd` shape, and it deliberately
+/// mirrors the fix in manaflow-ai/cmux#5032: the worktree must already
+/// exist on disk before we get here, and the workspace's first pane is
+/// a plain interactive shell. Handing the pane a one-shot setup command
+/// as its main process is what made their workspace tab flash and die
+/// when the command exited.
+///
+/// `cwd` alone does not place an SSH pane — see `effectiveCwdOverride`
+/// in App.tsx, which turns the workspace cwd into a `cd` for remote
+/// connections.
+#[tauri::command]
+fn project_folder_open_worktree(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    folder_id: String,
+    worktree_path: String,
+    name: String,
+) -> Result<WorkspacesFile, String> {
+    let (conn, existing) = {
+        let file = state
             .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)
-            .ok_or_else(|| "workspace not found".to_string())?;
-        ws.project_folders.retain(|f| f.id != folder_id);
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let folder = file
+            .project_folders
+            .iter()
+            .find(|f| f.id == folder_id)
+            .ok_or_else(|| "project folder not found".to_string())?;
+        let existing = file
+            .workspaces
+            .iter()
+            .find(|w| w.worktree_path.as_deref() == Some(worktree_path.as_str()))
+            .map(|w| w.id.clone());
+        (
+            folder.connection.clone().unwrap_or(Connection::Local { shell: None }),
+            existing,
+        )
+    };
+
+    // Already open: activate it instead of making a second workspace on
+    // the same directory. The sidebar shouldn't offer this, but a double
+    // click and a stale scan both get here.
+    if let Some(id) = existing {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        file.active_workspace_id = Some(id);
+        drop(file);
+        persist(&state)?;
+        let _ = app.emit("workspaces:changed", ());
+        return Ok(state.workspaces.lock().unwrap().clone());
+    }
+
+    let ws = Workspace {
+        id: new_workspace_id(),
+        name,
+        color: None,
+        emoji: None,
+        cwd: Some(worktree_path.clone()),
+        connection: Some(conn.clone()),
+        layout: Some(LayoutNode::Pane {
+            pane_id: new_pane_id(),
+            pane_kind: PaneKind::Terminal,
+            connection: Some(conn),
+            browser: None,
+            title: None,
+            auto_title: None,
+            annotation: None,
+            color: None,
+            emoji: None,
+            help_topic: None,
+            diff_source: None,
+            smart_bidi: None,
+        }),
+        setup_command: None,
+        teardown_command: None,
+        env: Vec::new(),
+        auto_port_forward: false,
+        last_active_at: 0,
+        git_worktree: None,
+        claude_separate_account: false,
+        group_id: None,
+        sort_order: None,
+        project_folder_id: Some(folder_id),
+        worktree_path: Some(worktree_path),
+    };
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        file.active_workspace_id = Some(ws.id.clone());
+        file.workspaces.push(ws);
     }
     persist(&state)?;
     let _ = app.emit("workspaces:changed", ());
@@ -7530,9 +7662,11 @@ pub fn run() {
             workspace_delete,
             workspace_set_active,
             workspace_create_worktree,
-            workspace_project_folder_add,
-            workspace_project_folder_update,
-            workspace_project_folder_remove,
+            project_folder_add,
+            project_folder_update,
+            project_folder_remove,
+            project_folder_open_worktree,
+            worktrees::project_folder_probe,
             worktrees::project_folder_list_worktrees,
             worktrees::project_folder_create_worktree,
             workspace_split,
@@ -7952,7 +8086,8 @@ mod migration_tests {
             claude_separate_account: false,
             group_id: None,
             sort_order: None,
-            project_folders: Vec::new(),
+            project_folder_id: None,
+        worktree_path: None,
         }
     }
 
@@ -8021,7 +8156,8 @@ mod migration_tests {
             claude_separate_account: false,
             group_id: None,
             sort_order: None,
-            project_folders: Vec::new(),
+            project_folder_id: None,
+        worktree_path: None,
         }
     }
 
@@ -8111,7 +8247,8 @@ mod migration_tests {
                 claude_separate_account: false,
                 group_id: None,
                 sort_order: None,
-                project_folders: Vec::new(),
+                project_folder_id: None,
+        worktree_path: None,
             }],
             ..Default::default()
         };
