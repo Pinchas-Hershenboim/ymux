@@ -947,6 +947,18 @@ export function PaneView(p: Props) {
     return w;
   };
 
+  /**
+   * The width the children actually get: `clientWidth` is the PADDING
+   * box, so comparing a sum of child widths against it hands the run an
+   * extra `padding-inline` of slack (20px here) and leaves that much
+   * still overflowing. The header used to clip, which hid the mistake.
+   */
+  const availableWidth = (el: HTMLElement): number => {
+    const cs = getComputedStyle(el);
+    const pad = (parseFloat(cs.paddingInlineStart) || 0) + (parseFloat(cs.paddingInlineEnd) || 0);
+    return el.clientWidth - pad;
+  };
+
   // Shrink until the header stops overflowing. Solid applies signal writes
   // to the DOM synchronously, so each setVisibleCount is reflected in the
   // next measurement. The loop is self-correcting: as soon as n < total the
@@ -957,7 +969,8 @@ export function PaneView(p: Props) {
     if (!el) return;
     let n = actions().length;
     setVisibleCount(n);
-    while (n > 0 && contentWidth(el) > el.clientWidth + 1) {
+    const avail = availableWidth(el);
+    while (n > 0 && contentWidth(el) > avail + 1) {
       n -= 1;
       setVisibleCount(n);
     }

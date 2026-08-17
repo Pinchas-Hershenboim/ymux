@@ -1152,11 +1152,12 @@ body {
   font-family: var(--w-font-mono);
   color: var(--w-text-dim);
   flex-shrink: 0;
-  /* The button run is fitted in JS (PaneView `fit()`), which measures
-     scrollWidth vs clientWidth — so the header must clip, not spill.
-     Without this the overflowing buttons were silently cut off by
-     `.pane { overflow: hidden }` with no hint they existed. */
-  overflow: hidden;
+  /* NO `overflow: hidden` here. It was added for the JS fitter (PaneView
+     `fit()`) and it clipped the overflow dropdown to invisibility — the
+     menu is `position:absolute; top:100%` inside the header, so clipping
+     the header hides it entirely and the chevron looks dead. The fitter
+     never needed it: it sums the children's offsetWidth against the
+     header's own content width, which is unaffected by clipping. */
   /* beta.3 (pane-dragdrop) Fix 1: the whole header is the drag surface. */
   cursor: grab;
 }

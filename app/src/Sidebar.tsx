@@ -15,6 +15,9 @@ import {
   IconWarning,
 } from "./icons";
 import type { SidebarMode } from "./settings";
+import { createLogger } from "./logger";
+
+const log = createLogger("SIDEBAR");
 
 // cmux-A A2: eight-color palette for workspace group swatches. Kept
 // intentionally small so a group's dot in the sidebar is easy to
@@ -690,16 +693,23 @@ export function Sidebar(p: Props) {
     | { status: "error"; message: string };
   const [scans, setScans] = createSignal<Record<string, ScanState>>({});
 
+  // Logged at every outcome: this is a round-trip to another machine
+  // that can fail silently in the UI (a collapsed row shows nothing),
+  // and without a log line a user report of "it just doesn't show"
+  // is undiagnosable. Metadata only — never the worktree paths.
   const scanFolder = async (workspaceId: string, folder: ProjectFolder) => {
     setScans((prev) => ({ ...prev, [folder.id]: { status: "loading" } }));
+    log.info(`worktree scan start ws=${workspaceId} folder=${folder.id}`);
     try {
       const entries = await p.onListWorktrees(workspaceId, folder.path);
       setScans((prev) => ({ ...prev, [folder.id]: { status: "ok", entries } }));
+      log.info(`worktree scan ok folder=${folder.id} count=${entries.length}`);
     } catch (e) {
       setScans((prev) => ({
         ...prev,
         [folder.id]: { status: "error", message: String(e) },
       }));
+      log.error(`worktree scan failed folder=${folder.id}`, e);
     }
   };
 
