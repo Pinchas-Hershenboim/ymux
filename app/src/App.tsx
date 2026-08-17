@@ -2978,15 +2978,26 @@ function App() {
         />
       </Show>
       <ErrorBoundary
-        fallback={(err) => (
-          <div class="sidebar-error">
-            <p>{t("error.sidebarRender")}</p>
-            <pre>{String(err)}</pre>
-            <button class="primary" onClick={() => setShowSetup({})}>
-              + New workspace
-            </button>
-          </div>
-        )}
+        fallback={(err) => {
+          // A sidebar render crash used to leave NOTHING in debug.log —
+          // the card on screen was the only evidence, so a user report
+          // of "the sidebar" was undiagnosable after the fact. This one
+          // cost two build-and-test rounds (a TDZ ReferenceError from
+          // state declared after the component's return, fixed in
+          // cbef36e). Logging in a render function is a side effect, but
+          // this branch renders once per error and never in the happy
+          // path.
+          log.error("sidebar render crashed", err);
+          return (
+            <div class="sidebar-error">
+              <p>{t("error.sidebarRender")}</p>
+              <pre>{String(err)}</pre>
+              <button class="primary" onClick={() => setShowSetup({})}>
+                + New workspace
+              </button>
+            </div>
+          );
+        }}
       >
         <Sidebar
           workspaces={file().workspaces}
