@@ -241,13 +241,14 @@ fn detect_local_shells_impl() -> Vec<ShellInfo> {
             } else {
                 label.to_string()
             };
+            let available = found.is_some();
             Some(ShellInfo {
                 id: id.to_string(),
                 label,
                 command: found
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| bin.to_string()),
-                available: found.is_some(),
+                available,
             })
         })
         .collect();
@@ -339,12 +340,12 @@ fn builtin_defaults() -> Vec<String> {
         // a real bug. `source\repos` is Visual Studio's default; the
         // Mac-side equivalents are ~/Developer (Xcode) and ~/Projects.
         #[cfg(target_os = "windows")]
-        let subs: &[&[&str]] = &[&["Documents"], &["source"], &["source", "repos"], &["Downloads"]];
+        let subs: [&[&str]; 4] = [&["Documents"][..], &["source"][..], &["source", "repos"][..], &["Downloads"][..]];
         #[cfg(not(target_os = "windows"))]
-        let subs: &[&[&str]] = &[&["Documents"], &["Developer"], &["Projects"], &["Downloads"]];
+        let subs: [&[&str]; 4] = [&["Documents"][..], &["Developer"][..], &["Projects"][..], &["Downloads"][..]];
         for parts in subs {
             let mut p = h.clone();
-            p.extend(parts.iter());
+            p.extend(parts.iter().copied());
             v.push(p.to_string_lossy().to_string());
         }
     }
