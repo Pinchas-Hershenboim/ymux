@@ -2253,3 +2253,38 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    VALIDATION: cargo test --workspace green (207 + 97); tsc clean; vite build
    clean; tauri build --no-bundle + Rule #13 asset-hash check + Rule #14 launch.
    STILL NOT SMOKED LIVE against a real SSH repo — FOLLOWUPS P1 stands.
+
+[SIDEBAR TDZ] the whole sidebar was an ErrorBoundary card
+   2026-08-17 ~12:20 +0300. Commits cbef36e (fix), 9da0483 (log guard).
+   Yossi's report was one word: "הSIDEBAR".
+   CAUSE: the project-folder block (scans / pathKey / sortedFolders /
+   byWorktreePath / renderProjectFolderSections) was placed AFTER Sidebar's
+   `return (` statement. The `const`s therefore never executed and every read
+   hit the temporal dead zone -> "Cannot access 'sortedFolders' before
+   initialization" -> ErrorBoundary replaced the entire sidebar.
+   WHAT HID IT: renderWorkspaceItem / renderWorkspaceRow live in that same
+   after-return region and work fine, because FUNCTION DECLARATIONS HOIST and
+   const does not. Putting new state beside them looked consistent and wasn't.
+   tsc does not flag TDZ.
+   ALSO EXPLAINS the previous round's "#3 לא מציג": there the crash was
+   CONDITIONAL — renderProjectFolders short-circuited on
+   <Show when={folders().length > 0}> before touching scans(), so the sidebar
+   survived until a folder was actually pinned, then died exactly where the
+   list should have appeared. In v2 the call is unconditional -> dead at boot.
+
+   PROCESS FAILURES WORTH RECORDING (mine):
+   1. I reported a build as "ready" that had FAILED. `npm run tauri build`
+      returned exit code 0 while the output contained
+      "Access is denied. (os error 5)" — a running app.exe blocked the link.
+      Exit code is not a build result here; the output text is. Check both.
+   2. cargo test + tsc + vite build + the Rule #13 asset-hash check + "process
+      still alive after 14s" ALL PASSED on a binary whose sidebar was entirely
+      replaced by an error card. "The process didn't die" is not "the UI works"
+      — that is Rule #14's actual point and I treated the launch as if it
+      satisfied it.
+   3. A sidebar render crash wrote NOTHING to debug.log, so the on-screen card
+      was the only evidence and nothing survived to diagnose afterwards. Fixed
+      in 9da0483: the ErrorBoundary fallback now calls log.error. NOTE the new
+      guard's FIRING path is itself untested — its absence from the log after a
+      clean boot is consistent with the sidebar rendering, but was not proven by
+      deliberately breaking it.
