@@ -6558,7 +6558,7 @@ fn peek_claude_jsonl(path: &Path) -> ClaudeJsonlPeek {
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
 
     let mut head = Vec::new();
-    let _ = f.by_ref().take(CLAUDE_PEEK_BYTES).read_to_end(&mut head);
+    let _ = std::io::Read::by_ref(&mut f).take(CLAUDE_PEEK_BYTES).read_to_end(&mut head);
     let head = String::from_utf8_lossy(&head);
     for line in head.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
