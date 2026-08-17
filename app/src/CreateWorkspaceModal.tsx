@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
+import { isWindows } from "./platform";
 import { createLogger } from "./logger";
 
 const log = createLogger("WORKSPACE");
@@ -406,7 +407,11 @@ export function CreateWorkspaceModal(p: Props) {
               <span>{t("ws.create.custom_cmd.label")}</span>
               <input
                 value={shell()}
-                placeholder={t("ws.create.custom_cmd.placeholder")}
+                placeholder={t(
+                  isWindows()
+                    ? "ws.create.custom_cmd.placeholder"
+                    : "ws.create.custom_cmd.placeholder.posix",
+                )}
                 disabled
               />
             </label>

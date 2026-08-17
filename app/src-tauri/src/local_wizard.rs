@@ -3,8 +3,9 @@
 //! Two affordances surfaced in `CreateWorkspaceModal` when Type=Local:
 //!
 //! 1. `detect_local_shells()` — surface what's actually installed
-//!    (PowerShell 7, Windows PowerShell, cmd, Git Bash, WSL) so the
-//!    user can pick by label instead of typing a binary path.
+//!    (Windows: PowerShell 7, Windows PowerShell, cmd, Git Bash, WSL;
+//!    macOS/Linux: the `$SHELL` login shell first, then zsh/bash/fish/sh)
+//!    so the user can pick by label instead of typing a binary path.
 //!
 //! 2. `recent_paths` — a small JSON store of recently-used cwds for
 //!    local PTY workspaces. The cwd combobox is seeded with built-in
@@ -63,10 +64,20 @@ pub(crate) fn which(exe: &str) -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn which(_exe: &str) -> Option<PathBuf> {
-    None
+pub(crate) fn which(exe: &str) -> Option<PathBuf> {
+    // macOS port: a bare name is resolved against PATH; an absolute /
+    // relative path is accepted as-is when it exists. No PATHEXT on unix.
+    if exe.contains('/') {
+        let p = PathBuf::from(exe);
+        return p.is_file().then_some(p);
+    }
+    let path_env = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_env)
+        .map(|dir| dir.join(exe))
+        .find(|p| p.is_file())
 }
 
+#[cfg(target_os = "windows")]
 fn pwsh_canonical() -> Option<PathBuf> {
     // Prefer the canonical Program Files install over a sideloaded one
     // on PATH so a confused user doesn't get a stale 7.0 from
@@ -79,6 +90,7 @@ fn pwsh_canonical() -> Option<PathBuf> {
     which("pwsh.exe")
 }
 
+#[cfg(target_os = "windows")]
 fn git_bash() -> Option<PathBuf> {
     // Git for Windows ships bash at `<install>\bin\bash.exe`, and the
     // graphical Git Bash launcher at `<install>\git-bash.exe`. We
@@ -99,6 +111,7 @@ fn git_bash() -> Option<PathBuf> {
     which("git-bash.exe").or_else(|| which("bash.exe"))
 }
 
+#[cfg(target_os = "windows")]
 fn wsl_available() -> bool {
     // `wsl --status` exits 0 when there's at least one distro registered.
     // `which` alone can succeed on machines where the Store stub is
@@ -121,6 +134,11 @@ fn wsl_available() -> bool {
 
 #[tauri::command]
 pub(crate) fn detect_local_shells() -> Vec<ShellInfo> {
+    detect_local_shells_impl()
+}
+
+#[cfg(target_os = "windows")]
+fn detect_local_shells_impl() -> Vec<ShellInfo> {
     let mut out = Vec::new();
 
     if let Some(p) = pwsh_canonical() {
@@ -174,6 +192,74 @@ pub(crate) fn detect_local_shells() -> Vec<ShellInfo> {
         });
     }
 
+    out
+}
+
+/// macOS port: the shells a Mac (or Linux box) actually ships / commonly
+/// has. The user's login shell (`$SHELL`, zsh since Catalina) is listed
+/// first so the dropdown's default matches what Terminal.app would open.
+/// Everything else is probed on PATH; missing ones stay in the list but
+/// greyed out (same UX as pwsh on a Windows box without PowerShell 7).
+#[cfg(not(target_os = "windows"))]
+fn detect_local_shells_impl() -> Vec<ShellInfo> {
+    let login = std::env::var("SHELL").ok().filter(|s| !s.is_empty());
+    let login_stem = login
+        .as_deref()
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+
+    // (id, label, binary). Order = display order before the login-shell
+    // hoist. `sh` is always present on a POSIX system.
+    let candidates: [(&str, &str, &str); 5] = [
+        ("zsh", "zsh", "zsh"),
+        ("bash", "bash", "bash"),
+        ("fish", "fish", "fish"),
+        ("pwsh", "PowerShell 7", "pwsh"),
+        ("sh", "sh", "sh"),
+    ];
+
+    let mut out: Vec<ShellInfo> = candidates
+        .iter()
+        .filter_map(|(id, label, bin)| {
+            let is_login = login_stem.as_deref() == Some(*bin);
+            // A login shell that lives off PATH (Homebrew fish before the
+            // profile ran) is still spawnable by its $SHELL path.
+            let found = which(bin).or_else(|| {
+                is_login
+                    .then(|| login.as_deref().map(PathBuf::from))
+                    .flatten()
+                    .filter(|p| p.is_file())
+            });
+            // pwsh is opt-in on a Mac — only list it when installed, the
+            // rest are shown greyed out so the user learns what's missing.
+            if found.is_none() && *id == "pwsh" {
+                return None;
+            }
+            let label = if is_login {
+                format!("{label} (default)")
+            } else {
+                label.to_string()
+            };
+            Some(ShellInfo {
+                id: id.to_string(),
+                label,
+                command: found
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| bin.to_string()),
+                available: found.is_some(),
+            })
+        })
+        .collect();
+
+    // Hoist the login shell to the top so it's the dropdown default.
+    if let Some(pos) = out
+        .iter()
+        .position(|s| login_stem.as_deref() == Some(s.id.as_str()) && s.available)
+    {
+        let login_shell = out.remove(pos);
+        out.insert(0, login_shell);
+    }
     out
 }
 
@@ -247,11 +333,20 @@ fn builtin_defaults() -> Vec<String> {
         .ok();
     let mut v = Vec::new();
     if let Some(h) = home {
-        v.push(h.clone());
-        v.push(format!("{h}\\Documents"));
-        v.push(format!("{h}\\source"));
-        v.push(format!("{h}\\source\\repos"));
-        v.push(format!("{h}\\Downloads"));
+        let h = PathBuf::from(h);
+        v.push(h.to_string_lossy().to_string());
+        // Native separator per host — `/Users/x\Documents` on a Mac was
+        // a real bug. `source\repos` is Visual Studio's default; the
+        // Mac-side equivalents are ~/Developer (Xcode) and ~/Projects.
+        #[cfg(target_os = "windows")]
+        let subs: &[&[&str]] = &[&["Documents"], &["source"], &["source", "repos"], &["Downloads"]];
+        #[cfg(not(target_os = "windows"))]
+        let subs: &[&[&str]] = &[&["Documents"], &["Developer"], &["Projects"], &["Downloads"]];
+        for parts in subs {
+            let mut p = h.clone();
+            p.extend(parts.iter());
+            v.push(p.to_string_lossy().to_string());
+        }
     }
     v
 }

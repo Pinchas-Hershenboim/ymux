@@ -1531,6 +1531,11 @@ fn pick_default_shell(requested: Option<String>) -> String {
     if let Some(s) = requested.filter(|s| !s.is_empty()) {
         return s;
     }
+    pick_platform_default_shell()
+}
+
+#[cfg(windows)]
+fn pick_platform_default_shell() -> String {
     let path_var = std::env::var("PATH").unwrap_or_default();
     for candidate in ["pwsh.exe", "powershell.exe", "cmd.exe"] {
         for dir in std::env::split_paths(&path_var) {
@@ -1540,6 +1545,39 @@ fn pick_default_shell(requested: Option<String>) -> String {
         }
     }
     "cmd.exe".into()
+}
+
+/// macOS port: what Terminal.app would open — the user's login shell
+/// (`$SHELL`), else zsh (the macOS default since Catalina), bash, sh.
+#[cfg(not(windows))]
+fn pick_platform_default_shell() -> String {
+    if let Some(s) = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty() && Path::new(s).is_file())
+    {
+        return s;
+    }
+    for candidate in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if Path::new(candidate).is_file() {
+            return candidate.to_string();
+        }
+    }
+    "/bin/sh".into()
+}
+
+/// Split a user-typed local shell command into (program, args).
+///
+/// Windows never needed this — ConPTY takes one command line and
+/// `CommandBuilder::new("wsl.exe bash -l")` just works. A unix `execvp`
+/// wants argv, so `"zsh -l"` must become `["zsh", "-l"]` or the spawn
+/// fails with "no such file". Whitespace split is enough for a shell
+/// invocation (paths with spaces are not a thing for /bin/* shells);
+/// no quoting rules on purpose — this is a shell picker, not a shell.
+#[cfg_attr(windows, allow(dead_code))]
+fn split_shell_command(cmd: &str) -> (String, Vec<String>) {
+    let mut parts = cmd.split_whitespace().map(str::to_string);
+    let program = parts.next().unwrap_or_default();
+    (program, parts.collect())
 }
 
 fn emit_data(
@@ -1694,7 +1732,26 @@ fn spawn_local_pty(
         .map_err(|e| format!("openpty failed: {e}"))?;
 
     let shell_cmd = pick_default_shell(shell);
+    #[cfg(windows)]
     let mut cmd = CommandBuilder::new(&shell_cmd);
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let (program, args) = split_shell_command(&shell_cmd);
+        let mut c = CommandBuilder::new(&program);
+        for a in &args {
+            c.arg(a);
+        }
+        // macOS port: Terminal.app / iTerm spawn the shell as a LOGIN
+        // shell, and that is where the PATH lives on a Mac (Homebrew's
+        // `eval "$(brew shellenv)"` sits in ~/.zprofile, not ~/.zshrc).
+        // Without `-l` a fresh pane can't find brew/node/claude. Only
+        // added when the user didn't pass their own args — a typed
+        // "zsh -c ..." / "bash --norc" is respected verbatim.
+        if args.is_empty() && matches!(detect_shell_kind(&program), ShellKind::Posix) {
+            c.arg("-l");
+        }
+        c
+    };
     for a in utf8_shell_args(detect_shell_kind(&shell_cmd)) {
         cmd.arg(a);
     }
@@ -7953,6 +8010,31 @@ mod utf8_shell_tests {
     #[test]
     fn posix_shell_is_left_alone() {
         assert!(utf8_shell_args(ShellKind::Posix).is_empty());
+    }
+
+    #[test]
+    fn unix_shell_paths_are_posix() {
+        // macOS port: what detect_local_shells / $SHELL hand back.
+        for sh in ["/bin/zsh", "/bin/bash", "/usr/local/bin/fish", "zsh"] {
+            assert!(matches!(super::detect_shell_kind(sh), ShellKind::Posix), "{sh}");
+        }
+        assert!(matches!(
+            super::detect_shell_kind("/usr/local/bin/pwsh"),
+            ShellKind::PowerShell
+        ));
+    }
+
+    #[test]
+    fn custom_command_splits_into_argv() {
+        let (p, a) = super::split_shell_command("  zsh   -l ");
+        assert_eq!(p, "zsh");
+        assert_eq!(a, vec!["-l"]);
+        let (p, a) = super::split_shell_command("/bin/bash");
+        assert_eq!(p, "/bin/bash");
+        assert!(a.is_empty());
+        let (p, a) = super::split_shell_command("");
+        assert_eq!(p, "");
+        assert!(a.is_empty());
     }
 
     #[test]

@@ -1672,3 +1672,28 @@ SCANNED for the same swallow pattern in the other generated scripts:
   explicitly, so the status does propagate.
 
 cargo test 266/0.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build)
+TASK: local workspace on macOS offered no zsh/bash — only the Windows list.
+ROOT CAUSE: local_wizard::which() returned None on non-Windows,
+  detect_local_shells() was a hardcoded pwsh/powershell/cmd/gitbash/wsl
+  list, pick_default_shell() fell through to "cmd.exe", and the frontend
+  seeded shellId="powershell". Custom commands like "zsh -l" would also
+  fail on unix (execvp needs argv, not one string).
+FILES:
+  app/src-tauri/src/local_wizard.rs — real PATH which() on unix;
+    detect_local_shells split per-OS: unix lists $SHELL first ("(default)"),
+    then zsh/bash/fish/sh (greyed if missing), pwsh only when installed;
+    builtin_defaults() uses native separators (~/Developer, ~/Projects on mac).
+  app/src-tauri/src/lib.rs — pick_default_shell → per-OS: unix = $SHELL,
+    /bin/zsh, /bin/bash, /bin/sh; spawn_local_pty splits the command into
+    argv on unix and adds `-l` (login shell, like Terminal.app — Homebrew
+    PATH lives in .zprofile) when the user gave no args. +3 unit tests.
+  app/src/QuickLocalCreateFlow.tsx — default shellId = first available
+    detected shell; label falls back to Rust label when no i18n row.
+  app/src/SetupWizard.tsx, CreateWorkspaceModal.tsx, i18n/{en,he,ru,ar}.json
+    — ".posix" variants for the Windows-flavored placeholders/tile label.
+  FOLLOWUPS.md — 3 P2 items (2026-08-10) moved to Done.
+RESULT: compiles-on-CI pending (Rule #17), untested live. Windows path
+  unchanged (all new code behind cfg(not(windows)) / same defaults).

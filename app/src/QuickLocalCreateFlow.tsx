@@ -1,6 +1,7 @@
 import { createSignal, For, Show, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
+import { isWindows } from "./platform";
 import { createLogger } from "./logger";
 
 const log = createLogger("WORKSPACE");
@@ -55,6 +56,13 @@ export function QuickLocalCreateFlow(p: Props) {
       try {
         const shells = await invoke<ShellInfo[]>("detect_local_shells");
         setDetectedShells(shells);
+        // macOS port: the "powershell" seed only exists on Windows. If the
+        // seeded id isn't in the detected list, default to the first
+        // available shell (the Rust side hoists $SHELL to the top).
+        if (!shells.some((s) => s.id === shellId() && s.available)) {
+          const first = shells.find((s) => s.available) ?? shells[0];
+          if (first) setShellId(first.id);
+        }
       } catch (e) {
         log.warn("detect_local_shells failed", e);
       }
@@ -66,6 +74,14 @@ export function QuickLocalCreateFlow(p: Props) {
       }
     })();
   });
+
+  // t() returns the key itself when there's no entry — zsh/bash/fish
+  // are proper nouns with no i18n row, so fall back to the Rust label.
+  const shellLabel = (s: ShellInfo): string => {
+    const key = `ws.create.shell.${s.id}`;
+    const tr = t(key);
+    return tr === key ? s.label : tr;
+  };
 
   const cleanedEnv = (): EnvVar[] =>
     envRows().filter((r) => r.key.trim() !== "");
@@ -113,7 +129,11 @@ export function QuickLocalCreateFlow(p: Props) {
           autofocus
           value={name()}
           onInput={(e) => setName(e.currentTarget.value)}
-          placeholder={t("ws.create.field.name.placeholder")}
+          placeholder={t(
+            isWindows()
+              ? "ws.create.field.name.placeholder"
+              : "ws.create.field.name.placeholder.posix",
+          )}
         />
       </label>
 
@@ -154,7 +174,7 @@ export function QuickLocalCreateFlow(p: Props) {
             <For each={detectedShells()}>
               {(s) => (
                 <option value={s.id} disabled={!s.available}>
-                  {t(`ws.create.shell.${s.id}`, {}) || s.label}
+                  {shellLabel(s)}
                   {!s.available ? " " + t("ws.create.shell.not_installed") : ""}
                 </option>
               )}
@@ -168,7 +188,11 @@ export function QuickLocalCreateFlow(p: Props) {
           <input
             value={shell()}
             onInput={(e) => setShell(e.currentTarget.value)}
-            placeholder={t("ws.create.custom_cmd.placeholder")}
+            placeholder={t(
+              isWindows()
+                ? "ws.create.custom_cmd.placeholder"
+                : "ws.create.custom_cmd.placeholder.posix",
+            )}
           />
         </label>
       </Show>
