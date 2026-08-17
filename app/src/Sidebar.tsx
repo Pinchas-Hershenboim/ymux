@@ -86,25 +86,23 @@ interface Props {
   onOpenNotes: () => void;
   onAction: (
     id: string,
-    action: "rename" | "edit" | "delete" | "disconnect" | "addons" | "add_project_folder",
+    action: "rename" | "edit" | "delete" | "disconnect" | "addons",
   ) => void;
-  // Project folders: repo paths pinned to a workspace, rendered as a
-  // collapsible sub-tree of the workspace row with each folder's git
-  // worktrees under it. The Sidebar owns the scan cache (lazy, on
-  // expand + a manual refresh — never polled, since a scan is a
-  // round-trip over the workspace's SSH connection); the App owns
-  // persistence and the "open a session here" plumbing.
-  onProjectFolderSetCollapsed: (
-    workspaceId: string,
-    folderId: string,
-    isCollapsed: boolean,
-  ) => void;
-  onProjectFolderRemove: (workspaceId: string, folderId: string) => void;
-  onProjectFolderNewWorktree: (workspaceId: string, folder: ProjectFolder) => void;
+  /** Pin a new project folder — a global action, not per-workspace. */
+  onPinProjectFolder: () => void;
+  // Project folders: pinned repos rendered as sections whose children
+  // are workspaces, one per git worktree. The Sidebar owns the scan
+  // cache (lazy, never polled — a scan is a round-trip over the
+  // folder's connection); the App owns persistence and workspace
+  // creation.
+  projectFolders: ProjectFolder[];
+  onProjectFolderSetCollapsed: (folderId: string, isCollapsed: boolean) => void;
+  onProjectFolderRemove: (folderId: string) => void;
+  onProjectFolderNewWorktree: (folder: ProjectFolder) => void;
   /** List a folder's worktrees. Rejects when there is no live session. */
-  onListWorktrees: (workspaceId: string, path: string) => Promise<WorktreeEntry[]>;
-  /** Open a terminal pane whose cwd is `path`, in that workspace. */
-  onOpenSessionAt: (workspaceId: string, path: string) => void;
+  onListWorktrees: (folderId: string, path: string) => Promise<WorktreeEntry[]>;
+  /** Open a worktree that has no workspace yet as its own workspace. */
+  onOpenWorktree: (folder: ProjectFolder, wt: WorktreeEntry) => void;
   // Phase 36.A / 39: all forwards across workspaces, for the per-
   // workspace inline 🌐 badge. Clicking the badge opens the Ports
   // window scoped to that workspace.
@@ -169,9 +167,17 @@ export function Sidebar(p: Props) {
   // that path reduces to the previous insertion-order rendering.
   const groupedWorkspaces = createMemo(() => {
     const validGroupIds = new Set(p.groups.map((g) => g.id));
+    // A workspace bound to a LIVE project folder is rendered by that
+    // folder's section instead, so skip it here — otherwise it shows
+    // twice. The `validFolderIds` guard matters: unpinning a folder
+    // leaves `worktree_path` set on purpose (so re-pinning re-adopts
+    // the workspace), and those must fall back to the flat list rather
+    // than vanish from the sidebar entirely.
+    const validFolderIds = new Set(p.projectFolders.map((f) => f.id));
     const ungrouped: { w: Workspace; ins: number }[] = [];
     const byGroup = new Map<string, { w: Workspace; ins: number }[]>();
     p.workspaces.forEach((w, ins) => {
+      if (w.project_folder_id && validFolderIds.has(w.project_folder_id)) return;
       const gid = w.group_id;
       if (gid && validGroupIds.has(gid)) {
         const list = byGroup.get(gid) ?? [];
@@ -526,6 +532,9 @@ export function Sidebar(p: Props) {
         <For each={groupedWorkspaces().ungrouped}>
           {(w) => renderWorkspaceItem(w)}
         </For>
+        {/* Project-folder sections sit below the flat list and above
+            the groups — a pinned repo is a heading, not a workspace. */}
+        {renderProjectFolderSections()}
         <For each={sortedGroups()}>
           {(g) => {
             const members = () => groupedWorkspaces().byGroup.get(g.id) ?? [];
@@ -669,6 +678,13 @@ export function Sidebar(p: Props) {
         <span class="ws-action-emoji"><IconPlus /></span>
         <span class="ws-action-label">{t("sidebar.new_workspace")}</span>
       </button>
+      {/* Pinning a repo is a sidebar-level action, not a workspace one
+          — the folder owns its own connection and needs no workspace to
+          exist first. */}
+      <button class="ws-add ws-add-secondary" onClick={p.onPinProjectFolder} title={t("pf.pinFolder")}>
+        <span class="ws-action-emoji"><IconFolder /></span>
+        <span class="ws-action-label">{t("pf.pinFolder")}</span>
+      </button>
       <Show when={dragKind() !== null && ghostPos() !== null}>
         <div
           class="ws-ghost"
@@ -683,25 +699,31 @@ export function Sidebar(p: Props) {
     </div>
   );
 
-  // ── project folder worktree scans ────────────────────────────────
-  // Keyed by folder id. Never polled: a scan runs `git worktree list`
-  // over the workspace's live SSH session, so it fires on expand and on
-  // an explicit refresh click, and the result sticks until then.
+  // ── project folder sections ──────────────────────────────────────
+  //
+  // A pinned repo renders as a section whose children are workspaces —
+  // one per git worktree (cmux's "Project Worktrees" model). A worktree
+  // that already has a workspace renders as that workspace's ordinary
+  // row; one that doesn't renders dim, and clicking it creates the
+  // workspace.
+  //
+  // Scans are keyed by folder id and never polled: `git worktree list`
+  // is a round-trip over the folder's SSH connection, so it runs when a
+  // section is open and has no result yet, and on an explicit ⟳.
   type ScanState =
     | { status: "loading" }
     | { status: "ok"; entries: WorktreeEntry[] }
     | { status: "error"; message: string };
   const [scans, setScans] = createSignal<Record<string, ScanState>>({});
 
-  // Logged at every outcome: this is a round-trip to another machine
-  // that can fail silently in the UI (a collapsed row shows nothing),
-  // and without a log line a user report of "it just doesn't show"
-  // is undiagnosable. Metadata only — never the worktree paths.
-  const scanFolder = async (workspaceId: string, folder: ProjectFolder) => {
+  // Logged at every outcome: a failing round-trip to another machine is
+  // otherwise invisible, and "it just doesn't show" is undiagnosable
+  // without it. Metadata only — never the worktree paths.
+  const scanFolder = async (folder: ProjectFolder) => {
     setScans((prev) => ({ ...prev, [folder.id]: { status: "loading" } }));
-    log.info(`worktree scan start ws=${workspaceId} folder=${folder.id}`);
+    log.info(`worktree scan start folder=${folder.id}`);
     try {
-      const entries = await p.onListWorktrees(workspaceId, folder.path);
+      const entries = await p.onListWorktrees(folder.id, folder.path);
       setScans((prev) => ({ ...prev, [folder.id]: { status: "ok", entries } }));
       log.info(`worktree scan ok folder=${folder.id} count=${entries.length}`);
     } catch (e) {
@@ -713,14 +735,6 @@ export function Sidebar(p: Props) {
     }
   };
 
-  const toggleFolder = (w: Workspace, folder: ProjectFolder) => {
-    // The scan is driven by the effect below, not from here — that way
-    // one rule covers every way a folder ends up expanded: this click,
-    // pinning a new one (which starts expanded), and an app restart
-    // with the folder already open.
-    p.onProjectFolderSetCollapsed(w.id, folder.id, !folder.is_collapsed);
-  };
-
   /** `~/src/winmux-feature-x` → `winmux-feature-x`, for the dim path hint. */
   const pathTail = (path: string) => {
     const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -728,136 +742,137 @@ export function Sidebar(p: Props) {
     return i === -1 ? norm : norm.slice(i + 1);
   };
 
-  function renderProjectFolders(w: Workspace) {
-    // ts-rs types this as required even though the backend elides the
-    // key when empty — see the note in types.ts.
-    const folders = () => w.project_folders ?? [];
+  /**
+   * Normalize a path for worktree↔workspace binding: git and the shell
+   * disagree about separators and trailing slashes, and a mismatch here
+   * would silently render a duplicate row instead of adopting the
+   * existing workspace.
+   */
+  const pathKey = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "");
+
+  const sortedFolders = createMemo(() =>
+    [...p.projectFolders]
+      .map((f, i) => ({ f, i }))
+      .sort(
+        (a, b) =>
+          (a.f.sort_order ?? Number.MAX_SAFE_INTEGER) -
+            (b.f.sort_order ?? Number.MAX_SAFE_INTEGER) || a.i - b.i,
+      )
+      .map((x) => x.f),
+  );
+
+  /** Workspaces already bound to a worktree path, for O(1) lookup. */
+  const byWorktreePath = createMemo(() => {
+    const m = new Map<string, Workspace>();
+    for (const w of p.workspaces) {
+      if (w.worktree_path) m.set(pathKey(w.worktree_path), w);
+    }
+    return m;
+  });
+
+  function renderProjectFolderSections() {
     return (
-      <Show when={folders().length > 0}>
-        <div class="pf-list">
-          <For each={folders()}>
-            {(f) => {
-              const scan = () => scans()[f.id];
-              // Scan once whenever the folder is open and we have no
-              // result yet. Re-expanding a folder we already scanned
-              // costs nothing; the ⟳ button is how you force a refresh.
-              createEffect(() => {
-                if (!f.is_collapsed && !scans()[f.id]) void scanFolder(w.id, f);
-              });
-              return (
-                <div class="pf-block">
-                  <div
-                    class="pf-row"
-                    title={f.path}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFolder(w, f);
-                    }}
-                  >
-                    <span class="pf-chevron">
-                      {f.is_collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
-                    </span>
-                    <span class="pf-icon"><IconFolder size={13} /></span>
-                    <span class="pf-name"><TechText text={f.name} /></span>
-                    <button
-                      class="pf-btn"
-                      title={t("pf.refresh")}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void scanFolder(w.id, f);
-                      }}
-                    >
-                      <IconRefresh size={12} />
-                    </button>
-                    <button
-                      class="pf-btn"
-                      title={t("pf.unpin")}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        p.onProjectFolderRemove(w.id, f.id);
-                      }}
-                    >
-                      ✕
-                    </button>
+      <For each={sortedFolders()}>
+        {(f) => {
+          const scan = () => scans()[f.id];
+          // One rule covers every way a section ends up open: this
+          // click, a freshly pinned folder, and a restart with it open.
+          createEffect(() => {
+            if (!f.is_collapsed && !scans()[f.id]) void scanFolder(f);
+          });
+          return (
+            <>
+              <div
+                class={`group-header pf-header ${f.is_collapsed ? "group-collapsed" : ""}`}
+                title={f.path}
+                onClick={() => p.onProjectFolderSetCollapsed(f.id, !f.is_collapsed)}
+              >
+                <span class="pf-chevron">
+                  {f.is_collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+                </span>
+                <span class="pf-icon"><IconFolder size={13} /></span>
+                <span class="group-header-name"><TechText text={f.name} /></span>
+                <button
+                  class="pf-btn"
+                  title={t("pf.newWorktree")}
+                  onClick={(e) => { e.stopPropagation(); p.onProjectFolderNewWorktree(f); }}
+                >
+                  <IconPlus size={12} />
+                </button>
+                <button
+                  class="pf-btn"
+                  title={t("pf.refresh")}
+                  onClick={(e) => { e.stopPropagation(); void scanFolder(f); }}
+                >
+                  <IconRefresh size={12} />
+                </button>
+                <button
+                  class="pf-btn"
+                  title={t("pf.unpin")}
+                  onClick={(e) => { e.stopPropagation(); p.onProjectFolderRemove(f.id); }}
+                >
+                  ✕
+                </button>
+              </div>
+              <Show when={!f.is_collapsed}>
+                <Show when={scan()?.status === "loading"}>
+                  <div class="pf-hint">{t("pf.scanning")}</div>
+                </Show>
+                <Show when={scan()?.status === "error"}>
+                  {/* git's own message — a bad path and a dead
+                      connection read very differently and the user
+                      needs to tell them apart. */}
+                  <div class="pf-hint pf-error" title={(scan() as { message: string }).message}>
+                    <IconWarning size={12} /> {(scan() as { message: string }).message}
                   </div>
-                  <Show when={!f.is_collapsed}>
-                    <div class="pf-children">
-                      <Show when={scan()?.status === "loading"}>
-                        <div class="pf-hint">{t("pf.scanning")}</div>
-                      </Show>
-                      <Show when={scan()?.status === "error"}>
-                        {/* git's own message, not a guess — a bad path
-                            and a dead connection read very differently
-                            and the user needs to tell them apart. */}
-                        <div class="pf-hint pf-error" title={(scan() as { message: string }).message}>
-                          <IconWarning size={12} /> {(scan() as { message: string }).message}
-                        </div>
-                      </Show>
-                      <Show when={scan()?.status === "ok"}>
-                        <For each={(scan() as { entries: WorktreeEntry[] }).entries}>
-                          {(wt) => (
-                            <div
-                              class={`wt-row ${wt.is_main ? "main" : ""} ${wt.is_prunable ? "prunable" : ""}`}
-                              title={`${wt.path}${wt.is_locked ? " — " + t("pf.locked") : ""}${
-                                wt.is_prunable ? " — " + t("pf.prunable") : ""
-                              }\n${t("pf.openSessionHere")}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                p.onOpenSessionAt(w.id, wt.path);
-                              }}
-                            >
-                              <span class="wt-icon"><IconGitBranch size={12} /></span>
-                              <span class="wt-branch">
-                                <TechText text={wt.branch ?? (wt.is_detached ? wt.head.slice(0, 7) : "—")} />
-                              </span>
-                              <span class="wt-path"><TechText text={pathTail(wt.path)} /></span>
-                              <Show when={wt.is_locked}>
-                                <span class="wt-flag" title={t("pf.locked")}>🔒</span>
-                              </Show>
-                              <Show when={wt.is_prunable}>
-                                <span class="wt-flag" title={t("pf.prunable")}>⚠</span>
-                              </Show>
-                            </div>
-                          )}
-                        </For>
-                        <Show when={(scan() as { entries: WorktreeEntry[] }).entries.length === 0}>
-                          <div class="pf-hint">{t("pf.noWorktrees")}</div>
+                </Show>
+                <Show when={scan()?.status === "ok"}>
+                  <For each={(scan() as { entries: WorktreeEntry[] }).entries}>
+                    {(wt) => {
+                      const bound = () =>
+                        byWorktreePath().get(pathKey(wt.path));
+                      return (
+                        <Show
+                          when={!bound()}
+                          fallback={<>{bound() && renderWorkspaceRow(bound()!)}</>}
+                        >
+                          <div
+                            class={`ws-item pf-unopened ${wt.is_prunable ? "prunable" : ""}`}
+                            title={`${wt.path}${wt.is_locked ? " — " + t("pf.locked") : ""}${
+                              wt.is_prunable ? " — " + t("pf.prunable") : ""
+                            }\n${t("pf.openWorktree")}`}
+                            onClick={() => p.onOpenWorktree(f, wt)}
+                          >
+                            <span class="wt-icon"><IconGitBranch size={12} /></span>
+                            <span class="wt-branch">
+                              <TechText text={wt.branch ?? (wt.is_detached ? wt.head.slice(0, 7) : "—")} />
+                            </span>
+                            <span class="wt-path"><TechText text={pathTail(wt.path)} /></span>
+                            <Show when={wt.is_locked}>
+                              <span class="wt-flag" title={t("pf.locked")}>🔒</span>
+                            </Show>
+                            <Show when={wt.is_prunable}>
+                              <span class="wt-flag" title={t("pf.prunable")}>⚠</span>
+                            </Show>
+                          </div>
                         </Show>
-                      </Show>
-                      <button
-                        class="pf-new-wt"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          p.onProjectFolderNewWorktree(w.id, f);
-                        }}
-                      >
-                        <IconPlus size={11} /> {t("pf.newWorktree")}
-                      </button>
-                    </div>
+                      );
+                    }}
+                  </For>
+                  <Show when={(scan() as { entries: WorktreeEntry[] }).entries.length === 0}>
+                    <div class="pf-hint">{t("pf.noWorktrees")}</div>
                   </Show>
-                </div>
-              );
-            }}
-          </For>
-        </div>
-      </Show>
+                </Show>
+              </Show>
+            </>
+          );
+        }}
+      </For>
     );
   }
 
   function renderWorkspaceItem(w: Workspace) {
-    // `mode === "icons"` has no room for a path tree — the workspace row
-    // is a bare dot there.
-    return (
-      <Show
-        when={p.mode !== "icons"}
-        fallback={renderWorkspaceRow(w)}
-      >
-        <>
-          {renderWorkspaceRow(w)}
-          {renderProjectFolders(w)}
-        </>
-      </Show>
-    );
+    return renderWorkspaceRow(w);
   }
 
   function renderWorkspaceRow(w: Workspace) {
@@ -957,9 +972,6 @@ export function Sidebar(p: Props) {
             </button>
             <button onClick={() => p.onAction(w.id, "addons")}>
               {t("ws.context.addons")}
-            </button>
-            <button onClick={() => p.onAction(w.id, "add_project_folder")}>
-              {t("pf.pinFolder")}…
             </button>
             <button
               onClick={() => {

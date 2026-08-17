@@ -78,7 +78,7 @@
   "pf.noWorktrees": "لا توجد أشجار عمل",
   "pf.locked": "مقفل",
   "pf.prunable": "قابل للتقليم — مجلده غير موجود",
-  "pf.openSessionHere": "انقر لفتح جلسة هنا",
+  "pf.openWorktree": "انقر لفتح شجرة العمل هذه كمساحة عمل",
   "pf.newWorktree": "شجرة عمل جديدة…",
   "pf.dialog.title": "تثبيت مجلد مشروع",
   "pf.dialog.pathLabel": "المسار على مضيف مساحة العمل",

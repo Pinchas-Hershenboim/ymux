@@ -34,6 +34,21 @@ type WorkspacesFile = {
   version: number;                       // currently 1
   active_workspace_id: string | null;
   workspaces: Workspace[];
+  groups?: WorkspaceGroup[];             // cmux-A A2 sidebar sections
+  project_folders?: ProjectFolder[];
+};
+
+// A pinned git repo, rendered as a sidebar section whose children are
+// workspaces — one per git worktree (cmux's "Project Worktrees" model).
+// It owns its connection rather than borrowing a workspace's, which is
+// what lets a server repo be pinned before any workspace points there.
+type ProjectFolder = {
+  id: string;                            // "pf_<hex_nanos>"
+  name: string;                          // label; defaults to the path basename
+  path: string;                          // repo root, absolute, on `connection`'s host
+  connection?: Connection;               // absent = this machine
+  is_collapsed?: boolean;                // persisted section state
+  sort_order?: number;                   // absent until reordered
 };
 
 type Workspace = {
@@ -44,19 +59,14 @@ type Workspace = {
   // legacy field — folded into layout on load if present
   connection?: Connection;
   layout?: LayoutNode;
-  // Repo paths pinned to this workspace. Resolved on the workspace's
-  // OWN host — usually the server behind its SSH connection — which is
-  // why the sidebar can list each one's git worktrees without opening
-  // anything new. Elided entirely when empty, so a file that never
-  // pinned one round-trips byte-identical.
-  project_folders?: ProjectFolder[];
-};
-
-type ProjectFolder = {
-  id: string;                            // "pf_<hex_nanos>"
-  name: string;                          // label; defaults to the path basename
-  path: string;                          // absolute, on the workspace's host
-  is_collapsed?: boolean;                // persisted sidebar state
+  // Set together, and only by `project_folder_open_worktree`, when this
+  // workspace was opened from a project folder's worktree row. The
+  // sidebar matches `worktree_path` against a scan to decide whether a
+  // worktree already has a workspace. Unpinning the folder clears
+  // `project_folder_id` but deliberately KEEPS `worktree_path`, so
+  // re-pinning re-adopts the workspace.
+  project_folder_id?: string;
+  worktree_path?: string;
 };
 
 type Connection =

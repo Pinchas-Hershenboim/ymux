@@ -2183,3 +2183,73 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    node_modules (junctioned to the main checkout) and no
    resources/winmux-cli.exe (copied from the main checkout) — the latter is
    exactly the pre-existing FOLLOWUPS P3.
+
+[PROJECT-FOLDERS v2] worktree = workspace (cmux model) + two overflow bugfixes
+   2026-08-16/17 +0300. Branch claude/pane-overflow-project-folders-a7353c.
+   Commits: eafd907 (overflow fixes), 94353d6 (backend rework), + this one.
+
+   WHY v2: Yossi built+ran the v1 binary and rejected the model on sight.
+   v1 hung ProjectFolder off a Workspace as metadata and "open session here"
+   opened a PANE in that same workspace. He wanted a section whose children are
+   workspaces. His FIRST message already said "like the groups logic" — that
+   was read as "looks like a group" instead of "is shaped like a group".
+
+   CMUX RESEARCH (fetched, not recalled — see DECISIONS 2026-08-16):
+   - sidebar has switchable views; one is "Project Worktrees" (cmux#5173)
+   - project row's `+` creates the worktree AND opens a workspace (cmux#5032)
+   - so a worktree MATERIALIZES AS A WORKSPACE
+   - cmux#5032 is a BUG report: they spawned the workspace with the one-shot
+     setup command as the main process, so the tab flashed and died when
+     `git worktree add` exited. We create the worktree first, then open a
+     workspace whose first pane is a plain interactive shell.
+   - nesting a workspace's TABS under it (cmux#1404) is requested-not-shipped
+     there; not copied.
+
+   SCHEMA
+   - ProjectFolder moved off Workspace to WorkspacesFile root, beside `groups`,
+     and gained its OWN Connection + sort_order. That is what makes a section
+     standalone — pinning a server repo no longer needs a workspace pointing at
+     the same host to already exist.
+   - Workspace: dropped `project_folders`, gained project_folder_id +
+     worktree_path (both skip_serializing_if).
+   - Serde tests: the ABANDONED inline project_folders key must still LOAD (a
+     branch build wrote it) — pinned so nobody adds deny_unknown_fields later.
+
+   COMMANDS
+   - project_folder_add/update/remove + project_folder_open_worktree (new)
+     + project_folder_probe (new: validates a path against a connection that
+     has no folder yet, for the pin dialog).
+   - remove() unpins and NOTHING else: not the directory, not the workspaces
+     opened from it. Those keep worktree_path and fall back to the flat list,
+     so re-pinning re-adopts them.
+   - SSH handle lookup moved from workspace-id to user@host:port. A folder
+     belongs to a HOST. key_path is a credential, not an identity → not matched.
+
+   *** BUG FOUND ON THE WAY, WIDER THAN THIS FEATURE ***
+   Workspace.cwd is INERT OVER SSH. pane_connect's Ssh arm never forwards cwd to
+   spawn_ssh — only the Local and WSL arms use it (lib.rs ~5804-5836). Every SSH
+   pane has always started in $HOME and a hand-set workspace cwd was silently
+   dropped. An SSH channel has no working-dir parameter; that is exactly what
+   cwdOverride papers over via `cd '<dir>'` in build_smart_connect_script.
+   connectPane now defaults cwdOverride to ws.cwd for REMOTE workspaces.
+   Fixed generally, not narrowed to worktrees — the narrow fix would leave every
+   other SSH cwd still broken. Behaviour change for anyone who set a cwd on an
+   SSH workspace and got $HOME: they now land where they asked.
+
+   ALSO IN eafd907 (two bugs in the pane-overflow work, both mine, found by
+   Yossi testing the v1 build — the chevron appeared but clicking did nothing):
+   1. `.pane-header { overflow: hidden }`, which I added FOR the fitter, clipped
+      the dropdown (it's position:absolute; top:100% inside the header). The
+      fitter never needed it.
+   2. The fitter compared the child-width sum against clientWidth = the PADDING
+      box, giving the run 20px of free slack, so ~20px stayed overflowing at
+      every width. Bug 1's clipping is exactly what hid bug 2.
+   Re-verified in Chromium against the real CSS, 7 widths x LTR/RTL: residual
+   overflow 0px (was ~20px), dropdown measures visible everywhere it exists.
+   Also added createLogger("SIDEBAR") — there was NO logger in Sidebar.tsx, so a
+   failed worktree scan left nothing in debug.log and Yossi's "לא מציג" was
+   undiagnosable. Scans now log start/ok+count/fail (metadata only).
+
+   VALIDATION: cargo test --workspace green (207 + 97); tsc clean; vite build
+   clean; tauri build --no-bundle + Rule #13 asset-hash check + Rule #14 launch.
+   STILL NOT SMOKED LIVE against a real SSH repo — FOLLOWUPS P1 stands.

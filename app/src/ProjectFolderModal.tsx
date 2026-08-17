@@ -17,8 +17,8 @@ import type { Connection, ProjectFolder, WorktreeEntry } from "./types";
 // path; only Local gets the native browse button.
 
 export type ProjectFolderModalMode =
-  | { kind: "pin"; workspaceId: string; connection: Connection | null }
-  | { kind: "worktree"; workspaceId: string; folder: ProjectFolder };
+  | { kind: "pin"; connection: Connection | null }
+  | { kind: "worktree"; folder: ProjectFolder };
 
 interface Props {
   mode: ProjectFolderModalMode;
@@ -83,14 +83,14 @@ export function ProjectFolderModal(p: Props) {
       // Validate before persisting: a path that is not a repo (or a
       // workspace with no live session) fails here with git's own
       // message instead of landing a dead row in the sidebar.
-      await invoke<WorktreeEntry[]>("project_folder_list_worktrees", {
-        workspaceId: p.mode.workspaceId,
+      await invoke<WorktreeEntry[]>("project_folder_probe", {
         path: value,
+        connection: p.mode.connection,
       });
-      await invoke("workspace_project_folder_add", {
-        workspaceId: p.mode.workspaceId,
+      await invoke("project_folder_add", {
         path: value,
         name: null,
+        connection: p.mode.connection,
       });
       p.onDone();
       p.onClose();
@@ -110,7 +110,7 @@ export function ProjectFolderModal(p: Props) {
     setError(null);
     try {
       await invoke<WorktreeEntry[]>("project_folder_create_worktree", {
-        workspaceId: p.mode.workspaceId,
+        folderId: p.mode.folder.id,
         projectPath: p.mode.folder.path,
         branchName: b,
         baseBranch: bb,

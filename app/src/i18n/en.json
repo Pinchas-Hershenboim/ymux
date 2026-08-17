@@ -78,7 +78,7 @@
   "pf.noWorktrees": "no worktrees",
   "pf.locked": "locked",
   "pf.prunable": "prunable — its directory is gone",
-  "pf.openSessionHere": "Click to open a session here",
+  "pf.openWorktree": "Click to open this worktree as a workspace",
   "pf.newWorktree": "New worktree…",
   "pf.dialog.title": "Pin a project folder",
   "pf.dialog.pathLabel": "Path on this workspace's host",

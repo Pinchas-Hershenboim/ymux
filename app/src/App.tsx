@@ -88,6 +88,7 @@ import {
   type EnvVar,
   type FeedItem,
   type ForwardRow,
+  type ProjectFolder,
   type WorktreeEntry,
   type FeedResolvedEvent,
   type LayoutNode,
@@ -1277,6 +1278,13 @@ function App() {
 
   // ─── project folders ────────────────────────────────────────────────────
 
+  /** Last path component, for naming a detached worktree's workspace. */
+  const pathTailOf = (path: string): string | undefined => {
+    const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
+    const tail = norm.slice(norm.lastIndexOf("/") + 1);
+    return tail || undefined;
+  };
+
   /** Reload the workspaces file after a project-folder mutation. */
   const reloadWorkspaces = async () => {
     const f = await invoke<WorkspacesFile>("workspaces_load");
@@ -1284,52 +1292,31 @@ function App() {
   };
 
   /**
-   * Open a terminal pane rooted at `path` — the "open session here"
-   * action on a worktree row.
+   * Open a worktree as its own workspace — the click target of a
+   * worktree row that has no workspace yet.
    *
-   * Splits the workspace's active pane and connects the NEW one with a
-   * cwd override; every piece of that already exists. The new pane is
-   * identified by diffing the layout's pane ids across the split rather
-   * than by guessing at the tree shape, which keeps this correct
-   * regardless of how `workspace_split` arranges the node.
+   * The backend does the whole job (create + activate, or activate the
+   * existing one), so there is nothing to stitch together here. The
+   * workspace's first pane connects through the normal restore path;
+   * its cwd reaches a remote shell via `effectiveCwdOverride`.
    */
-  const openSessionAt = async (workspaceId: string, path: string) => {
+  const openWorktree = async (folder: ProjectFolder, wt: WorktreeEntry) => {
     try {
-      if (file().active_workspace_id !== workspaceId) {
-        await handleSetActive(workspaceId);
-      }
-      const ws = file().workspaces.find((w) => w.id === workspaceId);
-      if (!ws) return;
-      const before = new Set(ws.layout ? collectPanes(ws.layout) : []);
-      const anchor = (activePaneId() && before.has(activePaneId()!))
-        ? activePaneId()!
-        : [...before][0];
-      if (!anchor) {
-        log.error("openSessionAt: workspace has no pane to split", workspaceId);
-        return;
-      }
-      const f = await invoke<WorkspacesFile>("workspace_split", {
-        workspaceId,
-        paneId: anchor,
-        direction: "horizontal",
-        paneKind: "terminal",
-        browserUrl: null,
+      const f = await invoke<WorkspacesFile>("project_folder_open_worktree", {
+        folderId: folder.id,
+        worktreePath: wt.path,
+        // Branch name is what the user recognises; a detached worktree
+        // falls back to the directory name rather than a bare sha.
+        name: wt.branch ?? pathTailOf(wt.path) ?? folder.name,
       });
       updateFile(f);
-      const after = f.workspaces.find((w) => w.id === workspaceId);
-      const fresh = after?.layout
-        ? collectPanes(after.layout).find((id) => !before.has(id))
-        : undefined;
-      if (!fresh) {
-        log.error("openSessionAt: split produced no new pane", workspaceId);
-        return;
-      }
-      setActivePaneId(fresh);
-      await connectPane(fresh, { cwdOverride: path });
+      if (f.active_workspace_id) await handleSetActive(f.active_workspace_id);
     } catch (e) {
-      log.error("openSessionAt failed", e);
+      log.error("project_folder_open_worktree failed", e);
+      flashSummaryToast("err", String(e));
     }
   };
+
 
   // ─── pane operations ────────────────────────────────────────────────────
 
@@ -3094,6 +3081,12 @@ function App() {
           }}
           onActivate={handleSetActive}
           onCreate={() => setShowSetup({})}
+          // Seeded from the active workspace's connection purely as a
+          // convenience — the folder stores its own copy, and the
+          // dialog lets the user change it.
+          onPinProjectFolder={() =>
+            setProjectFolderModal({ kind: "pin", connection: activeWs()?.connection ?? null })
+          }
           onOpenSettings={() => setShowSettings(true)}
           onOpenNotes={() => setShowNotes(true)}
           onAction={(id, action) => {
@@ -3107,52 +3100,42 @@ function App() {
             else if (action === "addons") {
               const ws = file().workspaces.find((w) => w.id === id);
               setAddonsWin({ id, name: ws?.name ?? "" });
-            } else if (action === "add_project_folder") {
-              const ws = file().workspaces.find((w) => w.id === id);
-              setProjectFolderModal({
-                kind: "pin",
-                workspaceId: id,
-                connection: ws?.connection ?? null,
-              });
             }
             // Phase 65.Q removed the "add_machine" action — joining an
             // existing server is handled by the main wizard (R).
           }}
           // ── project folders ───────────────────────────────────────
-          onProjectFolderSetCollapsed={(workspaceId, folderId, isCollapsed) => {
+          projectFolders={file().project_folders ?? []}
+          onProjectFolderSetCollapsed={(folderId, isCollapsed) => {
             void (async () => {
               try {
-                const f = await invoke<WorkspacesFile>("workspace_project_folder_update", {
-                  workspaceId,
+                const f = await invoke<WorkspacesFile>("project_folder_update", {
                   folderId,
                   name: null,
                   isCollapsed,
                 });
                 updateFile(f);
-              } catch (e) { log.error("workspace_project_folder_update failed", e); }
+              } catch (e) { log.error("project_folder_update failed", e); }
             })();
           }}
-          onProjectFolderRemove={(workspaceId, folderId) => {
+          onProjectFolderRemove={(folderId) => {
             void (async () => {
               try {
-                const f = await invoke<WorkspacesFile>("workspace_project_folder_remove", {
-                  workspaceId,
-                  folderId,
-                });
+                const f = await invoke<WorkspacesFile>("project_folder_remove", { folderId });
                 updateFile(f);
-              } catch (e) { log.error("workspace_project_folder_remove failed", e); }
+              } catch (e) { log.error("project_folder_remove failed", e); }
             })();
           }}
-          onProjectFolderNewWorktree={(workspaceId, folder) =>
-            setProjectFolderModal({ kind: "worktree", workspaceId, folder })
+          onProjectFolderNewWorktree={(folder) =>
+            setProjectFolderModal({ kind: "worktree", folder })
           }
           // Rejection is meaningful here — the Sidebar renders git's own
           // message (bad path, no live SSH session) rather than an empty
           // list, which would read as "this repo has no worktrees".
-          onListWorktrees={(workspaceId, path) =>
-            invoke<WorktreeEntry[]>("project_folder_list_worktrees", { workspaceId, path })
+          onListWorktrees={(folderId, path) =>
+            invoke<WorktreeEntry[]>("project_folder_list_worktrees", { folderId, path })
           }
-          onOpenSessionAt={(workspaceId, path) => void openSessionAt(workspaceId, path)}
+          onOpenWorktree={(folder, wt) => void openWorktree(folder, wt)}
           allForwards={portForwards()}
           onOpenPorts={(workspaceId) => {
             // Badge click: activate that workspace, then open the

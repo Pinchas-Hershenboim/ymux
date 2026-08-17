@@ -78,7 +78,7 @@
   "pf.noWorktrees": "нет worktree",
   "pf.locked": "заблокирован",
   "pf.prunable": "можно удалить — его каталог отсутствует",
-  "pf.openSessionHere": "Нажмите, чтобы открыть сессию здесь",
+  "pf.openWorktree": "Открыть этот worktree как рабочее пространство",
   "pf.newWorktree": "Новый worktree…",
   "pf.dialog.title": "Закрепить папку проекта",
   "pf.dialog.pathLabel": "Путь на хосте рабочего пространства",

@@ -78,7 +78,7 @@
   "pf.noWorktrees": "אין worktrees",
   "pf.locked": "נעול",
   "pf.prunable": "ניתן לגזימה — התיקייה שלו נעלמה",
-  "pf.openSessionHere": "לחץ כדי לפתוח סשן כאן",
+  "pf.openWorktree": "לחץ כדי לפתוח את ה-worktree הזה כסביבת עבודה",
   "pf.newWorktree": "worktree חדש…",
   "pf.dialog.title": "קיבוע תיקיית פרויקט",
   "pf.dialog.pathLabel": "נתיב על ה-host של סביבת העבודה",
