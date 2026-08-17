@@ -7,14 +7,18 @@ import type { Connection, ProjectFolder, WorktreeEntry } from "./types";
 
 // Two small dialogs over the same chrome:
 //
-//   mode "pin"      — pin a repo path to a workspace
+//   mode "pin"      — type a repo path (WSL only; see below)
 //   mode "worktree" — create a new worktree inside a pinned folder
 //
 // Both talk to a host that is usually NOT this machine, so neither one
-// guesses whether a path is valid: `project_folder_list_worktrees` is
-// the validation step, and whatever git says comes back verbatim. A
-// remote folder picker does not exist, so SSH/WSL workspaces type the
-// path; only Local gets the native browse button.
+// guesses whether a path is valid: git is the validation step and its
+// message comes back verbatim.
+//
+// On "pin": SSH workspaces do NOT come here — they get the real remote
+// browser (DirPicker.tsx, over SFTP), and Local gets the native dialog.
+// This mode is the WSL fallback, which has neither: `file_list_remote`
+// is SFTP-only and `WSL_CAPS.fileTransfer` is false, so there is nothing
+// to browse with and the path is typed.
 
 export type ProjectFolderModalMode =
   | { kind: "pin"; connection: Connection | null }

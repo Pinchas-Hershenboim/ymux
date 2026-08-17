@@ -439,15 +439,11 @@ export function PaneView(p: Props) {
     setDirPickForNewConn(false);
     setNcView("form");
   };
-  // v0.4.4 (Task 2): close the folder picker; if it was serving the
-  // new-connection modal, reopen that modal (keeping the previous ncDir).
-  const closeDirPicker = () => {
-    setDirPicker(null);
-    if (dirPickForNewConn()) {
-      setDirPickForNewConn(false);
-      setNewConnModal(true);
-    }
-  };
+  // `closeDirPicker` lived here to dismiss the standalone picker and
+  // reopen the new-connection modal behind it. It went with the picker
+  // (now DirPicker.tsx) — the inline browse view is dismissed by
+  // `cancelBrowse`, which returns to the form without ever having
+  // closed the modal.
   // v0.4.4-beta.2: open the unified new-connection modal with defaults.
   const openNewConnModal = () => {
     setNcView("form");
@@ -1850,67 +1846,13 @@ export function PaneView(p: Props) {
       {/* Phase 65 (bug AA): remote folder picker for "Open in directory". */}
       {/* v0.4.4-beta.2: only the standalone "open dir" flow uses this popup;
           the new-connection wizard renders the tree inline (ncView="browse"). */}
-      <Show when={dirPicker() && !dirPickForNewConn()}>
-        <div class="modal-backdrop" onClick={closeDirPicker}>
-          <div
-            class="modal claude-picker"
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div class="settings-head">
-              <h3>{t("connect.dirPicker.title")}</h3>
-              <button class="feed-x" title={t("common.close")} onClick={closeDirPicker}><IconClose size={14} /></button>
-            </div>
-            <div class="dir-picker-path" title={dirPicker()!.path}>{dirPicker()!.path}</div>
-            <Show when={recentDirs().length > 0}>
-              <div class="dir-picker-recent">
-                <div class="dir-picker-recent-label">{t("connect.dirPicker.recent")}</div>
-                <For each={recentDirs()}>
-                  {(d) => (
-                    <button class="dir-picker-recent-row" title={d} onClick={() => chooseDir(d)}>
-                      <IconClock size={14} /> {d}
-                    </button>
-                  )}
-                </For>
-              </div>
-            </Show>
-            <div class="claude-picker-body">
-              <Show when={dirPicker()!.loading}>
-                <p class="status-line">{t("connect.dirPicker.loading")}</p>
-              </Show>
-              <Show when={dirPicker()!.error}>
-                <p class="status-line err"><IconWarning size={13} /> {dirPicker()!.error}</p>
-              </Show>
-              <ul class="dir-picker-list">
-                <Show when={dirPicker()!.path !== "/"}>
-                  <li class="dir-picker-row up" onClick={() => void navigateDirPicker(dirPickerParent(dirPicker()!.path))}>
-                    <IconFolder size={14} /> ..
-                  </li>
-                </Show>
-                <For each={dirPicker()!.dirs}>
-                  {(name) => (
-                    <li
-                      class="dir-picker-row"
-                      onClick={() => void navigateDirPicker(dirPickerJoin(dirPicker()!.path, name))}
-                    >
-                      <IconFolder size={14} /> {name}
-                    </li>
-                  )}
-                </For>
-                <Show when={!dirPicker()!.loading && dirPicker()!.dirs.length === 0 && !dirPicker()!.error}>
-                  <li class="dir-picker-empty">{t("connect.dirPicker.empty")}</li>
-                </Show>
-              </ul>
-            </div>
-            <div class="modal-buttons">
-              <button onClick={closeDirPicker}>{t("common.cancel")}</button>
-              <button class="primary" onClick={() => chooseDir(dirPicker()!.path)}>
-                {t("connect.dirPicker.useThis")}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Show>
+      {/* The standalone directory picker that used to live here was
+          UNREACHABLE — its guard was `dirPicker() && !dirPickForNewConn()`
+          and the only caller of openDirPicker sets dirPickForNewConn
+          first. It is now app/src/DirPicker.tsx, with a live caller: the
+          workspace context menu's "pin project folder". The inline
+          browse view above (ncView() === "browse") is a second copy of
+          the same list with wizard chrome — see FOLLOWUPS. */}
 
       {/* v0.4.4-beta.2: standalone Claude session picker + tmux session picker
           removed — session resume lives in the wizard ("choose from list"),

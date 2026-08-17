@@ -86,10 +86,8 @@ interface Props {
   onOpenNotes: () => void;
   onAction: (
     id: string,
-    action: "rename" | "edit" | "delete" | "disconnect" | "addons",
+    action: "rename" | "edit" | "delete" | "disconnect" | "addons" | "add_project_folder",
   ) => void;
-  /** Pin a new project folder — a global action, not per-workspace. */
-  onPinProjectFolder: () => void;
   // Project folders: pinned repos rendered as sections whose children
   // are workspaces, one per git worktree. The Sidebar owns the scan
   // cache (lazy, never polled — a scan is a round-trip over the
@@ -850,13 +848,6 @@ export function Sidebar(p: Props) {
         <span class="ws-action-emoji"><IconPlus /></span>
         <span class="ws-action-label">{t("sidebar.new_workspace")}</span>
       </button>
-      {/* Pinning a repo is a sidebar-level action, not a workspace one
-          — the folder owns its own connection and needs no workspace to
-          exist first. */}
-      <button class="ws-add ws-add-secondary" onClick={p.onPinProjectFolder} title={t("pf.pinFolder")}>
-        <span class="ws-action-emoji"><IconFolder /></span>
-        <span class="ws-action-label">{t("pf.pinFolder")}</span>
-      </button>
       <Show when={dragKind() !== null && ghostPos() !== null}>
         <div
           class="ws-ghost"
@@ -972,6 +963,14 @@ export function Sidebar(p: Props) {
             </button>
             <button onClick={() => p.onAction(w.id, "addons")}>
               {t("ws.context.addons")}
+            </button>
+            {/* Pinning happens from a workspace because that is what
+                gives the folder browser a host to walk: `file_list_remote`
+                resolves SFTP from this workspace's live SSH session. The
+                folder itself stores a copy of the connection, so it
+                outlives the workspace it was picked from. */}
+            <button onClick={() => p.onAction(w.id, "add_project_folder")}>
+              {t("pf.pinFolder")}…
             </button>
             <button
               onClick={() => {

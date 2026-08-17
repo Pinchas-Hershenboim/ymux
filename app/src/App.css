@@ -404,10 +404,6 @@ body {
 }
 .pf-hint.pf-error { color: var(--w-error); }
 
-/* Secondary to the primary "new workspace" button below the list. */
-.ws-add-secondary { opacity: 0.8; }
-.ws-add-secondary:hover { opacity: 1; }
-
 /* Path field + optional native browse button, on one line. Paths are
    logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
 .pf-modal-row { display: flex; gap: 8px; align-items: center; }

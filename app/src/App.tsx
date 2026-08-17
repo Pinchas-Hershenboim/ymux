@@ -39,6 +39,8 @@ import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
 import { TicketModal } from "./TicketModal";
 import { ProjectFolderModal, type ProjectFolderModalMode } from "./ProjectFolderModal";
+import { DirPicker } from "./DirPicker";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { TicketsPanel } from "./TicketsPanel";
 import { parseCapture, pendingCapture, setPendingCapture } from "./browserDevMode";
 import { FileManagerPane } from "./FileManagerPane";
@@ -494,7 +496,8 @@ function App() {
     showSettings() || showPalette() || showPortsWindow() || installingUpdate() ||
     // Dev-Mode ticket modal — same reason as the rest: the native
     // Browser Webview paints above HTML and must be hidden for it.
-    pendingCapture() !== null || projectFolderModal() !== null;
+    pendingCapture() !== null || projectFolderModal() !== null ||
+    dirPickerFor() !== null;
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -1277,6 +1280,59 @@ function App() {
   };
 
   // ─── project folders ────────────────────────────────────────────────────
+
+  // ── pinning a project folder ────────────────────────────────────────────
+  //
+  // Entry point is the workspace context menu, because that is what gives
+  // the browser a host to walk: `file_list_remote` resolves SFTP from a
+  // LIVE ssh session for that workspace. SSH gets the real remote browser
+  // (DirPicker); Local gets the native dialog; WSL gets neither — there is
+  // no SFTP for it (`WSL_CAPS.fileTransfer` is false) — so it falls back to
+  // typing the path, which is what the pin modal is still there for.
+  const [dirPickerFor, setDirPickerFor] =
+    createSignal<{ workspaceId: string; connection: Connection | null } | null>(null);
+
+  /** Probe, then persist. The probe is what keeps a non-repo directory
+   *  from landing as a dead section — git's own message comes back. */
+  const pinProjectFolder = async (path: string, connection: Connection | null) => {
+    try {
+      await invoke<WorktreeEntry[]>("project_folder_probe", { path, connection });
+      const f = await invoke<WorkspacesFile>("project_folder_add", {
+        path,
+        name: null,
+        connection,
+      });
+      updateFile(f);
+    } catch (e) {
+      log.error("pin project folder failed", e);
+      flashSummaryToast("err", String(e));
+    }
+  };
+
+  const startPinProjectFolder = async (workspaceId: string) => {
+    const ws = file().workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    const conn = ws.connection ?? null;
+    if (conn?.type === "ssh") {
+      // Arm the connection first so pinning works on a workspace whose
+      // panes are all disconnected — otherwise the browser opens straight
+      // onto "connect a terminal pane first". Idempotent and PTY-free.
+      try {
+        await invoke("workspace_ensure_connected", { workspaceId });
+      } catch (e) {
+        log.warn("ensure_connected before folder pick failed", e);
+      }
+      setDirPickerFor({ workspaceId, connection: conn });
+      return;
+    }
+    if (conn === null || conn.type === "local") {
+      const picked = await openFileDialog({ directory: true, multiple: false });
+      if (typeof picked === "string") await pinProjectFolder(picked, conn);
+      return;
+    }
+    // WSL: no SFTP and no meaningful native path, so type it.
+    setProjectFolderModal({ kind: "pin", connection: conn });
+  };
 
   /** Last path component, for naming a detached worktree's workspace. */
   const pathTailOf = (path: string): string | undefined => {
@@ -3092,12 +3148,6 @@ function App() {
           }}
           onActivate={handleSetActive}
           onCreate={() => setShowSetup({})}
-          // Seeded from the active workspace's connection purely as a
-          // convenience — the folder stores its own copy, and the
-          // dialog lets the user change it.
-          onPinProjectFolder={() =>
-            setProjectFolderModal({ kind: "pin", connection: activeWs()?.connection ?? null })
-          }
           onOpenSettings={() => setShowSettings(true)}
           onOpenNotes={() => setShowNotes(true)}
           onAction={(id, action) => {
@@ -3111,6 +3161,8 @@ function App() {
             else if (action === "addons") {
               const ws = file().workspaces.find((w) => w.id === id);
               setAddonsWin({ id, name: ws?.name ?? "" });
+            } else if (action === "add_project_folder") {
+              void startPinProjectFolder(id);
             }
             // Phase 65.Q removed the "add_machine" action — joining an
             // existing server is handled by the main wizard (R).
@@ -3745,6 +3797,23 @@ function App() {
       {/* Dev Mode ticket capture. Opened by browser:ticket-captured;
           folded into anyModalOpen() above so the Browser Webview is
           hidden while it's up (it would otherwise paint over this). */}
+      {/* Remote folder browser for pinning a project folder. Scoped to
+          the workspace whose context menu opened it — that is where the
+          SFTP session comes from. */}
+      <Show when={dirPickerFor()}>
+        {(d) => (
+          <DirPicker
+            workspaceId={d().workspaceId}
+            onClose={() => setDirPickerFor(null)}
+            onPick={(dir) => {
+              const conn = d().connection;
+              setDirPickerFor(null);
+              void pinProjectFolder(dir, conn);
+            }}
+          />
+        )}
+      </Show>
+
       {/* Project folders: pin a repo path, or create a worktree inside
           one. Folded into anyModalOpen() for the same Webview reason. */}
       <Show when={projectFolderModal()}>
