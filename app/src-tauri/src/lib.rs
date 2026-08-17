@@ -6507,23 +6507,110 @@ fn list_claude_sessions_local(limit: usize) -> Result<Vec<ClaudeSessionInfo>, St
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let project_path = p
-            .parent()
-            .and_then(|q| q.file_name())
-            .and_then(|s| s.to_str())
-            .unwrap_or("?")
-            .to_string();
+        // Same contract as the SSH path: `cwd` from inside the JSONL is the
+        // real project dir (what `claude --resume` must be launched from);
+        // the encoded dir name (`-Users-yossi-dev-foo`) is a display-only
+        // fallback the frontend refuses to `cd` to. Without this a picked
+        // session on a local workspace resumed from $HOME and Claude
+        // couldn't find it.
+        let peek = peek_claude_jsonl(&p);
+        let project_path = peek.cwd.unwrap_or_else(|| {
+            p.parent()
+                .and_then(|q| q.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string()
+        });
         out.push(ClaudeSessionInfo {
             session_id,
             project_path,
             jsonl_path: p.to_string_lossy().to_string(),
             mtime_unix: mtime,
-            last_user: None,
-            last_assistant: None,
-            is_subagent: false,
+            last_user: peek.first_user,
+            last_assistant: peek.last_assistant,
+            is_subagent: peek.is_subagent,
         });
     }
     Ok(out)
+}
+
+/// What the local session picker needs from one transcript, without
+/// reading the whole file (sessions run to tens of MB): the first
+/// `PEEK_BYTES` give cwd / sidechain flag / first user line, the last
+/// `PEEK_BYTES` give the latest assistant line — the same head/tail
+/// window the SSH-side shell pipeline uses.
+#[derive(Default)]
+struct ClaudeJsonlPeek {
+    cwd: Option<String>,
+    is_subagent: bool,
+    first_user: Option<String>,
+    last_assistant: Option<String>,
+}
+
+const CLAUDE_PEEK_BYTES: u64 = 256 * 1024;
+
+fn peek_claude_jsonl(path: &Path) -> ClaudeJsonlPeek {
+    use std::io::{Seek as _, SeekFrom};
+    let mut out = ClaudeJsonlPeek::default();
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return out;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+
+    let mut head = Vec::new();
+    let _ = f.by_ref().take(CLAUDE_PEEK_BYTES).read_to_end(&mut head);
+    let head = String::from_utf8_lossy(&head);
+    for line in head.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if out.cwd.is_none() {
+            out.cwd = v
+                .get("cwd")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+        }
+        if v.get("isSidechain").and_then(|x| x.as_bool()) == Some(true) {
+            out.is_subagent = true;
+        }
+        if out.first_user.is_none() && v.get("type").and_then(|x| x.as_str()) == Some("user") {
+            let text = extract_text_field(line);
+            if !text.is_empty() {
+                out.first_user = Some(text);
+            }
+        }
+        if out.cwd.is_some() && out.first_user.is_some() {
+            break;
+        }
+    }
+
+    // Tail: last full line of type "assistant". Skip the first (likely
+    // partial) line when we seeked into the middle of the file.
+    let tail_start = len.saturating_sub(CLAUDE_PEEK_BYTES);
+    if f.seek(SeekFrom::Start(tail_start)).is_ok() {
+        let mut tail = Vec::new();
+        let _ = f.read_to_end(&mut tail);
+        let tail = String::from_utf8_lossy(&tail);
+        let lines: Vec<&str> = tail.lines().collect();
+        let skip = usize::from(tail_start > 0);
+        for line in lines.iter().skip(skip).rev() {
+            if !line.contains("\"assistant\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("type").and_then(|x| x.as_str()) == Some("assistant") {
+                let text = extract_text_field(line);
+                if !text.is_empty() {
+                    out.last_assistant = Some(text);
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Best-effort extractor: pulls the first occurrence of `"text":"…"` (or
@@ -8231,6 +8318,44 @@ mod tmux_list_parse_tests {
         let out = parse_tmux_sessions(&text);
         assert_eq!(out.len(), 1);
         assert!(out[0].label.is_none());
+    }
+}
+
+#[cfg(test)]
+mod claude_jsonl_peek_tests {
+    use super::peek_claude_jsonl;
+
+    fn write_tmp(name: &str, body: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("winmux-peek-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&p, body).expect("write tmp");
+        p
+    }
+
+    #[test]
+    fn reads_cwd_previews_and_sidechain_from_head_and_tail() {
+        let body = concat!(
+            "{\"type\":\"user\",\"cwd\":\"/Users/yossi/dev/foo\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello there\"}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"first answer\"}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"last answer\"}]}}\n",
+        );
+        let p = write_tmp("main", body);
+        let peek = peek_claude_jsonl(&p);
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(peek.cwd.as_deref(), Some("/Users/yossi/dev/foo"));
+        assert!(!peek.is_subagent);
+        assert_eq!(peek.first_user.as_deref(), Some("hello there"));
+        assert_eq!(peek.last_assistant.as_deref(), Some("last answer"));
+    }
+
+    #[test]
+    fn sidechain_flag_and_missing_file() {
+        let p = write_tmp("side", "{\"type\":\"user\",\"isSidechain\":true,\"cwd\":\"C:\\\\dev\\\\x\"}\n");
+        let peek = peek_claude_jsonl(&p);
+        let _ = std::fs::remove_file(&p);
+        assert!(peek.is_subagent);
+        assert_eq!(peek.cwd.as_deref(), Some("C:\\dev\\x"));
+        let none = peek_claude_jsonl(std::path::Path::new("/nonexistent/winmux/x.jsonl"));
+        assert!(none.cwd.is_none() && none.last_assistant.is_none());
     }
 }
 

@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openNativeDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
 import { describeConnection, effectiveIdentity, isLocalConn, isRemoteConn, isRemoteEffective } from "./types";
@@ -215,7 +216,8 @@ export function PaneView(p: Props) {
   // well. Windows-local and WSL stay on the plain path (backend decides).
   // Single predicate — every tmux-only affordance gates on this, not on
   // isSsh(); SSH-only commands (ensure_connected, SFTP, ports) keep isSsh().
-  const isMacLocal = () => isMac() && isLocalConn(p.pane.connection ?? p.workspaceConnection);
+  const isLocalPane = () => isLocalConn(p.pane.connection ?? p.workspaceConnection);
+  const isMacLocal = () => isMac() && isLocalPane();
   const hasTmux = () => isSsh() || isMacLocal();
   const isTmux = () => !!p.tmuxSession;
   // Phase 12.B Smart Connect — the "open in directory" text-input fallback
@@ -375,8 +377,16 @@ export function PaneView(p: Props) {
   };
   const openDirPicker = async () => {
     setRecentDirs(loadRecentDirs());
+    if (isLocalPane()) {
+      // Local pane: the host's native folder dialog (Finder sheet on
+      // macOS, Explorer on Windows) — the SFTP tree needs an SSH session.
+      const dir = await pickLocalFolder();
+      if (dir) chooseDir(dir);
+      return;
+    }
     if (!isSsh()) {
-      // Local pane: no SFTP — fall back to the text input.
+      // WSL pane: no SFTP and a host dialog would hand back a Windows
+      // path the distro can't cd to — keep the text input.
       setSmartInput("");
       setSmartModal("cwd");
       return;
@@ -445,6 +455,11 @@ export function PaneView(p: Props) {
   // Validation: directory is OPTIONAL (empty = the user's $HOME root, the
   // backend default — fill it only to run elsewhere). custom needs text;
   // "choose from list" needs a session pick. --resume/--continue are plain runs.
+  // A resumable session's cwd — POSIX (`/…`) or Windows (`C:\…`) absolute.
+  // Anything else is the encoded `~/.claude/projects/<dir>` name, which is
+  // display-only (never `cd` to it).
+  const isAbsolutePath = (s: string | undefined | null): s is string =>
+    !!s && (s.startsWith("/") || /^[A-Za-z]:[\\/]/.test(s));
   const newConnValid = (): boolean => {
     if (ncCmd() === "custom" && !ncCustom().trim()) return false;
     if (ncCmd() === "from-list" && !ncPickedSession()) return false;
@@ -452,7 +467,33 @@ export function PaneView(p: Props) {
   };
   // v0.4.4-beta.2: browse is now an INLINE view within the same modal (not a
   // separate popup). Load the tree into dirPicker() and switch the body.
+  // Native folder chooser for LOCAL panes. Returns null on cancel/error;
+  // the dialog itself is the UI, so no inline browse view is needed.
+  const pickLocalFolder = async (): Promise<string | null> => {
+    try {
+      const picked = await openNativeDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: ncDir().trim() || undefined,
+      });
+      return typeof picked === "string" && picked ? picked : null;
+    } catch (e) {
+      log.warn("native folder dialog failed", e);
+      return null;
+    }
+  };
   const browseNewConnDir = () => {
+    if (isLocalPane()) {
+      // Local: native dialog straight into ncDir — the modal stays on
+      // the form view (no SFTP tree to render).
+      void pickLocalFolder().then((dir) => {
+        if (dir) {
+          pushRecentDir(dir);
+          setNcDir(dir);
+        }
+      });
+      return;
+    }
     setDirPickForNewConn(true);
     setNcView("browse");
     void openDirPicker();
@@ -512,7 +553,7 @@ export function PaneView(p: Props) {
     // A picked resume session overrides the directory with its own project
     // path (so resume lands where the session was created), if absolute.
     let dir = ncDir().trim();
-    if (picked && picked.project_path?.startsWith("/")) dir = picked.project_path;
+    if (picked && isAbsolutePath(picked.project_path)) dir = picked.project_path;
     // Empty stays empty: no cwdOverride → the backend lands in the user's $HOME
     // root (default). Only send an override when the user actually typed a path
     // (or a picked session supplied its project dir).
@@ -1438,7 +1479,7 @@ export function PaneView(p: Props) {
                         value={ncDir()}
                         onInput={(e) => setNcDir(e.currentTarget.value)}
                       />
-                      <Show when={isSsh()}>
+                      <Show when={isSsh() || isLocalPane()}>
                         <button class="nc-browse" onClick={browseNewConnDir}>
                           {t("connect.newConn.browse")}
                         </button>

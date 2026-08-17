@@ -1730,3 +1730,22 @@ FILES:
   i18n/{en,he,ru,ar}.json — localSetup.mac.*, setup.local.new(.hint).posix,
     step labels, connect.*.hintLocal (parity 1016 keys each).
 RESULT: compiles-on-CI pending, untested live. Known gap: hooks/CLI on mac.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 3
+BUGS (Yossi, live on mac):
+  1. Directory picker on a local pane fell back to a text input.
+     FIX app/src/PaneView.tsx — local panes (any OS) open the native folder
+     dialog (@tauri-apps/plugin-dialog `open({directory:true})`, already
+     permitted in capabilities) from both the "Open in directory" flow and
+     the new-connection modal's Browse button (now shown for local too).
+     WSL keeps the text input (a host dialog returns a Windows path).
+  2. "Choose from list" resume didn't cd to the session's project dir on
+     local workspaces → `claude --resume` ran from $HOME and missed it.
+     ROOT CAUSE list_claude_sessions_local used the encoded dir name
+     (`-Users-yossi-dev-foo`) as project_path; the FE only cd's to `/…`.
+     FIX lib.rs — peek_claude_jsonl(): head/tail 256KB read for cwd,
+     isSidechain, first user, last assistant (parity with the SSH shell
+     pipeline; no full-file read). FE isAbsolutePath also accepts `C:\…`.
+     +2 unit tests.
+RESULT: CI pending, untested live.
