@@ -1,4 +1,5 @@
 import { createEffect, createSignal, ErrorBoundary, onCleanup, onMount, Show } from "solid-js";
+import type { RtlProfileKind } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -54,8 +55,6 @@ import {
   pasteIntoActiveTerminal,
   readClipboardText,
   setCtrlCCopyOnSelect,
-  setMirrorArrowsRtl,
-  setTuiOwnsBidiEnabled,
 } from "./terminalInstance";
 import { saveRemoteFileAs } from "./download";
 import { MarkdownViewer } from "./MarkdownViewer";
@@ -769,10 +768,24 @@ function App() {
   const paneToSession = new Map<string, string>();
   const sessionToPane = new Map<string, string>();
 
-  const ensureTerm = (paneId: string): TerminalInstance => {
+  const ensureTerm = (
+    paneId: string,
+    profile: RtlProfileKind = "local",
+  ): TerminalInstance => {
     let ti = terms.get(paneId);
+    // 2026-08-19: a pane can be built before its connection is known (the
+    // effect that mounts the terminal runs before Connect), and local vs
+    // remote want opposite RTL modes. If the profile now resolves differently
+    // AND that flips the renderer, the instance cannot adapt — xterm.js has
+    // no DOM<->WebGL swap — so rebuild it rather than leave a pane that
+    // silently ignores its own settings.
+    if (ti && ti.profile !== profile && ti.staleRenderer) {
+      ti.dispose();
+      terms.delete(paneId);
+      ti = undefined;
+    }
     if (!ti) {
-      ti = new TerminalInstance(paneId);
+      ti = new TerminalInstance(paneId, profile);
       terms.set(paneId, ti);
     }
     return ti;
@@ -2642,8 +2655,6 @@ function App() {
       setCtrlCCopyOnSelect(
         (s.shortcuts ?? DEFAULT_SHORTCUTS).copy_on_select_with_ctrl_c,
       );
-      setMirrorArrowsRtl(s.terminal?.mirror_arrows_rtl ?? true);
-      setTuiOwnsBidiEnabled(s.terminal?.tui_owns_bidi ?? false);
     } catch (e) {
       log.warn("settings_load failed", e);
     }
@@ -3014,8 +3025,6 @@ function App() {
         setCtrlCCopyOnSelect(
           (e.payload.shortcuts ?? DEFAULT_SHORTCUTS).copy_on_select_with_ctrl_c,
         );
-        setMirrorArrowsRtl(e.payload.terminal?.mirror_arrows_rtl ?? true);
-        setTuiOwnsBidiEnabled(e.payload.terminal?.tui_owns_bidi ?? false);
       })
     );
     // Phase 18: agent-hooks outdated event from the backend's

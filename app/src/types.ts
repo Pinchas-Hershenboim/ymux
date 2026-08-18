@@ -407,6 +407,28 @@ export function capsOf(c: Connection | null | undefined): ConnCaps {
   }
 }
 
+/** Which RTL settings profile a pane uses. See `profileFor`. */
+export type RtlProfileKind = "local" | "remote";
+
+/**
+ * 2026-08-19: pick the RTL profile for a connection.
+ *
+ * Measured live, both directions, same build and session: a native Windows
+ * pane (ConPTY) delivers Hebrew ALREADY in visual order — the Windows console
+ * keeps RTL text visually ordered in its screen buffer and ConPTY re-emits
+ * that buffer — so `bidi_reorder` renders it correctly and a browser bidi pass
+ * reverses it. An SSH pane delivers logical order, where `auto_per_line` is
+ * correct and `off` comes out reversed. Opposite modes, not different tuning,
+ * which is why one global setting could never serve both.
+ *
+ * The axis is `posixExec`, deliberately NOT a local/remote boolean — see the
+ * commentary above `capsOf`. **WSL is "remote"**: it is Linux with tmux and a
+ * Linux Claude, and is local only geographically.
+ */
+export function profileFor(c: Connection | null | undefined): RtlProfileKind {
+  return capsOf(c).posixExec ? "remote" : "local";
+}
+
 /**
  * Workspace-level capabilities: the workspace's own connection, widened
  * by any pane that carries one of its own. Mirrors the layout walk

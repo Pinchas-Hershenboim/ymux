@@ -1,4 +1,5 @@
 import { createSignal, For, Show, onMount, createMemo, createEffect, onCleanup } from "solid-js";
+import type { RtlProfileKind } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -28,6 +29,7 @@ import {
   HookNotificationSettings,
   INTERACTIVE_HOOKS,
   OBSERVABILITY_HOOKS,
+  type RtlProfileFields,
 } from "./settings";
 import { applyI18nSettings, LANGUAGES, t } from "./i18n";
 import { isFontAvailableAsync } from "./fontProbe";
@@ -204,10 +206,22 @@ type Tab = "general" | "textLocale" | "appearance" | "shortcuts" | "agentNotif" 
 // beta.3: sub-tab within the "Hooks & Notifications" card.
 type HooksNotifSubTab = "hooks" | "sound";
 
+/** Per-profile fallbacks, matching RtlProfiles::default() in settings.rs.
+ *  They differ on purpose: measured 2026-08-19, a native Windows pane needs
+ *  bidi_reorder and an SSH pane needs auto_per_line. */
+const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
+  local: { rtl_mode: "bidi_reorder", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
+  remote: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
+};
+
 export function SettingsModal(p: Props) {
   const [tab, setTab] = createSignal<Tab>("general");
   // beta.3: sub-tab inside the "Hooks & Notifications" card.
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
+  // 2026-08-19: which RTL profile the controls below are editing. Local
+  // (native Windows ConPTY) and remote (SSH/WSL, i.e. anything POSIX) were
+  // measured to need OPPOSITE modes, so they are configured separately.
+  const [rtlProfile, setRtlProfile] = createSignal<RtlProfileKind>("remote");
   const [presets, setPresets] = createSignal<PresetEntry[]>([]);
   const [fonts, setFonts] = createSignal<FontFamilies>({ ui: [], mono: [] });
   const [catalog, setCatalog] = createSignal<FontCatalogItem[]>([]);
@@ -327,6 +341,29 @@ export function SettingsModal(p: Props) {
         setSaving(false);
       }
     }, 500);
+  };
+
+  /** Read one RTL field for the profile currently being edited, falling back
+   *  to the deprecated flat field and then to that profile's own default —
+   *  local and remote deliberately differ. */
+  const rtlField = <K extends keyof RtlProfileFields>(k: K): RtlProfileFields[K] => {
+    const prof = p.settings.terminal.rtl?.[rtlProfile()];
+    const flat = (p.settings.terminal as Record<string, unknown>)[k as string] as
+      | RtlProfileFields[K]
+      | undefined;
+    const fallback = RTL_FIELD_DEFAULTS[rtlProfile()][k];
+    return (prof?.[k] ?? flat ?? fallback) as RtlProfileFields[K];
+  };
+
+  /** Write one RTL field into the profile being edited, leaving the other
+   *  profile untouched — that separation is the whole point. */
+  const setRtlField = <K extends keyof RtlProfileFields>(k: K, v: RtlProfileFields[K]) => {
+    const cur = p.settings.terminal.rtl ?? {};
+    const kind = rtlProfile();
+    update("terminal", {
+      ...p.settings.terminal,
+      rtl: { ...cur, [kind]: { ...(cur[kind] ?? {}), [k]: v } },
+    });
   };
 
   const update = <K extends keyof Settings>(k: K, v: Settings[K]) =>
@@ -758,6 +795,21 @@ export function SettingsModal(p: Props) {
                 </section>
                 <section>
                   <h4>{t("settings.terminal.rtl.title")}</h4>
+                  {/* Reuses .settings-mode-toggle, the pill control already
+                      used for the theme mode in this same modal. */}
+                  <div class="settings-mode-toggle" style="margin-bottom:8px">
+                    <For each={["local", "remote"] as const}>
+                      {(k) => (
+                        <button
+                          class={`settings-mode-btn ${rtlProfile() === k ? "active" : ""}`}
+                          onClick={() => setRtlProfile(k)}
+                        >
+                          {t(`settings.terminal.rtl.profile.${k}`)}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                  <p class="settings-hint">{t(`settings.terminal.rtl.profile.${rtlProfile()}.hint`)}</p>
                   <For each={[
                     ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
                     ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
@@ -769,8 +821,8 @@ export function SettingsModal(p: Props) {
                           type="radio"
                           name="rtl-mode"
                           value={id}
-                          checked={(p.settings.terminal.rtl_mode ?? "auto_per_line") === id}
-                          onChange={() => update("terminal", { ...p.settings.terminal, rtl_mode: id })}
+                          checked={rtlField("rtl_mode") === id}
+                          onChange={() => setRtlField("rtl_mode", id)}
                         />
                         <span style="flex:1" title={t(descKey)}>
                           <strong>{t(labelKey)}</strong>
@@ -781,24 +833,24 @@ export function SettingsModal(p: Props) {
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.auto_direction ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, auto_direction: e.currentTarget.checked })}
+                      checked={rtlField("auto_direction") as boolean}
+                      onChange={(e) => setRtlField("auto_direction", e.currentTarget.checked)}
                     />
                     <span>{t("settings.terminal.auto_direction.label")}</span>
                   </label>
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.mirror_arrows_rtl ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, mirror_arrows_rtl: e.currentTarget.checked })}
+                      checked={rtlField("mirror_arrows_rtl") as boolean}
+                      onChange={(e) => setRtlField("mirror_arrows_rtl", e.currentTarget.checked)}
                     />
                     <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
                   </label>
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.tui_owns_bidi ?? false}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, tui_owns_bidi: e.currentTarget.checked })}
+                      checked={rtlField("tui_owns_bidi") as boolean}
+                      onChange={(e) => setRtlField("tui_owns_bidi", e.currentTarget.checked)}
                     />
                     <span>{t("settings.terminal.tui_owns_bidi.label")}</span>
                   </label>

@@ -45,6 +45,7 @@ import {
   nextTuiOwnsBidi,
 } from "./textDirection";
 import { transformMouseX, findRow } from "./mouseRtl";
+import type { RtlProfileKind } from "./types";
 import { t } from "./i18n";
 
 // Phase 62.B (item J): parse a `file://` URI (as emitted in Claude Code's
@@ -121,17 +122,49 @@ let g_fontSizePx: number | null = null;
  *  panes construct with it; null until the first applyTheme() pushes one
  *  (the constructor then falls back to the Tokyo Night default below). */
 let g_termTheme: ITheme | null = null;
-let g_rtlMode: RtlMode = "auto_per_line";
 /** Phase 16: when true, Ctrl+C with a non-empty selection copies the
  *  selection to clipboard instead of sending SIGINT. Mirrors Windows
  *  Terminal / VS Code's behavior. Settings → Shortcuts toggles it. */
 let g_ctrlCCopyOnSelect = true;
-/** Phase HH: mirror Left/Right arrows on RTL lines (default on; only
- *  active when the cursor's line is actually RTL). Settings → Terminal. */
-let g_mirrorArrowsRtl = true;
-// 2026-08-18: gates the TUI-owns-bidi LTR forcing. Default OFF — current
-// Claude emits Hebrew in logical order, so forcing LTR is what scrambles it.
-let g_tuiOwnsBidiEnabled = false;
+
+/** The four RTL knobs, for ONE class of pane. Mirrors `RtlProfile` in
+ *  settings.rs. */
+export interface RtlProfileSettings {
+  rtlMode: RtlMode;
+  /** Per-line `dir` from the text. Only meaningful in `auto_per_line`. */
+  autoDirection: boolean;
+  /** Mirror Left/Right arrows while the cursor sits on an RTL line. */
+  mirrorArrowsRtl: boolean;
+  /** Legacy: force LTR while a self-bidi TUI holds the pane. Default off. */
+  tuiOwnsBidi: boolean;
+}
+
+/**
+ * 2026-08-19: these used to be four scalar globals, which made every pane in
+ * the app share one RTL strategy — so a setting that fixed local panes broke
+ * remote ones and vice versa. They are per-profile now; each TerminalInstance
+ * reads through `this.profile` (see `profileFor` in types.ts).
+ *
+ * Defaults differ because the two classes were measured to need OPPOSITE
+ * modes: a native Windows pane gets visual-order Hebrew from ConPTY and wants
+ * `bidi_reorder`; an SSH pane gets logical order and wants `auto_per_line`.
+ * Real values arrive from settings on boot; these only cover the window before
+ * the first `applyTheme`.
+ */
+const g_rtl: Record<RtlProfileKind, RtlProfileSettings> = {
+  local: {
+    rtlMode: "bidi_reorder",
+    autoDirection: true,
+    mirrorArrowsRtl: true,
+    tuiOwnsBidi: false,
+  },
+  remote: {
+    rtlMode: "auto_per_line",
+    autoDirection: true,
+    mirrorArrowsRtl: true,
+    tuiOwnsBidi: false,
+  },
+};
 /** Phase 65.O (round 6): one-time guard so the "no wheel proxy" note is
  *  logged once, not once per pane. */
 let g_loggedNoWheelProxy = false;
@@ -256,19 +289,31 @@ export function setTerminalFontSize(sizePt: number): void {
  * affected panes. The reorder pipeline (writeData) flips immediately
  * for all current panes.
  */
-export function setRtlMode(mode: RtlMode): void {
-  g_rtlMode = mode;
-  // For panes already in auto-per-line mode, ensure the dir="auto"
-  // observer is running. For panes constructed before the switch, this
-  // is a no-op if their renderer doesn't match — they'll pick the new
-  // strategy on next construction.
+export function setRtlProfiles(next: Record<RtlProfileKind, RtlProfileSettings>): void {
+  g_rtl.local = { ...next.local };
+  g_rtl.remote = { ...next.remote };
+  // Panes already built for the matching renderer pick the change up; panes
+  // built under a different mode keep their renderer (xterm.js cannot swap
+  // DOM↔WebGL on a live Terminal) and only take the new strategy on the next
+  // construction. `staleRenderer` below is what tells the UI to say so.
   for (const ti of g_terminals) {
     ti.ensureDirObserver();
+    ti.refreshRowDirections();
   }
 }
 
-export function getRtlMode(): RtlMode {
-  return g_rtlMode;
+export function getRtlProfile(kind: RtlProfileKind): RtlProfileSettings {
+  return g_rtl[kind];
+}
+
+/** True when at least one live pane was built under a different renderer than
+ *  its profile now asks for, i.e. the user must re-open it for the change to
+ *  fully apply. Drives the "re-open panes" hint in Settings — previously the
+ *  contract was only a code comment, so a mode switch looked like it silently
+ *  did nothing. */
+export function hasStaleRenderer(): boolean {
+  for (const ti of g_terminals) if (ti.staleRenderer) return true;
+  return false;
 }
 
 // v0.4.4 (RTL Approach C): the per-line auto-direction escape hatch. When ON
@@ -276,34 +321,15 @@ export function getRtlMode(): RtlMode {
 // `dir` computed by detectDirection (mixed→RTL, pure-Latin→LTR). When OFF,
 // rows fall back to plain `dir="ltr"` (classic terminal, no BiDi flipping).
 // Only meaningful in `auto_per_line` mode — the other RtlMode paths ignore it.
-let g_autoDirection = true;
-export function setAutoDirection(on: boolean): void {
-  if (g_autoDirection === on) return;
-  g_autoDirection = on;
-  // Re-run the direction pass on every live terminal so the change is live.
-  for (const ti of g_terminals) ti.applyRowDirections(true);
-}
-export function getAutoDirection(): boolean {
-  return g_autoDirection;
-}
+// (now `autoDirection` on each RtlProfileSettings — see g_rtl above)
 
 /** Phase 16: flip the Ctrl+C-copies-on-selection behavior at runtime. */
 export function setCtrlCCopyOnSelect(enabled: boolean): void {
   g_ctrlCCopyOnSelect = enabled;
 }
 
-/** Phase HH: flip RTL arrow-key mirroring at runtime. */
-export function setMirrorArrowsRtl(enabled: boolean): void {
-  g_mirrorArrowsRtl = enabled;
-}
-
-/** 2026-08-18: flip the TUI-owns-bidi LTR forcing at runtime. Default OFF —
- *  see the setting's doc comment in settings.rs for why the premise it was
- *  built on no longer holds for current Claude. */
-export function setTuiOwnsBidiEnabled(enabled: boolean): void {
-  g_tuiOwnsBidiEnabled = enabled;
-  for (const t of g_terminals) t.refreshRowDirections();
-}
+// (mirrorArrowsRtl and tuiOwnsBidi now live on each RtlProfileSettings and
+//  arrive through setRtlProfiles — see g_rtl above)
 
 
 /** Phase HH: swap a Left/Right cursor-key escape sequence to the other
@@ -548,7 +574,7 @@ export class TerminalInstance {
    *  current Claude emits logical-order Hebrew and forcing LTR corrupts it.
    *  See settings.rs `tui_owns_bidi`. */
   private get bidiOwnedByTui(): boolean {
-    return this.tuiOwnsBidi && g_tuiOwnsBidiEnabled;
+    return this.tuiOwnsBidi && this.rtl.tuiOwnsBidi;
   }
 
   /** Re-run the direction pass after a live settings change. */
@@ -556,9 +582,30 @@ export class TerminalInstance {
     this.applyRowDirections(true);
   }
 
-  constructor(paneId: string) {
+  /** Which RTL profile this pane follows. Fixed for the pane's lifetime;
+   *  `App.tsx` rebuilds the instance if a connect changes the answer. */
+  readonly profile: RtlProfileKind;
+
+  /** The four RTL knobs for THIS pane's class, read live so a settings
+   *  change applies without waiting for a new pane (except the renderer,
+   *  which xterm.js cannot swap — see `staleRenderer`). */
+  private get rtl(): RtlProfileSettings {
+    return g_rtl[this.profile];
+  }
+
+  /** True when this pane was built for a different renderer than its profile
+   *  now asks for. The DOM↔WebGL choice is frozen at construction, so the
+   *  only cure is re-opening the pane; the Settings UI says so. */
+  get staleRenderer(): boolean {
+    const wantsDom = this.rtl.rtlMode === "auto_per_line";
+    const builtDom = this.rtlModeAtConstruct === "auto_per_line";
+    return wantsDom !== builtDom;
+  }
+
+  constructor(paneId: string, profile: RtlProfileKind = "local") {
+    this.profile = profile;
     this.paneId = paneId;
-    this.rtlModeAtConstruct = g_rtlMode;
+    this.rtlModeAtConstruct = g_rtl[profile].rtlMode;
     this.container = document.createElement("div");
     this.container.className = "terminal-container";
 
@@ -1021,7 +1068,7 @@ export class TerminalInstance {
     if (this.rtlModeAtConstruct !== "auto_per_line") return;
     const rowsHost = this.container.querySelector(".xterm-rows") as HTMLElement | null;
     if (!rowsHost) return;
-    const auto = g_autoDirection;
+    const auto = this.rtl.autoDirection;
     const children = Array.from(rowsHost.children) as HTMLElement[];
     const texts = children.map((el) => el.textContent ?? "");
 
@@ -1061,7 +1108,7 @@ export class TerminalInstance {
       // cursor-key sequences are considered, and only when the cursor's
       // line is predominantly RTL — LTR lines pass through untouched.
       if (
-        g_mirrorArrowsRtl &&
+        this.rtl.mirrorArrowsRtl &&
         (data === "\x1b[C" ||
           data === "\x1b[D" ||
           data === "\x1bOC" ||
@@ -1363,12 +1410,12 @@ export class TerminalInstance {
         msg: `OSC8 hyperlink sequence detected in pane ${this.paneId}`,
       }).catch(() => {});
     }
-    // The reorder pipeline keys off the LIVE rtl mode (g_rtlMode), so
+    // The reorder pipeline keys off the LIVE rtl mode for this pane's
     // a settings change takes effect on the very next flush - no
     // need to wait for a new pane. tuiOwnsBidi bypasses the reorder:
     // Claude's output is ALREADY visual order; reordering it again
     // scrambles it.
-    if (g_rtlMode === "bidi_reorder" && !this.bidiOwnedByTui) {
+    if (this.rtl.rtlMode === "bidi_reorder" && !this.bidiOwnedByTui) {
       this.term.write(reorderRtlForDisplay(merged));
     } else {
       this.term.write(merged);

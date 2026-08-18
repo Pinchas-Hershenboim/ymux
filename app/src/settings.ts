@@ -3,7 +3,15 @@
 // this file is the typed mirror used by the frontend.
 
 import { invoke } from "@tauri-apps/api/core";
-import { setTerminalFont, setTerminalTheme, setRtlMode, setAutoDirection, setAutoResetOnConnect, type RtlMode } from "./terminalInstance";
+import {
+  setTerminalFont,
+  setTerminalTheme,
+  setRtlProfiles,
+  setAutoResetOnConnect,
+  type RtlMode,
+  type RtlProfileSettings,
+} from "./terminalInstance";
+import type { RtlProfileKind } from "./types";
 import type { ITheme } from "@xterm/xterm";
 
 export interface AnsiPalette {
@@ -64,10 +72,30 @@ export interface TerminalSettings {
   auto_direction?: boolean;
   /** 2026-08-18: force LTR while a self-bidi TUI holds the pane. Default false. */
   tui_owns_bidi?: boolean;
+  /** 2026-08-19: the four RTL knobs above, split per pane class. The flat
+   *  fields are deprecated and kept only so a pre-split settings.json still
+   *  loads; the backend seeds this from them on first load. Optional here
+   *  because that migration is what fills it in. */
+  rtl?: RtlProfilesSettings;
   /** v0.4.4-beta.2: clear stale mouse-tracking modes on connect (fixes the
    *  `\e[<..M` mouse-escape leak from an unclean vim/fzf/less exit).
    *  Default true. */
   auto_reset_on_connect?: boolean;
+}
+
+/** One class of pane's RTL knobs. Mirrors `RtlProfile` in settings.rs. */
+export interface RtlProfileFields {
+  rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
+  auto_direction?: boolean;
+  mirror_arrows_rtl?: boolean;
+  tui_owns_bidi?: boolean;
+}
+
+/** `local` = native Windows ConPTY panes; `remote` = anything with a POSIX
+ *  shell behind it, which includes WSL. See `profileFor` in types.ts. */
+export interface RtlProfilesSettings {
+  local?: RtlProfileFields;
+  remote?: RtlProfileFields;
 }
 
 export interface HooksSettings {
@@ -452,6 +480,33 @@ export const checkForUpdates = (): Promise<UpdateInfo> =>
  * them (var(--w-bg) etc.) so the entire UI re-tints instantly. Called on
  * startup after load and on every `settings:changed` event.
  */
+/**
+ * 2026-08-19: settings → the per-profile RTL record the terminals read.
+ *
+ * Falls back to the deprecated flat fields per key, so this stays correct in
+ * the window before the backend migration has run (and if a hand-edited
+ * settings.json carries only one of the two shapes). `local` and `remote`
+ * deliberately fall back to DIFFERENT defaults — they were measured to need
+ * opposite modes; see `profileFor` in types.ts.
+ */
+export function resolveRtlProfiles(
+  t: TerminalSettings,
+): Record<RtlProfileKind, RtlProfileSettings> {
+  const pick = (
+    p: RtlProfileFields | undefined,
+    fallbackMode: RtlMode,
+  ): RtlProfileSettings => ({
+    rtlMode: (p?.rtl_mode ?? t.rtl_mode ?? fallbackMode) as RtlMode,
+    autoDirection: p?.auto_direction ?? t.auto_direction ?? true,
+    mirrorArrowsRtl: p?.mirror_arrows_rtl ?? t.mirror_arrows_rtl ?? true,
+    tuiOwnsBidi: p?.tui_owns_bidi ?? t.tui_owns_bidi ?? false,
+  });
+  return {
+    local: pick(t.rtl?.local, "bidi_reorder"),
+    remote: pick(t.rtl?.remote, "auto_per_line"),
+  };
+}
+
 export function applyTheme(s: Settings): void {
   const r = document.documentElement.style;
   const t = s.theme;
@@ -500,10 +555,7 @@ export function applyTheme(s: Settings): void {
   // Phase 15.A: push the RTL mode. The write pipeline flips immediately
   // on every live pane; the renderer choice (DOM vs WebGL) is sticky
   // per pane and only affects newly-opened terminals.
-  const mode = (s.terminal.rtl_mode ?? "auto_per_line") as RtlMode;
-  setRtlMode(mode);
-  // v0.4.4: per-line auto-direction escape hatch (default on).
-  setAutoDirection(s.terminal.auto_direction ?? true);
+  setRtlProfiles(resolveRtlProfiles(s.terminal));
   // v0.4.4-beta.2: clear stale mouse-tracking modes on connect (default on).
   setAutoResetOnConnect(s.terminal.auto_reset_on_connect ?? true);
 

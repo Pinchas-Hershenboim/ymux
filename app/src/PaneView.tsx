@@ -3,8 +3,8 @@ import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
-import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps } from "./types";
+import type { Connection, LayoutNode, TmuxSessionInfo, RtlProfileKind } from "./types";
+import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps, profileFor } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
 import { createLogger } from "./logger";
@@ -121,7 +121,7 @@ interface Props {
   tmuxSession?: string | null;
   onSetTitle: (paneId: string, title: string) => void;
   onSetAnnotation: (paneId: string, annotation: string) => void;
-  ensureTerm: (paneId: string) => TerminalInstance;
+  ensureTerm: (paneId: string, profile: RtlProfileKind) => TerminalInstance;
   onFocus: (paneId: string) => void;
   onConnect: (paneId: string, opts?: ConnectOpts) => void;
   onSplit: (paneId: string, direction: "horizontal" | "vertical") => void;
@@ -678,7 +678,7 @@ export function PaneView(p: Props) {
   createEffect(() => {
     const paneId = p.pane.pane_id;
     if (!slotRef) return;
-    const nextTi = p.ensureTerm(paneId);
+    const nextTi = p.ensureTerm(paneId, profileFor(effectiveConn()));
     if (ti && ti !== nextTi) {
       // Detach previous terminal's container from THIS slot before
       // hooking up the new one. If it was moved elsewhere already

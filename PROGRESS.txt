@@ -2980,3 +2980,57 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
   (SSH = Linux Claude inside tmux, local = Windows Claude, no tmux).
 
   CHECKS  tsc clean, vite clean, 47/47 + 11/11 unit tests. NOT VERIFIED LIVE.
+
+--------------------------------------------------------------------------------
+2026-08-19 — RTL settings split per pane class (local Windows vs Linux SSH/WSL)
+--------------------------------------------------------------------------------
+  MEASURED FIRST, then built. Same build, same session, both directions:
+    remote (SSH -> Linux): auto_per_line CORRECT, off reversed
+    local  (Windows ConPTY): bidi_reorder CORRECT, off reversed, auto reversed
+  The two classes need OPPOSITE modes, so one global setting could only ever
+  satisfy one of them. Yossi called this from the symptoms before I did:
+  "ההגדרה הזו עובדת או למקומי או למרוחק - צריך לעשות הפרדה מובנית".
+
+  WHY THEY DIFFER: a native Windows pane gets Hebrew ALREADY in visual order
+  (the Windows console keeps RTL visually ordered in its screen buffer and
+  ConPTY re-emits that buffer), so our logical->visual reorder is what makes it
+  right and a browser bidi pass is a second reorder that breaks it. Linux just
+  passes bytes through in logical order.
+
+  SPLIT AXIS is ConnCaps.posixExec, NOT a local/remote boolean — types.ts:242
+  warns against that boolean precisely because WSL falls through both. WSL is
+  grouped with REMOTE: Linux, tmux, Linux Claude; local only geographically.
+  Yossi confirmed: "מקומי הוא ללא WSL - טרמינל רגיל לחלוטין של ווינדוס".
+
+  RUST   RtlProfile / RtlProfiles in settings.rs + TerminalSettings.rtl, as
+         Option<> so ABSENT IS THE MIGRATION SIGNAL: a fresh install gets the
+         measured per-class defaults, an existing settings.json has no `rtl`
+         key, deserialises to None, and migrate_rtl_profiles seeds BOTH
+         profiles from that user's own flat values — nobody's behaviour
+         changes on upgrade. Hooked into the existing migrate_settings, which
+         already persists. The 4 flat fields stay, deprecated, one release.
+         4 new tests (seeding, idempotence, defaults-differ, absent->None).
+
+  FRONT  terminalInstance.ts: the four scalar globals became
+         g_rtl: Record<RtlProfileKind, RtlProfileSettings>; every read goes
+         through this.profile. Constructor takes the profile.
+         types.ts: profileFor(conn) beside capsOf, one line, reuses posixExec.
+         PaneView already had the connection at the ensureTerm seam — it just
+         wasn't passing it.
+         App.tsx ensureTerm rebuilds an instance when the profile changes AND
+         that flips the renderer (xterm.js has no DOM<->WebGL swap on a live
+         Terminal), which covers a pane built before its connection was known.
+         New hasStaleRenderer()/staleRenderer: the "re-open the pane" contract
+         used to be a code comment only, so a mode switch looked like it did
+         nothing.
+  UI     Settings -> Text & Language -> RTL: a local|remote pill switching
+         which profile the existing four controls edit. Reuses
+         .settings-mode-toggle (the theme-mode pill in the same modal) — no
+         new CSS. i18n x4, 1083 keys each, parity intact, JSON validated.
+
+  CHECKS 253 cargo tests, 58 JS tests, tsc clean, vite clean. NOT LIVE YET.
+  STILL OPEN: on a local pane auto_per_line renders reversed even though the
+  stream is logical there — it should have worked. Adding a per-pane renderer
+  log line next rather than inferring from screenshots. Also still open, and
+  not from this change: caret pinned right and partial-repaint glitches under
+  bidi_reorder (terminal-wg's "cursed cursor").

@@ -373,6 +373,85 @@ pub(crate) struct Font {
     pub web_font_url: Option<String>,
 }
 
+/// 2026-08-19: RTL handling for ONE class of pane. The four knobs used to be
+/// flat on `TerminalSettings`, i.e. global, which made the two classes
+/// mutually exclusive — see `RtlProfiles`.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub(crate) struct RtlProfile {
+    /// "auto_per_line" (DOM renderer + per-row dir), "bidi_reorder"
+    /// (WebGL + our logical→visual reorder), or "off" (WebGL, raw).
+    #[serde(default = "default_rtl_mode")]
+    pub rtl_mode: String,
+    #[serde(default = "default_true")]
+    pub auto_direction: bool,
+    #[serde(default = "default_true")]
+    pub mirror_arrows_rtl: bool,
+    #[serde(default)]
+    pub tui_owns_bidi: bool,
+}
+
+impl Default for RtlProfile {
+    fn default() -> Self {
+        Self {
+            rtl_mode: default_rtl_mode(),
+            auto_direction: true,
+            mirror_arrows_rtl: true,
+            tui_owns_bidi: false,
+        }
+    }
+}
+
+/// 2026-08-19: RTL settings, split by what the pane is talking to. Measured
+/// live on 2026-08-19, both directions, same app, same build:
+///
+///   - A **remote** pane (SSH to Linux) delivers Hebrew in LOGICAL order, so
+///     `auto_per_line` renders it correctly and `off` renders it reversed.
+///   - A **local** pane (native Windows ConPTY) delivers Hebrew ALREADY IN
+///     VISUAL order — `auto_per_line` right-aligns it correctly but reverses
+///     the letters, because the browser's bidi pass is then the SECOND one.
+///     Windows console keeps RTL text visually ordered in its screen buffer
+///     and ConPTY re-emits that buffer; Linux just passes bytes through.
+///
+/// So the two classes need OPPOSITE modes, not different tuning of one mode,
+/// and a single global setting could only ever satisfy one of them. Yossi hit
+/// this as "ההגדרה הזו עובדת או למקומי או למרוחק".
+///
+/// The split axis is `ConnCaps.posixExec` (`app/src/types.ts`), not a
+/// local/remote boolean: **WSL counts as remote**, because it is Linux with
+/// tmux and a Linux Claude, and is "local" only geographically.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub(crate) struct RtlProfiles {
+    /// Native Windows panes (ConPTY: cmd, PowerShell). Not WSL.
+    #[serde(default = "default_local_rtl")]
+    pub local: RtlProfile,
+    /// Anything with a POSIX shell behind it — SSH and WSL.
+    #[serde(default)]
+    pub remote: RtlProfile,
+}
+
+/// Measured on 2026-08-19, a native Windows pane, same build and same session
+/// as the remote test: `bidi_reorder` renders Hebrew correctly there, while
+/// both `off` and `auto_per_line` render it reversed. Remote is the opposite —
+/// `auto_per_line` is correct and `off` is reversed — which is why the default
+/// differs per profile instead of one value serving both.
+fn default_local_rtl() -> RtlProfile {
+    RtlProfile {
+        rtl_mode: "bidi_reorder".to_string(),
+        ..RtlProfile::default()
+    }
+}
+
+impl Default for RtlProfiles {
+    fn default() -> Self {
+        Self {
+            local: default_local_rtl(),
+            remote: RtlProfile::default(), // auto_per_line
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct TerminalSettings {
@@ -435,6 +514,46 @@ pub(crate) struct TerminalSettings {
     /// manual "Reset terminal" (Ctrl+Alt+R) is always available regardless.
     #[serde(default = "default_true")]
     pub auto_reset_on_connect: bool,
+    /// 2026-08-19: the RTL knobs above, split per pane class. See
+    /// `RtlProfiles` for the measurement that forced the split.
+    ///
+    /// The four flat fields (`rtl_mode`, `auto_direction`,
+    /// `mirror_arrows_rtl`, `tui_owns_bidi`) are DEPRECATED and kept only so
+    /// an existing settings.json still loads and can be migrated from. On
+    /// load, when `rtl` is absent, `migrate_rtl_profiles` seeds BOTH profiles
+    /// from them, so nobody's behaviour changes on upgrade. Delete the flat
+    /// fields a release later, not here.
+    ///
+    /// `Option` on purpose: **absent is the migration signal.** A fresh
+    /// install gets `Some(RtlProfiles::default())` — the measured per-class
+    /// defaults — while an existing settings.json has no `rtl` key at all,
+    /// deserialises to `None`, and gets seeded from that user's own flat
+    /// values instead. The two cases want different answers and a plain
+    /// `#[serde(default)]` could not tell them apart.
+    #[serde(default)]
+    pub rtl: Option<RtlProfiles>,
+}
+
+/// Seed `terminal.rtl` from the pre-split flat fields the first time a
+/// settings.json without it is loaded. Both profiles get the SAME values —
+/// the user's current behaviour, preserved exactly — and they diverge only
+/// when the user actually changes one. Returns true when it changed anything,
+/// so the caller can persist.
+pub(crate) fn migrate_rtl_profiles(t: &mut TerminalSettings) -> bool {
+    if t.rtl.is_some() {
+        return false;
+    }
+    let seeded = RtlProfile {
+        rtl_mode: t.rtl_mode.clone(),
+        auto_direction: t.auto_direction,
+        mirror_arrows_rtl: t.mirror_arrows_rtl,
+        tui_owns_bidi: t.tui_owns_bidi,
+    };
+    t.rtl = Some(RtlProfiles {
+        local: seeded.clone(),
+        remote: seeded,
+    });
+    true
 }
 
 fn default_rtl_mode() -> String {
@@ -1056,6 +1175,7 @@ impl Default for TerminalSettings {
             auto_direction: true,
             tui_owns_bidi: false,
             auto_reset_on_connect: true,
+            rtl: Some(RtlProfiles::default()),
         }
     }
 }
@@ -1452,6 +1572,13 @@ fn migrate_settings(s: &mut Settings) -> bool {
         s.updates.manifest_url = Some(DEFAULT_MANIFEST_URL.to_string());
         changed = true;
         log_info("SETTINGS", "settings: migrated placeholder manifest_url → default");
+    }
+    if migrate_rtl_profiles(&mut s.terminal) {
+        changed = true;
+        log_info(
+            "SETTINGS",
+            "settings: seeded terminal.rtl {local,remote} from the pre-split flat RTL fields",
+        );
     }
     changed
 }
@@ -2154,7 +2281,10 @@ mod font_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{migrate_settings, HookType, MigrationFlags, Settings, DEFAULT_MANIFEST_URL};
+    use super::{
+        migrate_rtl_profiles, migrate_settings, HookType, MigrationFlags, RtlProfile, RtlProfiles,
+        Settings, TerminalSettings, DEFAULT_MANIFEST_URL,
+    };
 
     #[test]
     fn migrates_placeholder_manifest_url() {
@@ -2296,5 +2426,72 @@ mod tests {
             serde_json::to_string(&HookType::UserPromptSubmit).unwrap(),
             "\"user-prompt-submit\""
         );
+    }
+
+    // ---- 2026-08-19: RTL profile split (local vs remote) ----------------
+
+    #[test]
+    fn rtl_migration_seeds_both_profiles_from_the_old_flat_fields() {
+        // An upgrading user must see NO behaviour change: whatever single
+        // value they had becomes both profiles, and they diverge only when
+        // they actually change one.
+        let mut t = TerminalSettings {
+            rtl_mode: "bidi_reorder".into(),
+            auto_direction: false,
+            mirror_arrows_rtl: false,
+            tui_owns_bidi: true,
+            rtl: None,
+            ..TerminalSettings::default()
+        };
+        assert!(migrate_rtl_profiles(&mut t), "absent rtl must migrate");
+        let r = t.rtl.expect("seeded");
+        for p in [&r.local, &r.remote] {
+            assert_eq!(p.rtl_mode, "bidi_reorder");
+            assert!(!p.auto_direction);
+            assert!(!p.mirror_arrows_rtl);
+            assert!(p.tui_owns_bidi);
+        }
+    }
+
+    #[test]
+    fn rtl_migration_is_idempotent_and_never_clobbers_a_tuned_split() {
+        // Once the user has split the two apart, a later load must not
+        // flatten them back onto the deprecated fields.
+        let mut t = TerminalSettings {
+            rtl_mode: "off".into(),
+            rtl: Some(RtlProfiles {
+                local: RtlProfile { rtl_mode: "bidi_reorder".into(), ..RtlProfile::default() },
+                remote: RtlProfile { rtl_mode: "auto_per_line".into(), ..RtlProfile::default() },
+            }),
+            ..TerminalSettings::default()
+        };
+        assert!(!migrate_rtl_profiles(&mut t), "present rtl must be left alone");
+        let r = t.rtl.unwrap();
+        assert_eq!(r.local.rtl_mode, "bidi_reorder");
+        assert_eq!(r.remote.rtl_mode, "auto_per_line");
+    }
+
+    #[test]
+    fn fresh_install_defaults_differ_per_profile() {
+        // Measured 2026-08-19 on one machine, same build: a native Windows
+        // pane needs bidi_reorder, an SSH pane needs auto_per_line. If these
+        // two are ever equal again the split has silently lost its point.
+        let r = RtlProfiles::default();
+        assert_eq!(r.local.rtl_mode, "bidi_reorder");
+        assert_eq!(r.remote.rtl_mode, "auto_per_line");
+        assert_ne!(r.local.rtl_mode, r.remote.rtl_mode);
+    }
+
+    #[test]
+    fn an_existing_settings_json_without_rtl_deserialises_to_none() {
+        // The migration signal itself. If serde ever starts filling this in,
+        // upgrading users would silently get the fresh-install defaults
+        // instead of their own values.
+        let json = r#"{"rtl_mode":"off","use_ymux_tmux_config":true,
+            "mirror_arrows_rtl":true,"auto_direction":true,
+            "tui_owns_bidi":false,"auto_reset_on_connect":true}"#;
+        let t: TerminalSettings = serde_json::from_str(json).unwrap();
+        assert!(t.rtl.is_none());
+        assert_eq!(t.rtl_mode, "off");
     }
 }
