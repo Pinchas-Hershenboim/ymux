@@ -280,7 +280,7 @@ pub struct EnvVar {
 
 // ─── Workspace ──────────────────────────────────────────────────────
 
-#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "../../../../src/bindings/")]
 pub struct Workspace {
     pub id: String,
@@ -930,19 +930,13 @@ mod tests {
             connection: Some(conn),
             layout: Some(layout),
             setup_command: Some("tmux source ~/.tmux.conf".into()),
-            teardown_command: None,
             env: vec![EnvVar {
                 key: "FOO".into(),
                 value: "bar".into(),
             }],
             auto_port_forward: true,
             last_active_at: 1_700_000_000,
-            git_worktree: None,
-            claude_separate_account: false,
-            group_id: None,
-            sort_order: None,
-            project_folder_id: None,
-        worktree_path: None,
+            ..Default::default()
         };
         let v = serde_json::to_value(&w).unwrap();
         // Spot-check the wire format.

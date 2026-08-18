@@ -569,9 +569,7 @@ async fn dispatch(
                 id: new_workspace_id(),
                 name: input.name,
                 color: input.color,
-                emoji: None,
                 cwd: input.cwd,
-                connection: None,
                 layout: Some(LayoutNode::Pane {
                     pane_id: new_pane_id(),
                     pane_kind: PaneKind::Terminal,
@@ -589,15 +587,7 @@ async fn dispatch(
                 setup_command: input.setup_command,
                 teardown_command: input.teardown_command,
                 env: input.env.unwrap_or_default(),
-                auto_port_forward: false,
-                last_active_at: 0,
-                git_worktree: None,
-                claude_separate_account: false,
-                // cmux-A A2: RPC-created workspaces default to ungrouped.
-                group_id: None,
-                sort_order: None,
-                project_folder_id: None,
-        worktree_path: None,
+                ..Default::default()
             };
             let cloned = ws.clone();
             {

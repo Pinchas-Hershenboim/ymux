@@ -2581,9 +2581,6 @@ async fn provision_existing_install_key(
     let ws = Workspace {
         id: workspace_id.clone(),
         name: final_name,
-        color: None,
-        emoji: None,
-        cwd: None,
         connection: Some(conn.clone()),
         layout: Some(LayoutNode::Pane {
             pane_id: new_pane_id(),
@@ -2599,18 +2596,7 @@ async fn provision_existing_install_key(
             diff_source: None,
             smart_bidi: None,
         }),
-        setup_command: None,
-        teardown_command: None,
-        env: Vec::new(),
-        auto_port_forward: false,
-        last_active_at: 0,
-        git_worktree: None,
-        claude_separate_account: false,
-        // cmux-A A2: fresh workspaces default to ungrouped.
-        group_id: None,
-        sort_order: None,
-        project_folder_id: None,
-        worktree_path: None,
+        ..Default::default()
     };
     {
         let mut file = state.workspaces.lock().map_err(|e| e.to_string())?;
@@ -3782,7 +3768,6 @@ fn workspace_create(
         id: new_workspace_id(),
         name: input.name,
         color: input.color,
-        emoji: None,
         cwd: input.cwd,
         connection: Some(conn.clone()),
         layout: Some(LayoutNode::Pane {
@@ -3802,15 +3787,7 @@ fn workspace_create(
         setup_command: input.setup_command,
         teardown_command: input.teardown_command,
         env: input.env.unwrap_or_default(),
-        auto_port_forward: false,
-        last_active_at: 0,
-        git_worktree: None,
-        claude_separate_account: false,
-        // cmux-A A2: fresh workspaces default to ungrouped.
-        group_id: None,
-        sort_order: None,
-        project_folder_id: None,
-        worktree_path: None,
+        ..Default::default()
     };
     {
         let mut file = state.workspaces.lock().unwrap();
@@ -4211,8 +4188,6 @@ fn project_folder_open_worktree(
     let ws = Workspace {
         id: new_workspace_id(),
         name,
-        color: None,
-        emoji: None,
         cwd: Some(worktree_path.clone()),
         connection: Some(conn.clone()),
         layout: Some(LayoutNode::Pane {
@@ -4229,17 +4204,9 @@ fn project_folder_open_worktree(
             diff_source: None,
             smart_bidi: None,
         }),
-        setup_command: None,
-        teardown_command: None,
-        env: Vec::new(),
-        auto_port_forward: false,
-        last_active_at: 0,
-        git_worktree: None,
-        claude_separate_account: false,
-        group_id: None,
-        sort_order: None,
         project_folder_id: Some(folder_id),
         worktree_path: Some(worktree_path),
+        ..Default::default()
     };
     {
         let mut file = state
@@ -8072,22 +8039,8 @@ mod migration_tests {
         Workspace {
             id: id.to_string(),
             name: id.to_string(),
-            color: None,
-            emoji: None,
-            cwd: None,
-            connection: None,
-            layout: None,
-            setup_command: None,
-            teardown_command: None,
-            env: Vec::new(),
             auto_port_forward: apf,
-            last_active_at: 0,
-            git_worktree: None,
-            claude_separate_account: false,
-            group_id: None,
-            sort_order: None,
-            project_folder_id: None,
-        worktree_path: None,
+            ..Default::default()
         }
     }
 
@@ -8142,22 +8095,8 @@ mod migration_tests {
         Workspace {
             id: id.to_string(),
             name: id.to_string(),
-            color: None,
-            emoji: None,
-            cwd: None,
-            connection: None,
             layout: Some(layout),
-            setup_command: None,
-            teardown_command: None,
-            env: Vec::new(),
-            auto_port_forward: false,
-            last_active_at: 0,
-            git_worktree: None,
-            claude_separate_account: false,
-            group_id: None,
-            sort_order: None,
-            project_folder_id: None,
-        worktree_path: None,
+            ..Default::default()
         }
     }
 
@@ -8233,22 +8172,7 @@ mod migration_tests {
             workspaces: vec![Workspace {
                 id: "w1".into(),
                 name: "w1".into(),
-                color: None,
-                emoji: None,
-                cwd: None,
-                connection: None,
-                layout: None,
-                setup_command: None,
-                teardown_command: None,
-                env: Vec::new(),
-                auto_port_forward: false,
-                last_active_at: 0,
-                git_worktree: None,
-                claude_separate_account: false,
-                group_id: None,
-                sort_order: None,
-                project_folder_id: None,
-        worktree_path: None,
+                ..Default::default()
             }],
             ..Default::default()
         };

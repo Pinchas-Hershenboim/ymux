@@ -1066,22 +1066,9 @@ fn finalize_workspace(
         // the same colour. Choice is deterministic by host so the same
         // server gets the same colour across re-provisions.
         color: Some(workspace_color_for_host(&input.host)),
-        emoji: None,
-        cwd: None,
         connection: Some(new_conn),
         layout: Some(layout),
-        setup_command: None,
-        teardown_command: None,
-        env: Vec::new(),
-        auto_port_forward: false,
-        last_active_at: 0,
-        git_worktree: None,
-        claude_separate_account: false,
-        // cmux-A A2: newly-provisioned workspaces default to ungrouped.
-        group_id: None,
-        sort_order: None,
-        project_folder_id: None,
-        worktree_path: None,
+        ..Default::default()
     };
     let id_out = ws.id.clone();
     {
