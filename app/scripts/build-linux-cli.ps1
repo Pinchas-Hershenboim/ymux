@@ -51,7 +51,7 @@ $cargoHomeFwd = $cargoHome -replace "\\", "/"
 $rustupHomeFwd = $rustupHome -replace "\\", "/"
 $userHomeFwd = $env:USERPROFILE -replace "\\", "/"
 $env:RUSTFLAGS = "--remap-path-prefix=$cargoHome=cargo --remap-path-prefix=$cargoHomeFwd=cargo --remap-path-prefix=$rustupHome=rustup --remap-path-prefix=$rustupHomeFwd=rustup --remap-path-prefix=$env:USERPROFILE=user --remap-path-prefix=$userHomeFwd=user"
-Write-Host "RUSTFLAGS scrub: \$CARGO_HOME=$cargoHome \$RUSTUP_HOME=$rustupHome \$HOME=$env:USERPROFILE"
+Write-Host "RUSTFLAGS scrub: CARGO_HOME=$cargoHome RUSTUP_HOME=$rustupHome HOME=$env:USERPROFILE"
 
 # Ensure target installed.
 $targets = & rustup target list --installed

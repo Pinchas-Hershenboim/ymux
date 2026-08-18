@@ -11,7 +11,7 @@ Format:
 
 ## Open
 
-- [ ] 2026-08-03 | manual | **P2** — `typescript` is not a project dependency; there is no reproducible type-check
+- [x] 2026-08-03 | manual | **P2** — `typescript` is not a project dependency; there is no reproducible type-check — **DONE 2026-08-19.** `typescript@~5.6.2` is in `app/package.json` devDependencies and `npm run typecheck` now exists. `ci-windows.yml` had been papering over this with `npm i --no-save typescript@5`, which also meant CI type-checked against a different minor than developers ran locally; that line is gone.
 
   Found during the Phase 2 rebase verification. `app/node_modules` was
   completely empty (0 entries) in the main checkout, so no frontend

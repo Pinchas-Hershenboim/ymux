@@ -43,8 +43,19 @@ powershell -ExecutionPolicy Bypass -File ./scripts/build-release.ps1
 ```
 
 This wrapper sets `RUSTFLAGS=--remap-path-prefix=...` so embedded
-panic-location strings don't carry the build machine's `$HOME`. The
-output is:
+panic-location strings don't carry the build machine's `$HOME`. RUSTFLAGS is
+part of Cargo's fingerprint, so a compilation made without the remap can never
+be reused -- there is nothing to delete by hand.
+
+It takes two optional switches:
+
+- `-Bundles "nsis"` -- skip the WiX/MSI leg. `build-windows.yml` passes this on
+  `workflow_dispatch` runs; a real tag cut must produce both, so leave it off.
+- `-Timings` -- write Cargo's HTML timing report to
+  `app/src-tauri/target/cargo-timings/cargo-timing.html`. Use it before
+  claiming the build got slower.
+
+The output is:
 
 - `app/src-tauri/target/release/app.exe`
 - `app/src-tauri/target/release/bundle/msi/ymux_X.Y.Z_x64_en-US.msi`
@@ -56,6 +67,10 @@ Verify the scrub:
 grep -aoc $env:USERNAME app/src-tauri/target/release/app.exe
 # should be 0
 ```
+
+`build-windows.yml` now runs this check itself ("Assert the developer path
+scrub"), so a CI-produced release has already been verified; do it by hand only
+for a local cut.
 
 ## 3. Tag
 

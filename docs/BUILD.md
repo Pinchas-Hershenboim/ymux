@@ -88,10 +88,18 @@ cd app
 npm run tauri build
 ```
 
-Same as the debug build, **without** `-- --debug`. Cargo runs in release profile
-(slower, ~5 min cold; subsequent builds are fast). Tauri's bundler then runs
+Same as the debug build, **without** `-- --debug`. Tauri's bundler then runs
 WiX (for the MSI) and makensis (for the NSIS `setup.exe`). On first run it
 downloads the WiX toolset to `target/release/wix/`.
+
+Timing is dominated by whether the ~740-package dependency graph is already
+compiled, not by this project's own code. Cold (a fresh checkout or a fresh
+worktree) that is 12-15 minutes; warm it is a few minutes. If you are building
+from a worktree, share the main checkout's cache first --
+`docs/CONTRIBUTING.md` -> "Building from a worktree".
+
+For a real release cut use `scripts/build-release.ps1` rather than this
+command; see `docs/RELEASING.md`.
 
 Output:
 
