@@ -16,7 +16,7 @@
 //! the caller passes the original bytes through to xterm.js unchanged
 //! and uses the returned notifications as a side channel. This makes it
 //! a universal complement to the agent-specific hooks: any process that
-//! can print an escape sequence gets a winmux feed item for free.
+//! can print an escape sequence gets a ymux feed item for free.
 //!
 //! A 4 KB cap on the in-progress message guards against a runaway /
 //! adversarial stream that opens an OSC and never terminates it.

@@ -1,6 +1,6 @@
 //! beta.3-lh-insights: native local Insights for Local workspaces.
 //!
-//! Talks the same JSON shape as the remote `winmux-server` HTTP API so the
+//! Talks the same JSON shape as the remote `ymux-server` HTTP API so the
 //! Insights panel (`InsightsWindow.tsx`) can share its parsing code — the
 //! only routing decision the frontend has to make is remote-vs-local, and
 //! `insights_fetch` in `addons.rs` does that transparently.
@@ -102,7 +102,7 @@ pub struct DockerResp {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
     /// The frontend uses this to decide "old daemon" vs. "new daemon".
-    /// For local we mint a stable "winmux-local" version — never empty.
+    /// For local we mint a stable "ymux-local" version — never empty.
     pub daemon_version: String,
     pub containers: Vec<DockerContainer>,
 }
@@ -281,7 +281,7 @@ pub fn snapshot() -> Result<Snapshot, String> {
 // ─── Docker (Windows named pipe) ───────────────────────────────────────
 
 const DOCKER_PIPE: &str = r"\\.\pipe\docker_engine";
-const DAEMON_TAG: &str = "winmux-local";
+const DAEMON_TAG: &str = "ymux-local";
 
 /// Connect to Docker Desktop over the Windows named pipe. Returns `Ok(None)`
 /// (never `Err`) when Docker isn't reachable — the panel treats that as a
@@ -498,7 +498,7 @@ pub async fn docker_action(container_id: &str, action: &str) -> Result<String, S
 
 // ─── Hygiene / Logs (best-effort stubs for local) ─────────────────────
 
-/// Windows local doesn't have the "duplicate winmux port-watcher" / orphan
+/// Windows local doesn't have the "duplicate ymux port-watcher" / orphan
 /// claude session leak the Linux daemon patches — there's no long-lived
 /// server-side process. Return an empty structure so the Health tab renders
 /// "all clean" instead of erroring.
@@ -510,11 +510,11 @@ pub fn hygiene_snapshot() -> Hygiene {
     }
 }
 
-/// Tail the desktop's `debug.log` (winmux's own log). This is the closest
+/// Tail the desktop's `debug.log` (ymux's own log). This is the closest
 /// analogue to the remote daemon's `insights.log` — the panel already
 /// renders it as a plain text tail.
 pub fn logs_tail(limit: usize) -> Result<LogsResp, String> {
-    let dir = winmux_core::config_dir_pub().map_err(|e| format!("logs_tail: {e}"))?;
+    let dir = ymux_core::config_dir_pub().map_err(|e| format!("logs_tail: {e}"))?;
     let path = dir.join("debug.log");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,

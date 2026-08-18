@@ -1,7 +1,7 @@
-// Phase 8.F.4 — winmux-mcp: stdio MCP server bridging Claude Code / Cursor /
-// any MCP-aware agent into the running winmux app's named-pipe RPC.
+// Phase 8.F.4 — ymux-mcp: stdio MCP server bridging Claude Code / Cursor /
+// any MCP-aware agent into the running ymux app's named-pipe RPC.
 //
-// Wire: agent ⇄ stdio JSON-RPC ⇄ winmux-mcp ⇄ \\.\pipe\winmux-<user> ⇄ app.
+// Wire: agent ⇄ stdio JSON-RPC ⇄ ymux-mcp ⇄ \\.\pipe\ymux-<user> ⇄ app.
 // Each `tools/call` opens a fresh pipe connection — server is stateless per
 // call. The app must already be running; if the pipe is unreachable the
 // tool result is an MCP error with that message.
@@ -60,7 +60,7 @@ async fn main() -> io::Result<()> {
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
-                        "name": "winmux",
+                        "name": "ymux",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "capabilities": { "tools": {} }
@@ -160,18 +160,23 @@ fn default_pipe_name() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(whoami::username);
-    format!(r"\\.\pipe\winmux-{}", user)
+    format!(r"\\.\pipe\ymux-{}", user)
 }
 
 async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
     #[cfg(windows)]
     {
-        let name = std::env::var("WINMUX_PIPE_PATH").unwrap_or_else(|_| default_pipe_name());
+        // `WINMUX_PIPE_PATH` fallback: the rename bridge. A pre-rename
+        // desktop, or an MCP host config written before 0.5.0, only sets
+        // the old spelling. Drop once every deployed desktop is ≥0.5.0.
+        let name = std::env::var("YMUX_PIPE_PATH")
+            .or_else(|_| std::env::var("WINMUX_PIPE_PATH"))
+            .unwrap_or_else(|_| default_pipe_name());
         let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
             .open(&name)
             .map_err(|e| {
                 format!(
-                    "connect to {name}: {e} (is the winmux app running?)"
+                    "connect to {name}: {e} (is the ymux app running?)"
                 )
             })?;
         rpc_via(pipe, method, params).await
@@ -179,7 +184,7 @@ async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
     #[cfg(not(windows))]
     {
         let _ = (method, params);
-        Err("winmux-mcp: only Windows transport is implemented (named pipe)".into())
+        Err("ymux-mcp: only Windows transport is implemented (named pipe)".into())
     }
 }
 
@@ -208,14 +213,14 @@ where
         reader.read_line(&mut buf),
     )
     .await
-    .map_err(|_| "winmux RPC read timed out (60s)".to_string())?
+    .map_err(|_| "ymux RPC read timed out (60s)".to_string())?
     .map_err(|e| format!("read: {e}"))?;
     if r == 0 {
-        return Err("winmux closed pipe before response".into());
+        return Err("ymux closed pipe before response".into());
     }
     let resp: Value = serde_json::from_str(buf.trim()).map_err(|e| format!("parse resp: {e}"))?;
     if let Some(err) = resp.get("error") {
-        return Err(format!("winmux RPC error: {}", err));
+        return Err(format!("ymux RPC error: {}", err));
     }
     Ok(resp.get("result").cloned().unwrap_or(Value::Null))
 }
@@ -249,7 +254,7 @@ fn tool_definitions() -> Vec<Value> {
         // ── Discovery ────────────────────────────────────────────────────
         json!({
             "name": "list_workspaces",
-            "description": "List winmux workspaces with their layouts. Returns the full WorkspacesFile JSON so the agent can find pane_ids.",
+            "description": "List ymux workspaces with their layouts. Returns the full WorkspacesFile JSON so the agent can find pane_ids.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -331,7 +336,7 @@ fn tool_definitions() -> Vec<Value> {
         // ── Agent affordances ────────────────────────────────────────────
         json!({
             "name": "notify",
-            "description": "Show a desktop toast in winmux. Use to ping the user when a long task finishes or a decision is needed.",
+            "description": "Show a desktop toast in ymux. Use to ping the user when a long task finishes or a decision is needed.",
             "inputSchema": obj(
                 &[
                     ("title", s("toast title")),
@@ -343,7 +348,7 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "note_add",
-            "description": "Append a quick-capture note to winmux's notes. Tag is free-form; suggestions: idea, bug, todo. workspace_id / pane_id auto-attach context.",
+            "description": "Append a quick-capture note to ymux's notes. Tag is free-form; suggestions: idea, bug, todo. workspace_id / pane_id auto-attach context.",
             "inputSchema": obj(
                 &[
                     ("text", s("note body")),

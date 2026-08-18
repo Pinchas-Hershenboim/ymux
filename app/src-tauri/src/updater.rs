@@ -33,7 +33,7 @@ fn is_placeholder_host(url: &str) -> bool {
 }
 
 use crate::{log_debug, log_info, log_warn, AppState};
-use winmux_core::http::get_with_retry;
+use ymux_core::http::get_with_retry;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -74,7 +74,7 @@ pub(crate) struct ManifestHook {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
-    pub min_winmux_version: Option<String>,
+    pub min_ymux_version: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -152,7 +152,7 @@ async fn fetch_manifest(url: &str) -> Result<Manifest, String> {
             ureq::get(&url)
                 .set(
                     "User-Agent",
-                    &format!("winmux/{}", env!("CARGO_PKG_VERSION")),
+                    &format!("ymux/{}", env!("CARGO_PKG_VERSION")),
                 )
                 .timeout(std::time::Duration::from_secs(8))
         })
@@ -346,7 +346,7 @@ pub(crate) async fn check_remote_hooks(
         Some(u) if !u.is_empty() => u,
         _ => return,
     };
-    // v0.3.1: a placeholder / example manifest host (e.g. winmux.example.com)
+    // v0.3.1: a placeholder / example manifest host (e.g. ymux.example.com)
     // can never resolve — skip silently instead of logging a DNS failure on
     // every hooks-check tick (it spammed debug.log ~50×/session).
     if is_placeholder_host(&manifest_url) {
@@ -364,12 +364,12 @@ pub(crate) async fn check_remote_hooks(
         None => return,
     };
 
-    // 2. Ask the remote what `winmux_meta.hooks_version` is in
+    // 2. Ask the remote what `ymux_meta.hooks_version` is in
     //    ~/.claude/settings.json. `jq` does the lookup cleanly; we
     //    fall back to grep for hosts without jq.
     let cmd = "if [ -f \"$HOME/.claude/settings.json\" ]; then \
                if command -v jq >/dev/null; then \
-                 jq -r '.winmux_meta.hooks_version // \"none\"' \"$HOME/.claude/settings.json\" 2>/dev/null; \
+                 jq -r '.ymux_meta.hooks_version // \"none\"' \"$HOME/.claude/settings.json\" 2>/dev/null; \
                else \
                  grep -oE '\"hooks_version\"\\s*:\\s*\"[^\"]+\"' \"$HOME/.claude/settings.json\" 2>/dev/null \
                    | head -1 | sed -E 's/.*\"([^\"]+)\"$/\\1/'; \
@@ -441,7 +441,7 @@ pub(crate) async fn check_remote_hooks(
 
 /// Phase 18: run an arbitrary shell command in a workspace's active
 /// SSH session. Used by the hooks-banner "Update now" button to fire
-/// `winmux setup-hooks --agent claude --force --source github` over
+/// `ymux setup-hooks --agent claude --force --source github` over
 /// the tunnel without making the user open a pane and type it.
 /// Errors when no SSH session is alive for the workspace.
 #[tauri::command]
@@ -524,7 +524,7 @@ async fn http_download_to_file(
             ureq::get(&url)
                 .set(
                     "User-Agent",
-                    &format!("winmux/{}", env!("CARGO_PKG_VERSION")),
+                    &format!("ymux/{}", env!("CARGO_PKG_VERSION")),
                 )
                 // Installer is ~5 MB; 180s tolerates slow networks /
                 // corporate proxies without surfacing a confusing timeout.
@@ -604,7 +604,7 @@ pub(crate) async fn download_and_install_update(
 
     // Step 3: download to %TEMP%.
     let temp_dir = std::env::temp_dir();
-    let dest = temp_dir.join(format!("winmux-update-{}.exe", manifest.version));
+    let dest = temp_dir.join(format!("ymux-update-{}.exe", manifest.version));
     log_info("UPDATER", &format!(
         "updater: downloading {} -> {:?} (expected sha256 {expected_sha})",
         nsis_url, dest
@@ -703,7 +703,7 @@ struct GhAsset {
 }
 
 const GITHUB_RELEASES_API: &str =
-    "https://api.github.com/repos/yyhezkel/winmux/releases?per_page=50";
+    "https://api.github.com/repos/yyhezkel/ymux/releases?per_page=50";
 
 /// 5-minute cache so flicking between channels / re-opening Settings doesn't
 /// hammer the unauthenticated GitHub API (60 req/hr).
@@ -747,7 +747,7 @@ async fn fetch_releases() -> Result<Vec<ReleaseInfo>, String> {
         // surfaced immediately — retrying wouldn't help against a rate cap.
         let resp = get_with_retry(|| {
             ureq::get(GITHUB_RELEASES_API)
-                .set("User-Agent", &format!("winmux/{}", env!("CARGO_PKG_VERSION")))
+                .set("User-Agent", &format!("ymux/{}", env!("CARGO_PKG_VERSION")))
                 .set("Accept", "application/vnd.github+json")
                 .set("X-GitHub-Api-Version", "2022-11-28")
                 .timeout(std::time::Duration::from_secs(10))
@@ -807,11 +807,11 @@ mod version_manager_tests {
         let json = r#"[
           {
             "tag_name": "v0.3.1", "published_at": "2026-06-30T17:32:00Z",
-            "html_url": "https://github.com/yyhezkel/winmux/releases/tag/v0.3.1",
+            "html_url": "https://github.com/yyhezkel/ymux/releases/tag/v0.3.1",
             "body": "notes here", "prerelease": false, "draft": false,
             "assets": [
-              {"name": "winmux_0.3.1_x64-setup.exe", "browser_download_url": "https://x/setup.exe", "digest": "sha256:deadbeef"},
-              {"name": "winmux_0.3.1_x64_en-US.msi", "browser_download_url": "https://x/app.msi", "digest": "sha256:cafef00d"}
+              {"name": "ymux_0.3.1_x64-setup.exe", "browser_download_url": "https://x/setup.exe", "digest": "sha256:deadbeef"},
+              {"name": "ymux_0.3.1_x64_en-US.msi", "browser_download_url": "https://x/app.msi", "digest": "sha256:cafef00d"}
             ]
           },
           {
@@ -872,7 +872,7 @@ pub(crate) async fn updater_list_versions(force: bool) -> Result<Vec<ReleaseInfo
 
 /// Back up settings.json before a downgrade (71.C). Best-effort copy to a
 /// sibling so a newer-version-written settings.json isn't lost if an older
-/// winmux rewrites it.
+/// ymux rewrites it.
 fn backup_settings_file(tag: &str) -> Result<String, String> {
     let dir = crate::config_dir_pub()?;
     let src = dir.join("settings.json");
@@ -917,7 +917,7 @@ pub(crate) async fn updater_install_version(
         let _ = backup_settings_file(&rel.tag); // best-effort, never blocks install
     }
 
-    let dest = std::env::temp_dir().join(format!("winmux-install-{}.exe", rel.version));
+    let dest = std::env::temp_dir().join(format!("ymux-install-{}.exe", rel.version));
     log_info("UPDATER", &format!(
         "updater: installing {} from {} -> {:?}",
         rel.tag, nsis_url, dest

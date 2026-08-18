@@ -6,7 +6,7 @@ import { TerminalInstance, setTerminalFontSize } from "../terminalInstance";
 // Ctrl+wheel font zoom — pop-out windows only (the grid stays Settings-driven).
 // All open popouts share one zoom level, synced via the `popout:zoom` event and
 // persisted in localStorage so a fresh popout opens at the last size.
-const POPOUT_FONT_KEY = "winmux.popout.font_size_pt";
+const POPOUT_FONT_KEY = "ymux.popout.font_size_pt";
 const MIN_PT = 8;
 const MAX_PT = 32;
 const STEP_PT = 1;

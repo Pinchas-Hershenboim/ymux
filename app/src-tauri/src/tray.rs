@@ -20,17 +20,17 @@ pub(crate) static TRAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Build the tray icon + menu. Call once from `setup()`. Best-effort: returns
 /// an error the caller should log-and-ignore rather than propagate.
 pub(crate) fn init(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItem::with_id(app, "tray_show", "Show winmux", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "tray_show", "Show YMUX", true, None::<&str>)?;
     let new_ws =
         MenuItem::with_id(app, "tray_new_workspace", "New workspace", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "tray_settings", "Settings", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "tray_quit", "Quit winmux", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray_quit", "Quit YMUX", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &new_ws, &settings, &quit])?;
 
-    let mut builder = TrayIconBuilder::with_id("winmux-tray")
+    let mut builder = TrayIconBuilder::with_id("ymux-tray")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("winmux")
+        .tooltip("YMUX")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray_show" => show_main(app),
             "tray_new_workspace" => {

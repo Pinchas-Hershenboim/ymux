@@ -393,7 +393,7 @@ export function Sidebar(p: Props) {
       setDragKind(pending.kind);
       setDragId(pending.id);
       setDrop(null);
-      document.body.classList.add("winmux-dragging");
+      document.body.classList.add("ymux-dragging");
     }
     setGhostPos({ x: e.clientX, y: e.clientY });
     updateDropTarget(e.clientX, e.clientY);
@@ -416,7 +416,7 @@ export function Sidebar(p: Props) {
     window.removeEventListener("pointermove", onWinPointerMove);
     window.removeEventListener("pointerup", onWinPointerUp);
     window.removeEventListener("pointercancel", onWinPointerCancel);
-    document.body.classList.remove("winmux-dragging");
+    document.body.classList.remove("ymux-dragging");
     setGhostPos(null);
     setDragKind(null);
     setDragId(null);
@@ -537,7 +537,7 @@ export function Sidebar(p: Props) {
     }
   };
 
-  /** `~/src/winmux-feature-x` → `winmux-feature-x`, for the dim path hint. */
+  /** `~/src/ymux-feature-x` → `ymux-feature-x`, for the dim path hint. */
   const pathTail = (path: string) => {
     const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
     const i = norm.lastIndexOf("/");

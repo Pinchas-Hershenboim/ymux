@@ -6,12 +6,12 @@ Use this guide if you prefer to set up SSH key authentication manually, or if th
 
 On Windows (PowerShell):
 ```powershell
-ssh-keygen -t ed25519 -f $HOME\.ssh\winmux_key -C "winmux-<server-name>"
+ssh-keygen -t ed25519 -f $HOME\.ssh\ymux_key -C "ymux-<server-name>"
 ```
 
 On macOS or Linux:
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/winmux_key -C "winmux-<server-name>"
+ssh-keygen -t ed25519 -f ~/.ssh/ymux_key -C "ymux-<server-name>"
 ```
 
 When prompted for a passphrase, press Enter for no passphrase, or set one for extra security.
@@ -20,17 +20,17 @@ When prompted for a passphrase, press Enter for no passphrase, or set one for ex
 
 On Windows (PowerShell):
 ```powershell
-Get-Content $HOME\.ssh\winmux_key.pub | Set-Clipboard
+Get-Content $HOME\.ssh\ymux_key.pub | Set-Clipboard
 ```
 
 On macOS:
 ```bash
-pbcopy < ~/.ssh/winmux_key.pub
+pbcopy < ~/.ssh/ymux_key.pub
 ```
 
 On Linux:
 ```bash
-cat ~/.ssh/winmux_key.pub
+cat ~/.ssh/ymux_key.pub
 ```
 
 ## Step 3 — Install the key on the server
@@ -48,15 +48,15 @@ Replace `PASTE_YOUR_PUBLIC_KEY_HERE` with the public key from Step 2. The whole 
 
 If you have `ssh-copy-id`, you can combine steps 2 and 3:
 ```bash
-ssh-copy-id -i ~/.ssh/winmux_key.pub user@server.example.com
+ssh-copy-id -i ~/.ssh/ymux_key.pub user@server.example.com
 ```
 
-## Step 4 — Configure winmux
+## Step 4 — Configure ymux
 
-Open the workspace settings and set the SSH key path to `~/.ssh/winmux_key` (or wherever you saved your private key).
+Open the workspace settings and set the SSH key path to `~/.ssh/ymux_key` (or wherever you saved your private key).
 
 ## Troubleshooting
 
 - **Permission denied (publickey)**: Verify file permissions — `~/.ssh` should be 700, `authorized_keys` should be 600, the private key should be 600.
 - **Wrong user on the server**: Make sure you added the key to the right user's `~/.ssh/authorized_keys`, not root by default.
-- **Multiple keys**: SSH tries keys in order; specify one with `ssh -i ~/.ssh/winmux_key user@host`.
+- **Multiple keys**: SSH tries keys in order; specify one with `ssh -i ~/.ssh/ymux_key user@host`.

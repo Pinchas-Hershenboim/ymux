@@ -4,7 +4,7 @@
 //! Claude itself maintains under `~/.claude/projects/<proj>/<session>.jsonl`),
 //! pipe the last N exchanges through `claude -p "<prompt>"` on the
 //! same machine that hosts those transcripts, and save the resulting
-//! summary as a winmux Note tagged `summary`. Two entry points:
+//! summary as a ymux Note tagged `summary`. Two entry points:
 //!
 //!   - Manual: Ctrl+Alt+B in the desktop, the "Summarize" button in
 //!     the Settings → Claude tab, or this module's `claude_summarize`

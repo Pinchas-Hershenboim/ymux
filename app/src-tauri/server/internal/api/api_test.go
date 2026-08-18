@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"winmux-server/internal/insights"
+	"ymux-server/internal/insights"
 )
 
 // A Server whose insights service has no store/sampler — fine for testing
@@ -32,7 +32,7 @@ func TestHealthAndVersionAreUnauthed(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
 		t.Fatal(err)
 	}
-	if v["name"] != "winmux-server" || v["api_versions"] == nil || v["frame_version"] == nil {
+	if v["name"] != "ymux-server" || v["api_versions"] == nil || v["frame_version"] == nil {
 		t.Fatalf("version payload missing negotiation fields: %v", v)
 	}
 }

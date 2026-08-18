@@ -1,7 +1,7 @@
 // Client-side "is this font actually usable?" probe.
 //
 // Why not `document.fonts.check()`: in Chromium — and therefore in the
-// WebView2 winmux runs on — `check()` returns true for essentially any
+// WebView2 ymux runs on — `check()` returns true for essentially any
 // family name that isn't in the FontFaceSet, because it validates the
 // shorthand syntax rather than resolving the family. It reports a font we
 // do not have as present, which is the exact failure this whole area is

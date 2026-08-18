@@ -118,7 +118,7 @@ daemon manages.) Noted so we don't over-build.
 
 ## 4. 70.A — add-on `nginx-proxy`
 
-Manifest (new entry in `winmux-addons::builtin_registry`):
+Manifest (new entry in `ymux-addons::builtin_registry`):
 - `id: "nginx-proxy"`, `needs_sudo: true`, `dependencies: []`.
 - `detect`: `systemctl is-active nginx 2>/dev/null` (prints `active`/empty)
   — and, if active, also report cert presence so the UI can show "cert
@@ -129,17 +129,17 @@ Manifest (new entry in `winmux-addons::builtin_registry`):
   installer script to a temp file on the remote and runs it under the
   resolved privilege escalation.
 - `uninstall`: disable+remove the nginx site, `certbot delete` the cert,
-  remove `/etc/winmux/cloudflare.ini`. Leave nginx itself installed (other
+  remove `/etc/ymux/cloudflare.ini`. Leave nginx itself installed (other
   things may use it) unless a `purge` flag is set.
 
 Installer script (essentials — Rule #3: the desktop never string-concats
 the domain/token into a shell line; they're passed as **positional args**
 to a script file, and validated first):
 - `apt-get update && apt-get install -y nginx certbot python3-certbot-dns-cloudflare`
-- write `/etc/winmux/cloudflare.ini` (mode 600) with the CF token,
+- write `/etc/ymux/cloudflare.ini` (mode 600) with the CF token,
 - `certbot certonly --dns-cloudflare --dns-cloudflare-credentials … -d $DOMAIN
   --non-interactive --agree-tos -m admin@$DOMAIN` (DNS-01),
-- write `/etc/nginx/sites-available/winmux-$DOMAIN` with the WS-aware proxy
+- write `/etc/nginx/sites-available/ymux-$DOMAIN` with the WS-aware proxy
   block (Upgrade/Connection headers, `proxy_read_timeout 86400`),
 - symlink into `sites-enabled`, `nginx -t && systemctl reload nginx`,
 - a renewal hook `/etc/letsencrypt/renewal-hooks/post/reload-nginx.sh`.
@@ -239,7 +239,7 @@ All `Result<_, String>` (Rule #6). `mobile_pairing_init` runs the
 the Tauri command, used to write the remote `cloudflare.ini`, and **zeroized
 in memory** after the install command returns (wrap in a `Zeroizing<String>`
 / explicit zeroize; never persisted desktop-side, never logged — Rule #8
-discipline). It DOES persist remote-side in `/etc/winmux/cloudflare.ini`
+discipline). It DOES persist remote-side in `/etc/ymux/cloudflare.ini`
 (mode 600, root) because certbot's auto-renew needs it; documented.
 
 ## 8. Security considerations (consolidated)

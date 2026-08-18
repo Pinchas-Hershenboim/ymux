@@ -5,7 +5,7 @@ Rust side, which is `%APPDATA%` (= `C:\Users\<user>\AppData\Roaming`) on Windows
 
 ## Files
 
-All under `%APPDATA%\winmux\`:
+All under `%APPDATA%\ymux\`:
 
 | File | Written by | Read by |
 |---|---|---|
@@ -19,9 +19,9 @@ Plus, on each SSH-connected remote:
 
 | File | Path | Written by | Read by |
 |---|---|---|---|
-| `last.env` | `~/.winmux/run/last.env` (mode 0600) | `tunnel::write_remote_env_file` | `cli/main.rs::load_fallback_env_file` |
-| `winmux-linux-x64` | `~/.winmux/bin/` | bootstrap SFTP upload | the CLI binary itself; symlink target |
-| `winmux` (symlink) | `~/.winmux/bin/` | bootstrap | the user's PATH if they add it |
+| `last.env` | `~/.ymux/run/last.env` (mode 0600) | `tunnel::write_remote_env_file` | `cli/main.rs::load_fallback_env_file` |
+| `ymux-linux-x64` | `~/.ymux/bin/` | bootstrap SFTP upload | the CLI binary itself; symlink target |
+| `ymux` (symlink) | `~/.ymux/bin/` | bootstrap | the user's PATH if they add it |
 
 ## `workspaces.json`
 
@@ -201,7 +201,7 @@ Bundled resource describing the cross-compiled CLI binaries available for upload
 ```ts
 type RemoteManifest = {
   [triple: string]: {                    // e.g. "x86_64-linux"
-    path: string;                        // relative to resources/, e.g. "winmux-linux-x64"
+    path: string;                        // relative to resources/, e.g. "ymux-linux-x64"
     sha256: string;                      // lowercase hex
     size: number;                        // bytes
     built_at: string;                    // ISO 8601 UTC
@@ -224,13 +224,13 @@ bootstrap again.
 ## `last.env` (remote)
 
 Plain `KEY=value` per line, one variable per line, written via SSH heredoc to
-`~/.winmux/run/last.env` with mode 0600. Loaded by the Linux CLI's
-`load_fallback_env_file` if `WINMUX_SOCKET_ADDR` isn't already set.
+`~/.ymux/run/last.env` with mode 0600. Loaded by the Linux CLI's
+`load_fallback_env_file` if `YMUX_SOCKET_ADDR` isn't already set.
 
 ```
-WINMUX_SOCKET_ADDR=127.0.0.1:23456
-WINMUX_TUNNEL_TOKEN=A1B2C3...32 alphanum chars total
-WINMUX_PANE_ID=p_18abc_1
+YMUX_SOCKET_ADDR=127.0.0.1:23456
+YMUX_TUNNEL_TOKEN=A1B2C3...32 alphanum chars total
+YMUX_PANE_ID=p_18abc_1
 ```
 
 ## `settings.json`  *(Phase 9.A)*
@@ -284,7 +284,7 @@ type Settings = {
   updates: {
     check_on_startup: boolean;
     auto_download: boolean;       // currently always false (no signing keys yet)
-    manifest_url?: string;        // default: raw.githubusercontent.com/yyhezkel/winmux/main/manifest.json
+    manifest_url?: string;        // default: raw.githubusercontent.com/yyhezkel/ymux/main/manifest.json
     last_check_iso?: string;
     last_seen_version?: string;
   };
@@ -293,7 +293,7 @@ type Settings = {
 
 ### Theme presets
 
-Built-in presets are returned by `settings.get-presets` (RPC) or `winmux settings presets` (CLI). Selecting one overwrites all theme fields; manual color edits flip `theme.preset` to `"custom"`.
+Built-in presets are returned by `settings.get-presets` (RPC) or `ymux settings presets` (CLI). Selecting one overwrites all theme fields; manual color edits flip `theme.preset` to `"custom"`.
 
 - `tokyo-night` (default)
 - `dracula`
@@ -307,7 +307,7 @@ The frontend reads `settings.theme` on startup and writes the colors as CSS cust
 
 ### Update manifest
 
-`settings.updates.manifest_url` (default `https://raw.githubusercontent.com/yyhezkel/winmux/main/manifest.json`) is polled by `updater.rs` on startup (after a 3-second grace period). The manifest is a static JSON file in the repo root — see [docs/RELEASING.md](RELEASING.md) for the full release flow and the manifest schema. The file lives on `main`, so it's globally cached + served fast by GitHub's CDN, with no API rate limits.
+`settings.updates.manifest_url` (default `https://raw.githubusercontent.com/yyhezkel/ymux/main/manifest.json`) is polled by `updater.rs` on startup (after a 3-second grace period). The manifest is a static JSON file in the repo root — see [docs/RELEASING.md](RELEASING.md) for the full release flow and the manifest schema. The file lives on `main`, so it's globally cached + served fast by GitHub's CDN, with no API rate limits.
 
 ## Environment variables
 
@@ -315,12 +315,12 @@ The frontend reads `settings.theme` on startup and writes the colors as CSS cust
 
 | Var | Default | Effect |
 |---|---|---|
-| `WINMUX_SOCKET_ADDR` | unset | If set (anywhere), CLI uses TCP transport with this `host:port`. Required on Linux. |
-| `WINMUX_TUNNEL_TOKEN` | unset | If TCP transport is selected, used as the HMAC key for the challenge-response handshake. Required on Linux. |
-| `WINMUX_PIPE_PATH` | `\\.\pipe\winmux-<USER>` | Override the default named-pipe path (Windows only). |
-| `WINMUX_PANE_ID` | unset | Stamped on `feed.push` so the agent feed card knows which pane it belongs to. |
-| `HOME` | OS-provided | Used to find `~/.winmux/run/last.env` for the fallback env load. |
-| `USERNAME` | OS-provided | Used in the default Windows pipe name if `WINMUX_PIPE_PATH` is unset. |
+| `YMUX_SOCKET_ADDR` | unset | If set (anywhere), CLI uses TCP transport with this `host:port`. Required on Linux. |
+| `YMUX_TUNNEL_TOKEN` | unset | If TCP transport is selected, used as the HMAC key for the challenge-response handshake. Required on Linux. |
+| `YMUX_PIPE_PATH` | `\\.\pipe\ymux-<USER>` | Override the default named-pipe path (Windows only). |
+| `YMUX_PANE_ID` | unset | Stamped on `feed.push` so the agent feed card knows which pane it belongs to. |
+| `HOME` | OS-provided | Used to find `~/.ymux/run/last.env` for the fallback env load. |
+| `USERNAME` | OS-provided | Used in the default Windows pipe name if `YMUX_PIPE_PATH` is unset. |
 
 ### Read by the Windows app
 
@@ -332,11 +332,11 @@ The frontend reads `settings.theme` on startup and writes the colors as CSS cust
 ### Written into the remote shell
 
 These are set by `set_env` (best-effort) on the SSH shell channel **and** mirrored
-into `~/.winmux/run/last.env` so the CLI works either way:
+into `~/.ymux/run/last.env` so the CLI works either way:
 
-- `WINMUX_SOCKET_ADDR=127.0.0.1:<remote_port>` (the port `tcpip_forward` returned)
-- `WINMUX_TUNNEL_TOKEN=<32-char alphanumeric>`
-- `WINMUX_PANE_ID=<the workspace's pane>`
+- `YMUX_SOCKET_ADDR=127.0.0.1:<remote_port>` (the port `tcpip_forward` returned)
+- `YMUX_TUNNEL_TOKEN=<32-char alphanumeric>`
+- `YMUX_PANE_ID=<the workspace's pane>`
 
 Common sshd setups filter unknown env vars via `AcceptEnv`. The file fallback
 exists precisely for that case.

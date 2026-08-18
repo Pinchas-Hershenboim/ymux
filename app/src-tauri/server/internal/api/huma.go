@@ -16,8 +16,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"winmux-server/internal/auth"
-	"winmux-server/internal/core"
+	"ymux-server/internal/auth"
+	"ymux-server/internal/core"
 )
 
 // opScopes maps a secured operation to the scope a paired device must hold to
@@ -35,8 +35,8 @@ var opScopes = map[string]auth.Scope{
 // bearer middleware, and the version/health/files/logs operations. It returns
 // the API so the caller can marshal OpenAPI() after registration.
 func (s *Server) newHumaAPI(mux *http.ServeMux) huma.API {
-	cfg := huma.DefaultConfig("winmux-server", core.Version)
-	cfg.Info.Description = "winmux server daemon API — the client-SDK surface " +
+	cfg := huma.DefaultConfig("ymux-server", core.Version)
+	cfg.Info.Description = "ymux server daemon API — the client-SDK surface " +
 		"(version negotiation, Files, Logs). Streaming WebSocket frames are " +
 		"described in asyncapi.json (PHASE-77-DESIGN §4.4). Generated from the " +
 		"huma handlers (S4); the Insights metrics API is desktop-internal and " +
@@ -69,7 +69,7 @@ func (s *Server) newHumaAPI(mux *http.ServeMux) huma.API {
 // OpenAPISpec returns the generated OpenAPI document as JSON. It builds the
 // huma API on a throwaway mux (registration only reflects types; the handlers
 // are never invoked), so it works even with nil subsystem providers — the
-// `winmux-server openapi` subcommand and the SDK pipeline use it to emit the
+// `ymux-server openapi` subcommand and the SDK pipeline use it to emit the
 // spec without a running server.
 func (s *Server) OpenAPISpec() ([]byte, error) {
 	return s.newHumaAPI(http.NewServeMux()).OpenAPI().MarshalJSON()
@@ -145,7 +145,7 @@ func (s *Server) registerMetaOps(api huma.API) {
 		Summary: "Version + capability negotiation (unauthenticated)", Tags: []string{"meta"},
 	}, func(_ context.Context, _ *struct{}) (*struct{ Body VersionBody }, error) {
 		return &struct{ Body VersionBody }{Body: VersionBody{
-			Name:         "winmux-server",
+			Name:         "ymux-server",
 			Version:      core.Version,
 			APIVersions:  []int{2},
 			FrameVersion: core.FrameVersion,

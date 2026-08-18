@@ -1,4 +1,4 @@
-; Phase 48-B: NSIS installer hooks for winmux.
+; Phase 48-B: NSIS installer hooks for ymux.
 ;
 ; Adds the install directory to the user's PATH on install and removes
 ; it on uninstall. User-level (HKCU\Environment) — no admin elevation

@@ -5,9 +5,9 @@ export type Hooks = {
  * Phase 18.1: which PreToolUse matcher to install in the agent's
  * settings.json. `"restrictive"` (default) only matches risky tools
  * (`Bash|Write|Edit|MultiEdit|NotebookEdit|Task`); `"all"` matches
- * every tool (`.*`) so EVERY action surfaces a winmux card; `"custom"`
+ * every tool (`.*`) so EVERY action surfaces a ymux card; `"custom"`
  * keeps whatever the user hand-edited locally and is never overwritten
- * by `winmux setup-hooks`. The setting is consumed by the desktop's
+ * by `ymux setup-hooks`. The setting is consumed by the desktop's
  * remote-side setup-hooks call (Phase 18 wraps `agent.setup_hooks`).
  */
 matcher_mode: string, 
@@ -21,7 +21,7 @@ matcher_mode: string,
 policy_enabled: boolean, 
 /**
  * Phase 66 (66.B): when true (default), the SSH bootstrap auto-runs
- * `winmux setup-hooks` on the remote after deploying the CLI, so a
+ * `ymux setup-hooks` on the remote after deploying the CLI, so a
  * fresh server starts surfacing permission cards without the user
  * invoking setup-hooks by hand. No-op if Claude Code isn't installed
  * remotely. Older settings.json loads with auto-install ON.

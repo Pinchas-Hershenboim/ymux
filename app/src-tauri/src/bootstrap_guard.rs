@@ -150,7 +150,7 @@ impl BootstrapGuard {
 }
 
 /// Stable key for one remote install. Two users on the same host each get
-/// their own `~/.winmux/bin`, so the user is part of the identity.
+/// their own `~/.ymux/bin`, so the user is part of the identity.
 pub(crate) fn host_key(user: &str, host: &str, port: u16) -> String {
     format!("{user}@{host}:{port}")
 }

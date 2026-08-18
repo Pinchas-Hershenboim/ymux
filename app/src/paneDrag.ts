@@ -127,7 +127,7 @@ function endGesture(): void {
   window.removeEventListener("pointermove", onWinPointerMove);
   window.removeEventListener("pointerup", onWinPointerUp);
   window.removeEventListener("pointercancel", onWinPointerCancel);
-  document.body.classList.remove("winmux-dragging");
+  document.body.classList.remove("ymux-dragging");
   setDragPaneId(null);
   setDragLabel("");
   setGhostPos(null);
@@ -153,7 +153,7 @@ function onWinPointerMove(e: PointerEvent): void {
     didDrag = true;
     setDragPaneId(pending.paneId);
     setDragLabel(pending.label);
-    document.body.classList.add("winmux-dragging");
+    document.body.classList.add("ymux-dragging");
   }
   setGhostPos({ x: e.clientX, y: e.clientY });
   updateDropTarget(e.clientX, e.clientY);

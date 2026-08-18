@@ -82,7 +82,7 @@ static BOUNDARY_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 
 fn make_boundary() -> String {
     let n = BOUNDARY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("----winmux-stt-{:016x}", n)
+    format!("----ymux-stt-{:016x}", n)
 }
 
 /// Phase 59.B: char-safe truncation for raw HTTP bodies that go into
@@ -139,7 +139,7 @@ pub(crate) async fn stt_transcribe_local(
             .set("Content-Type", &content_type)
             .set(
                 "User-Agent",
-                &format!("winmux/{}", env!("CARGO_PKG_VERSION")),
+                &format!("ymux/{}", env!("CARGO_PKG_VERSION")),
             )
             .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
             .send_bytes(&body);
@@ -204,7 +204,7 @@ mod tests {
         let a = make_boundary();
         let b = make_boundary();
         assert_ne!(a, b);
-        assert!(a.starts_with("----winmux-stt-"));
+        assert!(a.starts_with("----ymux-stt-"));
     }
 
     #[test]

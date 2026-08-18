@@ -1,16 +1,16 @@
 {
   "asyncapi": "2.6.0",
   "info": {
-    "title": "winmux-server streaming",
+    "title": "ymux-server streaming",
     "version": "2.0.0",
-    "description": "WebSocket frame contract for winmux-server (PHASE-77-DESIGN §4.4, frame_version 2). OpenAPI describes only REST, so the streaming frames are this separate, independently-versioned contract. Canonical machine schema: /api/frames.schema.json (JSON-Schema 2020-12, the SDK source). frame_version is advertised in the `hello` frame and by GET /api/version."
+    "description": "WebSocket frame contract for ymux-server (PHASE-77-DESIGN §4.4, frame_version 2). OpenAPI describes only REST, so the streaming frames are this separate, independently-versioned contract. Canonical machine schema: /api/frames.schema.json (JSON-Schema 2020-12, the SDK source). frame_version is advertised in the `hello` frame and by GET /api/version."
   },
   "defaultContentType": "application/json",
   "servers": {
     "tunnel": {
       "url": "127.0.0.1:{port}",
       "protocol": "ws",
-      "description": "localhost behind the winmux tunnel; bearer via Authorization header or ?token=.",
+      "description": "localhost behind the ymux tunnel; bearer via Authorization header or ?token=.",
       "variables": { "port": { "default": "7879" } }
     }
   },

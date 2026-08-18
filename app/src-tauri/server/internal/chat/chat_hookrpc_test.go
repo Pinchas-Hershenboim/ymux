@@ -1,9 +1,9 @@
 package chat
 
 // Phase 69.C acceptance — exercise the hook RPC server with a Go client that
-// replicates the winmux CLI wire format byte-for-byte (HMAC over the RAW
+// replicates the ymux CLI wire format byte-for-byte (HMAC over the RAW
 // nonce bytes + JSON-RPC framing). This stands in for a real
-// `winmux claude-hook` round-trip, which should also be run on Linux during
+// `ymux claude-hook` round-trip, which should also be run on Linux during
 // the 67.C integration.
 
 import (
@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"winmux-server/internal/hooks"
+	"ymux-server/internal/hooks"
 )
 
 func newTestManagerWithRPC(t *testing.T) *SessionManager {
@@ -71,20 +71,34 @@ func cliHookCall(t *testing.T, addr, token, paneID, kind string, reqID string) (
 	if err != nil {
 		return "", err
 	}
-	nonceHex := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "WINMUX-CHALLENGE "))
+	// Mirror whichever dialect the server opened with, exactly as the real
+	// CLI does — this keeps the test honest across the winmux → ymux tag
+	// flip instead of pinning it to today's challengeTag.
+	trimmed := strings.TrimSpace(line)
+	tag := ""
+	for _, candidate := range []string{ymuxTag, legacyTag} {
+		if strings.HasPrefix(trimmed, candidate+"-CHALLENGE ") {
+			tag = candidate
+			break
+		}
+	}
+	if tag == "" {
+		return "", fmt.Errorf("unrecognised challenge: %q", trimmed)
+	}
+	nonceHex := strings.TrimSpace(strings.TrimPrefix(trimmed, tag+"-CHALLENGE "))
 	nonce, err := hex.DecodeString(nonceHex)
 	if err != nil {
 		return "", err
 	}
 	h := hmac.New(sha256.New, []byte(token))
 	h.Write(nonce)
-	fmt.Fprintf(conn, "WINMUX-RESPONSE %s\n", hex.EncodeToString(h.Sum(nil)))
+	fmt.Fprintf(conn, "%s-RESPONSE %s\n", tag, hex.EncodeToString(h.Sum(nil)))
 
 	ok, err := br.ReadString('\n')
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(ok) != "WINMUX-OK" {
+	if strings.TrimSpace(ok) != tag+"-OK" {
 		return "", fmt.Errorf("handshake verdict: %q", strings.TrimSpace(ok))
 	}
 
@@ -199,5 +213,69 @@ func TestHookPaneIdMismatchDenies(t *testing.T) {
 	d, _ := cliHookCall(t, m.rpcAddr, s.rpcToken, "mob_someoneelse", "permission_request", "req_f")
 	if d != "deny" {
 		t.Fatalf("pane_id mismatch → %q, want deny", d)
+	}
+}
+
+// handshakeWithTag runs just the challenge/response half, forcing the client
+// to answer in `tag` regardless of which dialect the server opened with.
+// Returns the verdict line.
+func handshakeWithTag(t *testing.T, addr, token, tag string) string {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read challenge: %v", err)
+	}
+	trimmed := strings.TrimSpace(line)
+	idx := strings.Index(trimmed, "-CHALLENGE ")
+	if idx < 0 {
+		t.Fatalf("malformed challenge: %q", trimmed)
+	}
+	nonce, err := hex.DecodeString(trimmed[idx+len("-CHALLENGE "):])
+	if err != nil {
+		t.Fatalf("decode nonce: %v", err)
+	}
+	h := hmac.New(sha256.New, []byte(token))
+	h.Write(nonce)
+	fmt.Fprintf(conn, "%s-RESPONSE %s\n", tag, hex.EncodeToString(h.Sum(nil)))
+
+	verdict, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read verdict: %v", err)
+	}
+	return strings.TrimSpace(verdict)
+}
+
+// The winmux → ymux rename leaves both dialects on the wire at once: a remote
+// running the pre-rename CLI answers WINMUX-RESPONSE, a current one answers
+// YMUX-RESPONSE, and the same daemon serves both. Each must be accepted, and
+// the verdict must come back in the dialect the client used — a CLI that only
+// knows how to parse "WINMUX-OK" hangs up on anything else.
+func TestHookHandshakeAcceptsBothDialects(t *testing.T) {
+	m := newTestManagerWithRPC(t)
+	for _, tag := range []string{ymuxTag, legacyTag} {
+		s := registerFakeSession(m, "auto")
+		if got, want := handshakeWithTag(t, m.rpcAddr, s.rpcToken, tag), tag+"-OK"; got != want {
+			t.Fatalf("dialect %s: verdict = %q, want %q", tag, got, want)
+		}
+	}
+}
+
+// A bad token must be refused in the client's dialect too, so the rejection is
+// legible rather than landing as an "unexpected handshake verdict" parse error.
+func TestHookHandshakeDeniesInClientDialect(t *testing.T) {
+	m := newTestManagerWithRPC(t)
+	registerFakeSession(m, "auto")
+	for _, tag := range []string{ymuxTag, legacyTag} {
+		got := handshakeWithTag(t, m.rpcAddr, "not-the-token", tag)
+		if !strings.HasPrefix(got, tag+"-DENIED") {
+			t.Fatalf("dialect %s: verdict = %q, want %s-DENIED prefix", tag, got, tag)
+		}
 	}
 }

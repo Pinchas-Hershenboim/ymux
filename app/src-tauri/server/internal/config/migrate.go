@@ -1,8 +1,8 @@
 package config
 
-// migrate.go — one-time data-directory migration for the winmux-insights →
-// winmux-server rename (Phase 77 S5). On first boot of the 2.0 daemon the data
-// dir moves from ~/.winmux/insights to ~/.winmux/server, preserving the token,
+// migrate.go — one-time data-directory migration for the ymux-insights →
+// ymux-server rename (Phase 77 S5). On first boot of the 2.0 daemon the data
+// dir moves from ~/.ymux/insights to ~/.ymux/server, preserving the token,
 // chat.db (paired devices), workspace.db, metrics.db, and logs in place.
 
 import (
@@ -15,7 +15,7 @@ import (
 // acts only when the legacy dir holds real data (a `token` file) and the new
 // dir has not been initialized yet (no `token`), so it is idempotent and safe
 // to call on every start. It prefers an atomic whole-directory rename (both live
-// under ~/.winmux, i.e. the same filesystem); if the new dir already exists
+// under ~/.ymux, i.e. the same filesystem); if the new dir already exists
 // non-empty — e.g. the installer pre-created it — it moves entries one by one.
 // Returns true if a migration happened.
 func MigrateDataDir(legacy, current string) (bool, error) {

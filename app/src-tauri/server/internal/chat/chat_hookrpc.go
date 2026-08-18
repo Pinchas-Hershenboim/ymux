@@ -2,11 +2,11 @@ package chat
 
 // Phase 69.C — hook bridge. The daemon implements the SERVER half of the
 // Phase 66 RPC dialect so that Claude's hooks, fired inside a mobile-spawned
-// session, reach the phone for approval with ZERO changes to the winmux CLI
+// session, reach the phone for approval with ZERO changes to the ymux CLI
 // or hooks/claude-code.json.
 //
-// Flow: the daemon injects WINMUX_SOCKET_ADDR=<this listener>,
-// WINMUX_TUNNEL_TOKEN=<per-session token>, WINMUX_PANE_ID=mob_<id> into the
+// Flow: the daemon injects YMUX_SOCKET_ADDR=<this listener>,
+// YMUX_TUNNEL_TOKEN=<per-session token>, YMUX_PANE_ID=mob_<id> into the
 // claude child (see spawnEnv). When Claude fires a PreToolUse hook, the CLI
 // dials here, does the HMAC challenge-response, and pushes a
 // permission_request. We map it to the session (by which session's token
@@ -14,9 +14,9 @@ package chat
 // phone's allow/deny, and reply with the decision the CLI expects.
 //
 // Wire format (ported from cli/src/main.rs perform_handshake + rpc_via):
-//   S->C  "WINMUX-CHALLENGE <nonce-hex>\n"
-//   C->S  "WINMUX-RESPONSE <hmac_sha256(token, nonce_bytes)-hex>\n"
-//   S->C  "WINMUX-OK\n"  |  "WINMUX-DENIED <reason>\n"
+//   S->C  "YMUX-CHALLENGE <nonce-hex>\n"
+//   C->S  "YMUX-RESPONSE <hmac_sha256(token, nonce_bytes)-hex>\n"
+//   S->C  "YMUX-OK\n"  |  "YMUX-DENIED <reason>\n"
 //   C->S  {"jsonrpc":"2.0","id":1,"method":"feed.push","params":{…}}\n
 //   S->C  {"jsonrpc":"2.0","id":1,"result":{"request_id":…,"decision":…}}\n
 
@@ -33,8 +33,22 @@ import (
 	"time"
 )
 
+// Handshake wire tags (winmux → ymux rename). The challenge we EMIT stays
+// on the legacy tag for one release because a pre-rename `winmux` CLI does
+// a literal prefix match and hangs up on anything else; both ends read
+// either dialect and mirror whatever they were spoken to. Mirrors the same
+// constants in crates/ymux-tunnel/src/lib.rs — flip both together.
+//
+// FOLLOWUPS P1: set challengeTag = ymuxTag in the release after 0.5.0,
+// once every provisioned remote has been re-bootstrapped.
+const (
+	ymuxTag      = "YMUX"
+	legacyTag    = "WINMUX"
+	challengeTag = legacyTag
+)
+
 // SetHookAddr records the hook-RPC listener's bound address so spawned claude
-// children get WINMUX_SOCKET_ADDR pointed at it. Called by the hooks.Listener
+// children get YMUX_SOCKET_ADDR pointed at it. Called by the hooks.Listener
 // (SessionManager satisfies core.AddrSink). Phase 77: the listener boilerplate
 // moved to internal/hooks; the protocol (HandleHookConn ↓) stays here because
 // it is inseparable from per-session state — this is the concrete cycle break.
@@ -84,7 +98,7 @@ func (m *SessionManager) HandleHookConn(conn net.Conn) {
 		return
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if _, err := fmt.Fprintf(conn, "WINMUX-CHALLENGE %s\n", hex.EncodeToString(nonce)); err != nil {
+	if _, err := fmt.Fprintf(conn, "%s-CHALLENGE %s\n", challengeTag, hex.EncodeToString(nonce)); err != nil {
 		return
 	}
 
@@ -94,18 +108,30 @@ func (m *SessionManager) HandleHookConn(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	respHex := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(respLine), "WINMUX-RESPONSE "))
+	// Accept either dialect and answer in the one we were spoken to, so a
+	// pre-rename `winmux` CLI never sees a verdict tag it can't parse.
+	trimmed := strings.TrimSpace(respLine)
+	replyTag := challengeTag
+	respHex := ""
+	switch {
+	case strings.HasPrefix(trimmed, ymuxTag+"-RESPONSE "):
+		replyTag = ymuxTag
+		respHex = strings.TrimSpace(strings.TrimPrefix(trimmed, ymuxTag+"-RESPONSE "))
+	case strings.HasPrefix(trimmed, legacyTag+"-RESPONSE "):
+		replyTag = legacyTag
+		respHex = strings.TrimSpace(strings.TrimPrefix(trimmed, legacyTag+"-RESPONSE "))
+	}
 	respMAC, err := hex.DecodeString(respHex)
-	if err != nil {
-		_, _ = conn.Write([]byte("WINMUX-DENIED bad-response\n"))
+	if err != nil || respHex == "" {
+		_, _ = conn.Write([]byte(replyTag + "-DENIED bad-response\n"))
 		return
 	}
 	sess := m.matchSessionByHMAC(nonce, respMAC)
 	if sess == nil {
-		_, _ = conn.Write([]byte("WINMUX-DENIED unknown-session\n"))
+		_, _ = conn.Write([]byte(replyTag + "-DENIED unknown-session\n"))
 		return
 	}
-	if _, err := conn.Write([]byte("WINMUX-OK\n")); err != nil {
+	if _, err := conn.Write([]byte(replyTag + "-OK\n")); err != nil {
 		return
 	}
 

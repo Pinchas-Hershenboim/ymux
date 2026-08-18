@@ -6,7 +6,7 @@
 //! Mobile tab parses — no ts-rs bindings needed.
 //!
 //! Rule #2: the Cloudflare token is `Zeroize`d desktop-side after the install
-//! returns. It persists remote-side only in `/etc/winmux/cloudflare.ini`
+//! returns. It persists remote-side only in `/etc/ymux/cloudflare.ini`
 //! (mode-600 root) because certbot's auto-renew needs it.
 
 use serde_json::json;
@@ -16,9 +16,9 @@ use zeroize::Zeroize;
 use crate::addons::{exec, exec_stdin, nginx_proxy_install, pick_handle, remote_home};
 use crate::AppState;
 
-// Phase 77 S5 renamed the daemon data dir ~/.winmux/insights → ~/.winmux/server
+// Phase 77 S5 renamed the daemon data dir ~/.ymux/insights → ~/.ymux/server
 // (migrated in place on first 2.0 boot). The domain marker + token live there.
-const DOMAIN_FILE: &str = ".winmux/server/mobile-domain";
+const DOMAIN_FILE: &str = ".ymux/server/mobile-domain";
 
 /// Validate a device id coming back from the daemon before it lands in a URL
 /// path (defence in depth — the daemon mints `dev_<hex>`).
@@ -47,7 +47,7 @@ async fn daemon_curl(
     }
     let handle = pick_handle(state, workspace_id).ok_or("no active SSH session for this workspace")?;
     let home = remote_home(&handle).await;
-    let token = format!("$(cat '{home}/.winmux/server/token' 2>/dev/null)");
+    let token = format!("$(cat '{home}/.ymux/server/token' 2>/dev/null)");
     let base = format!(
         "curl -s --max-time 8 -X {method} -H \"Authorization: Bearer {token}\" "
     );

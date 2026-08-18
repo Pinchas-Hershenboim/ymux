@@ -18,7 +18,7 @@ import (
 	"os"
 	"sync"
 
-	"winmux-server/internal/workspace"
+	"ymux-server/internal/workspace"
 )
 
 // KindClaudeChat is the workspace session kind that gets a Claude engine.

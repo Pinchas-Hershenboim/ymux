@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest something for winmux
+about: Suggest something for ymux
 title: "[Feature] "
 labels: enhancement
 ---
@@ -15,7 +15,7 @@ Current workaround, if any.
 
 ## What would change
 
-What should winmux do differently?
+What should ymux do differently?
 
 ## Alternatives you considered
 

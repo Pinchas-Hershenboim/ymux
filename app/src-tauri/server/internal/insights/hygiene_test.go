@@ -3,7 +3,7 @@ package insights
 import "testing"
 
 func TestArgAfter(t *testing.T) {
-	args := []string{"winmux", "port-watch", "--workspace", "w_abc"}
+	args := []string{"ymux", "port-watch", "--workspace", "w_abc"}
 	if got := argAfter(args, "--workspace"); got != "w_abc" {
 		t.Fatalf("workspace: got %q", got)
 	}

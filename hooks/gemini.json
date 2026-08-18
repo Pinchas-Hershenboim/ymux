@@ -1,7 +1,7 @@
 {
-  "winmux_hooks_version": "0.0.1",
+  "ymux_hooks_version": "0.0.1",
   "agent": "gemini",
-  "min_winmux_version": "0.1.0",
+  "min_ymux_version": "0.1.0",
   "settings_file": null,
   "events": {},
   "_notes": [

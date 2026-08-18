@@ -11,7 +11,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"winmux-server/internal/core"
+	"ymux-server/internal/core"
 )
 
 // Service serves the Logs API over a Store.
@@ -33,7 +33,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux, _ func(http.HandlerFunc) ht
 // quietConfig mirrors files.quietConfig: no auto docs/openapi/schemas endpoints
 // and no $schema link transformer, so mounting adds only the operation routes.
 func quietConfig() huma.Config {
-	c := huma.DefaultConfig("winmux-server logs", core.Version)
+	c := huma.DefaultConfig("ymux-server logs", core.Version)
 	c.CreateHooks = nil
 	c.OpenAPIPath = ""
 	c.DocsPath = ""

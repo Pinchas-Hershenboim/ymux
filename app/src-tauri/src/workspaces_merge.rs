@@ -3,8 +3,10 @@
 //! `persist()` writes the WHOLE in-memory struct, which is
 //! last-write-wins over the entire document. That is fine while one app
 //! owns the file and wrong the moment two do — and two do, routinely: a
-//! stable winmux and a dev build share `%APPDATA%\winmux` unless someone
-//! remembers `WINMUX_CONFIG_DIR`.
+//! stable ymux and a dev build share `%APPDATA%\ymux` unless someone
+//! remembers `YMUX_CONFIG_DIR`. The pre-rename `%APPDATA%\winmux` and
+//! `WINMUX_CONFIG_DIR` are still honoured, so an old build and a new one
+//! can land on the same directory from either side of the rename.
 //!
 //! So a save is no longer "dump what I have". It re-reads the file, and
 //! if it changed since we last touched it, applies only OUR delta on top
@@ -185,7 +187,7 @@ fn merge_keyed_array(
 /// `on_disk` is what is there right now.
 ///
 /// Returns the text to write plus any lines worth logging. Splitting this
-/// out of `save_to_disk` is not tidiness: an idle winmux never saves, so
+/// out of `save_to_disk` is not tidiness: an idle ymux never saves, so
 /// the merge path is unreachable by launching the app and waiting, and
 /// the only way to hold it to account is to call it directly.
 pub(crate) fn reconcile(

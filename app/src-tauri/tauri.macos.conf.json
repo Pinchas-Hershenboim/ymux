@@ -6,9 +6,9 @@
   "bundle": {
     "targets": ["app"],
     "resources": [
-      "resources/winmux-linux-x64",
+      "resources/ymux-linux-x64",
       "resources/remote-manifest.json",
-      "resources/winmux-tmux.conf"
+      "resources/ymux-tmux.conf"
     ],
     "macOS": {
       "minimumSystemVersion": "13.0"

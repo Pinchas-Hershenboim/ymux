@@ -1,8 +1,8 @@
 //! Phase 68.B — Add-on manager.
 //!
-//! Detects / installs / uninstalls / updates the winmux add-ons on a
+//! Detects / installs / uninstalls / updates the ymux add-ons on a
 //! workspace's remote over its existing SSH session. The manifest schema +
-//! built-in registry live in the `winmux-addons` crate (68.A); this module
+//! built-in registry live in the `ymux-addons` crate (68.A); this module
 //! is the desktop side that runs the actions and exposes `addon_*` Tauri
 //! commands for the Settings → Add-ons table + the wizards (68.E/F).
 //!
@@ -10,8 +10,8 @@
 //! than re-invoking the Rust bootstrap, so the connect-time bootstrap stays
 //! the single owner of the CLI + tmux.conf upload (backward compatible —
 //! those show up here as detect-only / "managed on connect"). Hooks are
-//! fully manageable via the remote `winmux setup-hooks`, and `insights`
-//! (68.C) ships a `winmux insights install` subcommand.
+//! fully manageable via the remote `ymux setup-hooks`, and `insights`
+//! (68.C) ships a `ymux insights install` subcommand.
 
 use std::sync::Arc;
 
@@ -21,18 +21,18 @@ use russh_sftp::client::SftpSession;
 use tauri::State;
 use tokio::io::AsyncWriteExt;
 
-use winmux_addons::{
+use ymux_addons::{
     builtin_registry, ids, manifest_for, routines, AddonAction, AddonManifest, AddonStatus,
 };
 
 use crate::{AppState, Session, SshClient};
 
-// Phase 68.C / Phase 77: the cross-compiled server daemon (`winmux-server`,
-// formerly `winmux-insights`), embedded so the AddonManager can SFTP-upload the
+// Phase 68.C / Phase 77: the cross-compiled server daemon (`ymux-server`,
+// formerly `ymux-insights`), embedded so the AddonManager can SFTP-upload the
 // arch-matched binary on install. On install we symlink the old
-// `winmux-insights` name → `winmux-server` for backward compatibility.
-const SERVER_X64: &[u8] = include_bytes!("../resources/winmux-server-linux-x64");
-const SERVER_ARM64: &[u8] = include_bytes!("../resources/winmux-server-linux-arm64");
+// `ymux-insights` name → `ymux-server` for backward compatibility.
+const SERVER_X64: &[u8] = include_bytes!("../resources/ymux-server-linux-x64");
+const SERVER_ARM64: &[u8] = include_bytes!("../resources/ymux-server-linux-arm64");
 
 /// A live SSH handle for the workspace (mirrors file_manager's picker).
 pub(crate) fn pick_handle(state: &AppState, workspace_id: &str) -> Option<Arc<SshHandle<SshClient>>> {
@@ -60,7 +60,7 @@ pub(crate) fn is_local_workspace(state: &AppState, workspace_id: &str) -> bool {
         if w.id == workspace_id {
             return matches!(
                 w.connection,
-                None | Some(winmux_types::Connection::Local { .. })
+                None | Some(ymux_types::Connection::Local { .. })
             );
         }
     }
@@ -102,7 +102,7 @@ pub(crate) async fn remote_home(handle: &SshHandle<SshClient>) -> String {
 
 fn expand(script: &str, home: &str) -> String {
     script
-        .replace("${WINMUX_BIN}", &format!("{home}/.winmux/bin/winmux"))
+        .replace("${YMUX_BIN}", &format!("{home}/.ymux/bin/ymux"))
         .replace("${REMOTE_HOME}", home)
 }
 
@@ -127,7 +127,7 @@ async fn run_builtin(
     handle: &SshHandle<SshClient>,
     home: &str,
 ) -> Result<String, String> {
-    let bin = format!("{home}/.winmux/bin/winmux");
+    let bin = format!("{home}/.ymux/bin/ymux");
     match routine {
         routines::CLI_DETECT => {
             exec(handle, &format!("\"{bin}\" --version 2>/dev/null | head -1"), 8).await
@@ -136,14 +136,14 @@ async fn run_builtin(
         routines::TMUX_CONF_DETECT => {
             exec(
                 handle,
-                &format!("test -f \"{home}/.winmux/tmux.conf\" && echo present || true"),
+                &format!("test -f \"{home}/.ymux/tmux.conf\" && echo present || true"),
                 8,
             )
             .await
         }
         routines::TMUX_CONF_INSTALL => Ok("managed automatically on connect".into()),
         routines::HOOKS_DETECT => {
-            // Pull winmux_meta.hooks_version out of settings.json if present.
+            // Pull ymux_meta.hooks_version out of settings.json if present.
             exec(
                 handle,
                 &format!(
@@ -156,7 +156,7 @@ async fn run_builtin(
         }
         routines::HOOKS_INSTALL => {
             // Unified logging: freshly installed hooks read
-            // `~/.winmux/log-level`, so seed it with the desktop's setting.
+            // `~/.ymux/log-level`, so seed it with the desktop's setting.
             let _ =
                 crate::log_sync::push_log_level(handle, &crate::settings::log_level_setting())
                     .await;
@@ -171,13 +171,20 @@ async fn run_builtin(
         }
         routines::HOOKS_UNINSTALL => exec(handle, &hooks_uninstall_script(home), 15).await,
         routines::INSIGHTS_DETECT => {
-            // Phase 77: prefer winmux-server; fall back to the legacy
-            // winmux-insights name (symlink, or a pre-2.x install) so an
+            // Phase 77: prefer ymux-server; fall back to the legacy
+            // ymux-insights name (symlink, or a pre-2.x install) so an
             // existing install is still detected during the upgrade window.
+            // The `~/.winmux/bin/...` arms are the winmux → ymux rename: a
+            // remote provisioned before it still has the daemon under the
+            // old home. Without them detect reports "not installed", the
+            // user hits Install, and a second daemon races the first for
+            // the port.
             exec(
                 handle,
                 &format!(
-                    "( \"{home}/.winmux/bin/winmux-server\" --version 2>/dev/null || \
+                    "( \"{home}/.ymux/bin/ymux-server\" --version 2>/dev/null || \
+                       \"{home}/.ymux/bin/ymux-insights\" --version 2>/dev/null || \
+                       \"{home}/.winmux/bin/winmux-server\" --version 2>/dev/null || \
                        \"{home}/.winmux/bin/winmux-insights\" --version 2>/dev/null ) | head -1"
                 ),
                 8,
@@ -193,18 +200,29 @@ async fn run_builtin(
             let out = exec(
                 handle,
                 &format!(
-                    // Phase 77: tear down BOTH the new winmux-server and the legacy
-                    // winmux-insights (unit, binary, symlink) so an upgraded or a
-                    // pre-2.x install both uninstall cleanly.
-                    "systemctl --user disable --now winmux-server 2>/dev/null; \
+                    // Phase 77: tear down BOTH the new ymux-server and the legacy
+                    // ymux-insights (unit, binary, symlink) so an upgraded or a
+                    // pre-2.x install both uninstall cleanly. The winmux-* arms
+                    // are the winmux → ymux rename — a unit installed before it
+                    // survives a `systemctl disable ymux-server` untouched and
+                    // would keep holding the port.
+                    "systemctl --user disable --now ymux-server 2>/dev/null; \
+                     systemctl --user disable --now ymux-insights 2>/dev/null; \
+                     systemctl --user disable --now winmux-server 2>/dev/null; \
                      systemctl --user disable --now winmux-insights 2>/dev/null; \
+                     pkill -x ymux-server 2>/dev/null; pkill -f 'ymux-server serve' 2>/dev/null; \
+                     pkill -x ymux-insights 2>/dev/null; pkill -f 'ymux-insights serve' 2>/dev/null; \
                      pkill -x winmux-server 2>/dev/null; pkill -f 'winmux-server serve' 2>/dev/null; \
                      pkill -x winmux-insights 2>/dev/null; pkill -f 'winmux-insights serve' 2>/dev/null; \
+                     rm -f \"{home}/.ymux/bin/ymux-server\" \"{home}/.ymux/bin/ymux-insights\"; \
+                     rm -f \"{home}/.ymux/bin/winmux-server\" \"{home}/.ymux/bin/winmux-insights\"; \
                      rm -f \"{home}/.winmux/bin/winmux-server\" \"{home}/.winmux/bin/winmux-insights\"; \
-                     rm -f \"$HOME/.config/systemd/user/winmux-server.service\" \
+                     rm -f \"$HOME/.config/systemd/user/ymux-server.service\" \
+                           \"$HOME/.config/systemd/user/ymux-insights.service\" \
+                           \"$HOME/.config/systemd/user/winmux-server.service\" \
                            \"$HOME/.config/systemd/user/winmux-insights.service\"; \
                      systemctl --user daemon-reload 2>/dev/null; \
-                     if [ -e \"{home}/.winmux/bin/winmux-server\" ] || [ -e \"{home}/.winmux/bin/winmux-insights\" ]; \
+                     if [ -e \"{home}/.ymux/bin/ymux-server\" ] || [ -e \"{home}/.ymux/bin/ymux-insights\" ]; \
                        then echo STILL_PRESENT; else echo removed; fi"
                 ),
                 15,
@@ -252,7 +270,7 @@ pub(crate) async fn sftp_upload(
     // russh-sftp's default is a 10s deadline per 255KiB chunk, written
     // serially — the daemon binaries here are ~12MB, so that default gave up
     // long before a loaded host could finish. Same value as the bootstrap
-    // uploader; see winmux-bootstrap's SFTP_REQUEST_TIMEOUT_SECS.
+    // uploader; see ymux-bootstrap's SFTP_REQUEST_TIMEOUT_SECS.
     sftp.set_timeout(60).await;
     let r = async {
         let mut f = sftp
@@ -269,7 +287,7 @@ pub(crate) async fn sftp_upload(
     .await;
     // Callers pass a `.tmp` path and `mv -f` it into place afterwards, so a
     // failure here leaves a partial file that nothing else will ever clean
-    // up. That is the origin of the stale zero-byte `winmux-server.tmp`
+    // up. That is the origin of the stale zero-byte `ymux-server.tmp`
     // found on Yossi's server.
     if let Err(e) = r {
         if let Err(rm) = sftp.remove_file(remote_path).await {
@@ -329,10 +347,10 @@ async fn resolve_privilege(handle: &SshHandle<SshClient>) -> Result<String, Stri
     if uid.trim() == "0" {
         return Ok(String::new());
     }
-    let probe = exec(handle, "sudo -n true 2>&1 && echo WINMUX_SUDO_OK", 8)
+    let probe = exec(handle, "sudo -n true 2>&1 && echo YMUX_SUDO_OK", 8)
         .await
         .unwrap_or_default();
-    if probe.contains("WINMUX_SUDO_OK") {
+    if probe.contains("YMUX_SUDO_OK") {
         return Ok("sudo ".into());
     }
     Err("this server's user is not root and passwordless sudo isn't available. \
@@ -370,10 +388,10 @@ USERHOME="${2:-$HOME}"
 # Cloudflare token comes on stdin (never argv / never logged).
 IFS= read -r CF_TOKEN || true
 
-# Unified per-service log: everything below is tee'd to ~/.winmux/logs so the
+# Unified per-service log: everything below is tee'd to ~/.ymux/logs so the
 # desktop can read WHY an install failed instead of a black box. The token is
 # never echoed, so it never lands here.
-LOGDIR="$USERHOME/.winmux/logs"
+LOGDIR="$USERHOME/.ymux/logs"
 mkdir -p "$LOGDIR" 2>/dev/null || true
 LOG="$LOGDIR/mobile-install.log"
 exec > >(tee -a "$LOG") 2>&1
@@ -388,16 +406,16 @@ echo "[mobile] apt: installing nginx + certbot + dns-cloudflare (first run can t
 apt-get update -qq || fail "apt-get update failed (is the user root / NOPASSWD sudo?)" 10
 apt-get install -y -qq nginx certbot python3-certbot-dns-cloudflare || fail "apt install failed (see lines above)" 11
 
-install -d -m 700 /etc/winmux
+install -d -m 700 /etc/ymux
 umask 177
-printf 'dns_cloudflare_api_token = %s\n' "$CF_TOKEN" > /etc/winmux/cloudflare.ini
-chmod 600 /etc/winmux/cloudflare.ini
-echo "[mobile] wrote /etc/winmux/cloudflare.ini (600)"
+printf 'dns_cloudflare_api_token = %s\n' "$CF_TOKEN" > /etc/ymux/cloudflare.ini
+chmod 600 /etc/ymux/cloudflare.ini
+echo "[mobile] wrote /etc/ymux/cloudflare.ini (600)"
 
 if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
   echo "[mobile] certbot: requesting Let's Encrypt cert for $DOMAIN via Cloudflare DNS-01…"
   certbot certonly --dns-cloudflare \
-    --dns-cloudflare-credentials /etc/winmux/cloudflare.ini \
+    --dns-cloudflare-credentials /etc/ymux/cloudflare.ini \
     --dns-cloudflare-propagation-seconds 30 \
     -d "$DOMAIN" --non-interactive --agree-tos \
     --register-unsafely-without-email \
@@ -408,12 +426,12 @@ fi
 
 # limit_req_zone is an http-context directive — it MUST live outside any
 # server{} block. Define it once in conf.d (loaded once at http level, so it
-# is shared across every winmux vhost and can't collide as "already bound").
-cat > /etc/nginx/conf.d/winmux-ratelimit.conf <<'RL'
-limit_req_zone $binary_remote_addr zone=winmux:10m rate=20r/s;
+# is shared across every ymux vhost and can't collide as "already bound").
+cat > /etc/nginx/conf.d/ymux-ratelimit.conf <<'RL'
+limit_req_zone $binary_remote_addr zone=ymux:10m rate=20r/s;
 RL
 
-SITE="/etc/nginx/sites-available/winmux-$DOMAIN"
+SITE="/etc/nginx/sites-available/ymux-$DOMAIN"
 cat > "$SITE" <<NGINX
 server {
   listen 443 ssl http2;
@@ -423,7 +441,7 @@ server {
   ssl_protocols TLSv1.2 TLSv1.3;
   add_header Strict-Transport-Security "max-age=31536000" always;
   location / {
-    limit_req zone=winmux burst=40 nodelay;
+    limit_req zone=ymux burst=40 nodelay;
     proxy_pass http://127.0.0.1:7879;
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
@@ -436,18 +454,18 @@ server {
   }
 }
 NGINX
-ln -sf "$SITE" "/etc/nginx/sites-enabled/winmux-$DOMAIN"
+ln -sf "$SITE" "/etc/nginx/sites-enabled/ymux-$DOMAIN"
 nginx -t || fail "nginx config test failed (nginx -t above)" 4
 systemctl reload nginx || systemctl restart nginx || fail "nginx reload/restart failed" 5
 echo "[mobile] nginx reloaded — proxy live on 443 → 127.0.0.1:7879"
 
 mkdir -p /etc/letsencrypt/renewal-hooks/post
-printf '#!/bin/bash\nsystemctl reload nginx\n' > /etc/letsencrypt/renewal-hooks/post/winmux-reload-nginx.sh
-chmod +x /etc/letsencrypt/renewal-hooks/post/winmux-reload-nginx.sh
+printf '#!/bin/bash\nsystemctl reload nginx\n' > /etc/letsencrypt/renewal-hooks/post/ymux-reload-nginx.sh
+chmod +x /etc/letsencrypt/renewal-hooks/post/ymux-reload-nginx.sh
 
 # Hand the log back to the (non-root) SSH user so the desktop can tail it.
 chown "$(stat -c %u:%g "$USERHOME" 2>/dev/null || echo 0:0)" "$LOG" 2>/dev/null || true
-echo "WINMUX_NGINX_OK $DOMAIN"
+echo "YMUX_NGINX_OK $DOMAIN"
 "#;
 
 /// Param-driven install (called by `mobile_pairing_init`, 70.D). Validates the
@@ -464,8 +482,8 @@ pub(crate) async fn nginx_proxy_install(
     }
     crate::log_debug("MOBILE", &format!("nginx install begin domain={domain}"));
     let prefix = resolve_privilege(handle).await?;
-    let script_path = format!("{home}/.winmux/run/nginx-install.sh");
-    let _ = exec(handle, &format!("mkdir -p \"{home}/.winmux/run\""), 8).await;
+    let script_path = format!("{home}/.ymux/run/nginx-install.sh");
+    let _ = exec(handle, &format!("mkdir -p \"{home}/.ymux/run\""), 8).await;
     sftp_upload(handle, &script_path, NGINX_INSTALL_SCRIPT.as_bytes()).await?;
     // domain + home are validated/trusted → safe as quoted args; token is on
     // stdin only. 300s: a first-time apt install of certbot + the DNS plugin
@@ -481,8 +499,8 @@ pub(crate) async fn nginx_proxy_install(
     for l in tail.iter().rev().take(12).rev() {
         crate::log_debug("MOBILE", l);
     }
-    let log_path = format!("{home}/.winmux/logs/mobile-install.log");
-    if out.contains("WINMUX_NGINX_OK") {
+    let log_path = format!("{home}/.ymux/logs/mobile-install.log");
+    if out.contains("YMUX_NGINX_OK") {
         crate::log_info("MOBILE", &format!("nginx install OK domain={domain}"));
         Ok(format!("nginx + TLS ready for {domain}"))
     } else {
@@ -507,21 +525,21 @@ pub(crate) async fn nginx_proxy_install(
 async fn nginx_proxy_detect(handle: &SshHandle<SshClient>) -> Result<String, String> {
     let active = exec(handle, "systemctl is-active nginx 2>/dev/null || true", 8).await?;
     if active.trim() == "active" {
-        Ok(winmux_addons::NGINX_PROXY_VERSION.to_string())
+        Ok(ymux_addons::NGINX_PROXY_VERSION.to_string())
     } else {
         Ok(String::new())
     }
 }
 
-/// uninstall: disable+remove winmux nginx sites and the CF credential. Leaves
+/// uninstall: disable+remove ymux nginx sites and the CF credential. Leaves
 /// nginx itself installed (other services may use it).
 async fn nginx_proxy_uninstall(handle: &SshHandle<SshClient>) -> Result<String, String> {
     let prefix = resolve_privilege(handle).await?;
     let script = format!(
         "set -e; \
-         rm -f /etc/nginx/sites-enabled/winmux-* /etc/nginx/sites-available/winmux-*; \
-         rm -f /etc/nginx/conf.d/winmux-ratelimit.conf; \
-         rm -f /etc/winmux/cloudflare.ini; \
+         rm -f /etc/nginx/sites-enabled/ymux-* /etc/nginx/sites-available/ymux-*; \
+         rm -f /etc/nginx/conf.d/ymux-ratelimit.conf; \
+         rm -f /etc/ymux/cloudflare.ini; \
          (nginx -t >/dev/null 2>&1 && systemctl reload nginx) || true; \
          echo removed"
     );
@@ -540,17 +558,17 @@ async fn insights_install(handle: &SshHandle<SshClient>, home: &str) -> Result<S
     };
     let _ = exec(
         handle,
-        &format!("mkdir -p \"{home}/.winmux/bin\" \"{home}/.winmux/server\""),
+        &format!("mkdir -p \"{home}/.ymux/bin\" \"{home}/.ymux/server\""),
         8,
     )
     .await;
-    // Phase 77: install as `winmux-server`; keep a `winmux-insights` symlink so
+    // Phase 77: install as `ymux-server`; keep a `ymux-insights` symlink so
     // anything referencing the old name still resolves. Data dir is
-    // ~/.winmux/server (the 2.0 binary's default); on an in-place 1.x→2.x upgrade
-    // the daemon migrates ~/.winmux/insights → ~/.winmux/server on first boot,
+    // ~/.ymux/server (the 2.0 binary's default); on an in-place 1.x→2.x upgrade
+    // the daemon migrates ~/.ymux/insights → ~/.ymux/server on first boot,
     // preserving the token + chat.db + paired_devices (paired phones keep working).
-    let final_path = format!("{home}/.winmux/bin/winmux-server");
-    let legacy_link = format!("{home}/.winmux/bin/winmux-insights");
+    let final_path = format!("{home}/.ymux/bin/ymux-server");
+    let legacy_link = format!("{home}/.ymux/bin/ymux-insights");
     // pid-suffixed so two desktops (or two panes) installing at once can't
     // interleave their streams into one remote file — same fix as the CLI
     // bootstrap uploader.
@@ -603,13 +621,18 @@ else
   EXECSTART="$DAEMON serve"
 fi
 mkdir -p "$HOME/.config/systemd/user"
-# Phase 77: retire the old winmux-insights unit if present (the daemon is now
-# winmux-server); its data dir is unchanged so nothing is lost.
-systemctl --user disable --now winmux-insights >/dev/null 2>&1
-rm -f "$HOME/.config/systemd/user/winmux-insights.service"
-cat > "$HOME/.config/systemd/user/winmux-server.service" <<UNIT
+# Phase 77: retire the old ymux-insights unit if present (the daemon is now
+# ymux-server); its data dir is unchanged so nothing is lost.
+# The winmux-* lines are the winmux -> ymux rename: a unit installed under
+# the old name is invisible to `systemctl disable ymux-server` and would go
+# on serving the same port from the pre-rename binary.
+for OLD in ymux-insights winmux-server winmux-insights; do
+  systemctl --user disable --now "$OLD" >/dev/null 2>&1
+  rm -f "$HOME/.config/systemd/user/$OLD.service"
+done
+cat > "$HOME/.config/systemd/user/ymux-server.service" <<UNIT
 [Unit]
-Description=winmux server daemon
+Description=ymux server daemon
 After=network.target
 [Service]
 ExecStart=$EXECSTART
@@ -619,11 +642,11 @@ RestartSec=5
 WantedBy=default.target
 UNIT
 if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null; then
-  systemctl --user enable winmux-server >/dev/null 2>&1
-  systemctl --user restart winmux-server >/dev/null 2>&1 && echo "started (systemd --user)"
+  systemctl --user enable ymux-server >/dev/null 2>&1
+  systemctl --user restart ymux-server >/dev/null 2>&1 && echo "started (systemd --user)"
 else
-  pkill -x winmux-server 2>/dev/null; pkill -f 'winmux-server serve' 2>/dev/null
-  pkill -x winmux-insights 2>/dev/null; pkill -f 'winmux-insights serve' 2>/dev/null
+  pkill -x ymux-server 2>/dev/null; pkill -f 'ymux-server serve' 2>/dev/null
+  pkill -x ymux-insights 2>/dev/null; pkill -f 'ymux-insights serve' 2>/dev/null
   sleep 1
   if [ "$WRAP" = "sg" ] && [ -n "$SG" ]; then
     nohup "$SG" docker -c "exec $DAEMON serve" >/dev/null 2>&1 &
@@ -632,10 +655,10 @@ else
   fi
   echo "started (nohup)"
 fi
-echo "WINMUX_DOCKER=$NOTE"
+echo "YMUX_DOCKER=$NOTE"
 "#
     );
-    // Unified logging: seed `~/.winmux/log-level` BEFORE starting the daemon
+    // Unified logging: seed `~/.ymux/log-level` BEFORE starting the daemon
     // so its level-file watcher picks up the desktop's setting immediately.
     let _ = crate::log_sync::push_log_level(handle, &crate::settings::log_level_setting()).await;
     let r = exec(handle, &start, 25).await?;
@@ -646,12 +669,12 @@ echo "WINMUX_DOCKER=$NOTE"
         .unwrap_or_default();
     let marker = r
         .lines()
-        .find_map(|l| l.trim().strip_prefix("WINMUX_DOCKER="))
+        .find_map(|l| l.trim().strip_prefix("YMUX_DOCKER="))
         .unwrap_or("no-docker");
     Ok(format!("installed; {started}{}", docker_group_message(marker)))
 }
 
-/// Map a WINMUX_DOCKER=<marker> to the human suffix appended to the install
+/// Map a YMUX_DOCKER=<marker> to the human suffix appended to the install
 /// status. Pure (unit-tested).
 fn docker_group_message(marker: &str) -> String {
     match marker {
@@ -687,7 +710,7 @@ mod docker_group_tests {
     }
 }
 
-/// Strip winmux hook entries from settings.json + hooks.json (best-effort).
+/// Strip ymux hook entries from settings.json + hooks.json (best-effort).
 fn hooks_uninstall_script(home: &str) -> String {
     format!(
         r#"python3 - <<'PY' 2>/dev/null || true
@@ -700,8 +723,14 @@ for fn in ("settings.json", "hooks.json"):
     blocks = d.get("hooks", d) if fn == "settings.json" else d
     for ev in list(blocks):
         if isinstance(blocks[ev], list):
-            blocks[ev] = [e for e in blocks[ev] if "winmux" not in json.dumps(e)]
+            # Both spellings: entries written before the winmux -> ymux
+            # rename say "winmux", which does NOT contain "ymux" as a
+            # substring, so a single-token match would leave them behind
+            # and uninstall would silently do nothing.
+            blocks[ev] = [e for e in blocks[ev]
+                          if "ymux" not in json.dumps(e) and "winmux" not in json.dumps(e)]
             if not blocks[ev]: del blocks[ev]
+    d.pop("ymux_meta", None)
     d.pop("winmux_meta", None)
     json.dump(d, open(p, "w"), indent=2)
 print("removed")
@@ -716,7 +745,7 @@ async fn status_for(m: &AddonManifest, handle: &SshHandle<SshClient>, home: &str
     let installed_version = if v.is_empty() {
         None
     } else {
-        // Last whitespace token is usually the version (e.g. "winmux 0.2.8").
+        // Last whitespace token is usually the version (e.g. "ymux 0.2.8").
         Some(v.split_whitespace().last().unwrap_or(v).to_string())
     };
     let installed = installed_version.is_some();
@@ -776,7 +805,7 @@ async fn run_lifecycle(
     if home.is_empty() {
         return Err("could not resolve remote $HOME".into());
     }
-    // Dependency resolution (install): deps are currently just winmux-cli,
+    // Dependency resolution (install): deps are currently just ymux-cli,
     // which is always present in a connected session — so no extra work for
     // round 1. (A topological install of arbitrary deps lands with the
     // community-add-ons work.)
@@ -842,7 +871,7 @@ pub(crate) async fn insights_fetch(
     if !safe_api_path(&path) {
         return Err("invalid insights path".into());
     }
-    // beta.3-lh-insights: Local workspaces have no `winmux-server` daemon on the
+    // beta.3-lh-insights: Local workspaces have no `ymux-server` daemon on the
     // other end — route to the in-process native snapshot so the panel still
     // works. Frontend keeps calling `insights_fetch` with the same paths.
     if is_local_workspace(&state, &workspace_id) {
@@ -862,19 +891,19 @@ pub(crate) async fn insights_fetch(
     // clean, and dlog the outcome (Rule #1: status + length only, never body).
     let cmd = format!(
         "curl -s --max-time 6 \
-         -H \"Authorization: Bearer $(cat '{home}/.winmux/server/token' 2>/dev/null)\" \
-         -w '\\nWINMUX_HTTP=%{{http_code}}' \
+         -H \"Authorization: Bearer $(cat '{home}/.ymux/server/token' 2>/dev/null)\" \
+         -w '\\nYMUX_HTTP=%{{http_code}}' \
          'http://127.0.0.1:7879{path}' 2>/dev/null; \
-         command -v curl >/dev/null 2>&1 || echo 'WINMUX_HTTP=nocurl'"
+         command -v curl >/dev/null 2>&1 || echo 'YMUX_HTTP=nocurl'"
     );
     let raw = exec(&handle, &cmd, 10).await?;
     let status = raw
-        .rsplit("WINMUX_HTTP=")
+        .rsplit("YMUX_HTTP=")
         .next()
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // Body = everything before the last marker line.
-    let body = match raw.rfind("WINMUX_HTTP=") {
+    let body = match raw.rfind("YMUX_HTTP=") {
         Some(i) => raw[..i].trim_end_matches('\n').to_string(),
         None => raw.clone(),
     };
@@ -914,7 +943,7 @@ pub(crate) async fn insights_docker_action(
     let home = remote_home(&handle).await;
     let cmd = format!(
         "curl -s --max-time 8 -X POST -H 'Content-Type: application/json' \
-         -H \"Authorization: Bearer $(cat '{home}/.winmux/server/token' 2>/dev/null)\" \
+         -H \"Authorization: Bearer $(cat '{home}/.ymux/server/token' 2>/dev/null)\" \
          -d '{{\"cmd\":\"{action}\"}}' \
          'http://127.0.0.1:7879/docker/{container_id}/action'"
     );
@@ -950,7 +979,7 @@ pub(crate) async fn insights_hygiene_kill(
     let home = remote_home(&handle).await;
     let cmd = format!(
         "curl -s --max-time 8 -X POST -H 'Content-Type: application/json' \
-         -H \"Authorization: Bearer $(cat '{home}/.winmux/server/token' 2>/dev/null)\" \
+         -H \"Authorization: Bearer $(cat '{home}/.ymux/server/token' 2>/dev/null)\" \
          -d '{{\"pids\":[{list}]}}' \
          'http://127.0.0.1:7879/hygiene/kill'"
     );
@@ -969,9 +998,9 @@ pub(crate) async fn addon_logs(
         .ok_or("no active SSH session for this workspace")?;
     let home = remote_home(&handle).await;
     let log = match id.as_str() {
-        ids::INSIGHTS => format!("{home}/.winmux/server/insights.log"),
-        ids::HOOKS => format!("{home}/.winmux/hook-debug.log"),
-        ids::NGINX_PROXY => format!("{home}/.winmux/logs/mobile-install.log"),
+        ids::INSIGHTS => format!("{home}/.ymux/server/insights.log"),
+        ids::HOOKS => format!("{home}/.ymux/hook-debug.log"),
+        ids::NGINX_PROXY => format!("{home}/.ymux/logs/mobile-install.log"),
         _ => return Ok(String::new()),
     };
     exec(&handle, &format!("tail -n 200 \"{log}\" 2>/dev/null || true"), 10).await
@@ -983,7 +1012,7 @@ mod nginx_proxy_tests {
 
     #[test]
     fn accepts_real_domains() {
-        for d in ["winmux.example.com", "a.b.co", "my-server.dev", "x1.y2.example.org"] {
+        for d in ["ymux.example.com", "a.b.co", "my-server.dev", "x1.y2.example.org"] {
             assert!(valid_domain(d), "should accept {d}");
         }
     }

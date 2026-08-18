@@ -40,25 +40,25 @@ jobs:
         working-directory: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
         run: |
           mkdir dmg-root
-          cp -R winmux.app dmg-root/
+          cp -R ymux.app dmg-root/
           ln -s /Applications dmg-root/Applications
-          hdiutil create -volname winmux -srcfolder dmg-root -ov -format UDZO winmux_x64_macos13.dmg
-          shasum -a 256 winmux_x64_macos13.dmg
+          hdiutil create -volname ymux -srcfolder dmg-root -ov -format UDZO ymux_x64_macos13.dmg
+          shasum -a 256 ymux_x64_macos13.dmg
 
       - name: Upload dmg
         uses: actions/upload-artifact@v4
         with:
-          name: winmux-macos-intel-dmg
-          path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/winmux_x64_macos13.dmg
+          name: ymux-macos-intel-dmg
+          path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ymux_x64_macos13.dmg
           if-no-files-found: error
 
       # tar first — upload-artifact's zip does not preserve the symlinks and
       # exec bits inside a .app bundle.
       - name: Upload .app bundle (tarred)
         working-directory: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
-        run: tar -czf winmux-app.tar.gz winmux.app
+        run: tar -czf ymux-app.tar.gz ymux.app
       - uses: actions/upload-artifact@v4
         with:
-          name: winmux-macos-intel-app
-          path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/winmux-app.tar.gz
+          name: ymux-macos-intel-app
+          path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ymux-app.tar.gz
           if-no-files-found: error

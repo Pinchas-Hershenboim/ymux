@@ -1,4 +1,4 @@
-// contract.mjs — SDK ↔ real server contract test. Spawns winmux-server (go run)
+// contract.mjs — SDK ↔ real server contract test. Spawns ymux-server (go run)
 // on a temp data dir + files root, then drives the whole client-SDK surface
 // through the generated/typed SDK and asserts the wire contract holds: REST
 // files round-trip + logs + version, and a WS 8a fan-out + hello frame.
@@ -27,19 +27,19 @@ function sh(cmd, args, opts = {}) {
 
 // Build the SDK so we import the same dist consumers get.
 sh("npm", ["run", "build"], { cwd: sdkRoot, shell: process.platform === "win32" });
-const { WinmuxClient } = await imp(resolve(sdkRoot, "dist", "client.js"));
+const { YmuxClient } = await imp(resolve(sdkRoot, "dist", "client.js"));
 const { WorkspaceSocket } = await imp(resolve(sdkRoot, "dist", "ws.js"));
 const WebSocket = (await imp(resolve(sdkRoot, "node_modules", "ws", "index.js"))).default;
 
 const PORT = 7911;
 const BASE = `http://127.0.0.1:${PORT}`;
-const dir = mkdtempSync(join(tmpdir(), "winmux-contract-"));
-const filesRoot = mkdtempSync(join(tmpdir(), "winmux-files-"));
+const dir = mkdtempSync(join(tmpdir(), "ymux-contract-"));
+const filesRoot = mkdtempSync(join(tmpdir(), "ymux-files-"));
 
 // Build a real binary and spawn it directly — `go run` leaves an orphan child
 // holding the port when killed, which breaks re-runs.
-const exe = join(dir, process.platform === "win32" ? "winmux-server.exe" : "winmux-server");
-sh("go", ["build", "-o", exe, "./cmd/winmux-server"], { cwd: serverDir });
+const exe = join(dir, process.platform === "win32" ? "ymux-server.exe" : "ymux-server");
+sh("go", ["build", "-o", exe, "./cmd/ymux-server"], { cwd: serverDir });
 const srv = spawn(exe, ["serve", "--port", String(PORT), "--dir", dir, "--files-root", filesRoot], {
   stdio: ["ignore", "inherit", "inherit"],
 });
@@ -64,11 +64,11 @@ try {
     await new Promise((r) => setTimeout(r, 400));
   }
 
-  const client = new WinmuxClient({ baseUrl: BASE, token });
+  const client = new YmuxClient({ baseUrl: BASE, token });
 
   // meta
   const v = await client.version();
-  assert.equal(v.name, "winmux-server");
+  assert.equal(v.name, "ymux-server");
   assert.ok(Array.isArray(v.api_versions) && v.api_versions.includes(2), "api_versions includes 2");
   assert.ok(typeof v.frame_version === "number");
 
@@ -110,7 +110,7 @@ try {
   assert.equal(redeemed.default_workspace_id, "ws_default", "redeem returns default_workspace_id");
 
   // the long-term device token must work on the bearer-gated workspace API
-  const phone = new WinmuxClient({ baseUrl: BASE, token: redeemed.long_term_token });
+  const phone = new YmuxClient({ baseUrl: BASE, token: redeemed.long_term_token });
   const wss = await phone.workspaces.list();
   assert.ok(wss.some((w) => w.id === "ws_default"), "device token lists workspaces");
 

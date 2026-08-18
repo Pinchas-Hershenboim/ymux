@@ -135,7 +135,7 @@ hook_notifications: HookSettings,
 /**
  * Design Pass 01 (#2): dark/light appearance axis — "dark" | "light" |
  * "system". Independent of the colour preset: dark reuses the preset
- * engine as-is, "light" applies winmux's daylight chrome palette,
+ * engine as-is, "light" applies ymux's daylight chrome palette,
  * "system" follows the OS (`prefers-color-scheme`). A String (not an
  * enum) to match the sidebar_mode / rtl_mode pattern and keep the TS
  * binding a plain union. `default = "system"` keeps older settings.json

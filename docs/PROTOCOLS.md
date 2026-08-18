@@ -16,7 +16,7 @@ with `\n`. The server parses one line at a time; it does not support batching.
 ```
 
 `id` is echoed in the response. Notification-style requests (no `id`) are not used
-in winmux.
+in ymux.
 
 ### Response shape
 
@@ -128,7 +128,7 @@ Set a transient status text on a pane's header.
 
 ### `feed.push`
 
-Push an item onto the agent feed. Used by `winmux claude-hook ...`.
+Push an item onto the agent feed. Used by `ymux claude-hook ...`.
 
 **Params:**
 ```json
@@ -136,7 +136,7 @@ Push an item onto the agent feed. Used by `winmux claude-hook ...`.
   "request_id": "req_<unique>",
   "kind": "permission_request" | "passive",
   "subkind": "tool-permission" | "session-idle" | ...,
-  "pane_id": "<from WINMUX_PANE_ID>",
+  "pane_id": "<from YMUX_PANE_ID>",
   "workspace_id": "<optional>",
   "title": "Run `npm test` ?",
   "summary": "<long description>",
@@ -167,14 +167,14 @@ remote tool can also automate decisions.
 
 ## Named Pipe transport (Windows local)
 
-- **Name:** `\\.\pipe\winmux-<USERNAME>`. The user is `$env:USERNAME` if set, else
+- **Name:** `\\.\pipe\ymux-<USERNAME>`. The user is `$env:USERNAME` if set, else
   `whoami::username()`.
 - **Mode:** byte mode, `max_instances = 8`, `first_pipe_instance = false`.
 - **Framing:** newline-delimited JSON-RPC v2 (above).
 - **Auth:** none on the protocol level. The pipe ACL — the default Windows ACL of
   a pipe created by a user-mode process — restricts access to the same user. There
   is no HMAC or token because the pipe namespace is the auth boundary.
-- **Override:** the CLI honors `WINMUX_PIPE_PATH` if set.
+- **Override:** the CLI honors `YMUX_PIPE_PATH` if set.
 
 ## TCP transport (remote, via reverse SSH tunnel)
 
@@ -185,30 +185,30 @@ SSH channel and delivered to our `Handler::server_channel_open_forwarded_tcpip`,
 which hands it off to `tunnel.rs::bridge_to_pipe`.
 
 - **Address:** `127.0.0.1:<remote_port>`. The CLI on the remote reads it from
-  `WINMUX_SOCKET_ADDR` (with a fallback `~/.winmux/run/last.env` file).
+  `YMUX_SOCKET_ADDR` (with a fallback `~/.ymux/run/last.env` file).
 - **Auth:** HMAC-SHA256 challenge-response on the **first lines** of every TCP
   connection.
 
 ### Handshake
 
 ```
-server → client : WINMUX-CHALLENGE <hex 32-byte nonce>\n
-client → server : WINMUX-RESPONSE <hex HMAC-SHA256(token, nonce)>\n
-server → client : WINMUX-OK\n               # success
+server → client : YMUX-CHALLENGE <hex 32-byte nonce>\n
+client → server : YMUX-RESPONSE <hex HMAC-SHA256(token, nonce)>\n
+server → client : YMUX-OK\n               # success
                   ─ or ─
-                  WINMUX-DENIED <reason>\n  # failure (channel closed)
+                  YMUX-DENIED <reason>\n  # failure (channel closed)
 ```
 
 - **Token:** 32 alphanumeric chars, generated per SSH session. Lives in
-  `WINMUX_TUNNEL_TOKEN`. Never sent on the wire.
+  `YMUX_TUNNEL_TOKEN`. Never sent on the wire.
 - **HMAC:** `HMAC-SHA256(key=token_bytes, msg=nonce_bytes)`, 32 bytes →
   64 hex chars.
 - **Verification:** constant-time via `hmac::Hmac::verify_slice`.
 - **Timeout:** 10 s for both the challenge read and the response read on each side.
-- **`WINMUX-DENIED` reasons:** `bad-format` (response line didn't match
-  `WINMUX-RESPONSE <hex>`), `bad-mac` (HMAC verification failed).
+- **`YMUX-DENIED` reasons:** `bad-format` (response line didn't match
+  `YMUX-RESPONSE <hex>`), `bad-mac` (HMAC verification failed).
 
-After `WINMUX-OK`, the same TCP socket is used as a pure transport. The CLI sends
+After `YMUX-OK`, the same TCP socket is used as a pure transport. The CLI sends
 exactly one JSON-RPC request and reads exactly one JSON-RPC response per
 TCP connection. The server-side bridge `tokio::io::copy_bidirectional`s between
 the SSH channel and a fresh Named Pipe client connection — so the actual JSON-RPC
@@ -219,7 +219,7 @@ server is the same single server that handles local CLI calls.
 A "Claude hook" or similar agent integration invokes the CLI as:
 
 ```
-echo '<json-payload>' | ~/.winmux/bin/winmux claude-hook <subcommand>
+echo '<json-payload>' | ~/.ymux/bin/ymux claude-hook <subcommand>
 ```
 
 The CLI reads the payload from stdin, parses it as JSON, and constructs a `feed.push`.
@@ -266,23 +266,23 @@ Run on every SSH workspace connect, after auth, before opening the user's shell.
 2. Read `resources/remote-manifest.json` (BOM-stripped) to find the matching
    triple's expected SHA-256 + relative path.
 3. `echo $HOME` — for the absolute paths.
-4. `sha256sum ~/.winmux/bin/winmux-linux-x64` — compare hashes.
-5. If equal: refresh symlink `~/.winmux/bin/winmux → winmux-linux-x64`. Done.
-6. Otherwise: `mkdir -p ~/.winmux/bin`, then SFTP-upload the binary
+4. `sha256sum ~/.ymux/bin/ymux-linux-x64` — compare hashes.
+5. If equal: refresh symlink `~/.ymux/bin/ymux → ymux-linux-x64`. Done.
+6. Otherwise: `mkdir -p ~/.ymux/bin`, then SFTP-upload the binary
    (russh-sftp), `chmod 0755`, refresh symlink, `sha256sum` again to verify.
 
-Every step `dlog`s to `%APPDATA%\winmux\debug.log` for post-mortem.
+Every step `dlog`s to `%APPDATA%\ymux\debug.log` for post-mortem.
 
 ## Env propagation (Phase 6.3)
 
 When opening the SSH shell, the backend tries:
-- `channel.set_env(false, "WINMUX_SOCKET_ADDR", "127.0.0.1:<port>")` — best-effort.
+- `channel.set_env(false, "YMUX_SOCKET_ADDR", "127.0.0.1:<port>")` — best-effort.
   sshd often filters via `AcceptEnv`; failures are silent.
-- `channel.set_env(false, "WINMUX_TUNNEL_TOKEN", "<token>")` — same.
-- `channel.set_env(false, "WINMUX_PANE_ID", "<pane_id>")` — same.
+- `channel.set_env(false, "YMUX_TUNNEL_TOKEN", "<token>")` — same.
+- `channel.set_env(false, "YMUX_PANE_ID", "<pane_id>")` — same.
 
-And then writes a heredoc-quoted file `~/.winmux/run/last.env` (mode 0600) with
+And then writes a heredoc-quoted file `~/.ymux/run/last.env` (mode 0600) with
 the same three values. The Linux CLI runs `load_fallback_env_file` at startup,
 which reads that file and `setenv`s any missing vars before doing transport
-selection. If `WINMUX_SOCKET_ADDR` is set after this load, the CLI uses TCP;
+selection. If `YMUX_SOCKET_ADDR` is set after this load, the CLI uses TCP;
 otherwise (and only on Windows) it falls back to the named pipe.

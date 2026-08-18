@@ -17,14 +17,14 @@
   <rect x="0" y="0" width="1180" height="34" rx="12" fill="#0b0e13"/>
   <rect x="0" y="22" width="1180" height="12" fill="#0b0e13"/>
   <circle cx="22" cy="17" r="5" fill="#f7768e"/><circle cx="40" cy="17" r="5" fill="#e0af68"/><circle cx="58" cy="17" r="5" fill="#4ec9b0"/>
-  <text x="590" y="21" fill="#565f6a" font-size="12" text-anchor="middle">winmux</text>
+  <text x="590" y="21" fill="#565f6a" font-size="12" text-anchor="middle">ymux</text>
 
   <!-- ===== SIDEBAR (inline-start) ===== -->
   <rect x="0" y="34" width="248" height="686" fill="#161b22"/>
   <line x1="248" y1="34" x2="248" y2="720" stroke="#21262d"/>
   <!-- brand -->
   <rect x="18" y="52" width="22" height="22" rx="6" fill="url(#brand)"/>
-  <text x="50" y="69" fill="url(#brand)" font-size="16" font-weight="600" letter-spacing="0.4">winmux</text>
+  <text x="50" y="69" fill="url(#brand)" font-size="16" font-weight="600" letter-spacing="0.4">ymux</text>
 
   <!-- EMPTY-STATE CTA CARD in sidebar -->
   <rect x="14" y="96" width="220" height="196" rx="10" fill="#1c2230" stroke="#2d333d"/>
@@ -51,7 +51,7 @@
   <rect x="682" y="150" width="64" height="64" rx="16" fill="#161b22" stroke="#2d333d"/>
   <rect x="694" y="150" width="40" height="40" rx="12" transform="rotate(0)" fill="url(#brand)" opacity="0.9" x2="0"/>
   <text x="714" y="196" font-size="30" text-anchor="middle">▚</text>
-  <text x="714" y="262" fill="#e6edf3" font-size="26" font-weight="700" text-anchor="middle">Welcome to winmux</text>
+  <text x="714" y="262" fill="#e6edf3" font-size="26" font-weight="700" text-anchor="middle">Welcome to ymux</text>
   <text x="714" y="290" fill="#7d8590" font-size="14" text-anchor="middle">Your SSH workspaces, panes, and Claude Code — one window.</text>
 
   <!-- quick-start cards -->

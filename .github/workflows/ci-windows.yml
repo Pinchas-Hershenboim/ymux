@@ -6,7 +6,7 @@
 #
 # Ordering note that is easy to get wrong: `build:linux-cli` MUST run
 # before anything that touches cargo. It is what stages
-# src-tauri/resources/winmux-cli.exe, which is gitignored — and Tauri's
+# src-tauri/resources/ymux-cli.exe, which is gitignored — and Tauri's
 # build script hard-fails with "resource path doesn't exist" without it.
 # A fresh checkout is exactly that case (see FOLLOWUPS P3).
 name: ci-windows
@@ -59,7 +59,7 @@ jobs:
         working-directory: app
         run: npm ci
 
-      # Stages winmux-cli.exe + winmux-linux-x64 + remote-manifest.json.
+      # Stages ymux-cli.exe + ymux-linux-x64 + remote-manifest.json.
       # The musl cross-build links with rust-lld (see src-tauri/.cargo/
       # config.toml), so no external linker is needed on a Windows runner.
       # Fails in seconds if the cmdlet is unreachable, rather than four

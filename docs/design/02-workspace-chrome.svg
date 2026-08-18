@@ -11,7 +11,7 @@
   <rect x="0" y="34" width="236" height="726" fill="#161b22"/>
   <line x1="236" y1="34" x2="236" y2="760" stroke="#21262d"/>
   <rect x="16" y="50" width="20" height="20" rx="6" fill="url(#brand2)"/>
-  <text x="46" y="66" fill="url(#brand2)" font-size="15" font-weight="600">winmux</text>
+  <text x="46" y="66" fill="url(#brand2)" font-size="15" font-weight="600">ymux</text>
   <text x="214" y="66" fill="#565f6a" font-size="14" text-anchor="end">‹</text>
 
   <!-- section label -->

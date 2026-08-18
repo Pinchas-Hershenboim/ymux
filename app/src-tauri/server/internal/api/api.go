@@ -11,14 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"winmux-server/internal/auth"
-	"winmux-server/internal/chat"
-	"winmux-server/internal/files"
-	"winmux-server/internal/insights"
-	"winmux-server/internal/logging"
-	"winmux-server/internal/logs"
-	"winmux-server/internal/push"
-	"winmux-server/internal/workspace"
+	"ymux-server/internal/auth"
+	"ymux-server/internal/chat"
+	"ymux-server/internal/files"
+	"ymux-server/internal/insights"
+	"ymux-server/internal/logging"
+	"ymux-server/internal/logs"
+	"ymux-server/internal/push"
+	"ymux-server/internal/workspace"
 )
 
 // logger is the API front door's component logger (Phase 79.D unified format).

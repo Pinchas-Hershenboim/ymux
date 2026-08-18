@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"winmux-server/internal/config"
-	"winmux-server/internal/core"
-	"winmux-server/internal/logging"
+	"ymux-server/internal/config"
+	"ymux-server/internal/core"
+	"ymux-server/internal/logging"
 )
 
 // logger is the insights/metrics subsystem's component logger (Phase 79.D).

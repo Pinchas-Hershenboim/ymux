@@ -42,7 +42,7 @@ use crate::{config_dir, log_debug, log_info, log_warn, AppState};
 
 /// URL scheme the Dev-Mode inspect script uses to hand a captured
 /// element back to the app. See `install_ticket_bridge`.
-const TICKET_SCHEME: &str = "winmux-ticket";
+const TICKET_SCHEME: &str = "ymux-ticket";
 
 /// Event the main window listens on to open the ticket modal.
 const TICKET_EVENT: &str = "browser:ticket-captured";
@@ -63,14 +63,14 @@ struct TicketCapture {
 /// `on_ipc` either. So the Dev-Mode inspect script talks back through
 /// the one hook that does exist — navigation.
 ///
-/// The script sets `location.href = "winmux-ticket:<base64url>"`. This
+/// The script sets `location.href = "ymux-ticket:<base64url>"`. This
 /// handler decodes it, emits `browser:ticket-captured`, and returns
 /// `false` so the navigation itself never happens. **Every other URL
 /// returns `true`** — normal browsing, the port+path model, tabs and
 /// `workspace_browser_navigate` all take the exact same code path they
 /// did before this existed.
 ///
-/// Note the scheme is used WITHOUT `//`: `winmux-ticket:<data>` parses
+/// Note the scheme is used WITHOUT `//`: `ymux-ticket:<data>` parses
 /// as a cannot-be-a-base URL, so the payload lands in `path()` verbatim.
 /// The `//` form would put it in the *authority* slot instead —
 /// `host_str()` gets the data and `path()` comes back empty — and routes
@@ -81,7 +81,7 @@ fn handle_ticket_navigation(app: &AppHandle, workspace_id: &str, url: &Url) -> b
     if url.scheme() != TICKET_SCHEME {
         return true; // not ours — let the webview navigate normally
     }
-    // `winmux-ticket:AAAA` → path() is "AAAA" (cannot-be-a-base URL).
+    // `ymux-ticket:AAAA` → path() is "AAAA" (cannot-be-a-base URL).
     let encoded = url.path();
     match decode_capture(encoded) {
         Ok(capture) => {
@@ -224,7 +224,7 @@ pub(crate) async fn workspace_browser_show(
         // Default environment — shared with the main window + every other
         // workspace browser. One WebView2 environment per process.
         // Only addition to the builder: the ticket bridge. It is inert
-        // for every URL that isn't `winmux-ticket:` (returns true =
+        // for every URL that isn't `ymux-ticket:` (returns true =
         // navigate as before), and nothing is injected into the page.
         let bridge_app = app.clone();
         let bridge_ws = workspace_id.clone();
@@ -411,7 +411,7 @@ pub(crate) fn cleanup_workspace_sessions(workspace_id: &str) {
 mod ticket_bridge_tests {
     use super::*;
 
-    /// The whole bridge rests on this: `winmux-ticket:<data>` must parse
+    /// The whole bridge rests on this: `ymux-ticket:<data>` must parse
     /// as an opaque URL that hands the payload back byte-for-byte. Base64
     /// is case-sensitive, so any host-style normalization would corrupt it.
     #[test]

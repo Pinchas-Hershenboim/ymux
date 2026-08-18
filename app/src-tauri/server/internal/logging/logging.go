@@ -1,4 +1,4 @@
-// Package logging is the winmux-server unified logger (Phase 79.D). Every
+// Package logging is the ymux-server unified logger (Phase 79.D). Every
 // subsystem logs through log/slog with a shared handler that renders one line
 // format:
 //
@@ -7,7 +7,7 @@
 // Local time with UTC offset, LEVEL padded to width 5, COMP like [SRV:CHAT].
 // slog attrs render as trailing key=val pairs (%q-quoted when the value holds
 // spaces, quotes, or '='). The process-wide minimum level lives in Level and
-// is runtime-adjustable via WatchLevelFile (~/.winmux/log-level).
+// is runtime-adjustable via WatchLevelFile (~/.ymux/log-level).
 //
 // Output goes through a shared writer indirection, so package-level loggers
 // created before Setup runs (var logger = logging.New("SRV:X")) transparently

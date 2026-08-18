@@ -17,7 +17,7 @@ import (
 	"sort"
 	"strings"
 
-	"winmux-server/internal/core"
+	"ymux-server/internal/core"
 )
 
 var (
@@ -205,7 +205,7 @@ func (l *LocalFiles) Write(p string, data []byte) (string, int64, error) {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", 0, err
 	}
-	tmp := full + ".winmux-tmp"
+	tmp := full + ".ymux-tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return "", 0, err
 	}

@@ -244,6 +244,103 @@
         ],
         "type": "object"
       },
+      "HookDecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
+      "HookForwardRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "pane_id": {
+            "type": "string"
+          },
+          "req_id": {
+            "type": "string"
+          },
+          "timeout_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "tool_name": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "req_id",
+          "workspace_id",
+          "pane_id",
+          "tool_name",
+          "title",
+          "timeout_at"
+        ],
+        "type": "object"
+      },
+      "HookForwardResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "HookResolved": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "req_id": {
+            "type": "string"
+          },
+          "won": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "req_id",
+          "decision",
+          "won"
+        ],
+        "type": "object"
+      },
+      "HookStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "resolved": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "resolved",
+          "decision"
+        ],
+        "type": "object"
+      },
       "LineEvent": {
         "additionalProperties": false,
         "properties": {
@@ -357,6 +454,24 @@
         "required": [
           "lines",
           "truncated"
+        ],
+        "type": "object"
+      },
+      "ScopesBody": {
+        "additionalProperties": false,
+        "properties": {
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "scopes"
         ],
         "type": "object"
       },
@@ -504,9 +619,9 @@
     }
   },
   "info": {
-    "description": "winmux server daemon API — the client-SDK surface (version negotiation, Files, Logs). Streaming WebSocket frames are described in asyncapi.json (PHASE-77-DESIGN §4.4). Generated from the huma handlers (S4); the Insights metrics API is desktop-internal and documented separately.",
-    "title": "winmux-server",
-    "version": "2.0.0"
+    "description": "ymux server daemon API — the client-SDK surface (version negotiation, Files, Logs). Streaming WebSocket frames are described in asyncapi.json (PHASE-77-DESIGN §4.4). Generated from the huma handlers (S4); the Insights metrics API is desktop-internal and documented separately.",
+    "title": "ymux-server",
+    "version": "2.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -555,6 +670,120 @@
           }
         },
         "summary": "Redeem a one-shot pairing token for a device credential",
+        "tags": [
+          "pairing"
+        ]
+      }
+    },
+    "/api/v2/devices/{id}/scopes": {
+      "get": {
+        "operationId": "device-get-scopes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopesBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a device's scope grants",
+        "tags": [
+          "pairing"
+        ]
+      },
+      "put": {
+        "operationId": "device-set-scopes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopesBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set a device's scope grants (owner only)",
         "tags": [
           "pairing"
         ]
@@ -762,7 +991,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Read up to max_bytes of a file (raw bytes; X-Winmux-Truncated header)",
+        "summary": "Read up to max_bytes of a file (raw bytes; X-Ymux-Truncated header)",
         "tags": [
           "files"
         ]
@@ -837,6 +1066,107 @@
         "summary": "Upload a file (multipart form; ?path= destination)",
         "tags": [
           "files"
+        ]
+      }
+    },
+    "/api/v2/hooks/forward": {
+      "post": {
+        "operationId": "hooks-forward",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HookForwardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HookForwardResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Forward a desktop-origin hook to paired devices",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v2/hooks/{req_id}": {
+      "get": {
+        "operationId": "hooks-status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "req_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HookStatus"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Poll a forwarded hook's resolution",
+        "tags": [
+          "workspace"
         ]
       }
     },
@@ -1048,6 +1378,77 @@
         "summary": "Server-Sent Events tail of a client's log (event: line)",
         "tags": [
           "logs"
+        ]
+      }
+    },
+    "/api/v2/session/{sid}/hook/{req_id}": {
+      "put": {
+        "operationId": "session-resolve-hook",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "req_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HookDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HookResolved"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Approve or deny a pending hook request",
+        "tags": [
+          "workspace"
         ]
       }
     },

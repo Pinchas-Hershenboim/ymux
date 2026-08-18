@@ -13,13 +13,13 @@
 
 1. **DPAPI מבודד בין-משתמשים, לא בין-תהליכים.** `CryptProtectData` ב-`CurrentUser` scope אומר: כל תהליך שרץ תחת אותו user יכול לפענח. כלומר חבילת npm זדונית שהסוכן הריץ (postinstall) רצה כ-*אותו user* כמו ה-broker, ויכולה לקרוא את `secrets.dpapi` ולעשות `CryptUnprotectData` בעצמה — **בלי לעבור דרך ה-capability protocol בכלל**. ה-Vault מגן מצוין על *ערוץ ה-LLM* (prompt injection, exfil בצ'אט). הוא **לא** מגן מפני קוד arbitrary שהסוכן הריץ. זה בסדר — זה עדיין win גדול — אבל חייב להיאמר במפורש, והוא קובע מה מותר לסמן `PreApproved`.
 
-2. **ל-WebView2 אין isolated worlds.** התכנון הנוכחי של `BrowserFormFill` מניח "Main world" מול "Isolated content script world" — **זה לא קיים ב-WebView2** (קיים ב-Apple WKWebView ובתוסף-דפדפן, לא ב-WebView2). סקריפט שמוזרק עם `AddScriptToExecuteOnDocumentCreated` רץ ב-main world של הדף, נגיש ל-JS של הדף. ההנחה ש-`__winmux_fillCredential` "מבודד" — שגויה. זו טעות עובדתית בתכנון, לא רק tradeoff.
+2. **ל-WebView2 אין isolated worlds.** התכנון הנוכחי של `BrowserFormFill` מניח "Main world" מול "Isolated content script world" — **זה לא קיים ב-WebView2** (קיים ב-Apple WKWebView ובתוסף-דפדפן, לא ב-WebView2). סקריפט שמוזרק עם `AddScriptToExecuteOnDocumentCreated` רץ ב-main world של הדף, נגיש ל-JS של הדף. ההנחה ש-`__ymux_fillCredential` "מבודד" — שגויה. זו טעות עובדתית בתכנון, לא רק tradeoff.
 
 3. **ה-broker pattern כבר ניצח בשוק.** Claude Code (`apiKeyHelper`), Continue.dev (Org secrets proxied, never sent to IDE), Infisical/Doppler (`run` מזריק env, כלום לא נכתב לדיסק) — כולם הגיעו לאותה מסקנה: *ה-agent מקבל use, לא value*. התזה של יוסי (capability > credential) נכונה ומאומתת ע"י התעשייה. אין צורך להמציא — צריך ליישם נכון.
 
 4. **ה-capability לא צריך להיות JWT.** ה-broker המקומי הוא ה-verifier היחיד. אז cap_id צריך להיות **opaque handle אטום** ב-map צד-broker, single-use, נמחק ב-`.use`. זה inherently revocable ו-replay-proof, בלי חתימות, בלי key management. JWT/STS רלוונטיים רק כשיש verifier מבוזר — לא המקרה כאן.
 
-5. **ל-MVP: שתי egress, לא חמש.** (1) **Local child-process shim** (`winmux exec --with-secret`) — מאמת את התזה הכי חזק, הסוד אף פעם לא נכנס ל-env של הסוכן. (2) **SSH env injection** — leverage הכי גבוה (90% כבר קיים ב-`lib.rs:2440`), workflow אמיתי (gh/aws/kubectl על remote). **לדחות:** BrowserFormFill (isolation שבור ב-WebView2) ו-Stdin (weakest link, niche).
+5. **ל-MVP: שתי egress, לא חמש.** (1) **Local child-process shim** (`ymux exec --with-secret`) — מאמת את התזה הכי חזק, הסוד אף פעם לא נכנס ל-env של הסוכן. (2) **SSH env injection** — leverage הכי גבוה (90% כבר קיים ב-`lib.rs:2440`), workflow אמיתי (gh/aws/kubectl על remote). **לדחות:** BrowserFormFill (isolation שבור ב-WebView2) ו-Stdin (weakest link, niche).
 
 ---
 
@@ -33,7 +33,7 @@
 - **איפה זה נופל:** ה-env var הסופי גלוי לכל תהליך-ילד שה-shell מוליד. אין הפרדה בין "Claude צריך את המפתח" ל-"הסקריפט שהוא הריץ יכול לקרוא אותו". `apiKeyHelper` פותר rotation/storage, לא isolation.
 - מקור: [Claude Code env vars](https://code.claude.com/docs/en/env-vars), [Manage API key env vars](https://support.claude.com/en/articles/12304248-manage-api-key-environment-variables-in-claude-code).
 
-> **לקח ל-winmux:** `apiKeyHelper` הוא הוכחת היתכנות ל-"broker מזריק, agent לא מאחסן". winmux לוקח את זה צעד קדימה: ה-broker גם *מבצע את הפעולה* ולא רק שולף ערך.
+> **לקח ל-ymux:** `apiKeyHelper` הוא הוכחת היתכנות ל-"broker מזריק, agent לא מאחסן". ymux לוקח את זה צעד קדימה: ה-broker גם *מבצע את הפעולה* ולא רק שולף ערך.
 
 #### Warp
 - **מודל הסודות:** **Secret Redaction** — regex patterns שמזהים סודות ב-output ומצנזרים אותם *לפני* שליחה ל-LLM. כבוי כברירת מחדל, מופעל ב-Settings → Privacy.
@@ -41,7 +41,7 @@
 - **איפה זה נופל:** Warp עצמם מודים — דפוסי credentials ב-shell output "too varied and context-dependent" כדי לתפוס באמינות. redaction מבוסס-regex הוא best-effort, לא boundary. וזה לא חל ב-Session Sharing.
 - מקור: [Warp Secret Redaction](https://docs.warp.dev/privacy/secret-redaction), [Don't leak secrets](https://www.warp.dev/blog/dont-accidentally-leak-secrets-from-your-terminal).
 
-> **לקח ל-winmux:** redaction הוא detection, לא prevention. winmux בחר נכון ב-capability boundary במקום regex scrubbing. אבל כדאי **גם** redaction על output של ה-shim (כשהסוד עשוי להשתקף בתשובת שרת).
+> **לקח ל-ymux:** redaction הוא detection, לא prevention. ymux בחר נכון ב-capability boundary במקום regex scrubbing. אבל כדאי **גם** redaction על output של ה-shim (כשהסוד עשוי להשתקף בתשובת שרת).
 
 #### Cursor
 - **מודל הסודות:** Secrets UI מובנה (cloud/background agents) + קריאת `.env` אם מורשה.
@@ -49,7 +49,7 @@
 - **איפה זה נופל:** סודות "baked into disk snapshots", חוסר visibility מתי סוד נקרא/הוחלף. ובאופן מדאיג — דווח על RCE ב-Cursor דרך git hooks חבויים: הסוכן מבצע commit/checkout, hook זדוני רץ עם ה-credentials. ה-blast radius של "agent קורא .env" הוא כל הסוד.
 - מקור: [Infisical: Cursor cloud agents](https://infisical.com/blog/secure-secrets-management-for-cursor-cloud-agents), [Your agent is reading your .env](https://infisical.com/blog/your-ai-coding-agent-is-reading-your-env-file), [Cursor git-hooks RCE](https://hackread.com/cursor-ai-ide-vulnerability-code-execution-git-hooks/).
 
-> **לקח ל-winmux:** ה-git-hooks RCE הוא בדיוק תרחיש "קוד arbitrary שהסוכן הריץ = same user = יכול לפענח DPAPI". מחזק מסקנה #1.
+> **לקח ל-ymux:** ה-git-hooks RCE הוא בדיוק תרחיש "קוד arbitrary שהסוכן הריץ = same user = יכול לפענח DPAPI". מחזק מסקנה #1.
 
 #### OpenHands
 - **מודל הסודות:** **Secret Registry** — `update_secrets()`, ה-`TerminalTool` סורק פקודות אחר מפתחות סוד ידועים, מייצא אותם כ-env vars לפני הרצה, **ו-masks את הערך ב-output**. הכל בתוך Docker container.
@@ -57,21 +57,21 @@
 - **איפה זה נופל:** OpenHands עצמם מתעדים שהסוכן "would read all secrets when debugging environment files". masking ב-output הוא אותו best-effort כמו Warp. ה-container מבודד filesystem, אבל סוד שהוזרק ל-env עדיין ניתן ל-exfil ע"י קוד בתוך ה-container.
 - מקור: [OpenHands Secret Registry](https://docs.openhands.dev/sdk/guides/secrets), [Mitigating prompt injection](https://openhands.dev/blog/mitigating-prompt-injection-attacks-in-software-agents), [Issue #9124](https://github.com/OpenHands/OpenHands/issues/9124).
 
-> **לקח ל-winmux:** OpenHands' "scan command → inject env → mask output" הוא בדיוק מה ש-`SshInject` עושה, אבל ל-winmux יש יתרון: ה-Docker container אצל OpenHands הוא ה-isolation; אצל winmux ה-isolation הוא ה-broker. שתי הגישות חולקות את אותו weak point: ברגע שהסוד ב-env, `echo` מדליף.
+> **לקח ל-ymux:** OpenHands' "scan command → inject env → mask output" הוא בדיוק מה ש-`SshInject` עושה, אבל ל-ymux יש יתרון: ה-Docker container אצל OpenHands הוא ה-isolation; אצל ymux ה-isolation הוא ה-broker. שתי הגישות חולקות את אותו weak point: ברגע שהסוד ב-env, `echo` מדליף.
 
 #### Aider
 - **מודל הסודות:** `.env` בלבד (home / git root / cwd / `--env-file`, בסדר עדיפות), או env vars, או `--api-key provider=key`.
 - **מה הסוכן רואה:** הכל. אין שכבת broker, אין isolation, אין audit.
-- **איפה זה נופל:** זה ה-baseline ה"נאיבי" — credential, לא capability. כל מה ש-winmux מנסה לשפר. גם precedence של `.env` היה באג ידוע (issue #868).
+- **איפה זה נופל:** זה ה-baseline ה"נאיבי" — credential, לא capability. כל מה ש-ymux מנסה לשפר. גם precedence של `.env` היה באג ידוע (issue #868).
 - מקור: [Aider dotenv](https://aider.chat/docs/config/dotenv.html), [Aider API keys](https://aider.chat/docs/config/api-keys.html).
 
 #### Continue.dev
 - **מודל הסודות:** Mission Control עם **User Secrets** ו-**Org Secrets**. שימוש דרך `${{ secrets.NAME }}`.
 - **מה הסוכן רואה:** למפתח: ה-IDE extension *לא* מקבל את הערך כש-Org secret. "LLM requests are proxied through api.continue.dev and secrets are never sent to the IDE extensions". זה ה-broker pattern במלואו — הסוד יושב בצד שרת, הבקשות עוברות proxy.
-- **איפה זה נופל:** דורש control-plane מבוזר (api.continue.dev). אופליין/local-first זה לא מתאים. אבל הרעיון — "proxy את הבקשה, אל תיתן את הסוד" — הוא בדיוק ה-HTTP-header shim של winmux, מקומית.
+- **איפה זה נופל:** דורש control-plane מבוזר (api.continue.dev). אופליין/local-first זה לא מתאים. אבל הרעיון — "proxy את הבקשה, אל תיתן את הסוד" — הוא בדיוק ה-HTTP-header shim של ymux, מקומית.
 - מקור: [Continue.dev Secret Types](https://docs.continue.dev/mission-control/secrets/secret-types).
 
-> **לקח ל-winmux:** Continue.dev מוכיח שמשתמשים מקבלים "proxy את הבקשה" כ-UX. winmux עושה את אותו דבר בלי שרת — ה-broker המקומי הוא ה-proxy.
+> **לקח ל-ymux:** Continue.dev מוכיח שמשתמשים מקבלים "proxy את הבקשה" כ-UX. ymux עושה את אותו דבר בלי שרת — ה-broker המקומי הוא ה-proxy.
 
 #### GitHub Copilot CLI
 - **מודל הסודות:** שלוש שיטות: OAuth device flow (ברירת מחדל אינטראקטיבית), env vars (`COPILOT_GITHUB_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN`), ו-`gh` CLI fallback. דורש **fine-grained PAT** עם הרשאת "Copilot Requests"; classic tokens (`ghp_`) מתעלמים בשקט.
@@ -89,37 +89,37 @@
 > | OpenHands | Secret Registry | masked (best-effort) | Docker + masking |
 > | Claude Code | env + `apiKeyHelper` | כן (env) | broker ב-fetch |
 > | Continue.dev | proxy (Org) | **לא** (Org) | server-side proxy |
-> | **winmux (מוצע)** | **capability** | **לא** | **local broker** |
+> | **ymux (מוצע)** | **capability** | **לא** | **local broker** |
 >
-> winmux ו-Continue.dev הם היחידים עם boundary אמיתי. winmux היחיד שעושה זאת local-first.
+> ymux ו-Continue.dev הם היחידים עם boundary אמיתי. ymux היחיד שעושה זאת local-first.
 
 ### 1.2 אקוסיסטם של secrets managers
 
 #### 1Password CLI
 - **גישה בלי master password בכל פעם:** שלוש דרכים. (a) **Service account token** ב-env var — לאוטומציה headless. (b) **Biometric unlock** — Windows Hello / fingerprint במקום הסיסמה. (c) **App integration** — `op` מתחבר לאפליקציית 1Password ש-mngs את ה-unlock. בנוסף **SSH agent** מובנה + Shell Plugins שעוטפים CLIs שלמים ב-biometric.
-- **דפוס ל-winmux:** ה-biometric-per-use הוא בדיוק מה שצריך ל-egress רגיש. ה-Shell Plugins ("עטוף CLI, בקש מגע") הם תאומים ל-`winmux exec --with-secret`.
+- **דפוס ל-ymux:** ה-biometric-per-use הוא בדיוק מה שצריך ל-egress רגיש. ה-Shell Plugins ("עטוף CLI, בקש מגע") הם תאומים ל-`ymux exec --with-secret`.
 - מקור: [1Password biometric unlock](https://developer.1password.com/docs/cli/use-biometric-unlock/), [Shell Plugins](https://1password.com/blog/shell-plugins).
 
 #### HashiCorp Vault
 - **broker pattern קלאסי:** AppRole (RoleID + SecretID → token), כל סוד דינמי מקבל **lease** עם TTL, renewable עד `token_max_ttl`, ו-**revocable** (מיידית, idlocalinvalidate). "All dynamic secrets in Vault are required to have a lease".
 - **מה זה ה-"capability" המקביל:** ה-**lease_id** + ה-token. ה-token הוא ה-handle; ה-lease הוא ה-TTL/revocation binding.
-- **לקח ל-winmux:** ה-lease model = ה-`Capability { cap_id, expires_at }` של יוסי, פלוס revocation. winmux צריך לאמץ את "כל cap הוא lease שניתן לבטל מה-UI".
+- **לקח ל-ymux:** ה-lease model = ה-`Capability { cap_id, expires_at }` של יוסי, פלוס revocation. ymux צריך לאמץ את "כל cap הוא lease שניתן לבטל מה-UI".
 - מקור: [Vault Lease](https://developer.hashicorp.com/vault/docs/concepts/lease), [Vault AppRole](https://developer.hashicorp.com/vault/docs/auth/approle).
 
 #### AWS STS
 - **`AssumeRole` + session policy:** מחזיר temporary credentials (access key + secret + **session token**). ה-session policy עושה **scope-down**: ההרשאות הן ה-*intersection* של role policy ו-session policy — אי אפשר להעלות הרשאות, רק לצמצם.
 - **binding ל-session:** ה-session token חייב להישלח עם כל קריאה; AWS מאמת אותו. short-lived מובנה.
-- **לקח ל-winmux:** ה-"intersection, never escalate" הוא העיקרון הנכון ל-`secret.request(intent)`: ה-intent יכול רק לצמצם את ה-`EgressPolicy`, לעולם לא להרחיב. cap צריך לקודד את ה-intersection בין מה שהסוד מתיר למה שהבקשה ביקשה.
+- **לקח ל-ymux:** ה-"intersection, never escalate" הוא העיקרון הנכון ל-`secret.request(intent)`: ה-intent יכול רק לצמצם את ה-`EgressPolicy`, לעולם לא להרחיב. cap צריך לקודד את ה-intersection בין מה שהסוד מתיר למה שהבקשה ביקשה.
 - מקור: [STS AssumeRole](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html).
 
 #### Doppler / Infisical
 - **runtime injection:** `infisical run -- <cmd>` מזריק סודות כ-env vars לתהליך. "Nothing is written to disk... credentials fetched fresh on every agent boot". **Machine Identity** (non-human principal) מאומת דרך Universal Auth / OIDC / cloud IAM, scoped לסודות שהסוכן צריך בלבד. Doppler מזריק env בלבד (אין SDK fetch-by-name); Infisical גם fetch פר-שם.
-- **לקח ל-winmux:** "machine identity scoped to agent" = ה-`Principal` של winmux. "inject env, nothing to disk, fresh per boot" = בדיוק מה ש-`SshInject`/shim צריכים לעשות. וההבדל Doppler-vs-Infisical (env-only מול fetch-by-name) ממפה ל-winmux: env injection (כמו Doppler) מול capability-use (כמו Infisical SDK).
+- **לקח ל-ymux:** "machine identity scoped to agent" = ה-`Principal` של ymux. "inject env, nothing to disk, fresh per boot" = בדיוק מה ש-`SshInject`/shim צריכים לעשות. וההבדל Doppler-vs-Infisical (env-only מול fetch-by-name) ממפה ל-ymux: env injection (כמו Doppler) מול capability-use (כמו Infisical SDK).
 - מקור: [Infisical CLI secrets](https://infisical.com/docs/cli/commands/secrets), [Cursor cloud agents](https://infisical.com/blog/secure-secrets-management-for-cursor-cloud-agents).
 
 #### age (FiloSottile)
 - **keypair pattern:** X25519 recipients (public) / identities (private). file key אקראי (16 bytes) נעטף פעם לכל recipient. אפשר להצפין לכמה recipients במקביל.
-- **לקח ל-winmux:** age רלוונטי **לא** ל-runtime use אלא ל-**backup/export של ה-vault** או **sync בין מכונות**: הצפן את ה-secrets store ל-recipient שהוא TPM-backed key או YubiKey. DPAPI לא ניתן להעברה בין מכונות (per-machine); age כן. זו דרך נקייה ל-"export vault" בלי PowerShell PGP.
+- **לקח ל-ymux:** age רלוונטי **לא** ל-runtime use אלא ל-**backup/export של ה-vault** או **sync בין מכונות**: הצפן את ה-secrets store ל-recipient שהוא TPM-backed key או YubiKey. DPAPI לא ניתן להעברה בין מכונות (per-machine); age כן. זו דרך נקייה ל-"export vault" בלי PowerShell PGP.
 - מקור: [age authentication](https://words.filippo.io/age-authentication/), [FiloSottile/age](https://github.com/FiloSottile/age).
 
 ---
@@ -127,7 +127,7 @@
 ## 2. אבני בניין טכניות — מה זמין בפועל ב-Windows
 
 ### 2.1 DPAPI (`CryptProtectData` / `CryptUnprotectData`)
-- **כבר בשימוש:** `provisioning.rs:255` עוטף סיסמת-init דרך **shell-out ל-PowerShell** (`ProtectedData::Protect(..., 'CurrentUser')`), הסוד מועבר ב-env var `WINMUX_SECRET` ל-`powershell.exe`.
+- **כבר בשימוש:** `provisioning.rs:255` עוטף סיסמת-init דרך **shell-out ל-PowerShell** (`ProtectedData::Protect(..., 'CurrentUser')`), הסוד מועבר ב-env var `YMUX_SECRET` ל-`powershell.exe`.
 - **חוזק:** per-user-per-machine, אפס key management, ה-master key נגזר מ-logon credentials. העברת ה-JSON למשתמש אחר = ג'יבריש.
 - **חולשה קריטית:** `CurrentUser` נותן בידוד **בין-משתמשים בלבד**. "any application running on your credentials can access the protected data". אין intra-user process isolation. תהליך זדוני באותו user → `CryptUnprotectData` על `secrets.dpapi` → plaintext. בנוסף DPAPI נוצל היסטורית לחילוץ סודות ארגוני דרך ה-domain backup key.
 - **חולשת המימוש הנוכחי:** ה-shell-out ל-PowerShell חושף את הסוד ב-env block של תהליך-ילד (קריא ל-same-user דרך `NtQueryInformationProcess`/WMI), ומשאיר את הסוד plaintext רגעית ב-process אחר. ל-vault בתדירות גבוהה — **לעבור ל-`windows-rs` native in-process** (כמו שהעדכון עבר מ-PowerShell ל-`ureq` ב-v0.2.3 לפי CLAUDE.md). אין env var, אין תהליך-ילד.
@@ -135,19 +135,19 @@
 
 ### 2.2 Credential Manager מול DPAPI
 - **Credential Manager משתמש ב-DPAPI מתחת.** `CredRead`/`CredEnumerate` נגישים לכל תהליך ב-user context. אז Credential Manager **לא** פותר את בעיית ה-intra-user isolation — אותה חולשה בדיוק, פלוס API נוח יותר לתוקף (`CredEnumerate` מונה הכל).
-- **מתי בכל זאת:** Credential Manager טוב כשרוצים אינטגרציה עם מנגנוני OS (RDP, git credential helper). ל-vault פרטי של winmux — DPAPI ישיר על קובץ נשלט עדיף, כי אין enumeration surface ואין הופעה ב-`vaultcmd`/UI של Windows.
+- **מתי בכל זאת:** Credential Manager טוב כשרוצים אינטגרציה עם מנגנוני OS (RDP, git credential helper). ל-vault פרטי של ymux — DPAPI ישיר על קובץ נשלט עדיף, כי אין enumeration surface ואין הופעה ב-`vaultcmd`/UI של Windows.
 - **האם הסוכן יכול להידחות גישה?** לא ברמת ה-OS — שניהם same-user. הדחייה חייבת לבוא מה-broker (logical), לא מה-storage.
 - מקור: [Dumping creds w/ SeTrustedCredmanAccess](https://www.tiraniddo.dev/2021/05/dumping-stored-credentials-with.html).
 
 ### 2.3 TPM-backed keys / Windows Hello / Virtual Smart Card
 - **למה זה חשוב:** זו הדרך היחידה לשבור את ה-intra-user weakness. מפתח ב-TPM **לא ניתן לחילוץ** — תהליך זדוני יכול לבקש *שימוש* בו אבל לא להעתיק אותו, וב-Windows Hello השימוש מותנה ב-user gesture (PIN/biometric).
 - **headless בלי biometric:** TPM Virtual Smart Card עובד עם **PIN** (לא חובה biometric) — מתאים ל-laptop בלי מצלמת IR/קורא טביעה. נוצר עם `Tpmvscmgr` או `Windows.Device.SmartCards`. Microsoft ממליצים לעבור ל-Windows Hello for Business / FIDO2, אבל ה-VSC עדיין נתמך.
-- **דפוס ל-winmux:** עטוף את ה-DPAPI master של ה-vault במפתח TPM-sealed. אז גם same-user malware שקורא `secrets.dpapi` לא יכול לפענח בלי gesture/PIN דרך ה-TPM. זו ה-upgrade path מ-MVP ל-hardened.
+- **דפוס ל-ymux:** עטוף את ה-DPAPI master של ה-vault במפתח TPM-sealed. אז גם same-user malware שקורא `secrets.dpapi` לא יכול לפענח בלי gesture/PIN דרך ה-TPM. זו ה-upgrade path מ-MVP ל-hardened.
 - מקור: [Virtual Smart Card overview](https://learn.microsoft.com/en-us/windows/security/identity-protection/virtual-smart-cards/virtual-smart-card-overview), [Windows Hello apps](https://learn.microsoft.com/en-us/windows/apps/develop/security/windows-hello).
 
 ### 2.4 WebView2 isolated worlds — **התיקון הגדול**
 - **העובדה:** ל-WebView2 **אין** isolated worlds. הוא יכול להריץ קוד רק ב-page context ("main" world), בניגוד ל-Apple platforms. `AddScriptToExecuteOnDocumentCreated` רץ באותו context כמו הדף — אם הדף משנה `console.log`, השינוי משתקף גם בסקריפט המוזרק (הוכח ב-WebView2Feedback #2510). Microsoft עצמם מזהירים: "Be careful with `AddScriptToExecuteOnDocumentCreated`... any HTML document may have access to the native application's resources".
-- **מה זה שובר בתכנון:** ה-`__winmux_fillCredential(cap_id, selector)` המוזרק יושב ב-main world. דף זדוני יכול: (a) לעטוף/לדרוס את `document.querySelector(...).value` setter ולקרוא את הסוד ברגע ההזרקה, (b) לקרוא `input.value` אחרי המילוי, (c) לדרוס את הפונקציה הגלובלית עצמה. ההנחה "isolated content script world" שגויה.
+- **מה זה שובר בתכנון:** ה-`__ymux_fillCredential(cap_id, selector)` המוזרק יושב ב-main world. דף זדוני יכול: (a) לעטוף/לדרוס את `document.querySelector(...).value` setter ולקרוא את הסוד ברגע ההזרקה, (b) לקרוא `input.value` אחרי המילוי, (c) לדרוס את הפונקציה הגלובלית עצמה. ההנחה "isolated content script world" שגויה.
 - **מה כן אפשר ב-WebView2:** למלא דרך **CDP / DevTools Protocol מצד ה-host** (`Runtime.evaluate`/`Input.insertText`) ולא דרך global מוזרק; להריץ ב-WebView2 environment ייעודי לכל credential-fill; למלא ואז *מיד* לשגר את הטופס (submit) כדי לצמצם חלון הקריאה; אף פעם לא לחשוף callable global. אבל **residual risk נשאר**: דף שמאזין ל-`input` events או עוטף setters יכול לראות שהמילוי קרה ואת הערך. ל-credential לתוך דף לא-מהימן — זה **High**, לא "בינוני" כמו בתכנון.
 - מקור: [WebView2 security](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security), [WebView2Feedback #2510](https://github.com/MicrosoftEdge/WebView2Feedback/issues/2510).
 
@@ -159,13 +159,13 @@
 
 ### 2.6 Hardware tokens (YubiKey OpenPGP / gpg-agent)
 - **"proof, not possession":** המפתח הפרטי נשאר על ה-OpenPGP card; רק link מיובא ל-GPG. "your keys cannot be compromised in the case of an infection". gpg4win תומך ב-SSH auth: חיבור ראשון = PIN + מגע, אחר כך רק מגע.
-- **מקום ב-winmux:** ה-tier הגבוה — egress שדורש הוכחה קריפטוגרפית של נוכחות (לא רק "התהליך ביקש"). gotcha: gpg4win פותח smart cards ב-exclusive mode → מתנגש עם Pageant-replacements. אז אינטגרציה צריכה זהירות.
+- **מקום ב-ymux:** ה-tier הגבוה — egress שדורש הוכחה קריפטוגרפית של נוכחות (לא רק "התהליך ביקש"). gotcha: gpg4win פותח smart cards ב-exclusive mode → מתנגש עם Pageant-replacements. אז אינטגרציה צריכה זהירות.
 - מקור: [YubiKey SSH auth on Windows](https://developers.yubico.com/PGP/SSH_authentication/Windows.html).
 
 ### 2.7 Memory-only secrets (`zeroize` / `secrecy`)
 - **`zeroize`:** `ptr::write_volatile` + memory fences, מבטיח שאיפוס לא יוסר ע"י optimizer. אבל מודה: "potential for microarchitectural attacks (Spectre/Meltdown) to leak" — לא מגן מ-covert channels חומרתיים.
-- **`secrecy`:** עוטף ב-`SecretBox`/`SecretString`, מאפס ב-drop, **redaction ב-Debug** (מונע logging בטעות — קריטי לכלל #1 של winmux). אבל no_std-friendly: **לא** עושה `mlock`/`mprotect` — הסוד יכול להגיע ל-swap/hibernate file.
-- **כמה הזיכרון דליף בפועל:** סוד ב-process memory ניתן ל-MiniDump (same-user/admin). page file + `hiberfil.sys` יכולים לתפוס אותו לדיסק. `zeroize` מקצר את החלון אבל לא סוגר hibernate. ל-winmux: עטוף כל secret value ב-`secrecy::SecretString`, אפס מיד אחרי ה-egress, ושקול `VirtualLock` (windows-rs) על ה-buffer לסודות הכי רגישים.
+- **`secrecy`:** עוטף ב-`SecretBox`/`SecretString`, מאפס ב-drop, **redaction ב-Debug** (מונע logging בטעות — קריטי לכלל #1 של ymux). אבל no_std-friendly: **לא** עושה `mlock`/`mprotect` — הסוד יכול להגיע ל-swap/hibernate file.
+- **כמה הזיכרון דליף בפועל:** סוד ב-process memory ניתן ל-MiniDump (same-user/admin). page file + `hiberfil.sys` יכולים לתפוס אותו לדיסק. `zeroize` מקצר את החלון אבל לא סוגר hibernate. ל-ymux: עטוף כל secret value ב-`secrecy::SecretString`, אפס מיד אחרי ה-egress, ושקול `VirtualLock` (windows-rs) על ה-buffer לסודות הכי רגישים.
 - מקור: [zeroize](https://docs.rs/zeroize/latest/zeroize/), [secrecy](https://docs.rs/secrecy/latest/secrecy/).
 
 ---
@@ -175,7 +175,7 @@
 הנחת בסיס: התוקף הוא **same-user code** (חבילה זדונית שהסוכן הריץ, prompt injection שגרם להרצה) או **ה-LLM channel** (exfil בצ'אט). מחוץ לסקופ: Admin/SYSTEM, גישה פיזית, OS exploits, evil-maid — בדיוק כמו בתכנון של יוסי.
 
 ### 3.1 Spoofing
-- **T-S1:** binary זדוני בשם `winmux-mcp.exe` מתחבר ל-named pipe / local socket של ה-broker וקורא `secret.request`. ה-`Principal::McpTool(String)` הוא **string חופשי** — trivially spoofable. אין authentication של ה-peer.
+- **T-S1:** binary זדוני בשם `ymux-mcp.exe` מתחבר ל-named pipe / local socket של ה-broker וקורא `secret.request`. ה-`Principal::McpTool(String)` הוא **string חופשי** — trivially spoofable. אין authentication של ה-peer.
 - **T-S2:** תהליך מתחזה ל-pane אחר ע"י העברת `pane_id` שקרי ב-`secret.request(principal=current_pane)` — ה-API מקבל את ה-claim של הקורא.
 - **כיסוי בתכנון:** ❌ לא מכוסה. ה-Principal enum מתאר *מי מורשה* אבל לא *איך מאמתים את הזהות*.
 - **mitigation נדרש:** named pipe עם ACL מוגבל ל-SID של ה-user + בדיקת image path/signature של ה-peer process (`GetNamedPipeClientProcessId` → `QueryFullProcessImageName`). את `pane_id` ה-broker חייב **לגזור מהחיבור המאומת**, לא מה-claim של הקורא.
@@ -183,7 +183,7 @@
 
 ### 3.2 Tampering
 - **T-T1:** `secrets.json` (metadata, **לא מוצפן** לפי התכנון) נערך ע"י same-user process — מוסיף `EgressPolicy` מתירני, או הופך `ApprovalPolicy` ל-`PreApproved`, או משנה `url_pattern` ל-endpoint של התוקף (ואז ה-broker "בתום לב" ישלח את ה-Bearer header ליעד הזדוני).
-- **T-T2:** עריכת `workspaces.json` (כלל #7 של winmux כבר דורש atomic writes — רלוונטי).
+- **T-T2:** עריכת `workspaces.json` (כלל #7 של ymux כבר דורש atomic writes — רלוונטי).
 - **כיסוי בתכנון:** ⚠ חלקי. ה-values מוצפנים (DPAPI), אבל ה-**policy** גלוי וניתן לעריכה. זו ה-attack surface האמיתית: לא צריך לפענח את הסוד אם אפשר לשנות *לאן* הוא נשלח.
 - **mitigation נדרש:** HMAC/sign על `secrets.json` עם מפתח ב-DPAPI — אבל same-user יכול לחתום מחדש. עיגון אמיתי דורש TPM. חלופה קלה ל-MVP: לאחסן את ה-policy **בתוך אותו DPAPI blob** כמו הערך (אז tampering הורס את שניהם), ולוודא שה-`url_pattern` הוא allowlist קשיח שה-user אישר, לא glob פתוח.
 - **residual: בינוני** (גבוה אם נשאר metadata גלוי).
@@ -195,7 +195,7 @@
 - **residual: בינוני** — ניתן לזהות tampering, לא למנוע.
 
 ### 3.4 Information disclosure
-- **T-I1 (LLM channel):** הסוד מודפס בטעות בתשובת ה-shim. דוגמה ממשית: `winmux exec --with-secret -- curl https://httpbin.org/headers` — השרת משקף את ה-`Authorization` header חזרה ב-body, וה-body חוזר ל-LLM. **ה-broker חייב לסרוק את ה-output של ה-shim ולצנזר את ערך הסוד לפני החזרה.**
+- **T-I1 (LLM channel):** הסוד מודפס בטעות בתשובת ה-shim. דוגמה ממשית: `ymux exec --with-secret -- curl https://httpbin.org/headers` — השרת משקף את ה-`Authorization` header חזרה ב-body, וה-body חוזר ל-LLM. **ה-broker חייב לסרוק את ה-output של ה-shim ולצנזר את ערך הסוד לפני החזרה.**
 - **T-I2 (`echo $X`):** SSH env injection — `echo $GH_TOKEN` בטרמינל מדליף raw. מאושר בתכנון כ-tradeoff.
 - **T-I3 (memory dump):** סוד ב-process memory של ה-broker → MiniDump (same-user) → plaintext. page file / `hiberfil.sys` יכולים לשמר. mitigation: `secrecy::SecretString` + zeroize + (אופציונלי) `VirtualLock`.
 - **T-I4 (PowerShell shell-out):** המימוש הנוכחי (`provisioning.rs:255`) מעביר את הסוד ב-env var של `powershell.exe` — קריא ל-same-user רגעית. mitigation: native in-process DPAPI.
@@ -223,8 +223,8 @@
 
 **Attack A — npm postinstall קורא את ה-vault ישירות (עוקף את ה-broker לגמרי):**
 1. הסוכן (אחרי prompt injection, או סתם בתום-לב) מריץ `npm install some-pkg`.
-2. ל-`some-pkg` יש `postinstall` script זדוני. הוא רץ כ-**אותו Windows user** כמו `winmux.exe`.
-3. ה-script קורא את `%APPDATA%\winmux\secrets.dpapi` (קובץ נגיש ל-same-user).
+2. ל-`some-pkg` יש `postinstall` script זדוני. הוא רץ כ-**אותו Windows user** כמו `ymux.exe`.
+3. ה-script קורא את `%APPDATA%\ymux\secrets.dpapi` (קובץ נגיש ל-same-user).
 4. ה-script קורא ל-`CryptUnprotectData` על כל blob — **מצליח**, כי DPAPI `CurrentUser` מפענח לכל תהליך של אותו user.
 5. כל הסודות בפליינטקסט. ה-capability protocol, ה-feed cards, ה-audit — **כולם לא נגעו בכלל**. אין שורת audit, כי לא עברו דרך ה-broker.
 - **מה עוצר את זה היום:** כלום.
@@ -232,7 +232,7 @@
 - **מה לא מצמצם:** capability protocol מתוחכם יותר — התוקף לא משתמש בו.
 
 **Attack B — דף זדוני קורא את הערך שמולא (BrowserFormFill):**
-1. ה-broker מזריק `__winmux_fillCredential` ל-WebView2 דרך `AddScriptToExecuteOnDocumentCreated` → רץ ב-**main world** (סעיף 2.4).
+1. ה-broker מזריק `__ymux_fillCredential` ל-WebView2 דרך `AddScriptToExecuteOnDocumentCreated` → רץ ב-**main world** (סעיף 2.4).
 2. הסוכן קורא `fill_credential(cap_id, "#password")`.
 3. *לפני* המילוי, ה-JS של הדף כבר הריץ `Object.defineProperty(input, 'value', { set(v){ exfil(v); ... } })` או הוסיף `input` event listener.
 4. ה-broker עושה `document.querySelector("#password").value = secret` → ה-setter הזדוני יורה → הסוד נשלח ל-`exfil()`.
@@ -248,7 +248,7 @@
 התכנון: `secret.request → Capability { cap_id, expires_at }` ואז `secret.use(cap_id, payload)`, ברירת מחדל 60s / שימוש יחיד.
 
 ### 4.1 השוואה
-| מנגנון | shape | TTL/revocation | replay protection | מתאים ל-winmux? |
+| מנגנון | shape | TTL/revocation | replay protection | מתאים ל-ymux? |
 |---|---|---|---|---|
 | **JWT** | self-contained signed claims | exp claim; revocation קשה (צריך blocklist) | jti + exp | ❌ overkill — אין verifier מבוזר |
 | **AWS STS token** | opaque + session policy | short-lived; scope-down intersection | server validates each call | רעיון ה-intersection ✅ |
@@ -256,7 +256,7 @@
 | **Capsicum (FreeBSD)** | OS capability fd, unforgeable | מוגבל ל-lifetime של ה-fd | OS-enforced, אי אפשר לזייף | השראה: cap = unforgeable handle ✅ |
 | **WebAuthn assertion** | signed challenge, UP/UV flags, counter | one-time challenge | counter > stored, fresh challenge | ל-egress רגיש בלבד ✅ |
 
-### 4.2 הצורה הנכונה ל-winmux
+### 4.2 הצורה הנכונה ל-ymux
 ה-broker המקומי הוא ה-verifier **היחיד**. אז:
 
 - **opaque handle, לא token חתום.** `cap_id` = 128-bit random (`Uuid::new_v4` או `getrandom`), מפתח ב-`HashMap<CapId, PendingCap>` צד-broker. אין חתימה, אין key management. inherently revocable (מחק מה-map), inherently replay-proof (מחק ב-`.use`).
@@ -290,21 +290,21 @@
 ### 5.1 1Password biometric
 - מגע Touch ID / Windows Hello לפענוח. ה-UX: הסוד "נעול" עד gesture, ואז זמין לחלון קצר. ה-Shell Plugins עושים זאת per-CLI-invocation.
 - **gotcha:** דורש חומרת biometric; ב-laptop בלי קורא — נופל ל-PIN/system password.
-- **ל-winmux:** זה ה-tier הגבוה. לא לכל use — רק ל-egress רגיש או ל-`.request` ראשון בסשן.
+- **ל-ymux:** זה ה-tier הגבוה. לא לכל use — רק ל-egress רגיש או ל-`.request` ראשון בסשן.
 
 ### 5.2 SSH agent forwarding — אהוב ומסוכן
 - **למה אהוב:** המפתח לא עוזב את המכונה המקומית; ה-remote מבקש חתימות דרך ה-socket.
 - **למה מסוכן:** root על ה-remote יכול לגשת ל-socket דרך `SSH_AUTH_SOCK` ולהתחזות אליך downstream — "they aren't breaking in; they are walking through doors you opened". ProxyJump עדיף.
-- **ל-winmux:** ה-`SshInject` חולק את אותו DNA — ברגע שהסוד על ה-remote, root שם שולט בו. הלקח: **אל תזריק SSH env כברירת מחדל**, רק when needed (בדיוק כמו ההמלצה "Don't turn on ForwardAgent by default").
+- **ל-ymux:** ה-`SshInject` חולק את אותו DNA — ברגע שהסוד על ה-remote, root שם שולט בו. הלקח: **אל תזריק SSH env כברירת מחדל**, רק when needed (בדיוק כמו ההמלצה "Don't turn on ForwardAgent by default").
 - מקור: [SSH agent hijacking](https://www.clockwork.com/insights/ssh-agent-hijacking/), [SSH agent explained](https://smallstep.com/blog/ssh-agent-explained/).
 
 ### 5.3 Vault "approve in mobile app"
 - ל-secrets בעלי-סיכון-גבוה: אישור out-of-band במכשיר נפרד.
-- **ל-winmux:** overkill ל-MVP מקומי, אבל ה-feed card *הוא* ה-out-of-band approval המקומי. שדרוג עתידי: push לטלפון דרך ה-tunnel הקיים.
+- **ל-ymux:** overkill ל-MVP מקומי, אבל ה-feed card *הוא* ה-out-of-band approval המקומי. שדרוג עתידי: push לטלפון דרך ה-tunnel הקיים.
 
 ### 5.4 MFA fatigue — הדאטה
 - Microsoft תיעדו **382,000** ניסיונות MFA fatigue ב-12 חודשים, **1% מהמשתמשים אישרו את ההתראה הראשונה הבלתי-צפויה**. ארגונים עם **number matching** ראו **ירידה של 98%** בהתקפות מוצלחות.
-- **המסקנה ל-winmux:** `AlwaysAsk` על כל use → fatigue → אישור עיוור → ה-boundary קורס פסיכולוגית. **אל תשאל 50 פעם ביום.** במקום:
+- **המסקנה ל-ymux:** `AlwaysAsk` על כל use → fatigue → אישור עיוור → ה-boundary קורס פסיכולוגית. **אל תשאל 50 פעם ביום.** במקום:
   - הצג **תמיד את ה-target** (URL/host/command) בכרטיס — בלי זה אי אפשר להחליט.
   - ל-egress כותב/מסוכן: **number-matching** או הקלדת אישור קצר, לא כפתור ירוק יחיד.
   - רוב ה-uses → `FirstUseWorkspace` או `TimeWindowed`, לא `AlwaysAsk`.
@@ -312,7 +312,7 @@
 
 ### 5.5 GitHub fine-grained PAT — scope-down טוב
 - 50+ הרשאות granular, כל אחת no-access/read/write, repo-targeting, expiration, org-approval. "a PAT that can only read issues and do nothing else".
-- **ל-winmux:** זה המודל ל-`EgressPolicy` — לא "GitHub PAT" כללי, אלא "Bearer ל-`api.github.com/user/repos` ב-GET בלבד". ה-granularity הזו = ה-blast radius הקטן שמאפשר `TimeWindowed` במקום `AlwaysAsk`.
+- **ל-ymux:** זה המודל ל-`EgressPolicy` — לא "GitHub PAT" כללי, אלא "Bearer ל-`api.github.com/user/repos` ב-GET בלבד". ה-granularity הזו = ה-blast radius הקטן שמאפשר `TimeWindowed` במקום `AlwaysAsk`.
 - מקור: [Fine-grained PATs](https://github.blog/security/application-security/introducing-fine-grained-personal-access-tokens-for-github/), [Managing PATs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 
 ### 5.6 המלצת granularity per egress
@@ -375,7 +375,7 @@
 **עקרונות הבחירה:** (1) workflow אמיתי שיאומץ, (2) מאמת capability > credential, (3) לא צובע לפינה ארכיטקטונית.
 
 ### 7.1 מה נכנס ל-MVP (שתי egress)
-1. **Local child-process shim — `winmux exec --with-secret <cap_id> -- <cmd>`.**
+1. **Local child-process shim — `ymux exec --with-secret <cap_id> -- <cmd>`.**
    - *למה:* מאמת את התזה הכי חזק — הסוד **אף פעם** לא נכנס ל-env של הסוכן ולא לצ'אט. ה-shim פותר cap_id → סוד, מזריק ל-env של ה-child בלבד (או ל-header אם HTTP), מחזיר output מצונזר. workflow: `gh`, `curl`, `aws` מקומית.
    - *blast radius:* נמוך, scoped ל-`command_pattern`+`url_pattern`.
 2. **SSH env injection.**

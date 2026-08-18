@@ -2,7 +2,7 @@ package workspace
 
 // frames.go — the WebSocket frame contract (Phase 77 S4.3), formalized as typed
 // Go values so the producers can't drift from the published schema
-// (docs/winmux-server/frames.schema.json + asyncapi.json).
+// (docs/ymux-server/frames.schema.json + asyncapi.json).
 //
 // Design (locked S4.3 — no client is locked yet, so this is canonical):
 //   - Discriminator is "type" (idiomatic; kotlinx @JsonClassDiscriminator, TS
@@ -15,7 +15,7 @@ package workspace
 //   - Three families: control (hello), server→client session events, and
 //     client→server commands.
 
-import "winmux-server/internal/core"
+import "ymux-server/internal/core"
 
 // Frame type discriminators.
 const (

@@ -17,8 +17,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"winmux-server/internal/auth"
-	"winmux-server/internal/workspace"
+	"ymux-server/internal/auth"
+	"ymux-server/internal/workspace"
 )
 
 // HookForwardRequest is a desktop-origin hook forwarded to paired devices (B).
