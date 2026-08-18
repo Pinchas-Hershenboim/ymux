@@ -434,6 +434,73 @@ body {
 
 /* Path field + optional native browse button, on one line. Paths are
    logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
+/* Destructive-delete dialog. The danger is the LIST, not an adjective:
+   every workspace that dies is named, live ones are badged. */
+.confirm-delete { max-width: 420px; }
+.confirm-delete-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--w-error);
+}
+.confirm-delete-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.confirm-delete-lead { margin: 0; color: var(--w-text); }
+.confirm-delete-sub {
+  margin: 0;
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+}
+.confirm-delete-list {
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  max-height: 180px;
+  overflow-y: auto;
+  border-radius: var(--w-r-sm);
+  background: var(--w-surface);
+}
+.confirm-delete-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: var(--w-fs-sm);
+  color: var(--w-text);
+}
+.confirm-delete-icon { display: flex; flex-shrink: 0; opacity: 0.75; }
+.confirm-delete-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.confirm-delete-live {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: var(--w-fs-xs);
+  color: var(--w-error);
+  background: rgba(247, 118, 142, 0.14);
+}
+.confirm-delete-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--w-error);
+  font-size: var(--w-fs-sm);
+}
+.confirm-delete-safe {
+  margin: 0;
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-xs);
+}
+
 /* The connect wizard's directory row when the workspace IS a folder:
    shown, not editable. LTR because it is always a POSIX/Windows path,
    matching .pf-modal .pane-meta-title. */

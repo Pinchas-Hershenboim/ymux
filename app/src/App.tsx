@@ -39,6 +39,7 @@ import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
 import { TicketModal } from "./TicketModal";
 import { ProjectFolderModal, type ProjectFolderModalMode } from "./ProjectFolderModal";
+import { ConfirmDeleteWorkspace } from "./ConfirmDeleteWorkspace";
 import { DirPicker } from "./DirPicker";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { TicketsPanel } from "./TicketsPanel";
@@ -1236,39 +1237,32 @@ function App() {
     return out;
   };
 
-  const handleDelete = async (id: string) => {
+  /**
+   * Deleting a workspace takes its pinned project folders and every
+   * worktree workspace under them, along with any live remote session
+   * they hold. Directories on the host are untouched.
+   *
+   * That used to be two stacked `window.confirm` calls — an unstyled OS
+   * box describing the damage in prose. It read as no warning at all, so
+   * the dialog IS the warning now: `ConfirmDeleteWorkspace` lists every
+   * workspace by name, marks the live ones, and keeps focus on Cancel.
+   */
+  const [pendingDelete, setPendingDelete] = createSignal<Workspace[] | null>(null);
+
+  /** Notes across a subtree. Legacy unassigned (null) notes survive. */
+  const notesInSubtree = (subtree: Workspace[]): number => {
+    const ids = new Set(subtree.map((w) => w.id));
+    return notes().filter((n) => n.workspace_id && ids.has(n.workspace_id)).length;
+  };
+
+  const handleDelete = (id: string) => {
     const ws = file().workspaces.find((w) => w.id === id);
     if (!ws) return;
-    // Deleting a workspace now takes its pinned project folders and
-    // every worktree workspace under them. Directories on the host are
-    // untouched, but the SESSIONS are not — so the confirm names them,
-    // and says how many are live, because "3 workspaces" and "3
-    // workspaces, 2 connected" are different decisions.
-    const subtree = subtreeOf(id);
-    const descendants = subtree.filter((w) => w.id !== id);
-    if (descendants.length > 0) {
-      const live = subtree.filter((w) => liveWorkspaceIds().has(w.id)).length;
-      const names = descendants.map((w) => `  • ${w.name}`).join("\n");
-      const ok = window.confirm(
-        t("workspace.delete.withChildren", {
-          name: ws.name,
-          count: descendants.length,
-          names,
-          live,
-        }),
-      );
-      if (!ok) return;
-    } else if (!window.confirm(t("workspace.delete.confirm", { name: ws.name }))) {
-      return;
-    }
-    // Phase 39: extra confirm when any workspace in the subtree has
-    // notes (they'll be deleted with it). Counts notes strictly
-    // belonging to those — legacy unassigned (null) notes survive.
-    const ids = new Set(subtree.map((w) => w.id));
-    const noteCount = notes().filter((n) => n.workspace_id && ids.has(n.workspace_id)).length;
-    if (noteCount > 0) {
-      if (!window.confirm(t("workspace.delete.notesWarning", { count: noteCount }))) return;
-    }
+    setPendingDelete(subtreeOf(id));
+  };
+
+  const commitDelete = async (id: string) => {
+    setPendingDelete(null);
     try {
       const f = await invoke<WorkspacesFile>("workspace_delete", {
         workspaceId: id,
@@ -1276,6 +1270,7 @@ function App() {
       updateFile(f);
     } catch (e) {
       log.error("workspace_delete failed", e);
+      flashSummaryToast("err", String(e));
     }
   };
 
@@ -3211,7 +3206,7 @@ function App() {
             else if (action === "edit") {
               const ws = file().workspaces.find((w) => w.id === id);
               if (ws) setEditingWorkspace(ws);
-            } else if (action === "delete") void handleDelete(id);
+            } else if (action === "delete") handleDelete(id);
             else if (action === "disconnect")
               void handleDisconnectWorkspace(id);
             else if (action === "addons") {
@@ -3855,6 +3850,20 @@ function App() {
               setDirPickerFor(null);
               void pinProjectFolder(d().workspaceId, dir, conn);
             }}
+          />
+        )}
+      </Show>
+
+      {/* Destructive, and cascades over a subtree — so it gets a real
+          dialog rather than a browser confirm. */}
+      <Show when={pendingDelete()}>
+        {(sub) => (
+          <ConfirmDeleteWorkspace
+            subtree={sub()}
+            liveIds={liveWorkspaceIds()}
+            noteCount={notesInSubtree(sub())}
+            onClose={() => setPendingDelete(null)}
+            onConfirm={() => void commitDelete(sub()[0].id)}
           />
         )}
       </Show>

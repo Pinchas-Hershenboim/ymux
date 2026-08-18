@@ -1050,8 +1050,13 @@
   "fm.transfer.canceling": "Отмена…",
   "fm.transfer.canceled": "Отменено",
   "fm.transfer.failed": "Ошибка",
-  "workspace.delete.confirm": "Удалить рабочее пространство “{name}”?",
-  "workspace.delete.withChildren": "Удалить “{name}” и вложенные в него рабочие пространства ({count})?\n\n{names}\n\nУ {live} из них есть активные сессии, которые будут завершены. Каталоги на хосте не затрагиваются.",
   "pf.expand": "Развернуть",
-  "pf.collapse": "Свернуть"
+  "pf.collapse": "Свернуть",
+  "workspace.delete.title": "Удалить рабочее пространство",
+  "workspace.delete.lead": "Будет удалено",
+  "workspace.delete.alsoRemoves": "Вместе с ним удалятся вложенные рабочие пространства ({count}):",
+  "workspace.delete.live": "активно",
+  "workspace.delete.liveWarning": "У {count} из них есть активные сессии. Они будут завершены.",
+  "workspace.delete.hostSafe": "Каталоги на хосте не затрагиваются — только рабочие пространства.",
+  "workspace.delete.confirmButton": "Удалить"
 }

@@ -1050,8 +1050,13 @@
   "fm.transfer.canceling": "Canceling…",
   "fm.transfer.canceled": "Canceled",
   "fm.transfer.failed": "Failed",
-  "workspace.delete.confirm": "Delete workspace “{name}”?",
-  "workspace.delete.withChildren": "Delete “{name}” and the {count} workspace(s) nested under it?\n\n{names}\n\n{live} of them have live sessions, which will be terminated. Directories on the host are not touched.",
   "pf.expand": "Expand",
-  "pf.collapse": "Collapse"
+  "pf.collapse": "Collapse",
+  "workspace.delete.title": "Delete workspace",
+  "workspace.delete.lead": "About to delete",
+  "workspace.delete.alsoRemoves": "This also deletes the {count} workspace(s) nested under it:",
+  "workspace.delete.live": "live",
+  "workspace.delete.liveWarning": "{count} of these have live sessions. They will be terminated.",
+  "workspace.delete.hostSafe": "Directories on the host are not touched — only the workspaces.",
+  "workspace.delete.confirmButton": "Delete"
 }

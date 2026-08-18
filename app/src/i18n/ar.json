@@ -1050,8 +1050,13 @@
   "fm.transfer.canceling": "جارٍ الإلغاء…",
   "fm.transfer.canceled": "أُلغي",
   "fm.transfer.failed": "فشل",
-  "workspace.delete.confirm": "حذف مساحة العمل “{name}”؟",
-  "workspace.delete.withChildren": "حذف “{name}” و{count} من مساحات العمل المتداخلة تحتها؟\n\n{names}\n\n{live} منها لديها جلسات نشطة سيتم إنهاؤها. لا يتم المساس بالمجلدات على المضيف.",
   "pf.expand": "توسيع",
-  "pf.collapse": "طي"
+  "pf.collapse": "طي",
+  "workspace.delete.title": "حذف مساحة العمل",
+  "workspace.delete.lead": "على وشك حذف",
+  "workspace.delete.alsoRemoves": "سيتم أيضًا حذف {count} من مساحات العمل المتداخلة تحتها:",
+  "workspace.delete.live": "نشطة",
+  "workspace.delete.liveWarning": "{count} منها لديها جلسات نشطة. سيتم إنهاؤها.",
+  "workspace.delete.hostSafe": "لا يتم المساس بالمجلدات على المضيف — مساحات العمل فقط.",
+  "workspace.delete.confirmButton": "حذف"
 }

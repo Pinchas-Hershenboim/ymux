@@ -1050,8 +1050,13 @@
   "fm.transfer.canceling": "מבטל…",
   "fm.transfer.canceled": "בוטל",
   "fm.transfer.failed": "נכשל",
-  "workspace.delete.confirm": "למחוק את סביבת העבודה “{name}”?",
-  "workspace.delete.withChildren": "למחוק את “{name}” ואת {count} סביבות העבודה שמתחתיה?\n\n{names}\n\nל-{live} מהן יש סשנים חיים שייסגרו. התיקיות על השרת לא נוגעים בהן.",
   "pf.expand": "הרחב",
-  "pf.collapse": "כווץ"
+  "pf.collapse": "כווץ",
+  "workspace.delete.title": "מחיקת סביבת עבודה",
+  "workspace.delete.lead": "עומד למחוק את",
+  "workspace.delete.alsoRemoves": "יימחקו איתה גם {count} סביבות העבודה שמתחתיה:",
+  "workspace.delete.live": "חי",
+  "workspace.delete.liveWarning": "ל-{count} מהן יש סשנים חיים. הם ייסגרו.",
+  "workspace.delete.hostSafe": "התיקיות על השרת לא נוגעים בהן — רק בסביבות העבודה.",
+  "workspace.delete.confirmButton": "מחק"
 }
