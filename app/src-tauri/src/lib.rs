@@ -5903,11 +5903,15 @@ pub(crate) struct TmuxSessionInfo {
     pub windows: u32,
     pub last_attached: i64,
     /// Phase 81: joined from the server-side `~/.winmux/session-meta.json`.
-    /// Picker display precedence: label > claude_title > name.
+    /// Picker display precedence: label > auto_name > claude_title > name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_title: Option<String>,
+    /// Stable "<two words> · <date time>" derived from the session's first
+    /// prompt. Beats `claude_title`, which Claude rewrites as it goes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
     /// Machine id that created the session (see `machine_id()`).
@@ -5930,6 +5934,8 @@ struct SessionMetaEntryMirror {
     claude_session_id: Option<String>,
     #[serde(default)]
     claude_title: Option<String>,
+    #[serde(default)]
+    auto_name: Option<String>,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -6110,6 +6116,7 @@ fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             last_attached: parts[4].parse().unwrap_or(0),
             label: m.and_then(|m| m.label.clone()),
             claude_title: m.and_then(|m| m.claude_title.clone()),
+            auto_name: m.and_then(|m| m.auto_name.clone()),
             claude_session_id: m.and_then(|m| m.claude_session_id.clone()),
             origin: m.and_then(|m| m.origin.clone()),
         });

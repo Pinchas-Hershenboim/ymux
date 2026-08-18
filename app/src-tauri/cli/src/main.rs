@@ -2199,11 +2199,14 @@ async fn real_main() -> ExitCode {
             // Multi-machine sync: on every `stop` (fires each turn) record
             // this pane's tmux-session → Claude-session mapping + title in
             // the server-side `~/.winmux/session-meta.json`; `session-end`
-            // prunes dead sessions. Best-effort — a failure never blocks
+            // prunes dead sessions. `user-prompt-submit` seeds the stable
+            // `auto_name` from the session's FIRST prompt (see
+            // session_meta::handle_hook) and returns it as the display
+            // title from then on. Best-effort — a failure never blocks
             // the hook. Runs only for winmux panes (env-gate above).
             // Rule #1: log the error KIND only, never the title text.
             let (meta_claude_title, meta_tmux_session) =
-                if matches!(subcommand.as_str(), "stop" | "session-end") {
+                if matches!(subcommand.as_str(), "stop" | "session-end" | "user-prompt-submit") {
                     match session_meta::handle_hook(subcommand, &payload) {
                         Ok(v) => v,
                         Err(kind) => {

@@ -2318,3 +2318,48 @@ STILL OPEN — tmux vanishing server-side
   auto-killed). No destroy-unattached / exit-empty in the shipped conf.
   Remaining candidates need server evidence, not more code reading — see
   FOLLOWUPS P0 and docs/DECISIONS.md.
+
+==================================================================
+[2026-08-18 ~20:50 IDT] session=session-autoname (worktree)
+TASK: Phase 81.F - sessions get a STABLE name from their first prompt
+  Problem with Phase 81 as shipped: the session's display name came from
+  `claude_title`, which the stop hook re-reads from the transcript EVERY
+  turn. So the name churns as Claude rewrites its own summary, and it
+  carries no time anchor - useless as an identity in a picker full of
+  winmux-p_<hex> rows.
+  New: `auto_name` = "<two words> · <YYYY-MM-DD HH:MM>", derived ONCE from
+  the session's first real prompt by the UserPromptSubmit hook. Shown in
+  the tmux picker AND pinned on the pane header. claude_title is still
+  written every turn; it just moves to the picker row's hover tooltip.
+FILES:
+  M app/src-tauri/cli/src/session_meta.rs (auto_name field; two_words +
+    STOPWORDS + is_stopword; derive_session_name; prompt_can_name;
+    decide_auto_name (pure tri-state state machine); user-prompt-submit
+    arm in handle_hook; stop arm now returns auto_name.or(title);
+    MAX_TITLE_CHARS hoisted to module scope; +13 unit tests)
+  M app/src-tauri/cli/src/main.rs (one-line: user-prompt-submit joins the
+    stop/session-end session-meta dispatch gate)
+  M app/src-tauri/src/rpc_server.rs (user-prompt-submit arm sets the pane
+    auto_title BEFORE its early return - header named from turn 1)
+  M app/src-tauri/src/lib.rs (auto_name on TmuxSessionInfo +
+    SessionMetaEntryMirror + the parse_tmux_sessions join)
+  M app/src/types.ts, app/src/PaneView.tsx (precedence label > auto_name >
+    claude_title > name; claude_title moved into the row tooltip)
+  M hooks/claude-code.json (_notes only - NO version bump), docs/ARCHITECTURE.md,
+    docs/DECISIONS.md, FOLLOWUPS.md
+RESULT: CLI verified-live. cargo test 23/23 (10 pre-existing + 13 new) and a
+  real end-to-end smoke against a temp HOME on this Linux box: first prompt
+  writes auto_name ("נעבור התהליך · 2026-08-18 20:47"); a later prompt on the
+  same session_id does NOT rename; a new session_id opening with /clear CLEARS
+  the stale name; the next real prompt claims it; `stop` still records
+  claude_title without disturbing auto_name; hook-debug.log carries pane/session
+  metadata only (Rule #1 holds). tsc --noEmit clean.
+  DESKTOP HALF NOT COMPILED - `cargo check -p app` dies in gdk-sys (no gdk-3.0.pc
+  on this Linux sandbox) and installing GTK needed a blocked sudo. Pushed to
+  branch `session-autoname` so ci-windows is the gate. See FOLLOWUPS P1.
+NOTES: no hook-spec change and no setup-hooks re-run needed - UserPromptSubmit
+  was already registered (v1.3.0, for the chrome Ticker) and already carried the
+  prompt text, which the desktop was throwing away. Two-word extraction is
+  deliberately heuristic, not `claude -p`: this hook gates the START of a turn.
+  grep keywords: auto_name, decide_auto_name, two_words, derive_session_name.
+==================================================================

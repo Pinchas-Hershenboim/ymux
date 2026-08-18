@@ -1347,14 +1347,21 @@ export function PaneView(p: Props) {
                   <For each={tmuxPick()!}>
                     {(s) => {
                       // Phase 81: friendly name from the server-side
-                      // session-meta map — manual label beats the Claude
+                      // session-meta map — manual label beats the stable
+                      // auto-name ("<two words> · <date time>", derived
+                      // from the session's first prompt) beats the Claude
                       // session title beats the raw tmux name. When a
                       // friendly name shows, the raw name drops to a
                       // muted secondary line so cross-machine sessions
                       // stay identifiable AND attachable.
-                      const friendly = s.label ?? s.claude_title;
+                      const friendly = s.label ?? s.auto_name ?? s.claude_title;
+                      // Claude's rolling read of the conversation stays
+                      // reachable on hover once auto_name has the row.
+                      const tip = s.claude_title && s.claude_title !== friendly
+                        ? `${s.name} — ${s.claude_title}`
+                        : s.name;
                       return (
-                        <div class="nc-resume-row" onClick={() => pickTmuxSession(s.name)} title={s.name}>
+                        <div class="nc-resume-row" onClick={() => pickTmuxSession(s.name)} title={tip}>
                           <div class="nc-resume-head">
                             <span class="nc-resume-proj"><IconTerminal size={14} /> {friendly ?? s.name}</span>
                             <span class="nc-resume-badge">{s.windows}w</span>
