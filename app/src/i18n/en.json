@@ -1058,5 +1058,6 @@
   "workspace.delete.live": "live",
   "workspace.delete.liveWarning": "{count} of these have live sessions. They will be terminated.",
   "workspace.delete.hostSafe": "Directories on the host are not touched — only the workspaces.",
-  "workspace.delete.confirmButton": "Delete"
+  "workspace.delete.confirmButton": "Delete",
+  "pf.isRepo": "git repository — its worktrees are listed below"
 }

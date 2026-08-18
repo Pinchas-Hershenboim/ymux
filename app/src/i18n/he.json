@@ -1058,5 +1058,6 @@
   "workspace.delete.live": "חי",
   "workspace.delete.liveWarning": "ל-{count} מהן יש סשנים חיים. הם ייסגרו.",
   "workspace.delete.hostSafe": "התיקיות על השרת לא נוגעים בהן — רק בסביבות העבודה.",
-  "workspace.delete.confirmButton": "מחק"
+  "workspace.delete.confirmButton": "מחק",
+  "pf.isRepo": "מאגר git — ה-worktrees שלו מוצגים מתחת"
 }

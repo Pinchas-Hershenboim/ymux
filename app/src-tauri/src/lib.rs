@@ -4185,6 +4185,45 @@ fn workspace_open_worktree(
     Ok(state.workspaces.lock().unwrap().clone())
 }
 
+/// Demote a workspace that turned out not to be a git repo.
+///
+/// The sidebar calls this when a scan comes back with git's
+/// "not a git repository". Without it the row keeps its repo affordances
+/// and re-scans on every expand and every restart, asking a question
+/// whose answer will not change. Clearing the flag makes it an ordinary
+/// workspace that still opens panes in that directory — nothing is
+/// deleted, and re-pinning is how you undo it.
+#[tauri::command]
+fn workspace_set_project_root(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    is_project_root: bool,
+) -> Result<WorkspacesFile, String> {
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let ws = file
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        if ws.is_project_root == is_project_root {
+            return Ok(file.clone());
+        }
+        ws.is_project_root = is_project_root;
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    log_info(
+        "WORKSPACE",
+        &format!("ws={workspace_id} is_project_root={is_project_root}"),
+    );
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
 /// Persisted collapse state of a workspace's subtree.
 ///
 /// Deliberately NOT routed through `workspace_set_active`, which stamps
@@ -8014,6 +8053,7 @@ pub fn run() {
             workspace_pin_project_folder,
             workspace_open_worktree,
             workspace_set_collapsed,
+            workspace_set_project_root,
             worktrees::git_probe_worktrees,
             worktrees::workspace_list_worktrees,
             worktrees::workspace_create_project_worktree,

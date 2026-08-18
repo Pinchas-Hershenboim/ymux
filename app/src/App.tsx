@@ -3238,6 +3238,19 @@ function App() {
             invoke<WorktreeEntry[]>("workspace_list_worktrees", { workspaceId })
           }
           onOpenWorktree={(rootWorkspaceId, wt) => void openWorktree(rootWorkspaceId, wt)}
+          onNotARepo={(workspaceId) => {
+            void (async () => {
+              try {
+                const f = await invoke<WorkspacesFile>("workspace_set_project_root", {
+                  workspaceId,
+                  isProjectRoot: false,
+                });
+                updateFile(f);
+              } catch (e) {
+                log.error("workspace_set_project_root failed", e);
+              }
+            })();
+          }}
           allForwards={portForwards()}
           onOpenPorts={(workspaceId) => {
             // Badge click: activate that workspace, then open the

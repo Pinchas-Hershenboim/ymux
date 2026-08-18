@@ -246,14 +246,45 @@ async fn ssh_exec_capture(
         .map_err(|e| format!("exec: {e}"))?;
     let mut stdout = Vec::new();
     let mut code = 0i32;
+    // The exit status and EOF arrive in EITHER order, and breaking on
+    // whichever lands first loses the other. This used to `break` on Eof,
+    // so a failing git often reported code 0: `git_script` folds stderr
+    // into stdout with `2>&1`, so "fatal: not a git repository" came back
+    // as SUCCESSFUL output, parsed to zero worktrees, and a directory
+    // that is not a repo could be pinned as a project folder. Whether it
+    // failed was a race — the same path probed clean and then scanned
+    // dirty seconds later.
+    //
+    // So: collect until BOTH have arrived, or the channel closes. Never
+    // wait on EOF alone, which would hang a server that omits Close until
+    // the timeout.
+    let mut got_eof = false;
+    let mut got_status = false;
     let timed_out = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
         async {
             while let Some(msg) = ch.wait().await {
                 match msg {
                     ChannelMsg::Data { ref data } => stdout.extend_from_slice(data),
-                    ChannelMsg::ExitStatus { exit_status } => code = exit_status as i32,
-                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    // `2>&1` should route stderr here already; keep it in
+                    // case a server splits the streams anyway.
+                    ChannelMsg::ExtendedData { ref data, .. } => {
+                        stdout.extend_from_slice(data)
+                    }
+                    ChannelMsg::ExitStatus { exit_status } => {
+                        code = exit_status as i32;
+                        got_status = true;
+                        if got_eof {
+                            break;
+                        }
+                    }
+                    ChannelMsg::Eof => {
+                        got_eof = true;
+                        if got_status {
+                            break;
+                        }
+                    }
+                    ChannelMsg::Close => break,
                     _ => {}
                 }
             }
@@ -397,7 +428,15 @@ pub(crate) async fn git_probe_worktrees(
         return Err("project path is required".to_string());
     }
     let text = run_git_over(&state, &connection, &path, &["worktree", "list", "--porcelain"]).await?;
-    Ok(parse_worktree_porcelain(&text))
+    let list = parse_worktree_porcelain(&text);
+    // Second signal, independent of the exit code: a real repository
+    // always lists at least its own main worktree. Zero entries means the
+    // output was not a worktree listing at all — which is what a lost
+    // exit status looks like from here.
+    if list.is_empty() {
+        return Err(git_error(&text));
+    }
+    Ok(list)
 }
 
 /// Create a worktree for a project-folder workspace and return the
@@ -558,6 +597,25 @@ prunable gitdir file points to non-existent location
             default_worktree_target("C:\\src\\winmux", "wip"),
             "C:/src/winmux-wip"
         );
+    }
+
+    #[test]
+    fn a_fatal_message_parses_to_zero_worktrees() {
+        // This is the guard `git_probe_worktrees` leans on. `git_script`
+        // folds stderr into stdout with `2>&1`, so when an exit status is
+        // lost the caller sees a "successful" fatal message. A real repo
+        // always lists at least its own main worktree, so zero entries is
+        // proof the output was never a worktree listing.
+        let fatal = "fatal: not a git repository (or any of the parent directories): .git
+";
+        assert!(parse_worktree_porcelain(fatal).is_empty());
+
+        // ...while the smallest real listing is one entry.
+        let real = "worktree /home/y/p
+HEAD abc123
+branch refs/heads/main
+";
+        assert_eq!(parse_worktree_porcelain(real).len(), 1);
     }
 
     #[test]

@@ -2345,3 +2345,27 @@ TWO PRE-EXISTING BUGS FIXED IN PASSING
 
 RESULT: 316 cargo tests pass, tsc clean, vite builds. NOTHING RUN LIVE — see
 FOLLOWUPS P1 2026-08-18 for the 9-step smoke list.
+
+ADDENDUM 2026-08-18 (same branch) — two bugs found by live testing
+--------------------------------------------------------------------------------
+1. InsightsWindow's Claude-usage effect read state its own fetch writes. On
+   success it settled; on FAILURE usage() stayed null and it re-fired forever.
+   14,359 [USAGE] backoff lines in 43 min saturated the IPC channel, so
+   unrelated clicks stopped landing ("the folder picker opens and nothing
+   happens"). Reachable only because the v3->v4 migration produced a workspace
+   with an SSH connection and no live session. ClaudeUsageIndicator already
+   carried the fix AND the comment describing the trap; its sibling never got
+   it. Now on([view, workspaceId]) + plain-let guards.
+
+2. ssh_exec_capture broke on ChannelMsg::Eof, so when EOF preceded ExitStatus
+   the exit code was lost and stayed 0. git_script folds stderr in with 2>&1,
+   so a failing git came back as SUCCESSFUL output: "fatal: not a git
+   repository" parsed to zero worktrees and a non-repo could be PINNED. Whether
+   it failed was a race — /home/runner/build probed clean, then scanned dirty
+   18 seconds later. Now collects until both EOF and ExitStatus (or Close), and
+   git_probe_worktrees additionally rejects an empty listing, since a real repo
+   always lists at least its own main worktree.
+
+   Follow-on UX, per Yossi: a non-repo is demoted once (workspace_set_project_root
+   -> false) instead of re-asking on every expand and restart, and a confirmed
+   repo carries a small git badge on its folder glyph.

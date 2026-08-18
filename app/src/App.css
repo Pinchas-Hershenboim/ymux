@@ -434,6 +434,21 @@ body {
 
 /* Path field + optional native browse button, on one line. Paths are
    logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
+/* A pinned repo: folder glyph with a small git mark riding on it, so a
+   project folder is distinguishable from any other workspace at a
+   glance. The badge is decorative — the row's title carries the words. */
+.pf-icon-repo { position: relative; }
+.pf-git-badge {
+  position: absolute;
+  inset-inline-end: -4px;
+  bottom: -3px;
+  display: flex;
+  color: var(--w-accent);
+  background: var(--w-bg);
+  border-radius: 50%;
+  padding: 1px;
+}
+
 /* Destructive-delete dialog. The danger is the LIST, not an adjective:
    every workspace that dies is named, live ones are badged. */
 .confirm-delete { max-width: 420px; }

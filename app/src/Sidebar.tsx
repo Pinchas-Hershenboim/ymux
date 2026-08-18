@@ -99,6 +99,8 @@ interface Props {
   onListWorktrees: (workspaceId: string) => Promise<WorktreeEntry[]>;
   /** Open a worktree that has no workspace yet as a child of the root. */
   onOpenWorktree: (rootWorkspaceId: string, wt: WorktreeEntry) => void;
+  /** git says this directory is not a repo — stop treating it as one. */
+  onNotARepo: (workspaceId: string) => void;
   // Phase 36.A / 39: all forwards across workspaces, for the per-
   // workspace inline 🌐 badge. Clicking the badge opens the Ports
   // window scoped to that workspace.
@@ -493,9 +495,25 @@ export function Sidebar(p: Props) {
       setScans((prev) => ({ ...prev, [ws.id]: { status: "ok", entries } }));
       log.info(`worktree scan ok ws=${ws.id} count=${entries.length}`);
     } catch (e) {
+      const msg = String(e);
+      // Two very different failures wear the same red row otherwise.
+      // "No live SSH session" is transient and worth retrying; "not a git
+      // repository" is a permanent answer about this directory, so the
+      // workspace stops claiming to be a repo instead of asking again on
+      // every expand and every restart.
+      if (/not a git repository/i.test(msg)) {
+        setScans((prev) => {
+          const next = { ...prev };
+          delete next[ws.id];
+          return next;
+        });
+        log.info(`ws=${ws.id} is not a git repo — dropping the project-root flag`);
+        p.onNotARepo(ws.id);
+        return;
+      }
       setScans((prev) => ({
         ...prev,
-        [ws.id]: { status: "error", message: String(e) },
+        [ws.id]: { status: "error", message: msg },
       }));
       log.error(`worktree scan failed ws=${ws.id}`, e);
     }
@@ -949,7 +967,12 @@ export function Sidebar(p: Props) {
         </Show>
         <Show
           when={!w.is_project_root}
-          fallback={<span class="pf-icon"><IconFolder size={13} /></span>}
+          fallback={
+            <span class="pf-icon pf-icon-repo" title={t("pf.isRepo")}>
+              <IconFolder size={13} />
+              <span class="pf-git-badge"><IconGitBranch size={9} /></span>
+            </span>
+          }
         >
           <span
             class="ws-dot"

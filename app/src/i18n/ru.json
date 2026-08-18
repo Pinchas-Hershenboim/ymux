@@ -1058,5 +1058,6 @@
   "workspace.delete.live": "активно",
   "workspace.delete.liveWarning": "У {count} из них есть активные сессии. Они будут завершены.",
   "workspace.delete.hostSafe": "Каталоги на хосте не затрагиваются — только рабочие пространства.",
-  "workspace.delete.confirmButton": "Удалить"
+  "workspace.delete.confirmButton": "Удалить",
+  "pf.isRepo": "репозиторий git — его worktrees перечислены ниже"
 }
