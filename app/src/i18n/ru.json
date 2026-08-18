@@ -1020,6 +1020,8 @@
   "sidebar.move_to_group": "Переместить в группу",
   "sidebar.move_out_of_group": "Убрать из группы",
   "reconnect.title": "Соединение с {host} разорвано",
+  "cli_skew.banner.title": "CLI winmux на сервере рассинхронизирован",
+  "cli_skew.banner.text": "На сервере не тот CLI, которого ожидает эта сборка (нужен {expected}, найден {actual}) — {reason}. Хуки, тикеты и определение портов отключены до совпадения. Терминал работает как обычно.",
   "reconnect.title_multi": "Разорвано соединений: {n}",
   "reconnect.attempt_multi": "Переподключение {n} панелей… (попытка {a}/{max})",
   "reconnect.attempt": "Переподключение… (попытка {n}/{max})",

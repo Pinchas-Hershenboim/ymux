@@ -49,6 +49,21 @@ pub enum BootstrapStatus {
         sha256: String,
     },
     UnsupportedArch(String),
+    /// We tried to converge the remote CLI onto the binary this desktop
+    /// embeds and could not — the upload failed, or the post-upload hash
+    /// still didn't match. Distinct from `Err`, which means the bootstrap
+    /// couldn't run at all (no $HOME, unreadable manifest, dead channel).
+    ///
+    /// This case used to collapse into a generic `Err(String)` that the
+    /// caller showed for five seconds and then discarded, so a pane would
+    /// silently keep talking to a CLI of the wrong version. The desktop
+    /// speaks the protocol of the binary it embeds, so a mismatch is a
+    /// real functional gap and has to stay visible.
+    Skew {
+        expected: String,
+        actual: String,
+        reason: String,
+    },
 }
 
 /// Caller-provided helper to read a manifest-relative resource as
@@ -344,7 +359,24 @@ pub async fn bootstrap(
     .await;
 
     let bytes = resource_loader(&entry.path)?;
-    upload_via_sftp(handle, &remote_bin_abs, &bytes, &entry.sha256).await?;
+    // An upload that fails is NOT a bootstrap that couldn't run — the remote
+    // is simply still on a different binary. Report that as Skew so the
+    // caller can surface it and gate the CLI-dependent features, instead of
+    // `?`-ing out into an error string that got shown for five seconds.
+    if let Err(e) = upload_via_sftp(handle, &remote_bin_abs, &bytes, &entry.sha256).await {
+        log_warn("BOOT", &format!("bootstrap: upload failed, remote stays on its own binary: {e}"));
+        let (cur, _) = ssh_exec(
+            handle,
+            &format!("sha256sum {remote_bin_abs} 2>/dev/null | awk '{{print $1}}'"),
+        )
+        .await
+        .unwrap_or_default();
+        return Ok(BootstrapStatus::Skew {
+            expected: entry.sha256.clone(),
+            actual: cur.trim().to_lowercase(),
+            reason: e,
+        });
+    }
     ssh_exec(handle, &format!("chmod 0755 {remote_bin_abs}")).await?;
     ssh_exec(
         handle,
@@ -364,10 +396,11 @@ pub async fn bootstrap(
             "bootstrap: FAILED post-upload hash mismatch: got {} expected {}",
             after_hash, entry.sha256
         ));
-        return Err(format!(
-            "post-upload hash mismatch: got {after_hash}, expected {}",
-            entry.sha256
-        ));
+        return Ok(BootstrapStatus::Skew {
+            expected: entry.sha256.clone(),
+            actual: after_hash,
+            reason: "post-upload hash mismatch".into(),
+        });
     }
     log_info("BOOT", "bootstrap: COMPLETE — upload verified");
 

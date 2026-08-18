@@ -1,6 +1,7 @@
 // Phase 24.D: claude_chat module deleted with the ClaudeChat pane.
 mod addons;
 mod bidi_filter;
+mod bootstrap_guard;
 // Phase 53 (rebased): browser_pane.rs renamed to workspace_browser.rs;
 // per-pane commands swapped for workspace-keyed commands.
 mod workspace_browser;
@@ -184,6 +185,10 @@ pub(crate) struct AppState {
     /// environment. Held across the (retrying) slow path in
     /// `workspace_browser_show` so at most one creation runs at a time.
     pub(crate) browser_create_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes the connect-time CLI bootstrap per host, suppresses a
+    /// just-failed upload for a few minutes, and records whether the remote
+    /// CLI actually matches the binary we embed. See `bootstrap_guard`.
+    pub(crate) bootstrap_guard: bootstrap_guard::BootstrapGuard,
 }
 
 /// issue #4: per-pane agent turn timing for the winmux-tools chrome Ticker.
@@ -1712,6 +1717,40 @@ pub(crate) fn emit_pane_status_event(app: &AppHandle, pane_id: &str, text: &str)
     );
 }
 
+/// Record whether a workspace's remote CLI matches the binary we embed, and
+/// tell the frontend. The event drives a banner that persists until the state
+/// changes — unlike `pane:status`, which self-clears and therefore hid this
+/// exact condition. Hashes are truncated for display; the full pair is in
+/// debug.log.
+pub(crate) fn set_cli_alignment(
+    app: &AppHandle,
+    state: &AppState,
+    workspace_id: &str,
+    alignment: bootstrap_guard::Alignment,
+) {
+    state
+        .bootstrap_guard
+        .set_alignment(workspace_id, alignment.clone());
+    let payload = match &alignment {
+        bootstrap_guard::Alignment::Ok => serde_json::json!({
+            "workspace_id": workspace_id,
+            "aligned": true,
+        }),
+        bootstrap_guard::Alignment::Skew {
+            expected,
+            actual,
+            reason,
+        } => serde_json::json!({
+            "workspace_id": workspace_id,
+            "aligned": false,
+            "expected": expected.chars().take(12).collect::<String>(),
+            "actual": actual.chars().take(12).collect::<String>(),
+            "reason": reason,
+        }),
+    };
+    let _ = app.emit("workspace:cli-alignment", payload);
+}
+
 /// issue #4: emits the per-pane agent turn state for the chrome Ticker.
 /// `started_at_ms` = None clears the live timer (turn ended); `avg_ms` = None
 /// means no completed turns yet. The frontend ticks `M:SS` locally from
@@ -2798,11 +2837,40 @@ async fn spawn_ssh(
     // We never block the user's shell on this — failures are surfaced via pane:status.
     log_debug("SSH", "spawn_ssh: bootstrap starting");
     emit_pane_status_event(app, &pane_id, "bootstrapping winmux…");
-    match remote_bootstrap::bootstrap(&mut handle, app, false).await {
+    let hkey = bootstrap_guard::host_key(&user, &host, port);
+    let wanted_sha = remote_bootstrap::embedded_manifest()
+        .ok()
+        .and_then(|m| m.get("x86_64-linux").map(|e| e.sha256.clone()))
+        .unwrap_or_default();
+    // One bootstrap per host at a time. Panes reconnect together after a
+    // network drop, and without this each one opened its own SFTP channel
+    // and pushed the same multi-megabyte payload at the same instant.
+    let host_lock = state.bootstrap_guard.host_lock(&hkey);
+    let _boot_guard = host_lock.lock().await;
+    // A sibling pane may have converged the host while we waited on the
+    // lock, so re-check the cache here rather than before it.
+    let cached = state.bootstrap_guard.recent_failure(&hkey, &wanted_sha);
+    let outcome = if let Some(msg) = cached {
+        log_warn("SSH", &format!(
+            "spawn_ssh: skipping bootstrap — the same upload to {hkey} failed recently ({msg})"
+        ));
+        Ok(remote_bootstrap::BootstrapStatus::Skew {
+            expected: wanted_sha.clone(),
+            actual: String::new(),
+            reason: msg,
+        })
+    } else {
+        remote_bootstrap::bootstrap(&mut handle, app, false).await
+    };
+    match outcome {
         Ok(remote_bootstrap::BootstrapStatus::AlreadyOk) => {
+            state.bootstrap_guard.clear_failure(&hkey, &wanted_sha);
+            set_cli_alignment(app, state, &workspace_id, bootstrap_guard::Alignment::Ok);
             emit_pane_status_event(app, &pane_id, "");
         }
         Ok(remote_bootstrap::BootstrapStatus::Uploaded { bytes, sha256: _ }) => {
+            state.bootstrap_guard.clear_failure(&hkey, &wanted_sha);
+            set_cli_alignment(app, state, &workspace_id, bootstrap_guard::Alignment::Ok);
             emit_pane_status_event(
                 app,
                 &pane_id,
@@ -2818,12 +2886,46 @@ async fn spawn_ssh(
             );
             schedule_status_clear(app.clone(), pane_id.clone(), 5);
         }
+        // We could not converge the remote onto our binary. The shell still
+        // works; the CLI-dependent features do not, and this stays on screen
+        // until it's resolved instead of vanishing after five seconds — a
+        // disappearing status line is exactly how a version-skewed CLI went
+        // unnoticed for a whole debugging session.
+        Ok(remote_bootstrap::BootstrapStatus::Skew {
+            expected,
+            actual,
+            reason,
+        }) => {
+            log_warn("SSH", &format!(
+                "spawn_ssh: remote CLI NOT aligned on {hkey} — expected {expected} got {} ({reason})",
+                if actual.is_empty() { "<unknown>" } else { &actual }
+            ));
+            state
+                .bootstrap_guard
+                .record_failure(&hkey, &wanted_sha, &reason);
+            set_cli_alignment(
+                app,
+                state,
+                &workspace_id,
+                bootstrap_guard::Alignment::Skew {
+                    expected,
+                    actual,
+                    reason: reason.clone(),
+                },
+            );
+            emit_pane_status_event(
+                app,
+                &pane_id,
+                &format!("remote winmux CLI out of sync — {reason}"),
+            );
+        }
         Err(e) => {
             tracing::warn!("remote bootstrap failed: {e}");
             emit_pane_status_event(app, &pane_id, &format!("bootstrap failed: {e}"));
             schedule_status_clear(app.clone(), pane_id.clone(), 5);
         }
     }
+    drop(_boot_guard);
 
     // Unified logging: converge this host on the desktop's log level
     // (`~/.winmux/log-level`, read by the Go server watcher + CLI hooks).
@@ -3188,6 +3290,23 @@ async fn spawn_ssh(
     // stale ones from the original creation. The `2>/dev/null` swallows
     // the harmless "no server running" message when this is the first attach.
     if let Some(name) = &tmux_name {
+        // Evidence log, before we attach. A user reported that unplugging a
+        // laptop from AC left every tmux session on the server gone, and we
+        // had no way to say WHEN they disappeared — only that they were
+        // absent by the time anyone looked. One line per connect turns that
+        // into a timestamped fact that can be lined up against the server's
+        // own journal. Names only (Rule #1: never session content).
+        match list_tmux_sessions_via_handle(&handle_arc).await {
+            Ok(list) => log_info("SSH", &format!(
+                "tmux-inventory: {} session(s) on {user}@{host} before attach: [{}]",
+                list.len(),
+                list.iter()
+                    .map(|s| format!("{}(created={},attached={})", s.name, s.created, s.attached))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Err(e) => log_warn("SSH", &format!("tmux-inventory: could not list sessions: {e}")),
+        }
         let sessions_clone = state.core.sessions.clone();
         let id_clone = id.clone();
         let name_clone = name.clone();
@@ -3391,6 +3510,17 @@ async fn spawn_port_watcher(
     remote_port: u16,
     token: &Arc<String>,
 ) -> Result<(), String> {
+    // The watcher IS the remote CLI (`winmux port-watch`), talking the RPC
+    // protocol this desktop compiled against. Launching a binary we know is
+    // the wrong build produces failures far from their cause — the repeating
+    // reverse-tunnel handshake rejections in Yossi's log are what that looks
+    // like. Refuse clearly instead.
+    if !state.bootstrap_guard.is_aligned(workspace_id) {
+        log_warn("TUNNEL", &format!(
+            "port-watch[{workspace_id}]: skipped — remote winmux CLI is not the build this desktop embeds"
+        ));
+        return Err("remote winmux CLI out of sync".into());
+    }
     // Dedup, self-healing (Phase JJ). Skip ONLY if a LIVE watcher is
     // already running for this workspace. If the set still has the entry
     // but the task is finished/missing (e.g. a disconnect that didn't
@@ -4795,6 +4925,11 @@ fn workspace_delete(
         let _ = w.close();
     }
     workspace_browser::cleanup_workspace_sessions(&workspace_id);
+    // Drop the CLI-alignment verdict with the workspace it described.
+    // Deliberately NOT dropped on mere disconnect: an unresolved skew should
+    // outlive the connection, so the features it gates stay off until a
+    // bootstrap actually proves the remote binary matches.
+    state.bootstrap_guard.forget(&workspace_id);
     for pane_id in &panes_to_kill {
         if let Some(sid) = state.core.pane_sessions.lock().unwrap().remove(pane_id) {
             if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {

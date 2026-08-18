@@ -1020,6 +1020,8 @@
   "sidebar.move_to_group": "העבר לקבוצה",
   "sidebar.move_out_of_group": "הוצא מהקבוצה",
   "reconnect.title": "החיבור ל-{host} נותק",
+  "cli_skew.banner.title": "ה-CLI בשרת לא מסונכרן",
+  "cli_skew.banner.text": "בשרת רץ CLI אחר ממה שהבילד הזה מצפה לו (צריך {expected}, נמצא {actual}) — {reason}. hooks, טיקטים וזיהוי פורטים כבויים עד שזה יסתדר. הטרמינל עובד כרגיל.",
   "reconnect.title_multi": "{n} חיבורים נותקו",
   "reconnect.attempt_multi": "מנסה להתחבר מחדש ל-{n} פאנלים… (ניסיון {a}/{max})",
   "reconnect.attempt": "מנסה להתחבר מחדש… (ניסיון {n}/{max})",

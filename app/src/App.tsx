@@ -473,6 +473,19 @@ function App() {
   // at a time; the user dismisses (skip-this-version persists), defers
   // (banner gone until next connect), or triggers an in-place update.
   const [hooksBanner, setHooksBanner] = createSignal<HooksOutdatedInfo | null>(null);
+  // The remote `winmux` CLI could not be converged onto the build this
+  // desktop embeds. Kept per workspace and shown as a banner rather than a
+  // pane status line: the status line self-clears after five seconds, which
+  // is precisely how a version-skewed CLI stayed invisible while it broke
+  // hooks and the reverse tunnel.
+  type CliAlignmentEvent = {
+    workspace_id: string;
+    aligned: boolean;
+    expected?: string;
+    actual?: string;
+    reason?: string;
+  };
+  const [cliSkew, setCliSkew] = createSignal<Record<string, CliAlignmentEvent>>({});
   const [hooksUpdating, setHooksUpdating] = createSignal(false);
   // Phase 53 (rebased): native child Webviews always paint above
   // HTML, so opening a modal would visually hide it behind the
@@ -2482,6 +2495,18 @@ function App() {
         startReconnect(e.payload);
       })
     );
+    // Connect-time verdict on whether the remote CLI matches our build.
+    unlistens.push(
+      await listen<CliAlignmentEvent>("workspace:cli-alignment", (e) => {
+        const p = e.payload;
+        setCliSkew((prev) => {
+          const next = { ...prev };
+          if (p.aligned) delete next[p.workspace_id];
+          else next[p.workspace_id] = p;
+          return next;
+        });
+      }),
+    );
     // Unshipped-fivefer (#4): a pop-out window closed — re-attach the origin
     // pane's terminal (input + resize) if its session is still live. If the
     // popout closed *because* of pty:exit, the exit handler above already
@@ -3747,6 +3772,25 @@ function App() {
               {t("update_banner.skip")}
             </button>
             <button class="update-banner-x" onClick={() => setUpdateBanner(null)}>×</button>
+          </div>
+        </div>
+      </Show>
+
+      {/* Remote CLI out of sync for the ACTIVE workspace. No dismiss button:
+          it is a live functional gap (hooks, tickets and the reverse-tunnel
+          watcher are all switched off while it shows), and it clears itself
+          the moment a bootstrap converges. */}
+      <Show when={cliSkew()[activeWs()?.id ?? ""]}>
+        <div class="hooks-banner" role="status">
+          <div class="hooks-banner-body">
+            <strong>{t("cli_skew.banner.title")}</strong>
+            <span class="hooks-banner-detail">
+              {t("cli_skew.banner.text", {
+                expected: cliSkew()[activeWs()!.id].expected ?? "—",
+                actual: cliSkew()[activeWs()!.id].actual || "—",
+                reason: cliSkew()[activeWs()!.id].reason ?? "—",
+              })}
+            </span>
           </div>
         </div>
       </Show>
