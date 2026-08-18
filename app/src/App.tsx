@@ -1629,11 +1629,19 @@ function App() {
    * nothing but a cwd on a server — but the gap was never
    * worktree-specific, and narrowing the fix to worktrees would leave
    * every hand-set SSH cwd still quietly ignored.
+   *
+   * WSL is in the same boat for a different reason: `spawn_wsl_pty`
+   * guards `--cd` with a WINDOWS-side `Path::new(d).is_dir()`, which a
+   * Linux path like /home/y/src always fails, so the flag is silently
+   * dropped. Injecting the `cd` covers it. Local is genuinely fine —
+   * `spawn_local_pty` sets the process cwd directly — so it stays out.
    */
   const effectiveCwdOverride = (ws: Workspace, opts: ConnectOpts): string | null => {
     if (opts.cwdOverride) return opts.cwdOverride;
     if (!ws.cwd) return null;
-    return isRemoteWorkspace(ws) ? ws.cwd : null;
+    const needsInjection =
+      isRemoteWorkspace(ws) || ws.connection?.type === "wsl";
+    return needsInjection ? ws.cwd : null;
   };
 
   const connectPane = async (paneId: string, opts: ConnectOpts = {}) => {

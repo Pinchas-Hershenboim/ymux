@@ -35,20 +35,6 @@ type WorkspacesFile = {
   active_workspace_id: string | null;
   workspaces: Workspace[];
   groups?: WorkspaceGroup[];             // cmux-A A2 sidebar sections
-  project_folders?: ProjectFolder[];
-};
-
-// A pinned git repo, rendered as a sidebar section whose children are
-// workspaces — one per git worktree (cmux's "Project Worktrees" model).
-// It owns its connection rather than borrowing a workspace's, which is
-// what lets a server repo be pinned before any workspace points there.
-type ProjectFolder = {
-  id: string;                            // "pf_<hex_nanos>"
-  name: string;                          // label; defaults to the path basename
-  path: string;                          // repo root, absolute, on `connection`'s host
-  connection?: Connection;               // absent = this machine
-  is_collapsed?: boolean;                // persisted section state
-  sort_order?: number;                   // absent until reordered
 };
 
 type Workspace = {
@@ -59,14 +45,23 @@ type Workspace = {
   // legacy field — folded into layout on load if present
   connection?: Connection;
   layout?: LayoutNode;
-  // Set together, and only by `project_folder_open_worktree`, when this
-  // workspace was opened from a project folder's worktree row. The
-  // sidebar matches `worktree_path` against a scan to decide whether a
-  // worktree already has a workspace. Unpinning the folder clears
-  // `project_folder_id` but deliberately KEEPS `worktree_path`, so
-  // re-pinning re-adopts the workspace.
-  project_folder_id?: string;
-  worktree_path?: string;
+  // Sidebar nesting. `parent_id` absent = a root row, and only roots
+  // participate in `groups`. Written only by the two create paths
+  // (`workspace_pin_project_folder`, `workspace_open_worktree`); there
+  // is no re-parent gesture, and `load_from_disk` repairs self-parents,
+  // dangling ids and cycles so every consumer may assume a forest.
+  //
+  // `is_project_root` means "this workspace's cwd is a git repo whose
+  // worktrees the sidebar lists underneath it". It is NOT derived: a
+  // worktree child also has a parent, and `git worktree list` run from a
+  // linked worktree returns the same list including main, so scanning
+  // one would duplicate the subtree under itself.
+  //
+  // A worktree child needs no path field of its own — its `cwd` IS the
+  // worktree path, which is how a scan row is matched to a workspace.
+  parent_id?: string;
+  is_project_root?: boolean;             // elided when false
+  is_collapsed?: boolean;                // elided when false
 };
 
 type Connection =
@@ -84,6 +79,21 @@ type LayoutNode =
       ratio: number;                     // [0.05, 0.95]
     };
 ```
+
+### Migration: v2/v3 project folders
+
+A `project_folders` array at the file root (with `project_folder_id` /
+`worktree_path` on the workspaces that belonged to it) is the pre-tree
+shape. `load_from_disk` converts it once: each folder becomes a child
+workspace (`is_project_root`, `cwd` = the repo path) under the first root
+workspace on the same host, and its worktree workspaces re-parent under
+that, keeping their directory as `cwd`. A folder whose host matches no
+existing workspace is kept as a root rather than discarded.
+
+This runs before anything else touches the tree, and the file is
+persisted only after the new shape is in memory — `save_to_disk` rewrites
+the whole file from the struct rather than merging, so an unread legacy
+key is gone on the first write.
 
 ### Migration
 

@@ -2288,3 +2288,60 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
       guard's FIRING path is itself untested — its absence from the log after a
       clean boot is consistent with the sidebar rendering, but was not proven by
       deliberately breaking it.
+
+================================================================================
+2026-08-18 — Project folders v4: a project folder IS a workspace
+================================================================================
+Branch: claude/pane-overflow-project-folders-a7353c
+Commits: 8700032, e2d0f17, 804246a, 876d17f, b6f32a4 (+ docs)
+
+WHY: v2/v3 were rejected on sight, twice, for the same reason. Yossi wanted a
+SUB-WORKSPACE of the folder, with panes that open directly on it — not a
+separate entity pinned beside the workspace. The ProjectFolder entity is gone;
+a project folder is a Workspace with a cwd and one new field: parent_id.
+
+SCHEMA (app/src-tauri/crates/winmux-types/src/lib.rs)
+  + parent_id, is_project_root, is_collapsed  (all skip_serializing_if)
+  - ProjectFolder, project_folder_id, worktree_path
+  Workspace now derives Default; the 9 scattered initializers collapse to
+  ..Default::default() so the next field is a two-line diff instead of nine.
+
+MIGRATION (lib.rs::migrate_legacy_project_folders)
+  v2/v3 pins are converted at load, not dropped. save_to_disk rewrites the
+  whole file from the struct, so an unread `project_folders` key would have
+  been silently deleted on the first write. Each folder becomes a child
+  workspace under the first root on the same host; its worktree workspaces
+  re-parent under it keeping their directory as cwd; no host match keeps it as
+  a root. 7 tests, one of which caught a real bug: a worktree of the folder
+  being migrated could be chosen as that folder's own parent.
+
+CASCADE DELETE (lib.rs::workspace_delete)
+  BFS the subtree under one short lock, run teardown_workspace_runtime per id
+  with the lock dropped, then ONE retain + reassignment + persist. Active-id
+  fallback now prefers a root — `first()` could land the user inside an
+  unrelated repo's worktree. The frontend confirm names each descendant and
+  how many are live. This reverses DECISIONS.md 2026-08-16 on purpose.
+
+SIDEBAR — one recursive node (renderWorkspaceSubtree) replaces the flat list
+  of four sibling kinds. Only roots bucket into groups. Emitted as a FLAT
+  fragment: a wrapper carrying the parent's data-ws-id would make a hover over
+  a worktree stub paint a drop line on the parent. All new consts sit above the
+  component's return (cbef36e). Reorder is parent-scoped; drops are same-level.
+  The repo root's own `git worktree list` entry is filtered out — it IS the
+  workspace, and a stub for it would offer to open a child sharing its
+  parent's directory.
+
+MINI WIZARD — a folder-anchored workspace drops the Directory field and scopes
+  the Claude-session list to that folder. Not cosmetic: --resume <id> now
+  searches other projects too, so a foreign pick SUCCEEDS in the wrong repo.
+
+TWO PRE-EXISTING BUGS FIXED IN PASSING
+  * list_claude_sessions_local never got Phase 65's fix — project_path was the
+    ENCODED directory name; invisible only because the caller guards on
+    startsWith("/"), which C--Users-... fails by accident.
+  * spawn_wsl_pty guards --cd with a Windows-side is_dir() that a Linux path
+    always fails, so WSL silently ignored a workspace cwd. effectiveCwdOverride
+    now injects the cd for WSL as well as SSH.
+
+RESULT: 316 cargo tests pass, tsc clean, vite builds. NOTHING RUN LIVE — see
+FOLLOWUPS P1 2026-08-18 for the 9-step smoke list.
