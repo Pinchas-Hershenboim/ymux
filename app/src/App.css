@@ -431,6 +431,20 @@ body {
   overflow-wrap: anywhere;
 }
 .pf-hint.pf-error { color: var(--w-error); }
+/* Keep a hint on ONE line. git's messages are long enough to wrap into a
+   three-line red slab that reads as a crash rather than a status; the
+   full text stays available as the title. */
+.pf-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pf-hint > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* Path field + optional native browse button, on one line. Paths are
    logically LTR even in an RTL UI (same rule as .ticket-modal-code). */

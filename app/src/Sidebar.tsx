@@ -488,6 +488,11 @@ export function Sidebar(p: Props) {
   type ScanState =
     | { status: "loading" }
     | { status: "ok"; entries: WorktreeEntry[] }
+    // "There is no session yet" is not a failure, it is a not-yet. The
+    // scan fires while the sidebar paints, which on a cold start is
+    // BEFORE anything has connected, so treating it as an error left a
+    // red block on every launch that only a manual ⟳ could clear.
+    | { status: "offline" }
     | { status: "error"; message: string };
   const [scans, setScans] = createSignal<Record<string, ScanState>>({});
 
@@ -508,6 +513,12 @@ export function Sidebar(p: Props) {
       // repository" is a permanent answer about this directory, so the
       // workspace stops claiming to be a repo instead of asking again on
       // every expand and every restart.
+      // No session yet: park it and let the connectivity effect retry.
+      if (/no live SSH session/i.test(msg)) {
+        setScans((prev) => ({ ...prev, [ws.id]: { status: "offline" } }));
+        log.info(`worktree scan deferred ws=${ws.id} — host not connected yet`);
+        return;
+      }
       if (/not a git repository/i.test(msg)) {
         setScans((prev) => {
           const next = { ...prev };
@@ -540,6 +551,22 @@ export function Sidebar(p: Props) {
    * existing workspace.
    */
   const pathKey = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "");
+
+  // A parked scan resumes the moment any workspace reports a live
+  // session — the folder's host is almost always the one that just came
+  // up, and a redundant `git worktree list` is cheaper than a stale red
+  // row the user has to notice and clear by hand.
+  createEffect(() => {
+    const live = p.connectedIds;
+    if (live.size === 0) return;
+    const parked = Object.entries(scans())
+      .filter(([, st]) => st.status === "offline")
+      .map(([id]) => id);
+    for (const id of parked) {
+      const ws = p.workspaces.find((w) => w.id === id);
+      if (ws) void scanFolder(ws);
+    }
+  });
 
   /**
    * parent id → its children, sorted the same way the flat list is
@@ -855,6 +882,11 @@ export function Sidebar(p: Props) {
           <Show when={w.is_project_root}>
             <Show when={scan()?.status === "loading"}>
               <div class="pf-hint" style={`--ws-depth: ${depth + 1}`}>{t("pf.scanning")}</div>
+            </Show>
+            <Show when={scan()?.status === "offline"}>
+              <div class="pf-hint" style={`--ws-depth: ${depth + 1}`}>
+                {t("pf.waitingForConnection")}
+              </div>
             </Show>
             <Show when={scan()?.status === "error"}>
               {/* git's own message — a bad path and a dead connection

@@ -1061,5 +1061,6 @@
   "workspace.delete.confirmButton": "Удалить",
   "pf.isRepo": "репозиторий git — его worktrees перечислены ниже",
   "pf.checkGit": "Проверить наличие репозитория git",
-  "pf.checkGit.found": "“{name}” — репозиторий git, его worktrees теперь показаны"
+  "pf.checkGit.found": "“{name}” — репозиторий git, его worktrees теперь показаны",
+  "pf.waitingForConnection": "ожидание подключения…"
 }

@@ -1061,5 +1061,6 @@
   "workspace.delete.confirmButton": "حذف",
   "pf.isRepo": "مستودع git — فروع العمل مدرجة أدناه",
   "pf.checkGit": "تحقق من وجود مستودع git",
-  "pf.checkGit.found": "“{name}” مستودع git — فروع العمل معروضة الآن"
+  "pf.checkGit.found": "“{name}” مستودع git — فروع العمل معروضة الآن",
+  "pf.waitingForConnection": "بانتظار الاتصال…"
 }

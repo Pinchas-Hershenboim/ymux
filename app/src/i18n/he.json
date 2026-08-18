@@ -1061,5 +1061,6 @@
   "workspace.delete.confirmButton": "מחק",
   "pf.isRepo": "מאגר git — ה-worktrees שלו מוצגים מתחת",
   "pf.checkGit": "בדוק אם יש כאן מאגר git",
-  "pf.checkGit.found": "“{name}” הוא מאגר git — ה-worktrees שלו מוצגים עכשיו"
+  "pf.checkGit.found": "“{name}” הוא מאגר git — ה-worktrees שלו מוצגים עכשיו",
+  "pf.waitingForConnection": "מחכה לחיבור…"
 }
