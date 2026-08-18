@@ -538,7 +538,18 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
             ..Default::default()
         });
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
+    // Tolerate a UTF-8 BOM. serde_json rejects one with "expected value
+    // at line 1 column 1", which sets load_state = Failed and disables
+    // persistence entirely — the user is locked out of their own file and
+    // the message says nothing about a byte-order mark. Windows puts them
+    // there routinely: PowerShell 5.1's `Set-Content -Encoding utf8` and
+    // `Out-File` both write one, so a hand-edit through the obvious tool
+    // bricks the file.
+    let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
+    if text.len() != raw.len() {
+        log_warn("WORKSPACE", "load_from_disk: stripped a UTF-8 BOM from workspaces.json");
+    }
     log_debug("WORKSPACE", &format!("load_from_disk: read {} bytes", text.len()));
     let mut file: WorkspacesFile = serde_json::from_str(&text)
         .map_err(|e| format!("parse {:?}: {e}", path))?;
@@ -8788,6 +8799,27 @@ mod project_folder_migration_tests {
             parent_id: parent.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_utf8_bom_does_not_brick_the_workspaces_file() {
+        // Reached for real: restoring two fields by hand with PowerShell
+        // 5.1's `Set-Content -Encoding utf8` prepended a BOM, serde_json
+        // failed with "expected value at line 1 column 1", load_state went
+        // Failed, and the app came up with ZERO workspaces and persistence
+        // switched off. The parse has to survive the mark.
+        let body = r#"{"version":1,"workspaces":[{"id":"w1","name":"a"}]}"#;
+        let with_bom = format!("\u{feff}{body}");
+        assert!(
+            serde_json::from_str::<WorkspacesFile>(&with_bom).is_err(),
+            "serde still rejects a BOM — the strip below is what saves us"
+        );
+
+        let stripped = with_bom.strip_prefix('\u{feff}').unwrap_or(&with_bom);
+        let file: WorkspacesFile = serde_json::from_str(stripped).unwrap();
+        assert_eq!(file.workspaces.len(), 1);
+        // A file without one is untouched by the same strip.
+        assert_eq!(body.strip_prefix('\u{feff}').unwrap_or(body), body);
     }
 
     #[test]
