@@ -1742,19 +1742,10 @@ fn finalize_wsl_workspace(
         id: new_workspace_id(),
         name: display_name.clone(),
         color: Some(crate::provisioning::workspace_color_for_host(&display_name)),
-        emoji: None,
         cwd: cwd.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
         connection: Some(conn),
         layout: Some(layout),
-        setup_command: None,
-        teardown_command: None,
-        env: Vec::new(),
-        auto_port_forward: false,
-        last_active_at: 0,
-        git_worktree: None,
-        claude_separate_account: false,
-        group_id: None,
-        sort_order: None,
+        ..Default::default()
     };
     let id_out = ws.id.clone();
     {

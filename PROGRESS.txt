@@ -2103,6 +2103,86 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    - NotificationCenter: new workspaceName resolver prop → .notif-item-ws chip.
    NOT VERIFIED LIVE yet — build + run per plan. Windows "sound only first time"
    left as a to-verify (likely notify_rust coalescing identical titles).
+2026-08-18 — Project folders v4: a project folder IS a workspace
+================================================================================
+Branch: claude/pane-overflow-project-folders-a7353c
+Commits: 8700032, e2d0f17, 804246a, 876d17f, b6f32a4 (+ docs)
+
+WHY: v2/v3 were rejected on sight, twice, for the same reason. Yossi wanted a
+SUB-WORKSPACE of the folder, with panes that open directly on it — not a
+separate entity pinned beside the workspace. The ProjectFolder entity is gone;
+a project folder is a Workspace with a cwd and one new field: parent_id.
+
+SCHEMA (app/src-tauri/crates/winmux-types/src/lib.rs)
+  + parent_id, is_project_root, is_collapsed  (all skip_serializing_if)
+  - ProjectFolder, project_folder_id, worktree_path
+  Workspace now derives Default; the 9 scattered initializers collapse to
+  ..Default::default() so the next field is a two-line diff instead of nine.
+
+MIGRATION (lib.rs::migrate_legacy_project_folders)
+  v2/v3 pins are converted at load, not dropped. save_to_disk rewrites the
+  whole file from the struct, so an unread `project_folders` key would have
+  been silently deleted on the first write. Each folder becomes a child
+  workspace under the first root on the same host; its worktree workspaces
+  re-parent under it keeping their directory as cwd; no host match keeps it as
+  a root. 7 tests, one of which caught a real bug: a worktree of the folder
+  being migrated could be chosen as that folder's own parent.
+
+CASCADE DELETE (lib.rs::workspace_delete)
+  BFS the subtree under one short lock, run teardown_workspace_runtime per id
+  with the lock dropped, then ONE retain + reassignment + persist. Active-id
+  fallback now prefers a root — `first()` could land the user inside an
+  unrelated repo's worktree. The frontend confirm names each descendant and
+  how many are live. This reverses DECISIONS.md 2026-08-16 on purpose.
+
+SIDEBAR — one recursive node (renderWorkspaceSubtree) replaces the flat list
+  of four sibling kinds. Only roots bucket into groups. Emitted as a FLAT
+  fragment: a wrapper carrying the parent's data-ws-id would make a hover over
+  a worktree stub paint a drop line on the parent. All new consts sit above the
+  component's return (cbef36e). Reorder is parent-scoped; drops are same-level.
+  The repo root's own `git worktree list` entry is filtered out — it IS the
+  workspace, and a stub for it would offer to open a child sharing its
+  parent's directory.
+
+MINI WIZARD — a folder-anchored workspace drops the Directory field and scopes
+  the Claude-session list to that folder. Not cosmetic: --resume <id> now
+  searches other projects too, so a foreign pick SUCCEEDS in the wrong repo.
+
+TWO PRE-EXISTING BUGS FIXED IN PASSING
+  * list_claude_sessions_local never got Phase 65's fix — project_path was the
+    ENCODED directory name; invisible only because the caller guards on
+    startsWith("/"), which C--Users-... fails by accident.
+  * spawn_wsl_pty guards --cd with a Windows-side is_dir() that a Linux path
+    always fails, so WSL silently ignored a workspace cwd. effectiveCwdOverride
+    now injects the cd for WSL as well as SSH.
+
+RESULT: 316 cargo tests pass, tsc clean, vite builds. NOTHING RUN LIVE — see
+FOLLOWUPS P1 2026-08-18 for the 9-step smoke list.
+
+ADDENDUM 2026-08-18 (same branch) — two bugs found by live testing
+--------------------------------------------------------------------------------
+1. InsightsWindow's Claude-usage effect read state its own fetch writes. On
+   success it settled; on FAILURE usage() stayed null and it re-fired forever.
+   14,359 [USAGE] backoff lines in 43 min saturated the IPC channel, so
+   unrelated clicks stopped landing ("the folder picker opens and nothing
+   happens"). Reachable only because the v3->v4 migration produced a workspace
+   with an SSH connection and no live session. ClaudeUsageIndicator already
+   carried the fix AND the comment describing the trap; its sibling never got
+   it. Now on([view, workspaceId]) + plain-let guards.
+
+2. ssh_exec_capture broke on ChannelMsg::Eof, so when EOF preceded ExitStatus
+   the exit code was lost and stayed 0. git_script folds stderr in with 2>&1,
+   so a failing git came back as SUCCESSFUL output: "fatal: not a git
+   repository" parsed to zero worktrees and a non-repo could be PINNED. Whether
+   it failed was a race — /home/runner/build probed clean, then scanned dirty
+   18 seconds later. Now collects until both EOF and ExitStatus (or Close), and
+   git_probe_worktrees additionally rejects an empty listing, since a real repo
+   always lists at least its own main worktree.
+
+   Follow-on UX, per Yossi: a non-repo is demoted once (workspace_set_project_root
+   -> false) instead of re-asking on every expand and restart, and a confirmed
+   repo carries a small git badge on its folder glyph.
+=======
 --------------------------------------------------------------------------------
 2026-08-12  Tickets land on the machine the agent runs on (SSH/WSL/Local)
 --------------------------------------------------------------------------------
@@ -2319,6 +2399,192 @@ STILL OPEN — tmux vanishing server-side
   Remaining candidates need server evidence, not more code reading — see
   FOLLOWUPS P0 and docs/DECISIONS.md.
 
+[PANE-OVERFLOW + PROJECT-FOLDERS] two features, plan functional-bouncing-ritchie
+   2026-08-13 ~17:00 +0300. Branch claude/pane-overflow-project-folders-a7353c
+   (worktree pane-overflow-project-folders-0fd4f0). 5 commits:
+   6ee80f6, 568c905, 4138d33, 74472be, + docs.
+
+   FEATURE 1 — pane header overflow (6ee80f6)
+   Yossi: with many panes open the header buttons vanish. Cause: .pane-header is
+   a no-wrap flex row, .pane-btn can't shrink below its 14px SVG, and
+   .pane { overflow:hidden } clipped the overflow silently. Up to 9 buttons x
+   ~34px ~= 306px of buttons.
+   FIX: buttons moved into an actions() memo; a fitter decides how many render
+   inline and the rest fall into a chevron dropdown. `close` stays outside the
+   array and is always visible. Badges (tmux T, bg-count, status, agent-run) are
+   not actions and never move.
+   MEASUREMENT: sum of children offsetWidth + gaps, NOT scrollWidth — an RTL
+   header overflows towards the inline start, where scrollWidth is the messy
+   corner of the API. Verified in a throwaway Chromium harness served through
+   vite: 7 widths x LTR/RTL, identical convergence, 0-8 iterations, no residual
+   overflow above ~115px (below that even title+chevron+close can't fit; the
+   floor degrades to clipping the title stub, and a pane that narrow is
+   unusable anyway).
+   fit() runs from rAF only (never inside the effect that writes the signal, or
+   it loops), on ResizeObserver ticks and when the action set / a badge changes.
+   agentRunLabel is deliberately NOT tracked — ticks every second, fixed width
+   via tabular-nums.
+   The disconnect split-button stays one atomic item: unchanged inline, expands
+   to Detach / Kill session inside the menu. Zero behaviour change, only
+   position. Also wired pane.tooltip.split_right/down, which were hardcoded
+   English despite the keys existing in all 4 locales.
+
+   FEATURE 2 — project folders + worktrees (568c905, 4138d33, 74472be)
+   Yossi's framing: a project folder is a directory on a SERVER he works on
+   often; pin it under the workspace in the sidebar like the groups logic, and
+   since we already hold an SSH connection, listing its worktrees is the cheap
+   way to see "what exists and what doesn't". One action per worktree: open a
+   session there.
+   MODEL (his call, from AskUserQuestion): Vec<ProjectFolder> on Workspace (not
+   a global entity); open-session-here = new pane in the current workspace via
+   cwdOverride; scan on expand + manual refresh, no polling; worktree creation
+   IS in scope including over SSH.
+   - worktrees.rs: parse_worktree_porcelain + transport dispatch on Connection
+     (local arg-array / wsl_exec / exec channel on the workspace's LIVE ssh
+     handle via pick_ssh_handle). No live handle = explicit "connect a pane
+     first", never an empty list — an empty list reads as "no worktrees", a
+     different and misleading claim. Rule #3: wsl/ssh are shell strings by
+     construction, so every value goes through winmux_core::shell_quote; a test
+     asserts a path carrying `'; rm -rf /` stays inert.
+     sanitize_branch_name lifted OUT of workspace_create_worktree (was inline)
+     so both worktree paths share one rule.
+   - Schema: ProjectFolder{id,name,path,is_collapsed}, serde-defaulted,
+     skip_serializing_if=Vec::is_empty so an existing workspaces.json
+     round-trips byte-identical (test asserts the key is elided). 5 Workspace
+     initializers + 3 test literals updated.
+   - Commands: workspace_project_folder_add/update/remove (remove only unpins —
+     winmux didn't create the directory), project_folder_list_worktrees,
+     project_folder_create_worktree.
+   - UI: collapsible sub-tree under the workspace row; lazy scan driven by ONE
+     effect so every path to "open" is covered (click, freshly pinned, restart
+     with it open). Failed scan shows git's own message. Open-session-here finds
+     the new pane by diffing pane ids across the split rather than guessing the
+     tree shape. ProjectFolderModal serves both dialogs; pinning validates via
+     project_folder_list_worktrees first so a bad path fails with git's message
+     instead of landing a dead row; the worktree target dir is suggested and
+     shown BEFORE confirming. No remote folder picker exists, so ssh/wsl type
+     the path and only Local gets the native browse button.
+
+   KNOWN ts-rs 8 WART (docs/DECISIONS.md): it ignores multi-key serde attrs, so
+   the generated TS types project_folders as REQUIRED even though the backend
+   elides it. types.ts carries the warning; frontend must read
+   `w.project_folders ?? []`.
+
+   VALIDATION: cargo test --workspace green (207 + 94, 14 new); tsc clean; vite
+   build clean. NOT VERIFIED LIVE — no Tauri build was run, so per Rule #14 this
+   is "compiles, untested". Live smoke still owed: see FOLLOWUPS P1.
+
+   WORKTREE ENV (both gitignored, no repo impact): this worktree had no
+   node_modules (junctioned to the main checkout) and no
+   resources/winmux-cli.exe (copied from the main checkout) — the latter is
+   exactly the pre-existing FOLLOWUPS P3.
+
+[PROJECT-FOLDERS v2] worktree = workspace (cmux model) + two overflow bugfixes
+   2026-08-16/17 +0300. Branch claude/pane-overflow-project-folders-a7353c.
+   Commits: eafd907 (overflow fixes), 94353d6 (backend rework), + this one.
+
+   WHY v2: Yossi built+ran the v1 binary and rejected the model on sight.
+   v1 hung ProjectFolder off a Workspace as metadata and "open session here"
+   opened a PANE in that same workspace. He wanted a section whose children are
+   workspaces. His FIRST message already said "like the groups logic" — that
+   was read as "looks like a group" instead of "is shaped like a group".
+
+   CMUX RESEARCH (fetched, not recalled — see DECISIONS 2026-08-16):
+   - sidebar has switchable views; one is "Project Worktrees" (cmux#5173)
+   - project row's `+` creates the worktree AND opens a workspace (cmux#5032)
+   - so a worktree MATERIALIZES AS A WORKSPACE
+   - cmux#5032 is a BUG report: they spawned the workspace with the one-shot
+     setup command as the main process, so the tab flashed and died when
+     `git worktree add` exited. We create the worktree first, then open a
+     workspace whose first pane is a plain interactive shell.
+   - nesting a workspace's TABS under it (cmux#1404) is requested-not-shipped
+     there; not copied.
+
+   SCHEMA
+   - ProjectFolder moved off Workspace to WorkspacesFile root, beside `groups`,
+     and gained its OWN Connection + sort_order. That is what makes a section
+     standalone — pinning a server repo no longer needs a workspace pointing at
+     the same host to already exist.
+   - Workspace: dropped `project_folders`, gained project_folder_id +
+     worktree_path (both skip_serializing_if).
+   - Serde tests: the ABANDONED inline project_folders key must still LOAD (a
+     branch build wrote it) — pinned so nobody adds deny_unknown_fields later.
+
+   COMMANDS
+   - project_folder_add/update/remove + project_folder_open_worktree (new)
+     + project_folder_probe (new: validates a path against a connection that
+     has no folder yet, for the pin dialog).
+   - remove() unpins and NOTHING else: not the directory, not the workspaces
+     opened from it. Those keep worktree_path and fall back to the flat list,
+     so re-pinning re-adopts them.
+   - SSH handle lookup moved from workspace-id to user@host:port. A folder
+     belongs to a HOST. key_path is a credential, not an identity → not matched.
+
+   *** BUG FOUND ON THE WAY, WIDER THAN THIS FEATURE ***
+   Workspace.cwd is INERT OVER SSH. pane_connect's Ssh arm never forwards cwd to
+   spawn_ssh — only the Local and WSL arms use it (lib.rs ~5804-5836). Every SSH
+   pane has always started in $HOME and a hand-set workspace cwd was silently
+   dropped. An SSH channel has no working-dir parameter; that is exactly what
+   cwdOverride papers over via `cd '<dir>'` in build_smart_connect_script.
+   connectPane now defaults cwdOverride to ws.cwd for REMOTE workspaces.
+   Fixed generally, not narrowed to worktrees — the narrow fix would leave every
+   other SSH cwd still broken. Behaviour change for anyone who set a cwd on an
+   SSH workspace and got $HOME: they now land where they asked.
+
+   ALSO IN eafd907 (two bugs in the pane-overflow work, both mine, found by
+   Yossi testing the v1 build — the chevron appeared but clicking did nothing):
+   1. `.pane-header { overflow: hidden }`, which I added FOR the fitter, clipped
+      the dropdown (it's position:absolute; top:100% inside the header). The
+      fitter never needed it.
+   2. The fitter compared the child-width sum against clientWidth = the PADDING
+      box, giving the run 20px of free slack, so ~20px stayed overflowing at
+      every width. Bug 1's clipping is exactly what hid bug 2.
+   Re-verified in Chromium against the real CSS, 7 widths x LTR/RTL: residual
+   overflow 0px (was ~20px), dropdown measures visible everywhere it exists.
+   Also added createLogger("SIDEBAR") — there was NO logger in Sidebar.tsx, so a
+   failed worktree scan left nothing in debug.log and Yossi's "לא מציג" was
+   undiagnosable. Scans now log start/ok+count/fail (metadata only).
+
+   VALIDATION: cargo test --workspace green (207 + 97); tsc clean; vite build
+   clean; tauri build --no-bundle + Rule #13 asset-hash check + Rule #14 launch.
+   STILL NOT SMOKED LIVE against a real SSH repo — FOLLOWUPS P1 stands.
+
+[SIDEBAR TDZ] the whole sidebar was an ErrorBoundary card
+   2026-08-17 ~12:20 +0300. Commits cbef36e (fix), 9da0483 (log guard).
+   Yossi's report was one word: "הSIDEBAR".
+   CAUSE: the project-folder block (scans / pathKey / sortedFolders /
+   byWorktreePath / renderProjectFolderSections) was placed AFTER Sidebar's
+   `return (` statement. The `const`s therefore never executed and every read
+   hit the temporal dead zone -> "Cannot access 'sortedFolders' before
+   initialization" -> ErrorBoundary replaced the entire sidebar.
+   WHAT HID IT: renderWorkspaceItem / renderWorkspaceRow live in that same
+   after-return region and work fine, because FUNCTION DECLARATIONS HOIST and
+   const does not. Putting new state beside them looked consistent and wasn't.
+   tsc does not flag TDZ.
+   ALSO EXPLAINS the previous round's "#3 לא מציג": there the crash was
+   CONDITIONAL — renderProjectFolders short-circuited on
+   <Show when={folders().length > 0}> before touching scans(), so the sidebar
+   survived until a folder was actually pinned, then died exactly where the
+   list should have appeared. In v2 the call is unconditional -> dead at boot.
+
+   PROCESS FAILURES WORTH RECORDING (mine):
+   1. I reported a build as "ready" that had FAILED. `npm run tauri build`
+      returned exit code 0 while the output contained
+      "Access is denied. (os error 5)" — a running app.exe blocked the link.
+      Exit code is not a build result here; the output text is. Check both.
+   2. cargo test + tsc + vite build + the Rule #13 asset-hash check + "process
+      still alive after 14s" ALL PASSED on a binary whose sidebar was entirely
+      replaced by an error card. "The process didn't die" is not "the UI works"
+      — that is Rule #14's actual point and I treated the launch as if it
+      satisfied it.
+   3. A sidebar render crash wrote NOTHING to debug.log, so the on-screen card
+      was the only evidence and nothing survived to diagnose afterwards. Fixed
+      in 9da0483: the ErrorBoundary fallback now calls log.error. NOTE the new
+      guard's FIRING path is itself untested — its absence from the log after a
+      clean boot is consistent with the sidebar rendering, but was not proven by
+      deliberately breaking it.
+
+=========================================================================
 ================================================================================
 2026-08-18 — RTL: tuiOwnsBidi restored after 18 days missing (lost in a merge)
 ================================================================================
