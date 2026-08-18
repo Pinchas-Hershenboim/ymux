@@ -1020,6 +1020,8 @@
   "sidebar.move_to_group": "העבר לקבוצה",
   "sidebar.move_out_of_group": "הוצא מהקבוצה",
   "reconnect.title": "החיבור ל-{host} נותק",
+  "reconnect.title_multi": "{n} חיבורים נותקו",
+  "reconnect.attempt_multi": "מנסה להתחבר מחדש ל-{n} פאנלים… (ניסיון {a}/{max})",
   "reconnect.attempt": "מנסה להתחבר מחדש… (ניסיון {n}/{max})",
   "reconnect.cancel": "בטל",
   "reconnect.success": "מחובר מחדש ל-{host}",

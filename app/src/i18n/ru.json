@@ -1020,6 +1020,8 @@
   "sidebar.move_to_group": "Переместить в группу",
   "sidebar.move_out_of_group": "Убрать из группы",
   "reconnect.title": "Соединение с {host} разорвано",
+  "reconnect.title_multi": "Разорвано соединений: {n}",
+  "reconnect.attempt_multi": "Переподключение {n} панелей… (попытка {a}/{max})",
   "reconnect.attempt": "Переподключение… (попытка {n}/{max})",
   "reconnect.cancel": "Отмена",
   "reconnect.success": "Переподключено к {host}",

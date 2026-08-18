@@ -1020,6 +1020,8 @@
   "sidebar.move_to_group": "نقل إلى مجموعة",
   "sidebar.move_out_of_group": "إخراج من المجموعة",
   "reconnect.title": "انقطع الاتصال بـ {host}",
+  "reconnect.title_multi": "انقطع {n} اتصالات",
+  "reconnect.attempt_multi": "جارٍ إعادة الاتصال بـ {n} لوحات… (المحاولة {a}/{max})",
   "reconnect.attempt": "جارٍ إعادة الاتصال… (المحاولة {n}/{max})",
   "reconnect.cancel": "إلغاء",
   "reconnect.success": "تمت إعادة الاتصال بـ {host}",

@@ -249,7 +249,12 @@ pub(crate) async fn sftp_upload(
     let sftp = SftpSession::new(chan.into_stream())
         .await
         .map_err(|e| format!("sftp init: {e}"))?;
-    {
+    // russh-sftp's default is a 10s deadline per 255KiB chunk, written
+    // serially — the daemon binaries here are ~12MB, so that default gave up
+    // long before a loaded host could finish. Same value as the bootstrap
+    // uploader; see winmux-bootstrap's SFTP_REQUEST_TIMEOUT_SECS.
+    sftp.set_timeout(60).await;
+    let r = async {
         let mut f = sftp
             .create(remote_path)
             .await
@@ -259,6 +264,22 @@ pub(crate) async fn sftp_upload(
             .map_err(|e| format!("sftp write: {e}"))?;
         f.flush().await.ok();
         f.shutdown().await.ok();
+        Ok::<(), String>(())
+    }
+    .await;
+    // Callers pass a `.tmp` path and `mv -f` it into place afterwards, so a
+    // failure here leaves a partial file that nothing else will ever clean
+    // up. That is the origin of the stale zero-byte `winmux-server.tmp`
+    // found on Yossi's server.
+    if let Err(e) = r {
+        if let Err(rm) = sftp.remove_file(remote_path).await {
+            crate::log_warn(
+                "ADDON",
+                &format!("sftp_upload: could not remove partial {remote_path}: {rm}"),
+            );
+        }
+        let _ = sftp.close().await;
+        return Err(e);
     }
     let _ = sftp.close().await;
     Ok(())
@@ -530,7 +551,10 @@ async fn insights_install(handle: &SshHandle<SshClient>, home: &str) -> Result<S
     // preserving the token + chat.db + paired_devices (paired phones keep working).
     let final_path = format!("{home}/.winmux/bin/winmux-server");
     let legacy_link = format!("{home}/.winmux/bin/winmux-insights");
-    let tmp = format!("{final_path}.tmp");
+    // pid-suffixed so two desktops (or two panes) installing at once can't
+    // interleave their streams into one remote file — same fix as the CLI
+    // bootstrap uploader.
+    let tmp = format!("{final_path}.{}.tmp", std::process::id());
     sftp_upload(handle, &tmp, bytes).await?;
     let _ = exec(
         handle,
