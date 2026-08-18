@@ -3479,6 +3479,7 @@ function App() {
                     notifiedPaneIds={paneNotified()}
                     panePulseEnabled={settings()?.notifications?.pane_pulse_on_activity ?? true}
                     workspaceConnection={activeWs()?.connection ?? undefined}
+                    workspaceCwd={activeWs()?.cwd ?? undefined}
                     workspaceName={activeWs()?.name}
                     workspaceColor={activeWs()?.color ?? undefined}
                     workspaceEmoji={activeWs()?.emoji ?? undefined}

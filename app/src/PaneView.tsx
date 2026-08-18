@@ -77,6 +77,10 @@ interface Props {
   // / Browser / ClaudeChat panes, or a fresh Terminal pane). Threaded
   // from App.tsx via LayoutView.
   workspaceConnection?: Connection;
+  /** The workspace's own directory, when it has one — a pinned project
+   *  folder or a worktree opened under it. Its presence is what turns
+   *  the connection wizard into the scoped mini version. */
+  workspaceCwd?: string;
   // Phase 23.I: the workspace name. The pane header falls back to it
   // when the user hasn't set a pane-specific title, replacing the
   // noisy "ssh user@host:port" auto-label.
@@ -213,6 +217,14 @@ export function PaneView(p: Props) {
   // the workspace's canonical connection so SSH-only menu items
   // (tmux) show up from FM / Browser / Chat panes too.
   // What the pane's effective target CAN DO (own connection > workspace).
+  // A workspace with its own directory (a pinned project folder, or a
+  // worktree opened under one) anchors every pane it hosts. The wizard
+  // drops its Directory field in that case: wandering out of the folder
+  // is precisely what the sub-workspace exists to prevent.
+  const folderAnchor = () => {
+    const c = p.workspaceCwd?.trim();
+    return c ? c : null;
+  };
   const caps = () => paneCaps(p.pane, p.workspaceConnection);
   // Kept for the genuinely SSH-only bits — the SFTP directory picker, which
   // has no WSL backend yet. Do not reach for this to answer "does it have
@@ -303,9 +315,16 @@ export function PaneView(p: Props) {
     setNcSessionsLoading(true);
     setNcSessionsErr(null);
     try {
+      // Scoped to the folder when there is one. Not cosmetic: since
+      // Claude Code 2.1.223 `--resume <id>` searches "the current
+      // project directory and its git worktrees, THEN every other
+      // project on this machine", so picking a foreign session does not
+      // fail — it succeeds, resuming another repo's conversation inside
+      // this folder.
       const list = await invoke<ClaudeSessionInfo[]>("pane_list_claude_sessions", {
         workspaceId: p.workspaceId,
         limit: 40,
+        projectPath: folderAnchor(),
       });
       setNcSessions(list);
     } catch (e) {
@@ -534,10 +553,16 @@ export function PaneView(p: Props) {
     opts.persistent = ncType() === "tmux";
     const c = ncCmd();
     const picked = ncPickedSession();
-    // A picked resume session overrides the directory with its own project
-    // path (so resume lands where the session was created), if absolute.
-    let dir = ncDir().trim();
-    if (picked && picked.project_path?.startsWith("/")) dir = picked.project_path;
+    // A picked resume session normally overrides the directory with its
+    // own project path (so resume lands where the session was created).
+    // Inside a folder-anchored workspace that is exactly wrong — the
+    // pane must stay in the folder, and the list is already scoped to
+    // it, so the override is skipped rather than fought.
+    const anchor = folderAnchor();
+    let dir = anchor ?? ncDir().trim();
+    if (!anchor && picked && picked.project_path?.startsWith("/")) {
+      dir = picked.project_path;
+    }
     // Empty stays empty: no cwdOverride → the backend lands in the user's $HOME
     // root (default). Only send an override when the user actually typed a path
     // (or a picked session supplied its project dir).
@@ -1672,27 +1697,41 @@ export function PaneView(p: Props) {
                     </p>
                   </div>
 
-                  {/* 2. Directory (optional — empty = the user's $HOME root) */}
-                  <div class="nc-section">
-                    <label class="nc-label">
-                      {t("connect.newConn.directory")}{" "}
-                      <span class="nc-optional">{t("connect.newConn.dirDefault")}</span>
-                    </label>
-                    <div class="nc-dir-row">
-                      <input
-                        class="nc-input"
-                        autofocus
-                        placeholder="/home/user/project"
-                        value={ncDir()}
-                        onInput={(e) => setNcDir(e.currentTarget.value)}
-                      />
-                      <Show when={isSsh()}>
-                        <button class="nc-browse" onClick={browseNewConnDir}>
-                          {t("connect.newConn.browse")}
-                        </button>
-                      </Show>
+                  {/* 2. Directory. Anchored workspaces show it read-only:
+                         the folder IS the workspace, so there is nothing
+                         to choose. Everyone else keeps the free field. */}
+                  <Show
+                    when={!folderAnchor()}
+                    fallback={
+                      <div class="nc-section">
+                        <label class="nc-label">{t("connect.newConn.directory")}</label>
+                        <div class="nc-locked-dir" title={folderAnchor()!}>
+                          <IconFolder size={13} /> <span>{folderAnchor()}</span>
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div class="nc-section">
+                      <label class="nc-label">
+                        {t("connect.newConn.directory")}{" "}
+                        <span class="nc-optional">{t("connect.newConn.dirDefault")}</span>
+                      </label>
+                      <div class="nc-dir-row">
+                        <input
+                          class="nc-input"
+                          autofocus
+                          placeholder="/home/user/project"
+                          value={ncDir()}
+                          onInput={(e) => setNcDir(e.currentTarget.value)}
+                        />
+                        <Show when={isSsh()}>
+                          <button class="nc-browse" onClick={browseNewConnDir}>
+                            {t("connect.newConn.browse")}
+                          </button>
+                        </Show>
+                      </div>
                     </div>
-                  </div>
+                  </Show>
 
                   {/* 3. Command (dropdown; custom field only when chosen) */}
                   <div class="nc-section">

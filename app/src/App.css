@@ -434,6 +434,27 @@ body {
 
 /* Path field + optional native browse button, on one line. Paths are
    logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
+/* The connect wizard's directory row when the workspace IS a folder:
+   shown, not editable. LTR because it is always a POSIX/Windows path,
+   matching .pf-modal .pane-meta-title. */
+.nc-locked-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: var(--w-r-sm);
+  background: var(--w-surface);
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+  direction: ltr;
+  text-align: start;
+}
+.nc-locked-dir span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .pf-modal-row { display: flex; gap: 8px; align-items: center; }
 .pf-modal-row input {
   flex: 1 1 auto;

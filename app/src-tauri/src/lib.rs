@@ -6798,8 +6798,12 @@ async fn pane_list_claude_sessions(
     state: State<'_, AppState>,
     workspace_id: String,
     limit: Option<usize>,
+    project_path: Option<String>,
 ) -> Result<Vec<ClaudeSessionInfo>, String> {
     let limit = limit.unwrap_or(30).min(200);
+    let scope = project_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
     // Locate any live SSH handle for this workspace. The shell command runs
     // on the remote where Claude Code is actually installed.
     let handle_opt = {
@@ -6812,8 +6816,21 @@ async fn pane_list_claude_sessions(
             })
     };
 
+    // Claude Code stores sessions under ~/.claude/projects/<encoded-cwd>/,
+    // where <encoded-cwd> is the absolute working directory with every
+    // non-alphanumeric character replaced by `-`. Names over 200 chars are
+    // truncated and hashed, so this narrows with a PREFIX glob (quoted
+    // segment, bare `*`) and leaves the authoritative check to the `cwd`
+    // field inside the JSONL — the directory name is a lossy encoding.
+    let root = match scope.as_deref() {
+        Some(p) => format!(
+            "\"$HOME/.claude/projects\"/{}*",
+            shell_quote(&claude_project_dir_prefix(p))
+        ),
+        None => "\"$HOME/.claude/projects\"".to_string(),
+    };
     let script = format!(
-        "find \"$HOME/.claude/projects\" -maxdepth 4 -name '*.jsonl' \
+        "find {root} -maxdepth 4 -name '*.jsonl' \
          -printf '%T@\\t%p\\n' 2>/dev/null | sort -rn | head -{} | \
          while IFS=$'\\t' read -r mt path; do \
            cwd=$(head -50 \"$path\" 2>/dev/null | \
@@ -6857,7 +6874,7 @@ async fn pane_list_claude_sessions(
         // walk of %USERPROFILE%\.claude\projects\*\*.jsonl. We don't try to
         // mirror the full bash pipeline — just enumerate, sort by mtime,
         // return path + mtime; previews are skipped.
-        return list_claude_sessions_local(limit);
+        return list_claude_sessions_local(limit, scope.as_deref());
     };
 
     let mut out = Vec::new();
@@ -6879,6 +6896,14 @@ async fn pane_list_claude_sessions(
             .unwrap_or(0);
         let path = parts[1].to_string();
         let cwd_field = parts.get(2).map(|s| s.trim()).filter(|s| !s.is_empty());
+        // The directory glob above is only a narrowing hint; THIS is the
+        // check. A session whose real cwd is elsewhere never belongs in a
+        // folder-scoped list.
+        if let Some(want) = scope.as_deref() {
+            if cwd_field.map(|c| !paths_equal(c, want)).unwrap_or(true) {
+                continue;
+            }
+        }
         let is_subagent = parts.get(3).map(|s| s.trim() == "1").unwrap_or(false);
         let last_user = parts.get(4).map(|s| extract_text_field(s));
         let last_asst = parts.get(5).map(|s| extract_text_field(s));
@@ -6911,7 +6936,49 @@ async fn pane_list_claude_sessions(
     Ok(out)
 }
 
-fn list_claude_sessions_local(limit: usize) -> Result<Vec<ClaudeSessionInfo>, String> {
+/// Encode an absolute path the way Claude Code names its project dirs:
+/// every non-alphanumeric character becomes `-`. Used only to NARROW a
+/// search, never to reconstruct a path — the encoding is lossy in both
+/// directions (Phase 65 bug: `cd '-home-runner-tax'`).
+fn claude_project_dir_prefix(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Compare two directory paths for the session scope: separators and a
+/// trailing slash must not decide whether a session belongs to a folder.
+fn paths_equal(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    norm(a) == norm(b)
+}
+
+/// Read the `"cwd"` field out of a session transcript. That field is the
+/// source of truth for which project a session belongs to; the on-disk
+/// directory NAME is the lossy encoding above.
+fn claude_session_cwd(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(path).ok()?;
+    for line in std::io::BufReader::new(f).lines().take(50) {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+                if !c.is_empty() {
+                    return Some(c.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn list_claude_sessions_local(
+    limit: usize,
+    scope: Option<&str>,
+) -> Result<Vec<ClaudeSessionInfo>, String> {
     let home = dirs::home_dir().ok_or_else(|| "no home dir".to_string())?;
     let root = home.join(".claude").join("projects");
     if !root.exists() {
@@ -6939,6 +7006,15 @@ fn list_claude_sessions_local(limit: usize) -> Result<Vec<ClaudeSessionInfo>, St
         }
     }
     entries.sort_by(|a, b| b.1.cmp(&a.1));
+    // Filter BEFORE truncating, or a scoped list silently comes back
+    // short because the newest N sessions belonged to other projects.
+    if let Some(want) = scope {
+        entries.retain(|(p, _)| {
+            claude_session_cwd(p)
+                .map(|c| paths_equal(&c, want))
+                .unwrap_or(false)
+        });
+    }
     entries.truncate(limit);
     let mut out = Vec::new();
     for (p, mtime) in entries {
@@ -6947,12 +7023,19 @@ fn list_claude_sessions_local(limit: usize) -> Result<Vec<ClaudeSessionInfo>, St
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let project_path = p
-            .parent()
-            .and_then(|q| q.file_name())
-            .and_then(|s| s.to_str())
-            .unwrap_or("?")
-            .to_string();
+        // Phase 65 (bug Y) fixed this for the SSH path and missed the
+        // local one: `project_path` was the on-disk directory NAME, i.e.
+        // the encoded form (`C--Users-...`). It stayed invisible only
+        // because the caller's guard is `project_path.startsWith("/")`,
+        // which an encoded Windows path fails by accident. Scoping a
+        // local project folder needs the real value.
+        let project_path = claude_session_cwd(&p).unwrap_or_else(|| {
+            p.parent()
+                .and_then(|q| q.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string()
+        });
         out.push(ClaudeSessionInfo {
             session_id,
             project_path,
@@ -8478,6 +8561,44 @@ mod migration_tests {
             rewrite_browser_filemanager_panes_to_terminal(&mut file),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod claude_session_scope_tests {
+    use super::{claude_project_dir_prefix, paths_equal};
+
+    #[test]
+    fn dir_prefix_matches_claude_code_encoding() {
+        // Every non-alphanumeric becomes '-', per the Agent SDK docs.
+        assert_eq!(claude_project_dir_prefix("/Users/me/proj"), "-Users-me-proj");
+        assert_eq!(
+            claude_project_dir_prefix("/home/runner/src/winmux-feature.x"),
+            "-home-runner-src-winmux-feature-x"
+        );
+        // Windows paths encode too — that is what the local branch globs.
+        assert_eq!(claude_project_dir_prefix(r"C:\Users\y\p"), "C--Users-y-p");
+    }
+
+    #[test]
+    fn dir_prefix_is_only_a_hint_never_a_path() {
+        // Lossy on purpose: '-' collapses '/', '.' and '-' alike, so two
+        // different repos can share a prefix. That is exactly why the
+        // authoritative check is the cwd read out of the JSONL — trusting
+        // this string as a path is Phase 65's `cd '-home-runner-tax'` bug.
+        assert_eq!(
+            claude_project_dir_prefix("/a/b-c"),
+            claude_project_dir_prefix("/a-b/c")
+        );
+    }
+
+    #[test]
+    fn scope_comparison_ignores_separators_and_trailing_slash() {
+        assert!(paths_equal("/srv/p", "/srv/p/"));
+        assert!(paths_equal(r"C:\src\p", "C:/src/p"));
+        assert!(!paths_equal("/srv/p", "/srv/p2"));
+        // A worktree is NOT its repo: sessions must not leak between them.
+        assert!(!paths_equal("/srv/p", "/srv/p-feature"));
     }
 }
 
