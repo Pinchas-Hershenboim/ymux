@@ -55,6 +55,7 @@ import {
   readClipboardText,
   setCtrlCCopyOnSelect,
   setMirrorArrowsRtl,
+  setTuiOwnsBidiEnabled,
 } from "./terminalInstance";
 import { saveRemoteFileAs } from "./download";
 import { MarkdownViewer } from "./MarkdownViewer";
@@ -2642,6 +2643,7 @@ function App() {
         (s.shortcuts ?? DEFAULT_SHORTCUTS).copy_on_select_with_ctrl_c,
       );
       setMirrorArrowsRtl(s.terminal?.mirror_arrows_rtl ?? true);
+      setTuiOwnsBidiEnabled(s.terminal?.tui_owns_bidi ?? false);
     } catch (e) {
       log.warn("settings_load failed", e);
     }
@@ -3013,6 +3015,7 @@ function App() {
           (e.payload.shortcuts ?? DEFAULT_SHORTCUTS).copy_on_select_with_ctrl_c,
         );
         setMirrorArrowsRtl(e.payload.terminal?.mirror_arrows_rtl ?? true);
+        setTuiOwnsBidiEnabled(e.payload.terminal?.tui_owns_bidi ?? false);
       })
     );
     // Phase 18: agent-hooks outdated event from the backend's

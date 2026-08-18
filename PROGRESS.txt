@@ -2706,3 +2706,53 @@ ZELLIJ (Part B) — no code written, spike gates everything.
   8 steps; steps 5 (two full cycles in one pane, catches a latched-ON state) and
   7 (inside tmux over SSH, decides the set-titles question) are the ones that
   cannot be inferred from anything already checked.
+
+--------------------------------------------------------------------------------
+2026-08-19 — TUI-owns-bidi turned OFF by default: the premise expired
+--------------------------------------------------------------------------------
+  Live test of v0.4.5 (the restore) produced the opposite of the expected result.
+  Yossi: local pane broken, SSH fine. debug.log had exactly ONE pane with
+  transitions:
+    23:44:16 [UI:TERM] tui-owns-bidi on  pane=p_18ab17f9e2257cd8_1
+    23:50:01 [UI:TERM] tui-owns-bidi off pane=p_18ab17f9e2257cd8_1
+  The feature engaged exactly where Hebrew broke, and never engaged where Hebrew
+  worked. SSH panes are spared only because tmux swallows the OSC title the
+  detector needs (no set-titles in the bundled conf).
+
+  Diagnosis: Claude changed. The feature was verified in 2026-07 against Claude
+  2.1.74-2.1.210, which printed Hebrew ALREADY reversed for BiDi-less terminals.
+  claude-fable-5 prints logical order like everything else, so the ordinary
+  per-line RTL pass is correct and forcing dir="ltr" is what scrambles it.
+  MY RESTORE MADE LOCAL PANES WORSE. Said plainly because the DECISIONS entry
+  it was based on is what made it look safe.
+
+  Fix: setting terminal.tui_owns_bidi, DEFAULT FALSE, Settings -> Terminal
+  toggle, en/he/ar/ru. Not deleted — deleting it silently is how this loop
+  started. Detection + the tui-owns-bidi log line still run unconditionally;
+  only the LTR forcing is gated, via `bidiOwnedByTui` in terminalInstance.ts.
+  That log line is the only reason this took minutes instead of days.
+
+  FILES  settings.rs (field + Default), terminalInstance.ts (g_tuiOwnsBidiEnabled,
+         setTuiOwnsBidiEnabled, bidiOwnedByTui getter, refreshRowDirections,
+         3 effect sites regated), App.tsx (2 wiring sites), SettingsModal.tsx,
+         settings.ts, bindings/TerminalSettings.ts (ts-rs confirmed my
+         hand-written binding byte-for-byte), i18n x4, DECISIONS, PROGRESS.
+
+  A SECOND BUG FOUND, NOT FIXED: dir="ltr" would not have worked even for the
+  old visual-order Claude. `dir` sets only the paragraph base direction; UAX #9
+  rule L2 still reverses Hebrew runs inside an LTR paragraph. Suppressing
+  reordering needs `unicode-bidi: bidi-override`, which appears nowhere near
+  .xterm-rows (checked: every unicode-bidi in App.css targets other surfaces).
+  So the legacy path is likely broken for the Claude it was written for too.
+  Left alone deliberately — it is behind a default-off flag now, and fixing an
+  unverifiable path against a Claude version nobody here runs is speculation.
+  Anyone enabling the flag should add bidi-override first.
+
+  PROCESS: I confirmed the original symptom with a multiple-choice question
+  whose first option was the answer I expected, and built a restore on it. The
+  discriminating question — what breaks WHERE — took one sentence from Yossi to
+  answer and would have redirected the whole session. Ask for the observation
+  that splits hypotheses, not the one that confirms yours.
+
+  CHECKS  247 cargo tests pass. 47/47 textDirection tests. tsc --noEmit clean.
+  NOT VERIFIED LIVE — needs a local pane with Hebrew in Claude on the new build.

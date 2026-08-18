@@ -37,6 +37,25 @@ mirror_arrows_rtl: boolean,
  */
 auto_direction: boolean, 
 /**
+ * 2026-08-18: force every row LTR while a self-bidi TUI (Claude Code)
+ * holds the pane. Written in 2026-07 because Claude 2.1.74–2.1.210
+ * emitted Hebrew ALREADY in visual order, so the per-line RTL pass
+ * bidi'd it a second time and scrambled it.
+ *
+ * DEFAULT FALSE, and that is the whole point: current Claude
+ * (verified live against claude-fable-5) emits Hebrew in LOGICAL
+ * order like any other program, so forcing LTR is now what breaks
+ * it. Measured on a live local pane — Hebrew scrambled with this on,
+ * correct with it off, while SSH panes were never affected because
+ * tmux swallows the OSC title the detector depends on.
+ *
+ * Kept rather than deleted because the visual-order behaviour was
+ * real one month ago and may still be, on an older Claude or another
+ * self-bidi TUI. Detection and its `tui-owns-bidi` log line run
+ * regardless of this flag; only the LTR forcing is gated.
+ */
+tui_owns_bidi: boolean, 
+/**
  * v0.4.4-beta.2: on connect/attach, clear stale mouse-tracking modes an
  * unclean app exit (vim/fzf/less/htop killed) can leave on — which makes
  * the bare shell print `\e[<..M` mouse escapes as text. Default true; a

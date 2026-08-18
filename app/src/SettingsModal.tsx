@@ -794,6 +794,15 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
                   </label>
+                  <label class="settings-checkbox" style="margin-top:8px">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.terminal.tui_owns_bidi ?? false}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, tui_owns_bidi: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.terminal.tui_owns_bidi.label")}</span>
+                  </label>
+                  <p class="settings-hint">{t("settings.terminal.tui_owns_bidi.hint")}</p>
                 </section>
               </Show>
 
