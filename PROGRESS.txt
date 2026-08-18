@@ -2939,3 +2939,44 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
     upgrade key, so the new package installs SIDE BY SIDE and the old one
     stays in Programs and Features. No shim exists for this -- the
     identifier IS the identity. Release notes need an uninstall step.
+--------------------------------------------------------------------------------
+2026-08-19 — ROOT CAUSE: the terminal grid inherited the UI's text direction
+--------------------------------------------------------------------------------
+  Found while running the diagnostic step of the local/remote-profile plan,
+  before writing any of that feature. Worth more than the feature.
+
+  CHAIN
+    i18n/index.ts:75      sets dir on <html> from the interface language
+    xterm.js              pins NO direction — verified, nothing in its CSS and
+                          no setAttribute("dir") anywhere in its lib
+    App.css               .terminal-container had no direction rule
+    dir inherits          => a Hebrew UI flipped the entire character grid
+    terminalInstance:971  ONLY auto_per_line set dir="ltr" on .xterm-rows
+
+  So every rtl_mode EXCEPT auto_per_line rendered the grid RTL, from the UI
+  language rather than from any terminal setting.
+
+  EXPLAINS TWO THINGS THAT HAD RESISTED EXPLANATION
+    - "off" looking identical to auto_per_line on a fresh local pane. They
+      should differ sharply (WebGL, zero bidi vs DOM with per-row dir). Both
+      ended up RTL by different routes.
+    - "מיושר לשמאל במקום לימין" on SSH. Alignment was never a terminal setting;
+      it was the grid's inherited paragraph direction.
+
+  FIX  direction: ltr on .terminal-container, unconditional. A terminal is a
+  fixed grid — column 0 is always leftmost. Per-row direction still varies via
+  the row's `dir` attribute, which is a declaration on the element itself and
+  still beats the inherited value, so auto_per_line is unaffected. The popout
+  window reuses the same class and is fixed with it.
+
+  WHY IT SURVIVED SO LONG: every RTL round in DECISIONS tested auto_per_line —
+  the one mode that accidentally immunised itself by pinning the rows host to
+  LTR. The bug needs a non-auto mode AND a Hebrew/Arabic interface.
+
+  IMPACT ON THE PLANNED WORK: the per-connection-kind profile split is NOT
+  started. Part of what looked like a local-vs-remote difference was this leak,
+  which was never connection-specific. Re-measure both sides on this build
+  before building profiles — the feature may shrink or may still be needed
+  (SSH = Linux Claude inside tmux, local = Windows Claude, no tmux).
+
+  CHECKS  tsc clean, vite clean, 47/47 + 11/11 unit tests. NOT VERIFIED LIVE.
