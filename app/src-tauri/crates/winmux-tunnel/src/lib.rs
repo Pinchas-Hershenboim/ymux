@@ -63,7 +63,15 @@ fn hex_nibble(c: u8) -> Result<u8, String> {
 /// Perform the server-side half of the HMAC challenge-response.
 /// Returns `Ok(())` if the client proved knowledge of the token; on failure, it has
 /// already written `WINMUX-DENIED ...` to the stream and the caller should drop it.
-async fn perform_handshake<S>(bs: &mut BufStream<S>, expected_token: &str) -> Result<(), String>
+/// `peer` is the originator (`addr:port`) of the forwarded connection, or a
+/// label for non-SSH transports. It is threaded through purely so a rejection
+/// names WHO was rejected — every arm below used to be anonymous, which made
+/// a repeating handshake failure impossible to attribute from debug.log alone.
+async fn perform_handshake<S>(
+    bs: &mut BufStream<S>,
+    expected_token: &str,
+    peer: &str,
+) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -84,10 +92,12 @@ where
     )
     .await;
     match read {
-        Ok(Ok(0)) => return Err("client closed before sending response".into()),
+        Ok(Ok(0)) => {
+            return Err(format!("client closed before sending response (peer {peer})"))
+        }
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => return Err(format!("read response: {e}")),
-        Err(_) => return Err("response timed out".into()),
+        Ok(Err(e)) => return Err(format!("read response from {peer}: {e}")),
+        Err(_) => return Err(format!("response timed out (peer {peer})")),
     }
     let line = line.trim();
     let resp_hex = match line.strip_prefix("WINMUX-RESPONSE ") {
@@ -95,7 +105,7 @@ where
         None => {
             let _ = bs.write_all(b"WINMUX-DENIED bad-format\n").await;
             let _ = bs.flush().await;
-            return Err(format!("bad response framing: {:?}", line));
+            return Err(format!("bad response framing from {peer}: {:?}", line));
         }
     };
     let resp = hex_decode(resp_hex)?;
@@ -107,7 +117,7 @@ where
     if mac.verify_slice(&resp).is_err() {
         let _ = bs.write_all(b"WINMUX-DENIED bad-mac\n").await;
         let _ = bs.flush().await;
-        return Err("hmac verify failed".into());
+        return Err(format!("hmac verify failed (peer {peer})"));
     }
 
     // 4) Tell the client we're good.
@@ -121,25 +131,30 @@ where
 pub async fn bridge_to_pipe(
     channel: Channel<russh::client::Msg>,
     expected_token: &str,
+    peer: &str,
 ) -> Result<(), String> {
-    bridge_stream_to_pipe(channel.into_stream(), expected_token).await
+    bridge_stream_to_pipe(channel.into_stream(), expected_token, peer).await
 }
 
 /// Phase 80: the transport-agnostic core of `bridge_to_pipe` — same HMAC
 /// handshake + pipe bridge over ANY duplex stream. The WSL RPC bridge
 /// feeds it plain TcpStreams (WSL2 Linux can't reach Windows named
 /// pipes); the SSH reverse-tunnel path feeds it russh channel streams.
-pub async fn bridge_stream_to_pipe<S>(stream: S, expected_token: &str) -> Result<(), String>
+pub async fn bridge_stream_to_pipe<S>(
+    stream: S,
+    expected_token: &str,
+    peer: &str,
+) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut bs = BufStream::new(stream);
 
-    if let Err(e) = perform_handshake(&mut bs, expected_token).await {
+    if let Err(e) = perform_handshake(&mut bs, expected_token, peer).await {
         log_warn("TUNNEL", &format!("tunnel: handshake REJECTED — {e}"));
         return Err(e);
     }
-    log_debug("TUNNEL", "tunnel: handshake OK");
+    log_debug("TUNNEL", &format!("tunnel: handshake OK (peer {peer})"));
 
     // Open a fresh client connection to the local pipe server.
     // Phase 39.A: on ERROR_PIPE_NOT_AVAILABLE (231) — all server
@@ -277,9 +292,13 @@ async fn exec_simple(
 
 /// Used as a small helper inside the russh `Handler`: spawn a bridge task. Exists so
 /// the trait method body stays tiny.
-pub fn spawn_bridge(channel: Channel<russh::client::Msg>, token: std::sync::Arc<String>) {
+pub fn spawn_bridge(
+    channel: Channel<russh::client::Msg>,
+    token: std::sync::Arc<String>,
+    peer: String,
+) {
     tokio::spawn(async move {
-        if let Err(e) = bridge_to_pipe(channel, &token).await {
+        if let Err(e) = bridge_to_pipe(channel, &token, &peer).await {
             tracing::warn!("tunnel bridge: {e}");
             log_warn("TUNNEL", &format!("tunnel: bridge error: {e}"));
         }

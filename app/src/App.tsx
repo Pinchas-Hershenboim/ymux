@@ -482,6 +482,19 @@ function App() {
   // at a time; the user dismisses (skip-this-version persists), defers
   // (banner gone until next connect), or triggers an in-place update.
   const [hooksBanner, setHooksBanner] = createSignal<HooksOutdatedInfo | null>(null);
+  // The remote `winmux` CLI could not be converged onto the build this
+  // desktop embeds. Kept per workspace and shown as a banner rather than a
+  // pane status line: the status line self-clears after five seconds, which
+  // is precisely how a version-skewed CLI stayed invisible while it broke
+  // hooks and the reverse tunnel.
+  type CliAlignmentEvent = {
+    workspace_id: string;
+    aligned: boolean;
+    expected?: string;
+    actual?: string;
+    reason?: string;
+  };
+  const [cliSkew, setCliSkew] = createSignal<Record<string, CliAlignmentEvent>>({});
   const [hooksUpdating, setHooksUpdating] = createSignal(false);
   // Phase 53 (rebased): native child Webviews always paint above
   // HTML, so opening a modal would visually hide it behind the
@@ -544,6 +557,17 @@ function App() {
   // tmux side: server-side tmux session survives; a successful reconnect
   // just runs `tmux attach -t <name>` again via the persistent flag, so
   // the user's scrollback + running processes come back intact.
+  //
+  // The state is keyed BY PANE. It used to be three module-scope
+  // singletons (one toast signal, one timer, one cancelled flag), and
+  // `startReconnect` opened with `if (reconnectToast()) cancelReconnect()`
+  // — so on a full outage, where every pane drops in the same tick, each
+  // incoming `ssh:disconnected` cancelled the previous pane's retry loop
+  // AND invoked `ssh_cancel_reconnect` on it. Only the LAST pane to fire
+  // ever retried; the rest were abandoned without a single attempt. The
+  // old comment called concurrent drops "rare … but not impossible on a
+  // full network outage" — which is exactly the unplug-the-laptop case
+  // this is meant to survive.
   type ReconnectToast = {
     paneId: string;
     host: string;
@@ -551,34 +575,46 @@ function App() {
     attempt: number;
     max: number;
   };
-  const [reconnectToast, setReconnectToast] = createSignal<ReconnectToast | null>(null);
-  // Timer + cancel handle — held outside the signal so cancel() can clear
-  // them without racing the state update.
-  let reconnectTimer: number | null = null;
-  let reconnectCancelled = false;
+  const [reconnectToasts, setReconnectToasts] = createSignal<ReconnectToast[]>([]);
+  // Timer + cancel handle per pane — held outside the signal so cancel()
+  // can clear them without racing the state update.
+  const reconnectRuns = new Map<string, { timer: number | null; cancelled: boolean }>();
   // 1s → 3s → 8s → 15s → 30s. 5 attempts total per spec.
   const RECONNECT_BACKOFFS_MS = [1_000, 3_000, 8_000, 15_000, 30_000];
   const RECONNECT_MAX = RECONNECT_BACKOFFS_MS.length;
   const reconnectJitter = (ms: number) => {
     // ±20% — spreads out concurrent retries so a filter that just came
     // back up doesn't get pounded by every client at the same instant.
+    // With N panes retrying in parallel this also staggers them, which is
+    // what keeps N simultaneous bootstraps off the same SFTP channel.
     const jitter = ms * 0.2 * (Math.random() * 2 - 1);
     return Math.max(0, Math.round(ms + jitter));
   };
-  const clearReconnectTimer = () => {
-    if (reconnectTimer !== null) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = null;
+  const clearReconnectTimer = (paneId: string) => {
+    const run = reconnectRuns.get(paneId);
+    if (run?.timer != null) {
+      window.clearTimeout(run.timer);
+      run.timer = null;
     }
   };
-  const cancelReconnect = () => {
-    reconnectCancelled = true;
-    clearReconnectTimer();
-    const t0 = reconnectToast();
-    setReconnectToast(null);
-    if (t0) {
+  // Drop one pane's run: stop its timer, forget it, and remove its toast
+  // row. Does NOT touch any other pane's loop.
+  const endReconnect = (paneId: string) => {
+    clearReconnectTimer(paneId);
+    reconnectRuns.delete(paneId);
+    setReconnectToasts((prev) => prev.filter((r) => r.paneId !== paneId));
+  };
+  // Cancel one pane, or every pane in flight when called with no argument
+  // (the toast's Cancel button covers the whole batch — the user asked for
+  // the reconnecting to stop, not for one arbitrary pane of it to stop).
+  const cancelReconnect = (paneId?: string) => {
+    const ids = paneId ? [paneId] : reconnectToasts().map((r) => r.paneId);
+    for (const id of ids) {
+      const run = reconnectRuns.get(id);
+      if (run) run.cancelled = true;
+      endReconnect(id);
       // Best-effort — a "no such pane" is fine (session may already be gone).
-      invoke("ssh_cancel_reconnect", { paneId: t0.paneId }).catch(() => {});
+      invoke("ssh_cancel_reconnect", { paneId: id }).catch(() => {});
     }
   };
   type SshDisconnectedEvent = {
@@ -1788,55 +1824,66 @@ function App() {
   // beta.3 (netfree, Track 1b): reconnect driver — defined AFTER
   // connectPane so the closure captures a valid binding at runtime.
   const startReconnect = (ev: SshDisconnectedEvent) => {
-    // If a reconnect is already running for a different pane, cancel it —
-    // one toast at a time (rare to see two SSH drops in the same second,
-    // but not impossible on a full network outage).
-    if (reconnectToast()) cancelReconnect();
-    reconnectCancelled = false;
+    // Every pane gets its own loop. A repeat drop for a pane already in
+    // flight restarts that pane's loop only — siblings keep retrying.
+    const paneId = ev.pane_id;
+    if (reconnectRuns.has(paneId)) {
+      const prev = reconnectRuns.get(paneId)!;
+      prev.cancelled = true;
+      clearReconnectTimer(paneId);
+    }
+    const run = { timer: null as number | null, cancelled: false };
+    reconnectRuns.set(paneId, run);
     const state: ReconnectToast = {
-      paneId: ev.pane_id,
+      paneId,
       host: ev.host,
       workspaceId: ev.workspace_id,
       attempt: 0,
       max: RECONNECT_MAX,
     };
-    setReconnectToast(state);
+    setReconnectToasts((prev) => [...prev.filter((r) => r.paneId !== paneId), state]);
     const attemptOnce = async () => {
-      if (reconnectCancelled) return;
-      const cur = reconnectToast();
+      // `run` is captured, so a loop superseded by a newer drop for the
+      // same pane stops here instead of racing the new one.
+      if (run.cancelled || reconnectRuns.get(paneId) !== run) return;
+      const cur = reconnectToasts().find((r) => r.paneId === paneId);
       if (!cur) return;
       const nextAttempt = cur.attempt + 1;
-      setReconnectToast({ ...cur, attempt: nextAttempt });
+      setReconnectToasts((prev) =>
+        prev.map((r) => (r.paneId === paneId ? { ...r, attempt: nextAttempt } : r)),
+      );
       try {
         // Reuse the existing pane_connect path — it does the full
         // handshake (host key check, auth via stored key / cached agent)
         // and, for persistent panes, re-runs `tmux new-session -A -s <name>`
         // which attaches to the still-alive server-side session.
-        await connectPane(ev.pane_id, {
+        await connectPane(paneId, {
           persistent: ev.persistent,
           tmuxSession: ev.tmux_session_name ?? undefined,
         });
-        // Success — replace with a short-lived "reconnected" toast.
-        setReconnectToast(null);
+        // Success — drop this pane's row and confirm. Siblings still in
+        // flight keep their rows and their loops.
+        if (reconnectRuns.get(paneId) !== run) return;
+        endReconnect(paneId);
         flashSummaryToast("ok", t("reconnect.success", { host: ev.host }));
       } catch (e) {
         // Attempt failed — schedule the next one, unless we're out of attempts.
-        if (reconnectCancelled) return;
+        if (run.cancelled || reconnectRuns.get(paneId) !== run) return;
         if (nextAttempt >= RECONNECT_MAX) {
-          setReconnectToast(null);
+          endReconnect(paneId);
           flashSummaryToast("err", t("reconnect.failed", { host: ev.host }));
           // Best-effort clear of the server flag so a future drop can
           // re-emit cleanly.
-          invoke("ssh_cancel_reconnect", { paneId: ev.pane_id }).catch(() => {});
+          invoke("ssh_cancel_reconnect", { paneId }).catch(() => {});
           return;
         }
         const delay = reconnectJitter(RECONNECT_BACKOFFS_MS[nextAttempt]);
-        reconnectTimer = window.setTimeout(attemptOnce, delay);
+        run.timer = window.setTimeout(attemptOnce, delay);
       }
     };
     // First attempt runs after the first backoff (1s) — gives the network
     // a beat to recover before we spam it.
-    reconnectTimer = window.setTimeout(
+    run.timer = window.setTimeout(
       attemptOnce,
       reconnectJitter(RECONNECT_BACKOFFS_MS[0]),
     );
@@ -2657,6 +2704,18 @@ function App() {
         if (e.payload.reason !== "transport-dropped") return;
         startReconnect(e.payload);
       })
+    );
+    // Connect-time verdict on whether the remote CLI matches our build.
+    unlistens.push(
+      await listen<CliAlignmentEvent>("workspace:cli-alignment", (e) => {
+        const p = e.payload;
+        setCliSkew((prev) => {
+          const next = { ...prev };
+          if (p.aligned) delete next[p.workspace_id];
+          else next[p.workspace_id] = p;
+          return next;
+        });
+      }),
     );
     // Unshipped-fivefer (#4): a pop-out window closed — re-attach the origin
     // pane's terminal (input + resize) if its session is still live. If the
@@ -4022,6 +4081,25 @@ function App() {
         </div>
       </Show>
 
+      {/* Remote CLI out of sync for the ACTIVE workspace. No dismiss button:
+          it is a live functional gap (hooks, tickets and the reverse-tunnel
+          watcher are all switched off while it shows), and it clears itself
+          the moment a bootstrap converges. */}
+      <Show when={cliSkew()[activeWs()?.id ?? ""]}>
+        <div class="hooks-banner" role="status">
+          <div class="hooks-banner-body">
+            <strong>{t("cli_skew.banner.title")}</strong>
+            <span class="hooks-banner-detail">
+              {t("cli_skew.banner.text", {
+                expected: cliSkew()[activeWs()!.id].expected ?? "—",
+                actual: cliSkew()[activeWs()!.id].actual || "—",
+                reason: cliSkew()[activeWs()!.id].reason ?? "—",
+              })}
+            </span>
+          </div>
+        </div>
+      </Show>
+
       <Show when={hooksBanner()}>
         <div class="hooks-banner" role="status">
           <div class="hooks-banner-body">
@@ -4066,26 +4144,42 @@ function App() {
       {/* beta.3 (netfree, Track 1b): reconnect toast — persistent (does
           NOT auto-dismiss), shows attempt counter + a cancel button.
           Rendered next to summary-toast so both can coexist visually. */}
-      <Show when={reconnectToast()}>
+      <Show when={reconnectToasts().length > 0}>
         <div class="reconnect-toast" role="status">
           <div class="reconnect-toast-body">
             <span class="reconnect-toast-spinner" aria-hidden="true">⟳</span>
             <div class="reconnect-toast-text">
               <div class="reconnect-toast-title">
-                {t("reconnect.title", { host: reconnectToast()!.host })}
+                {reconnectToasts().length === 1
+                  ? t("reconnect.title", { host: reconnectToasts()[0].host })
+                  : t("reconnect.title_multi", {
+                      n: String(reconnectToasts().length),
+                    })}
               </div>
               <div class="reconnect-toast-attempt">
-                {t("reconnect.attempt", {
-                  n: String(Math.max(1, reconnectToast()!.attempt)),
-                  max: String(reconnectToast()!.max),
-                })}
+                {/* Panes are jittered apart, so they sit on different
+                    attempt numbers — show the furthest along, which is
+                    the one that tells the user how close we are to
+                    giving up. */}
+                {reconnectToasts().length === 1
+                  ? t("reconnect.attempt", {
+                      n: String(Math.max(1, reconnectToasts()[0].attempt)),
+                      max: String(reconnectToasts()[0].max),
+                    })
+                  : t("reconnect.attempt_multi", {
+                      n: String(reconnectToasts().length),
+                      a: String(
+                        Math.max(1, ...reconnectToasts().map((r) => r.attempt)),
+                      ),
+                      max: String(RECONNECT_MAX),
+                    })}
               </div>
             </div>
           </div>
           <button
             type="button"
             class="reconnect-toast-cancel"
-            onClick={cancelReconnect}
+            onClick={() => cancelReconnect()}
           >
             {t("reconnect.cancel")}
           </button>

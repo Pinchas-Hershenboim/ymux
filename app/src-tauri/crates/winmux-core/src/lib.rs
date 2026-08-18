@@ -462,7 +462,11 @@ pub struct HostCheckOutcome {
 /// when the SSH server forwards a connection back to us. Phase 51.B2
 /// option β: this is how we break the SshClient → tunnel circular dep
 /// without folding tunnel into core.
-pub type BridgeSpawner = Arc<dyn Fn(Channel<client::Msg>, Arc<String>) + Send + Sync>;
+/// The third arg is the connection's originator (`addr:port`, as reported by
+/// the SSH server in the forwarded-tcpip channel open). It is logging-only,
+/// and it exists because a handshake that fails is otherwise anonymous —
+/// "client closed before sending response" told us nothing about WHO closed.
+pub type BridgeSpawner = Arc<dyn Fn(Channel<client::Msg>, Arc<String>, String) + Send + Sync>;
 
 pub struct SshClient {
     pub target: String,
@@ -580,14 +584,18 @@ impl client::Handler for SshClient {
         channel: russh::Channel<russh::client::Msg>,
         _connected_address: &str,
         _connected_port: u32,
-        _originator_address: &str,
-        _originator_port: u32,
+        originator_address: &str,
+        originator_port: u32,
         _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
+        // The originator is the remote-side peer that dialled the forwarded
+        // port. russh hands it to us and we used to drop it on the floor,
+        // which left every handshake failure in the tunnel unattributable.
+        let peer = format!("{originator_address}:{originator_port}");
         match (self.tunnel_token.clone(), self.bridge_spawner.clone()) {
-            (Some(token), Some(spawn)) => spawn(channel, token),
+            (Some(token), Some(spawn)) => spawn(channel, token, peer),
             _ => tracing::warn!(
-                "forwarded-tcpip channel arrived but no tunnel_token/bridge_spawner set; dropping"
+                "forwarded-tcpip channel from {peer} arrived but no tunnel_token/bridge_spawner set; dropping"
             ),
         }
         Ok(())

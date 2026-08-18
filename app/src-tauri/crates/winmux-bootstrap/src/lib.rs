@@ -25,6 +25,10 @@ const REMOTE_DIR: &str = ".winmux/bin";
 const REMOTE_BASE_DIR: &str = ".winmux";
 const TMUX_CONF_REMOTE: &str = "tmux.conf";
 const TMUX_CONF_MANIFEST_KEY: &str = "tmux-conf";
+/// Per-request SFTP deadline. russh-sftp's own default is 10s, which is the
+/// budget for ONE 255KiB chunk — far too tight on a busy or distant host,
+/// where a single late ack killed an otherwise healthy multi-megabyte upload.
+const SFTP_REQUEST_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Deserialize, Debug)]
 pub struct ManifestEntry {
@@ -45,6 +49,21 @@ pub enum BootstrapStatus {
         sha256: String,
     },
     UnsupportedArch(String),
+    /// We tried to converge the remote CLI onto the binary this desktop
+    /// embeds and could not — the upload failed, or the post-upload hash
+    /// still didn't match. Distinct from `Err`, which means the bootstrap
+    /// couldn't run at all (no $HOME, unreadable manifest, dead channel).
+    ///
+    /// This case used to collapse into a generic `Err(String)` that the
+    /// caller showed for five seconds and then discarded, so a pane would
+    /// silently keep talking to a CLI of the wrong version. The desktop
+    /// speaks the protocol of the binary it embeds, so a mismatch is a
+    /// real functional gap and has to stay visible.
+    Skew {
+        expected: String,
+        actual: String,
+        reason: String,
+    },
 }
 
 /// Caller-provided helper to read a manifest-relative resource as
@@ -133,7 +152,20 @@ async fn upload_via_sftp(
     // ETXTBSY, which OpenSSH SFTP reports as the generic SSH_FX_FAILURE
     // ("Failure: Failure"); rename(2) instead swaps the directory entry to a
     // fresh inode, so a still-running old binary never blocks the replace.
-    let tmp_path = format!("{abs_remote_path}.tmp");
+    //
+    // The suffix carries pid + a nanosecond stamp because the name used to be
+    // a bare `.tmp`: two panes reconnecting at the same instant (which is what
+    // a full network drop produces) opened the SAME remote path and interleaved
+    // their 2.4MB streams into it. Matches the `<name>.<pid>.tmp` convention
+    // the local atomic writes already use.
+    let tmp_path = format!(
+        "{abs_remote_path}.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    );
     log_debug("BOOT", &format!(
         "remote bootstrap: uploading to {tmp_path} then atomic-rename to {abs_remote_path} (sha256 {expected_hash})"
     ));
@@ -163,24 +195,43 @@ async fn upload_via_sftp(
             log_error("BOOT", &format!("bootstrap: SftpSession::new failed: {e}"));
             format!("sftp init: {e}")
         })?;
+    // russh-sftp defaults to a 10s deadline PER REQUEST, and each request is
+    // one 255KiB chunk written strictly serially (write → await ack → write).
+    // On a loaded or distant host 10s is far too tight: a 2.4MB payload is ~10
+    // sequential round trips, and one slow ack aborted the whole upload. The
+    // leftover we found on the server was 522,240 bytes — exactly two chunks.
+    sftp.set_timeout(SFTP_REQUEST_TIMEOUT_SECS).await;
     log_debug("BOOT", "bootstrap: sftp session ready");
 
-    {
-        let mut file = sftp
-            .create(&tmp_path)
-            .await
-            .map_err(|e| {
-                log_error("BOOT", &format!("bootstrap: sftp.create {tmp_path} failed: {e}"));
-                format!("sftp create {tmp_path}: {e}")
-            })?;
-        file.write_all(bytes)
-            .await
-            .map_err(|e| {
-                log_error("BOOT", &format!("bootstrap: sftp write_all failed: {e}"));
-                format!("sftp write: {e}")
-            })?;
+    let upload = async {
+        let mut file = sftp.create(&tmp_path).await.map_err(|e| {
+            log_error("BOOT", &format!("bootstrap: sftp.create {tmp_path} failed: {e}"));
+            format!("sftp create {tmp_path}: {e}")
+        })?;
+        file.write_all(bytes).await.map_err(|e| {
+            log_error("BOOT", &format!("bootstrap: sftp write_all failed: {e}"));
+            format!("sftp write: {e}")
+        })?;
         file.flush().await.ok();
         file.shutdown().await.ok();
+        Ok::<(), String>(())
+    }
+    .await;
+
+    // A failed upload used to return straight out and leave the partial file
+    // behind forever — that is where the stale `winmux-linux-x64.tmp` on
+    // Yossi's server came from. Remove it on every error path before
+    // propagating, so a retry never inherits someone else's carcass.
+    if let Err(e) = upload {
+        if let Err(rm) = sftp.remove_file(&tmp_path).await {
+            log_warn("BOOT", &format!(
+                "bootstrap: could not remove partial {tmp_path} after failed upload: {rm}"
+            ));
+        } else {
+            log_debug("BOOT", &format!("bootstrap: removed partial {tmp_path}"));
+        }
+        let _ = sftp.close().await;
+        return Err(e);
     }
     log_debug("BOOT", "bootstrap: sftp temp upload complete");
 
@@ -197,6 +248,9 @@ async fn upload_via_sftp(
         log_error("BOOT", &format!(
             "bootstrap: atomic rename {tmp_path} -> {abs_remote_path} failed (exit {mv_code})"
         ));
+        // Same reasoning as the upload error path: the fully-written temp is
+        // ours and nothing else will ever collect it.
+        let _ = ssh_exec(handle, &format!("rm -f {}", shell_quote(&tmp_path))).await;
         return Err(format!(
             "rename {tmp_path} -> {abs_remote_path}: exit {mv_code}"
         ));
@@ -293,10 +347,36 @@ pub async fn bootstrap(
     // still hold the binary's inode (e.g. orphaned by the pre-39.C pipe
     // crash). Non-fatal — pkill exits 1 when nothing matches, which is the
     // normal case; the trailing `true` keeps the channel exit clean.
-    let _ = ssh_exec(handle, "pkill -f winmux-linux-x64 2>/dev/null; sleep 0.1; true").await;
+    // The pattern is anchored and uses the `[w]` glob trick (same as the
+    // port-watch reaper) for two reasons: an unanchored `winmux-linux-x64`
+    // matches ANY process whose command line merely mentions the path, and
+    // without the bracket the `sh -c` running this very command matches
+    // itself. Narrow beats broad — this runs on the user's server.
+    let _ = ssh_exec(
+        handle,
+        "pkill -f '[w]inmux-linux-x64$' 2>/dev/null; sleep 0.1; true",
+    )
+    .await;
 
     let bytes = resource_loader(&entry.path)?;
-    upload_via_sftp(handle, &remote_bin_abs, &bytes, &entry.sha256).await?;
+    // An upload that fails is NOT a bootstrap that couldn't run — the remote
+    // is simply still on a different binary. Report that as Skew so the
+    // caller can surface it and gate the CLI-dependent features, instead of
+    // `?`-ing out into an error string that got shown for five seconds.
+    if let Err(e) = upload_via_sftp(handle, &remote_bin_abs, &bytes, &entry.sha256).await {
+        log_warn("BOOT", &format!("bootstrap: upload failed, remote stays on its own binary: {e}"));
+        let (cur, _) = ssh_exec(
+            handle,
+            &format!("sha256sum {remote_bin_abs} 2>/dev/null | awk '{{print $1}}'"),
+        )
+        .await
+        .unwrap_or_default();
+        return Ok(BootstrapStatus::Skew {
+            expected: entry.sha256.clone(),
+            actual: cur.trim().to_lowercase(),
+            reason: e,
+        });
+    }
     ssh_exec(handle, &format!("chmod 0755 {remote_bin_abs}")).await?;
     ssh_exec(
         handle,
@@ -316,10 +396,11 @@ pub async fn bootstrap(
             "bootstrap: FAILED post-upload hash mismatch: got {} expected {}",
             after_hash, entry.sha256
         ));
-        return Err(format!(
-            "post-upload hash mismatch: got {after_hash}, expected {}",
-            entry.sha256
-        ));
+        return Ok(BootstrapStatus::Skew {
+            expected: entry.sha256.clone(),
+            actual: after_hash,
+            reason: "post-upload hash mismatch".into(),
+        });
     }
     log_info("BOOT", "bootstrap: COMPLETE — upload verified");
 

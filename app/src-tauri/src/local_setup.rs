@@ -538,11 +538,12 @@ pub(crate) async fn ensure_wsl_bridge() -> Result<(u16, std::sync::Arc<String>),
             tauri::async_runtime::spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((stream, _peer)) => {
+                        Ok((stream, peer)) => {
                             let tok = token_for_loop.clone();
+                            let peer = peer.to_string();
                             tauri::async_runtime::spawn(async move {
                                 if let Err(e) =
-                                    winmux_tunnel::bridge_stream_to_pipe(stream, &tok).await
+                                    winmux_tunnel::bridge_stream_to_pipe(stream, &tok, &peer).await
                                 {
                                     // Handshake failures are expected noise from
                                     // port scanners — engineer-only log.

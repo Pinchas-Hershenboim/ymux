@@ -2103,6 +2103,301 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    - NotificationCenter: new workspaceName resolver prop → .notif-item-ws chip.
    NOT VERIFIED LIVE yet — build + run per plan. Windows "sound only first time"
    left as a to-verify (likely notify_rust coalescing identical titles).
+2026-08-18 — Project folders v4: a project folder IS a workspace
+================================================================================
+Branch: claude/pane-overflow-project-folders-a7353c
+Commits: 8700032, e2d0f17, 804246a, 876d17f, b6f32a4 (+ docs)
+
+WHY: v2/v3 were rejected on sight, twice, for the same reason. Yossi wanted a
+SUB-WORKSPACE of the folder, with panes that open directly on it — not a
+separate entity pinned beside the workspace. The ProjectFolder entity is gone;
+a project folder is a Workspace with a cwd and one new field: parent_id.
+
+SCHEMA (app/src-tauri/crates/winmux-types/src/lib.rs)
+  + parent_id, is_project_root, is_collapsed  (all skip_serializing_if)
+  - ProjectFolder, project_folder_id, worktree_path
+  Workspace now derives Default; the 9 scattered initializers collapse to
+  ..Default::default() so the next field is a two-line diff instead of nine.
+
+MIGRATION (lib.rs::migrate_legacy_project_folders)
+  v2/v3 pins are converted at load, not dropped. save_to_disk rewrites the
+  whole file from the struct, so an unread `project_folders` key would have
+  been silently deleted on the first write. Each folder becomes a child
+  workspace under the first root on the same host; its worktree workspaces
+  re-parent under it keeping their directory as cwd; no host match keeps it as
+  a root. 7 tests, one of which caught a real bug: a worktree of the folder
+  being migrated could be chosen as that folder's own parent.
+
+CASCADE DELETE (lib.rs::workspace_delete)
+  BFS the subtree under one short lock, run teardown_workspace_runtime per id
+  with the lock dropped, then ONE retain + reassignment + persist. Active-id
+  fallback now prefers a root — `first()` could land the user inside an
+  unrelated repo's worktree. The frontend confirm names each descendant and
+  how many are live. This reverses DECISIONS.md 2026-08-16 on purpose.
+
+SIDEBAR — one recursive node (renderWorkspaceSubtree) replaces the flat list
+  of four sibling kinds. Only roots bucket into groups. Emitted as a FLAT
+  fragment: a wrapper carrying the parent's data-ws-id would make a hover over
+  a worktree stub paint a drop line on the parent. All new consts sit above the
+  component's return (cbef36e). Reorder is parent-scoped; drops are same-level.
+  The repo root's own `git worktree list` entry is filtered out — it IS the
+  workspace, and a stub for it would offer to open a child sharing its
+  parent's directory.
+
+MINI WIZARD — a folder-anchored workspace drops the Directory field and scopes
+  the Claude-session list to that folder. Not cosmetic: --resume <id> now
+  searches other projects too, so a foreign pick SUCCEEDS in the wrong repo.
+
+TWO PRE-EXISTING BUGS FIXED IN PASSING
+  * list_claude_sessions_local never got Phase 65's fix — project_path was the
+    ENCODED directory name; invisible only because the caller guards on
+    startsWith("/"), which C--Users-... fails by accident.
+  * spawn_wsl_pty guards --cd with a Windows-side is_dir() that a Linux path
+    always fails, so WSL silently ignored a workspace cwd. effectiveCwdOverride
+    now injects the cd for WSL as well as SSH.
+
+RESULT: 316 cargo tests pass, tsc clean, vite builds. NOTHING RUN LIVE — see
+FOLLOWUPS P1 2026-08-18 for the 9-step smoke list.
+
+ADDENDUM 2026-08-18 (same branch) — two bugs found by live testing
+--------------------------------------------------------------------------------
+1. InsightsWindow's Claude-usage effect read state its own fetch writes. On
+   success it settled; on FAILURE usage() stayed null and it re-fired forever.
+   14,359 [USAGE] backoff lines in 43 min saturated the IPC channel, so
+   unrelated clicks stopped landing ("the folder picker opens and nothing
+   happens"). Reachable only because the v3->v4 migration produced a workspace
+   with an SSH connection and no live session. ClaudeUsageIndicator already
+   carried the fix AND the comment describing the trap; its sibling never got
+   it. Now on([view, workspaceId]) + plain-let guards.
+
+2. ssh_exec_capture broke on ChannelMsg::Eof, so when EOF preceded ExitStatus
+   the exit code was lost and stayed 0. git_script folds stderr in with 2>&1,
+   so a failing git came back as SUCCESSFUL output: "fatal: not a git
+   repository" parsed to zero worktrees and a non-repo could be PINNED. Whether
+   it failed was a race — /home/runner/build probed clean, then scanned dirty
+   18 seconds later. Now collects until both EOF and ExitStatus (or Close), and
+   git_probe_worktrees additionally rejects an empty listing, since a real repo
+   always lists at least its own main worktree.
+
+   Follow-on UX, per Yossi: a non-repo is demoted once (workspace_set_project_root
+   -> false) instead of re-asking on every expand and restart, and a confirmed
+   repo carries a small git badge on its folder glyph.
+=======
+--------------------------------------------------------------------------------
+2026-08-12  Tickets land on the machine the agent runs on (SSH/WSL/Local)
+--------------------------------------------------------------------------------
+
+Yossi: "למה תיקיית הכרטיסים היא מקומית ולא על השרת - הרי הסוכן קוד יושב על
+השרת". Correct, and the previous entry's design was wrong: an SSH workspace
+silently wrote to %APPDATA% and kept the remote path as metadata only. Claude
+Code runs in the project dir ON THE SERVER; a ticket it cannot see is not a
+ticket.
+
+Six commits: 4f58002, 95c0f31, 76ec575, 12cf043, e0c32d6 (+ this).
+
+THE CORE: a `Store` enum in tickets.rs whose Remote arm CARRIES a live SSH
+  handle, so it cannot be constructed without an authenticated session.
+  "Can we write there" is answered by the TYPE, not by a later check. That
+  deleted the hardcoded `Connection::Ssh => unwritable` gate and, with it,
+  three bugs at once.
+
+NO SECOND SSH CONNECTION — this was Yossi's question and it is worth
+  recording. `open_auto_forward` (lib.rs:3473), which builds the browser's
+  port-forward, resolves its session with `find_ssh_handle_for_workspace`,
+  the SAME lookup tickets now use, then opens a `direct-tcpip` CHANNEL on it
+  (lib.rs:3500). SSH multiplexes: the forward is one channel, an exec is a
+  second, SFTP is a third — one TCP connection, one login. lib.rs:2813 even
+  notes clones of the Arc<Handle> may open channels concurrently. So if the
+  browser is showing a tunnelled page, the handle to write the ticket is
+  already there, and no `workspace_ensure_connected` call is needed (it is
+  not a valid predicate anyway: lib.rs:5303 returns Ok(()) for password-auth
+  hosts and unknown host keys without connecting).
+
+THE LANDMINE, found by design review and verified against the crate source:
+  **SFTP rename CANNOT overwrite.** russh-sftp 2.1.1's `Extensions`
+  (client/session.rs:10-20) detects only hardlink/fsync/statvfs/limits — no
+  posix-rename — so `SftpSession::rename` is raw SSH_FXP_RENAME, which fails
+  when the destination exists. `tickets_update` rewrites an existing
+  <id>.json, so a pure-SFTP implementation would have passed every create
+  test and failed every update. Remote atomic write is therefore
+  `remote_write_bytes(<dst>.<pid>.tmp)` + `mv -f` over an exec channel, with
+  the tmp cleaned up if the mv fails so nothing dead is left in the repo.
+  `mv -f` is rename(2) => never a partial file; it is NOT durability across a
+  server power loss, and the comment says so rather than pretending.
+
+THREE BUGS DIED IN `resolve`:
+  1. project_override was applied then discarded for SSH — the escape hatch
+     could not rescue the one case it existed for. The ladder (`pick_project`)
+     is now pure and runs BEFORE a transport is chosen.
+  2. WSL always missed the git rung: `git_root_of` runs on the Windows side
+     and a Linux path never exists there, so tickets landed in a SUBDIRECTORY
+     of the repo. Now the UNC translation happens BEFORE the walk, and
+     project_path (Linux, what the agent sees) is a different variable from
+     the store (UNC, what std::fs opens). Conflating them WAS the bug.
+  3. tickets_dir_path hard-failed if mkdir failed; revealing a folder is
+     navigational and is now best-effort.
+
+LISTING IS ONE EXEC, not readdir + N reads: tens of tickets x 3 SFTP round
+  trips at 50ms RTT is a multi-second panel load. `name<TAB><base64>` per
+  line. base64 is NOT about screenshots (Yossi asked) — it is framing: ticket
+  descriptions are free text that can contain tabs/newlines, `remote_exec`
+  merges stderr into stdout (ChannelMsg::ExtendedData), and from_utf8_lossy
+  would silently corrupt bytes. base64 makes a stray stderr line fail the
+  tab-split and get skipped instead of poisoning a ticket. `tr -d` not
+  `base64 -w0`, which is GNU-only and breaks on BSD/macOS remotes.
+
+SCREENSHOT un-stubbed (76ec575) via SVG foreignObject — no library injected,
+  which html2canvas would have meant (~200KB of third-party code into the
+  user's page per capture). The non-obvious part: a node cloned into
+  foreignObject inherits NOTHING from the document's stylesheets, so computed
+  styles are inlined by hand or the result is unstyled black text. Everything
+  degrades to null (tainted canvas, >400 nodes, >1000x700, >512KB, 1.5s
+  timeout) rather than to a wrong ticket; the capture itself is never lost.
+
+NOT CONNECTED => clipboard, not a fallback file. Yossi's call and better than
+  what I planned: for an SSH workspace the browser only renders through the
+  tunnel, so this is only reachable when a session drops after the page
+  loaded. No Save button, no orphan file, no sync engine — Retry + "copy for
+  later" so the typed description survives. Removed two fields I had designed
+  (allow_local_fallback, stored_local_fallback).
+
+TESTS: 209 lib tests, 22 of them new pure-layer tests written BEFORE any I/O
+  existed. The Rule #3 guard feeds every command builder paths with a space,
+  quote, `;rm -rf /`, `$(id)`, backticks, `&&`, `|`, newline, glob — and I
+  mutation-checked it by removing shell_quote from cmd_mkdir_p, which made it
+  fail as intended. A security test that cannot fail is theatre.
+
+PROCESS NOTE worth remembering: shell heredocs silently ate backslashes twice
+  — once mangling Rust string literals (`'\r'` became a literal CR inside a
+  char literal) and once writing INVALID JSON into all four locale files. The
+  JSON case was caught only because the drift check parses every file. Fix
+  both times: write the patch as a script FILE and build backslashes with
+  chr(92). Do not pipe backslash-bearing content through a heredoc.
+
+STILL NOT VERIFIED LIVE. Nothing in the remote path has touched a real server.
+  Smoke list is in docs/DECISIONS.md; the one that matters most is
+  tickets_update, because it is the mv -f-over-existing case that SFTP rename
+  cannot do — smoke only create and the bug ships.
+
+--------------------------------------------------------------------------------
+2026-08-13  Dev-Mode tickets: LIVE SMOKE on Windows — the bridge WORKS
+--------------------------------------------------------------------------------
+
+Built through the Tauri CLI (Rule #13: verified index-DiQMKBr1.js is embedded in
+app.exe), launched it, Yossi drove the browser. Results:
+
+CLOSED — the open risk since this branch started:
+  on_navigation DOES fire for the unregistered `winmux-ticket:` scheme in
+  WebView2. The capture modal opened with the element filled in (a <pre>, 74
+  chars of HTML). The on_web_resource_request fallback is NOT needed. This was
+  the gate on everything else in the feature.
+
+FOUND LIVE — two bugs the unit tests could not have caught:
+  1. The SSH workspace resolved to "no project folder" and fell into
+     %APPDATA%\winmux\tickets\<ws>\ — the exact behaviour this branch exists to
+     remove. Root cause: I assumed an SSH workspace carries a `cwd`. It does
+     not. workspaces.json had cwd:"" and git_worktree:"" — the user connects and
+     `cd`s inside the pane, and nothing writes that back.
+     FIX (6612554): when cwd is empty, ask tmux where the pane actually is
+     (`tmux display-message -p -t <session> '#{pane_current_path}'`) and start
+     the git walk there. Verified against the live host: returns
+     /home/runner/club, which is a real git repo. Chain is now
+       no cwd -> pane cwd -> git root -> /home/runner/club/.winmux-tickets
+  2. The no-project branch hardcoded transport "local", so an SSH workspace was
+     described to the UI as local — visible in the screenshot as a bare Windows
+     path with no host. Now reports the real transport + host.
+
+VERIFIED against the live server (161.97.93.172) by running the exact command
+shapes the Rust builds, over ssh:
+  git rev-parse from a SUBDIR   -> /home/runner/wmx-smoke   (the git rung)
+  mkdir -p                       -> ok
+  mv -f to a fresh name          -> ok (create)
+  mv -f OVER AN EXISTING FILE    -> ok, content changed open->resolved (update)
+  bulk base64 listing            -> two `name<TAB>b64` lines, decoded fine
+  missing directory              -> exit 0, no output
+Fixture removed afterwards.
+
+VERIFIED for WSL: new #[ignore]d live test drives the real distro —
+/home/<u>/wmx-tk/app/src/components -> UNC -> walk up -> repo root -> back to
+/home/<u>/wmx-tk. That is the subdirectory bug proven fixed against reality.
+
+STILL NOT VERIFIED — do not claim these:
+  - No ticket has actually been written to the server yet. Checked after the
+    smoke: /home/runner/club/.winmux-tickets does not exist. So the russh-sftp
+    write, the mv -f through Store::write_atomic_named, tickets_list over the
+    remote, and tickets_update remain unexercised end-to-end. The command
+    SHAPES are proven; the Rust that issues them is not.
+  - Screenshot fidelity. In the smoke the preview rendered as an empty
+    checkerboard, i.e. a transparent PNG. A <pre> with no background is a
+    plausible reason, but it needs a coloured element to tell "correct" from
+    "foreignObject drew nothing".
+
+THREE CORRECTIONS I MADE TO MYSELF THIS SESSION (all were confident and wrong):
+  - "the WSL share dies on a cold distro" — no. \wsl.localhost\<d>\home
+    resolves even right after `wsl --terminate`. What actually happened: WSL
+    wipes /tmp on every distro stop and my test fixture lived there. A vanished
+    path is indistinguishable from a dead share. The retry stays (I did observe
+    two transient misses) but the comment now states observations, not a
+    mechanism I never established.
+  - The sftp-CLI rename test proved nothing about russh-sftp: the OpenSSH
+    client uses posix-rename@openssh.com and DID overwrite. russh-sftp does not
+    negotiate that extension (checked client/session.rs), so `mv -f` is still
+    required — but on crate-source evidence, not on that test.
+  - Earlier in the branch: "the // URL form corrupts base64 case". It does not;
+    the real reason for the opaque form is that the payload lands in host_str()
+    and path() comes back empty.
+
+================================================================================
+2026-08-18 — Reconnect storm + SFTP bootstrap hardening (worktree follow-up-options-d63140)
+================================================================================
+TRIGGER: Yossi pasted a full transcript from his second machine — repeated
+"sftp write: Timeout" against runner@185.237.252.130, followed by "unplugging
+the laptop from AC closed every tmux session on the server".
+
+WHAT I CHANGED
+  app/src/App.tsx                 per-pane reconnect state (was 3 globals)
+  app/src/i18n/{en,he,ar,ru}.json reconnect.*_multi + cli_skew.banner.*
+  crates/winmux-bootstrap/lib.rs  unique .tmp, cleanup on failure,
+                                  set_timeout(60), anchored pkill, Skew variant
+  crates/winmux-core/lib.rs       BridgeSpawner carries the peer address
+  crates/winmux-tunnel/lib.rs     handshake errors name the peer
+  src/addons.rs                   same .tmp + timeout + cleanup treatment
+  src/local_setup.rs              WSL bridge passes its accept() peer
+  src/bootstrap_guard.rs          NEW — per-host lock, negative cache, alignment
+  src/lib.rs                      wired the guard, gated port-watch,
+                                  tmux-inventory log before attach
+
+RESULT: cargo check clean, cargo test 316 pass / 0 fail (6 new), tsc 0,
+vite build OK. COMPILES AND TESTS — NOT YET RUN LIVE. The decisive checks
+(4 panes surviving one network drop; exactly one SFTP stream on a
+hash-mismatched host) both need a real build against a real server.
+
+CORRECTIONS TO THE PREVIOUS SESSION'S CONCLUSIONS (from the pasted transcript)
+  - "the server rebooted at 22:21, so this is not a winmux bug" — wrong
+    premise. Yossi did that reboot BY HAND because he could not connect. The
+    reboot is a consequence of the bug, not an independent cause.
+  - "russh-sftp writes 32KB chunks, ~74 round trips" — no. MAX_WRITE_LENGTH is
+    261,120. The 522,240-byte leftover on the server is exactly 2 chunks, which
+    is what pinned the failure to the third write.
+  - "the default timeout is ~15s" — it is 10s (rawsession.rs:183). The measured
+    15s was wall-clock for the whole sequence.
+  - "compare version instead of hash" — rejected. The desktop speaks the
+    protocol of the binary it embeds; a version compare would pass protocol
+    skew through silently.
+  - "add backoff" — there is no retry loop to back off. The storm is one
+    attempt per connect; a negative cache is the matching fix.
+
+STILL OPEN — tmux vanishing server-side
+  Yossi confirms `tmux ls` was already empty BEFORE his manual reboot. I could
+  not find a mechanism. Ruled out by reading every kill path in the repo: the 4
+  tmux kill-session call sites (all behind explicit user action),
+  kill_session_inner (explicitly preserves tmux), the bootstrap pkill (tmux's
+  cmdline does not contain the pattern), the port-watch reaper (scoped), the
+  addons pkill (scoped), and the Go hygiene daemon (hygiene.go killPids only
+  permits duplicate port-watchers by PID; orphan claude needs >24h and is never
+  auto-killed). No destroy-unattached / exit-empty in the shipped conf.
+  Remaining candidates need server evidence, not more code reading — see
+  FOLLOWUPS P0 and docs/DECISIONS.md.
 
 [PANE-OVERFLOW + PROJECT-FOLDERS] two features, plan functional-bouncing-ritchie
    2026-08-13 ~17:00 +0300. Branch claude/pane-overflow-project-folders-a7353c
@@ -2289,83 +2584,4 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
       clean boot is consistent with the sidebar rendering, but was not proven by
       deliberately breaking it.
 
-================================================================================
-2026-08-18 — Project folders v4: a project folder IS a workspace
-================================================================================
-Branch: claude/pane-overflow-project-folders-a7353c
-Commits: 8700032, e2d0f17, 804246a, 876d17f, b6f32a4 (+ docs)
-
-WHY: v2/v3 were rejected on sight, twice, for the same reason. Yossi wanted a
-SUB-WORKSPACE of the folder, with panes that open directly on it — not a
-separate entity pinned beside the workspace. The ProjectFolder entity is gone;
-a project folder is a Workspace with a cwd and one new field: parent_id.
-
-SCHEMA (app/src-tauri/crates/winmux-types/src/lib.rs)
-  + parent_id, is_project_root, is_collapsed  (all skip_serializing_if)
-  - ProjectFolder, project_folder_id, worktree_path
-  Workspace now derives Default; the 9 scattered initializers collapse to
-  ..Default::default() so the next field is a two-line diff instead of nine.
-
-MIGRATION (lib.rs::migrate_legacy_project_folders)
-  v2/v3 pins are converted at load, not dropped. save_to_disk rewrites the
-  whole file from the struct, so an unread `project_folders` key would have
-  been silently deleted on the first write. Each folder becomes a child
-  workspace under the first root on the same host; its worktree workspaces
-  re-parent under it keeping their directory as cwd; no host match keeps it as
-  a root. 7 tests, one of which caught a real bug: a worktree of the folder
-  being migrated could be chosen as that folder's own parent.
-
-CASCADE DELETE (lib.rs::workspace_delete)
-  BFS the subtree under one short lock, run teardown_workspace_runtime per id
-  with the lock dropped, then ONE retain + reassignment + persist. Active-id
-  fallback now prefers a root — `first()` could land the user inside an
-  unrelated repo's worktree. The frontend confirm names each descendant and
-  how many are live. This reverses DECISIONS.md 2026-08-16 on purpose.
-
-SIDEBAR — one recursive node (renderWorkspaceSubtree) replaces the flat list
-  of four sibling kinds. Only roots bucket into groups. Emitted as a FLAT
-  fragment: a wrapper carrying the parent's data-ws-id would make a hover over
-  a worktree stub paint a drop line on the parent. All new consts sit above the
-  component's return (cbef36e). Reorder is parent-scoped; drops are same-level.
-  The repo root's own `git worktree list` entry is filtered out — it IS the
-  workspace, and a stub for it would offer to open a child sharing its
-  parent's directory.
-
-MINI WIZARD — a folder-anchored workspace drops the Directory field and scopes
-  the Claude-session list to that folder. Not cosmetic: --resume <id> now
-  searches other projects too, so a foreign pick SUCCEEDS in the wrong repo.
-
-TWO PRE-EXISTING BUGS FIXED IN PASSING
-  * list_claude_sessions_local never got Phase 65's fix — project_path was the
-    ENCODED directory name; invisible only because the caller guards on
-    startsWith("/"), which C--Users-... fails by accident.
-  * spawn_wsl_pty guards --cd with a Windows-side is_dir() that a Linux path
-    always fails, so WSL silently ignored a workspace cwd. effectiveCwdOverride
-    now injects the cd for WSL as well as SSH.
-
-RESULT: 316 cargo tests pass, tsc clean, vite builds. NOTHING RUN LIVE — see
-FOLLOWUPS P1 2026-08-18 for the 9-step smoke list.
-
-ADDENDUM 2026-08-18 (same branch) — two bugs found by live testing
---------------------------------------------------------------------------------
-1. InsightsWindow's Claude-usage effect read state its own fetch writes. On
-   success it settled; on FAILURE usage() stayed null and it re-fired forever.
-   14,359 [USAGE] backoff lines in 43 min saturated the IPC channel, so
-   unrelated clicks stopped landing ("the folder picker opens and nothing
-   happens"). Reachable only because the v3->v4 migration produced a workspace
-   with an SSH connection and no live session. ClaudeUsageIndicator already
-   carried the fix AND the comment describing the trap; its sibling never got
-   it. Now on([view, workspaceId]) + plain-let guards.
-
-2. ssh_exec_capture broke on ChannelMsg::Eof, so when EOF preceded ExitStatus
-   the exit code was lost and stayed 0. git_script folds stderr in with 2>&1,
-   so a failing git came back as SUCCESSFUL output: "fatal: not a git
-   repository" parsed to zero worktrees and a non-repo could be PINNED. Whether
-   it failed was a race — /home/runner/build probed clean, then scanned dirty
-   18 seconds later. Now collects until both EOF and ExitStatus (or Close), and
-   git_probe_worktrees additionally rejects an empty listing, since a real repo
-   always lists at least its own main worktree.
-
-   Follow-on UX, per Yossi: a non-repo is demoted once (workspace_set_project_root
-   -> false) instead of re-asking on every expand and restart, and a confirmed
-   repo carries a small git badge on its folder glyph.
+=========================================================================
