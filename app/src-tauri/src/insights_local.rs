@@ -280,6 +280,7 @@ pub fn snapshot() -> Result<Snapshot, String> {
 
 // ─── Docker (Windows named pipe) ───────────────────────────────────────
 
+#[cfg(windows)]
 const DOCKER_PIPE: &str = r"\\.\pipe\docker_engine";
 const DAEMON_TAG: &str = "winmux-local";
 
@@ -287,13 +288,13 @@ const DAEMON_TAG: &str = "winmux-local";
 /// (never `Err`) when Docker isn't reachable — the panel treats that as a
 /// friendly no-docker state rather than a hard error.
 #[cfg(windows)]
-async fn connect_docker() -> Result<Option<bollard::Docker>, String> {
+async fn connect_docker() -> Result<Option<(bollard::Docker, String)>, String> {
     match bollard::Docker::connect_with_named_pipe_defaults() {
         Ok(d) => {
             // Ping so we surface an actionable reason ("no_socket" vs
             // "permission") rather than hitting the first list_containers.
             match d.ping().await {
-                Ok(_) => Ok(Some(d)),
+                Ok(_) => Ok(Some((d, DOCKER_PIPE.to_string()))),
                 Err(e) => {
                     crate::log_warn("INSIGHTS-LOCAL", &format!("docker ping failed: {e}"));
                     Ok(None)
@@ -307,31 +308,86 @@ async fn connect_docker() -> Result<Option<bollard::Docker>, String> {
     }
 }
 
+/// Unix socket paths a local Docker-compatible daemon may listen on, in
+/// probe order. `/var/run/docker.sock` is only present on macOS when
+/// Docker Desktop's "Allow the default Docker socket" (admin) option is
+/// on — recent versions default it OFF, so the per-user socket under
+/// `~/.docker/run` is the common case. OrbStack / Colima / Rancher
+/// Desktop / Podman each have their own; the `docker` CLI finds them via
+/// contexts, we simply try them all. `DOCKER_HOST=unix://…` wins.
 #[cfg(not(windows))]
-async fn connect_docker() -> Result<Option<bollard::Docker>, String> {
-    // On Linux/macOS the remote daemon path is the intended one; local
-    // Insights on non-Windows is a best-effort courtesy. Try the unix
-    // socket via bollard's defaults; if it fails we return None.
-    match bollard::Docker::connect_with_local_defaults() {
-        Ok(d) => match d.ping().await {
-            Ok(_) => Ok(Some(d)),
-            Err(_) => Ok(None),
-        },
-        Err(_) => Ok(None),
+fn docker_socket_candidates() -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Some(h) = std::env::var_os("DOCKER_HOST") {
+        let h = h.to_string_lossy().to_string();
+        if let Some(p) = h.strip_prefix("unix://") {
+            v.push(std::path::PathBuf::from(p));
+        }
     }
+    v.push(std::path::PathBuf::from("/var/run/docker.sock"));
+    if let Some(home) = dirs::home_dir() {
+        v.push(home.join(".docker/run/docker.sock")); // Docker Desktop (per-user)
+        v.push(home.join(".orbstack/run/docker.sock")); // OrbStack
+        v.push(home.join(".colima/default/docker.sock")); // Colima
+        v.push(home.join(".colima/docker.sock"));
+        v.push(home.join(".rd/docker.sock")); // Rancher Desktop
+        v.push(home.join(".local/share/containers/podman/machine/podman.sock")); // Podman
+    }
+    v
+}
+
+/// The socket we would report in the "not reachable" card: the first
+/// candidate that exists on disk (a daemon that isn't answering), else the
+/// canonical default.
+#[cfg(not(windows))]
+fn docker_socket_label() -> String {
+    docker_socket_candidates()
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/run/docker.sock"))
+        .to_string_lossy()
+        .to_string()
+}
+
+#[cfg(windows)]
+fn docker_socket_label() -> String {
+    DOCKER_PIPE.to_string()
+}
+
+#[cfg(not(windows))]
+async fn connect_docker() -> Result<Option<(bollard::Docker, String)>, String> {
+    // Try each existing socket in order and keep the first that answers a
+    // ping. A socket that exists but doesn't ping (daemon starting /
+    // stopped) is skipped so a second runtime (e.g. OrbStack next to a
+    // dead Docker Desktop) still gets found.
+    for sock in docker_socket_candidates().into_iter().filter(|p| p.exists()) {
+        let path = sock.to_string_lossy().to_string();
+        match bollard::Docker::connect_with_socket(&path, 5, bollard::API_DEFAULT_VERSION) {
+            Ok(d) => match d.ping().await {
+                Ok(_) => return Ok(Some((d, path))),
+                Err(e) => {
+                    crate::log_warn("INSIGHTS-LOCAL", &format!("docker ping failed on {path}: {e}"));
+                }
+            },
+            Err(e) => {
+                crate::log_warn("INSIGHTS-LOCAL", &format!("docker connect failed on {path}: {e}"));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Fetch container list + per-container stats snapshot. Never panics; a
 /// failure to talk to Docker returns `available: false` with a reason.
 pub async fn docker_snapshot() -> Result<DockerResp, String> {
-    let docker = match connect_docker().await? {
+    let (docker, socket_label) = match connect_docker().await? {
         Some(d) => d,
         None => {
             return Ok(DockerResp {
                 available: false,
                 reason: Some("no_socket".into()),
-                detail: Some(format!("docker pipe not reachable ({DOCKER_PIPE})")),
-                socket: Some(DOCKER_PIPE.into()),
+                detail: Some(format!("docker socket not reachable ({})", docker_socket_label())),
+                socket: Some(docker_socket_label()),
                 hint: Some("Start Docker Desktop, then hit Refresh.".into()),
                 daemon_version: DAEMON_TAG.into(),
                 containers: vec![],
@@ -413,7 +469,7 @@ pub async fn docker_snapshot() -> Result<DockerResp, String> {
         available: true,
         reason: None,
         detail: None,
-        socket: Some(DOCKER_PIPE.into()),
+        socket: Some(socket_label),
         hint: None,
         daemon_version: DAEMON_TAG.into(),
         containers: out,
@@ -468,7 +524,7 @@ pub async fn docker_action(container_id: &str, action: &str) -> Result<String, S
     if !matches!(action, "start" | "stop" | "restart" | "kill") {
         return Err("invalid docker action".into());
     }
-    let docker = connect_docker()
+    let (docker, _socket) = connect_docker()
         .await?
         .ok_or_else(|| "docker not reachable".to_string())?;
     match action {

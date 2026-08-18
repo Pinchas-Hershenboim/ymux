@@ -1774,3 +1774,16 @@ FIX lib.rs spawn_local_pty (unix): if LANG/LC_ALL/LC_CTYPE are all unset,
   inject LANG=<AppleLocale>.UTF-8 when /usr/share/locale has it, else
   en_US.UTF-8 (default_utf8_locale(), probed once). Note: an already-
   running tmux server keeps its old env — `tmux kill-server` once.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 6
+BUG (Yossi): local Insights on mac says Docker socket exists but daemon
+  doesn't answer, shows \\.\pipe\docker_engine.
+ROOT CAUSE: unix connect_docker used bollard local defaults =
+  /var/run/docker.sock only; Docker Desktop on recent macOS defaults the
+  admin "default socket" option OFF, so the daemon listens only on
+  ~/.docker/run/docker.sock. Card text was Windows-only.
+FIX insights_local.rs — probe DOCKER_HOST (unix://), /var/run/docker.sock,
+  ~/.docker/run, ~/.orbstack/run, ~/.colima, ~/.rd, podman machine sock;
+  first that pings wins; connect_docker returns the answering path and
+  the card shows it (both OSes).
