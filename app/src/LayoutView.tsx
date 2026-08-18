@@ -84,6 +84,7 @@ interface Props {
   // Phase 23.D: the workspace's canonical connection, threaded
   // through to PaneView so isSsh() can fall back to it.
   workspaceConnection?: Connection;
+  workspaceCwd?: string;
   // Phase 23.I: workspace name. PaneView's header falls back to it
   // when the pane has no user-set title.
   workspaceName?: string;
@@ -158,6 +159,7 @@ function LeafPane(props: { all: Props; pane: Extract<LayoutNode, { kind: "pane" 
           workspaceId={props.all.workspaceId}
           pane={props.pane}
           workspaceConnection={props.all.workspaceConnection}
+          workspaceCwd={props.all.workspaceCwd}
           workspaceName={props.all.workspaceName}
           workspaceColor={props.all.workspaceColor}
           workspaceEmoji={props.all.workspaceEmoji}

@@ -1,4 +1,4 @@
-import { createSignal, For, Show, createEffect, onCleanup, type JSX } from "solid-js";
+import { createSignal, For, Show, createEffect, on, onCleanup, type JSX } from "solid-js";
 import { createNarrow } from "./useNarrow";
 import {
   IconActivity,
@@ -102,8 +102,28 @@ export function InsightsWindow(p: Props) {
   const [usage, setUsage] = createSignal<ClaudeUsage | null>(null);
   const [usageLoading, setUsageLoading] = createSignal(false);
   const [usageErr, setUsageErr] = createSignal<string | null>(null);
+  // `usageInFlight` and `usageTriedFor` are plain `let`s, NOT signals, so
+  // reading them inside the effect below cannot subscribe it. This is the
+  // same trap ClaudeUsageIndicator documents at its `let inFlight`: an
+  // effect that reads state its own fetch writes re-triggers itself.
+  //
+  // Here it was `!usage() && !usageLoading()`. On success it settled,
+  // because `usage()` filled — which is why it looked fine for months. On
+  // FAILURE `usage()` stays null forever, so the guard reopens the moment
+  // `usageLoading` drops and the effect fires again immediately: a tight
+  // loop of remote fetches, ~14k in 40 minutes, saturating the IPC channel
+  // until unrelated clicks stopped landing. It took a workspace that has
+  // an SSH connection but no live session (a pinned project folder before
+  // its first connect) to make the fetch fail reliably enough to show.
+  //
+  // A failed attempt is now remembered per workspace: the Refresh button
+  // is the retry, not the render loop.
+  let usageInFlight = false;
+  let usageTriedFor: string | null = null;
   const refreshClaude = async (force: boolean) => {
-    if (!p.workspaceId) return;
+    if (!p.workspaceId || usageInFlight) return;
+    usageInFlight = true;
+    usageTriedFor = p.workspaceId;
     setUsageLoading(true);
     setUsageErr(null);
     try {
@@ -115,16 +135,23 @@ export function InsightsWindow(p: Props) {
     } catch (e) {
       setUsageErr(String(e instanceof Error ? e.message : e));
     } finally {
+      usageInFlight = false;
       setUsageLoading(false);
     }
   };
   // Load usage when the Claude tab is opened (uses the 5-min backend cache;
-  // only cold-fetches — ~8s — if nothing is cached yet).
-  createEffect(() => {
-    if (view() === "claude" && p.workspaceId && !usage() && !usageLoading()) {
-      void refreshClaude(false);
-    }
-  });
+  // only cold-fetches — ~8s — if nothing is cached yet). `on([...])` locks
+  // the dependency list so nothing read in the body can retrigger it.
+  createEffect(
+    on(
+      () => [view(), p.workspaceId] as const,
+      ([v, ws]) => {
+        if (v !== "claude" || !ws) return;
+        if (usageTriedFor === ws) return;
+        void refreshClaude(false);
+      },
+    ),
+  );
   // Phase 72.2: daemon log viewer.
   const [logLines, setLogLines] = createSignal<string[]>([]);
   const [logPath, setLogPath] = createSignal("");

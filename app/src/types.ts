@@ -17,6 +17,10 @@ export type { LayoutNode } from "./bindings/LayoutNode";
 export type { Workspace } from "./bindings/Workspace";
 // cmux-A A2: sidebar collapsible groups.
 export type { WorkspaceGroup } from "./bindings/WorkspaceGroup";
+// One row of `git worktree list --porcelain`, for a workspace flagged
+// `is_project_root`. There is no ProjectFolder type any more — a pinned
+// repo IS a workspace, nested under the one it was pinned from.
+export type { WorktreeEntry } from "./bindings/WorktreeEntry";
 export type { FeedItem } from "./bindings/FeedItem";
 export type { FeedItemState } from "./bindings/FeedItemState";
 export type { ClaudeUsage } from "./bindings/ClaudeUsage";

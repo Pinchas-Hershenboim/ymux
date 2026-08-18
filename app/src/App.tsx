@@ -38,6 +38,10 @@ import { CommandPalette, type Command } from "./CommandPalette";
 import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
 import { TicketModal } from "./TicketModal";
+import { ProjectFolderModal, type ProjectFolderModalMode } from "./ProjectFolderModal";
+import { ConfirmDeleteWorkspace } from "./ConfirmDeleteWorkspace";
+import { DirPicker } from "./DirPicker";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { TicketsPanel } from "./TicketsPanel";
 import { parseCapture, pendingCapture, setPendingCapture } from "./browserDevMode";
 import { FileManagerPane } from "./FileManagerPane";
@@ -87,6 +91,7 @@ import {
   type EnvVar,
   type FeedItem,
   type ForwardRow,
+  type WorktreeEntry,
   type FeedResolvedEvent,
   type LayoutNode,
   type Note,
@@ -366,6 +371,10 @@ function App() {
   // Monitor's open/drawer/float state now lives in the unified `panels`
   // registry (see panels.ts) under the "monitor" id.
   const [addonsWin, setAddonsWin] = createSignal<{ id: string; name: string } | null>(null);
+  // Project folders: the pin dialog and the new-worktree dialog share
+  // one modal, discriminated by `kind`.
+  const [projectFolderModal, setProjectFolderModal] =
+    createSignal<ProjectFolderModalMode | null>(null);
   // Phase 35 (#1.3): command palette (Ctrl+Shift+P).
   const [showPalette, setShowPalette] = createSignal(false);
   // Phase 36 (#2.2): live auto port-forwards (all workspaces).
@@ -500,7 +509,8 @@ function App() {
     showSettings() || showPalette() || showPortsWindow() || installingUpdate() ||
     // Dev-Mode ticket modal — same reason as the rest: the native
     // Browser Webview paints above HTML and must be hidden for it.
-    pendingCapture() !== null;
+    pendingCapture() !== null || projectFolderModal() !== null ||
+    dirPickerFor() !== null;
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -1242,17 +1252,53 @@ function App() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  /** Every workspace id under `id`, including it. Mirrors the backend
+   *  BFS, visited set and all — a cycle here would hang the confirm. */
+  const subtreeOf = (id: string): Workspace[] => {
+    const all = file().workspaces;
+    const out: Workspace[] = [];
+    const seen = new Set<string>([id]);
+    const queue = [id];
+    while (queue.length) {
+      const cur = queue.pop()!;
+      const w = all.find((x) => x.id === cur);
+      if (w) out.push(w);
+      for (const c of all) {
+        if (c.parent_id === cur && !seen.has(c.id)) {
+          seen.add(c.id);
+          queue.push(c.id);
+        }
+      }
+    }
+    return out;
+  };
+
+  /**
+   * Deleting a workspace takes its pinned project folders and every
+   * worktree workspace under them, along with any live remote session
+   * they hold. Directories on the host are untouched.
+   *
+   * That used to be two stacked `window.confirm` calls — an unstyled OS
+   * box describing the damage in prose. It read as no warning at all, so
+   * the dialog IS the warning now: `ConfirmDeleteWorkspace` lists every
+   * workspace by name, marks the live ones, and keeps focus on Cancel.
+   */
+  const [pendingDelete, setPendingDelete] = createSignal<Workspace[] | null>(null);
+
+  /** Notes across a subtree. Legacy unassigned (null) notes survive. */
+  const notesInSubtree = (subtree: Workspace[]): number => {
+    const ids = new Set(subtree.map((w) => w.id));
+    return notes().filter((n) => n.workspace_id && ids.has(n.workspace_id)).length;
+  };
+
+  const handleDelete = (id: string) => {
     const ws = file().workspaces.find((w) => w.id === id);
     if (!ws) return;
-    if (!window.confirm(`Delete workspace "${ws.name}"?`)) return;
-    // Phase 39: extra confirm when the workspace has notes (they'll be
-    // deleted with it). Counts notes strictly belonging to this ws —
-    // legacy unassigned (null) notes survive the delete.
-    const noteCount = notes().filter((n) => n.workspace_id === id).length;
-    if (noteCount > 0) {
-      if (!window.confirm(t("workspace.delete.notesWarning", { count: noteCount }))) return;
-    }
+    setPendingDelete(subtreeOf(id));
+  };
+
+  const commitDelete = async (id: string) => {
+    setPendingDelete(null);
     try {
       const f = await invoke<WorkspacesFile>("workspace_delete", {
         workspaceId: id,
@@ -1260,6 +1306,7 @@ function App() {
       updateFile(f);
     } catch (e) {
       log.error("workspace_delete failed", e);
+      flashSummaryToast("err", String(e));
     }
   };
 
@@ -1304,6 +1351,139 @@ function App() {
       await disconnectPane(paneId);
     }
   };
+
+  // ─── project folders ────────────────────────────────────────────────────
+
+  // ── pinning a project folder ────────────────────────────────────────────
+  //
+  // Entry point is the workspace context menu, because that is what gives
+  // the browser a host to walk: `file_list_remote` resolves SFTP from a
+  // LIVE ssh session for that workspace. SSH gets the real remote browser
+  // (DirPicker); Local gets the native dialog; WSL gets neither — there is
+  // no SFTP for it (`WSL_CAPS.fileTransfer` is false) — so it falls back to
+  // typing the path, which is what the pin modal is still there for.
+  const [dirPickerFor, setDirPickerFor] =
+    createSignal<{ workspaceId: string; connection: Connection | null } | null>(null);
+
+  /** Probe, then persist. The probe is what keeps a non-repo directory
+   *  from landing as a dead section — git's own message comes back. */
+  const pinProjectFolder = async (
+    parentWorkspaceId: string,
+    path: string,
+    connection: Connection | null,
+  ) => {
+    try {
+      await invoke<WorktreeEntry[]>("git_probe_worktrees", { path, connection });
+      const f = await invoke<WorkspacesFile>("workspace_pin_project_folder", {
+        parentWorkspaceId,
+        path,
+        name: null,
+      });
+      updateFile(f);
+      if (f.active_workspace_id) await handleSetActive(f.active_workspace_id);
+    } catch (e) {
+      log.error("pin project folder failed", e);
+      flashSummaryToast("err", String(e));
+    }
+  };
+
+  /**
+   * Ask git again whether this workspace's directory is a repo.
+   *
+   * Demotion is one-way and deliberate — a folder git rejected should
+   * not be re-probed on every expand and restart. But `git init` makes
+   * the old answer wrong, and there was otherwise no route back:
+   * `workspace_pin_project_folder` refuses a duplicate path under the
+   * same parent, so re-pinning could not undo it either.
+   */
+  const recheckGit = async (workspaceId: string) => {
+    const ws = file().workspaces.find((w) => w.id === workspaceId);
+    if (!ws?.cwd) return;
+    try {
+      await invoke<WorktreeEntry[]>("git_probe_worktrees", {
+        path: ws.cwd,
+        connection: ws.connection ?? null,
+      });
+      const f = await invoke<WorkspacesFile>("workspace_set_project_root", {
+        workspaceId,
+        isProjectRoot: true,
+      });
+      updateFile(f);
+      flashSummaryToast("ok", t("pf.checkGit.found", { name: ws.name }));
+    } catch (e) {
+      // git's own message: "not a git repository" and "no live SSH
+      // session" are different problems and the user has to tell them
+      // apart to know whether retrying is worth anything.
+      log.info(`recheck git ws=${workspaceId} — ${String(e)}`);
+      flashSummaryToast("err", String(e));
+    }
+  };
+
+  const startPinProjectFolder = async (workspaceId: string) => {
+    const ws = file().workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    const conn = ws.connection ?? null;
+    if (conn?.type === "ssh") {
+      // Arm the connection first so pinning works on a workspace whose
+      // panes are all disconnected — otherwise the browser opens straight
+      // onto "connect a terminal pane first". Idempotent and PTY-free.
+      try {
+        await invoke("workspace_ensure_connected", { workspaceId });
+      } catch (e) {
+        log.warn("ensure_connected before folder pick failed", e);
+      }
+      setDirPickerFor({ workspaceId, connection: conn });
+      return;
+    }
+    if (conn === null || conn.type === "local") {
+      const picked = await openFileDialog({ directory: true, multiple: false });
+      if (typeof picked === "string") await pinProjectFolder(workspaceId, picked, conn);
+      return;
+    }
+    // WSL: no SFTP and no meaningful native path, so type it.
+    setProjectFolderModal({ kind: "pin", workspaceId, connection: conn });
+  };
+
+  /** Last path component, for naming a detached worktree's workspace. */
+  const pathTailOf = (path: string): string | undefined => {
+    const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
+    const tail = norm.slice(norm.lastIndexOf("/") + 1);
+    return tail || undefined;
+  };
+
+  /** Reload the workspaces file after a project-folder mutation. */
+  const reloadWorkspaces = async () => {
+    const f = await invoke<WorkspacesFile>("workspaces_load");
+    updateFile(f);
+  };
+
+  /**
+   * Open a worktree as its own workspace — the click target of a
+   * worktree row that has no workspace yet.
+   *
+   * The backend does the whole job (create + activate, or activate the
+   * existing one), so there is nothing to stitch together here. The
+   * workspace's first pane connects through the normal restore path;
+   * its cwd reaches a remote shell via `effectiveCwdOverride`.
+   */
+  const openWorktree = async (rootWorkspaceId: string, wt: WorktreeEntry) => {
+    const root = file().workspaces.find((w) => w.id === rootWorkspaceId);
+    try {
+      const f = await invoke<WorkspacesFile>("workspace_open_worktree", {
+        rootWorkspaceId,
+        worktreePath: wt.path,
+        // Branch name is what the user recognises; a detached worktree
+        // falls back to the directory name rather than a bare sha.
+        name: wt.branch ?? pathTailOf(wt.path) ?? root?.name ?? "worktree",
+      });
+      updateFile(f);
+      if (f.active_workspace_id) await handleSetActive(f.active_workspace_id);
+    } catch (e) {
+      log.error("workspace_open_worktree failed", e);
+      flashSummaryToast("err", String(e));
+    }
+  };
+
 
   // ─── pane operations ────────────────────────────────────────────────────
 
@@ -1497,6 +1677,36 @@ function App() {
     restoring?: boolean;
   };
 
+  /**
+   * `Workspace.cwd` is honored natively only by the Local and WSL spawn
+   * paths (`spawn_local_pty` sets `cmd.cwd`, `spawn_wsl_pty` passes
+   * `--cd`). The SSH arm of `pane_connect` never forwards it, so an SSH
+   * pane has always landed in `$HOME` and the workspace's cwd was
+   * silently inert — an SSH channel has no working-directory parameter
+   * to set, which is exactly what `cwdOverride` exists to paper over: it
+   * runs a `cd '<dir>'` through `build_smart_connect_script` once the
+   * shell is up.
+   *
+   * So for a remote workspace we default the override to the workspace's
+   * own cwd. Project folders depend on this — a worktree workspace is
+   * nothing but a cwd on a server — but the gap was never
+   * worktree-specific, and narrowing the fix to worktrees would leave
+   * every hand-set SSH cwd still quietly ignored.
+   *
+   * WSL is in the same boat for a different reason: `spawn_wsl_pty`
+   * guards `--cd` with a WINDOWS-side `Path::new(d).is_dir()`, which a
+   * Linux path like /home/y/src always fails, so the flag is silently
+   * dropped. Injecting the `cd` covers it. Local is genuinely fine —
+   * `spawn_local_pty` sets the process cwd directly — so it stays out.
+   */
+  const effectiveCwdOverride = (ws: Workspace, opts: ConnectOpts): string | null => {
+    if (opts.cwdOverride) return opts.cwdOverride;
+    if (!ws.cwd) return null;
+    const needsInjection =
+      isRemoteWorkspace(ws) || ws.connection?.type === "wsl";
+    return needsInjection ? ws.cwd : null;
+  };
+
   const connectPane = async (paneId: string, opts: ConnectOpts = {}) => {
     const ws = activeWs();
     if (!ws) return;
@@ -1514,7 +1724,7 @@ function App() {
         acceptUnknownHost: opts.acceptUnknownHost ?? false,
         persistent: opts.persistent ?? false,
         mode: opts.mode ?? null,
-        cwdOverride: opts.cwdOverride ?? null,
+        cwdOverride: effectiveCwdOverride(ws, opts),
         cmd: opts.cmd ?? null,
         claudeArgs: opts.claudeArgs ?? null,
         tmuxSessionName: opts.tmuxSession ?? null,
@@ -2966,15 +3176,26 @@ function App() {
         />
       </Show>
       <ErrorBoundary
-        fallback={(err) => (
-          <div class="sidebar-error">
-            <p>{t("error.sidebarRender")}</p>
-            <pre>{String(err)}</pre>
-            <button class="primary" onClick={() => setShowSetup({})}>
-              + New workspace
-            </button>
-          </div>
-        )}
+        fallback={(err) => {
+          // A sidebar render crash used to leave NOTHING in debug.log —
+          // the card on screen was the only evidence, so a user report
+          // of "the sidebar" was undiagnosable after the fact. This one
+          // cost two build-and-test rounds (a TDZ ReferenceError from
+          // state declared after the component's return, fixed in
+          // cbef36e). Logging in a render function is a side effect, but
+          // this branch renders once per error and never in the happy
+          // path.
+          log.error("sidebar render crashed", err);
+          return (
+            <div class="sidebar-error">
+              <p>{t("error.sidebarRender")}</p>
+              <pre>{String(err)}</pre>
+              <button class="primary" onClick={() => setShowSetup({})}>
+                + New workspace
+              </button>
+            </div>
+          );
+        }}
       >
         <Sidebar
           workspaces={file().workspaces}
@@ -3076,15 +3297,52 @@ function App() {
             else if (action === "edit") {
               const ws = file().workspaces.find((w) => w.id === id);
               if (ws) setEditingWorkspace(ws);
-            } else if (action === "delete") void handleDelete(id);
+            } else if (action === "delete") handleDelete(id);
             else if (action === "disconnect")
               void handleDisconnectWorkspace(id);
             else if (action === "addons") {
               const ws = file().workspaces.find((w) => w.id === id);
               setAddonsWin({ id, name: ws?.name ?? "" });
+            } else if (action === "add_project_folder") {
+              void startPinProjectFolder(id);
+            } else if (action === "check_git") {
+              void recheckGit(id);
             }
             // Phase 65.Q removed the "add_machine" action — joining an
             // existing server is handled by the main wizard (R).
+          }}
+          // ── project-folder workspaces ─────────────────────────────
+          onSetCollapsed={(workspaceId, isCollapsed) => {
+            void (async () => {
+              try {
+                const f = await invoke<WorkspacesFile>("workspace_set_collapsed", {
+                  workspaceId,
+                  collapsed: isCollapsed,
+                });
+                updateFile(f);
+              } catch (e) { log.error("workspace_set_collapsed failed", e); }
+            })();
+          }}
+          onNewWorktree={(w) => setProjectFolderModal({ kind: "worktree", workspace: w })}
+          // Rejection is meaningful here — the Sidebar renders git's own
+          // message (bad path, no live SSH session) rather than an empty
+          // list, which would read as "this repo has no worktrees".
+          onListWorktrees={(workspaceId) =>
+            invoke<WorktreeEntry[]>("workspace_list_worktrees", { workspaceId })
+          }
+          onOpenWorktree={(rootWorkspaceId, wt) => void openWorktree(rootWorkspaceId, wt)}
+          onNotARepo={(workspaceId) => {
+            void (async () => {
+              try {
+                const f = await invoke<WorkspacesFile>("workspace_set_project_root", {
+                  workspaceId,
+                  isProjectRoot: false,
+                });
+                updateFile(f);
+              } catch (e) {
+                log.error("workspace_set_project_root failed", e);
+              }
+            })();
           }}
           allForwards={portForwards()}
           onOpenPorts={(workspaceId) => {
@@ -3330,6 +3588,7 @@ function App() {
                     notifiedPaneIds={paneNotified()}
                     panePulseEnabled={settings()?.notifications?.pane_pulse_on_activity ?? true}
                     workspaceConnection={activeWs()?.connection ?? undefined}
+                    workspaceCwd={activeWs()?.cwd ?? undefined}
                     workspaceName={activeWs()?.name}
                     workspaceColor={activeWs()?.color ?? undefined}
                     workspaceEmoji={activeWs()?.emoji ?? undefined}
@@ -3684,6 +3943,52 @@ function App() {
       {/* Dev Mode ticket capture. Opened by browser:ticket-captured;
           folded into anyModalOpen() above so the Browser Webview is
           hidden while it's up (it would otherwise paint over this). */}
+      {/* Remote folder browser for pinning a project folder. Scoped to
+          the workspace whose context menu opened it — that is where the
+          SFTP session comes from. */}
+      <Show when={dirPickerFor()}>
+        {(d) => (
+          <DirPicker
+            workspaceId={d().workspaceId}
+            onClose={() => setDirPickerFor(null)}
+            onPick={(dir) => {
+              // Read EVERYTHING off the accessor before clearing the
+              // signal: `setDirPickerFor(null)` unmounts this <Show>, and
+              // `d()` past that point is not guaranteed to still resolve.
+              const { workspaceId, connection } = d();
+              setDirPickerFor(null);
+              void pinProjectFolder(workspaceId, dir, connection);
+            }}
+          />
+        )}
+      </Show>
+
+      {/* Destructive, and cascades over a subtree — so it gets a real
+          dialog rather than a browser confirm. */}
+      <Show when={pendingDelete()}>
+        {(sub) => (
+          <ConfirmDeleteWorkspace
+            subtree={sub()}
+            liveIds={liveWorkspaceIds()}
+            noteCount={notesInSubtree(sub())}
+            onClose={() => setPendingDelete(null)}
+            onConfirm={() => void commitDelete(sub()[0].id)}
+          />
+        )}
+      </Show>
+
+      {/* Project folders: pin a repo path, or create a worktree inside
+          one. Folded into anyModalOpen() for the same Webview reason. */}
+      <Show when={projectFolderModal()}>
+        {(m) => (
+          <ProjectFolderModal
+            mode={m()}
+            onClose={() => setProjectFolderModal(null)}
+            onDone={() => void reloadWorkspaces()}
+          />
+        )}
+      </Show>
+
       <Show when={pendingCapture()}>
         {(pc) => (
           <TicketModal
