@@ -34,6 +34,7 @@ mod tickets;
 mod tray;
 mod updater;
 mod worktrees;
+mod workspaces_merge;
 // Phase 51.C: `mod tunnel` moved to its own crate winmux-tunnel.
 // Existing crate::tunnel::* callsites still resolve via this alias.
 use winmux_tunnel as tunnel;
@@ -483,6 +484,26 @@ pub(crate) fn hex_utf8(s: &str) -> String {
     s.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The file content as this process last read or wrote it.
+///
+/// `save_to_disk` used to dump the whole in-memory struct, which is
+/// last-write-wins across the entire document — fine while one app owns
+/// the file, and wrong the moment two do. Two do routinely: a stable
+/// winmux and a dev build share %APPDATA%\winmux unless somebody
+/// remembers WINMUX_CONFIG_DIR, and the older of the two silently drops
+/// every field its structs do not know.
+///
+/// So this is the "base" of a three-way merge. When the file on disk no
+/// longer matches it, another writer got there first and we apply only
+/// our own delta on top of theirs instead of flattening their work.
+static LAST_KNOWN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn remember_file_text(text: &str) {
+    if let Ok(mut g) = LAST_KNOWN.lock() {
+        *g = Some(text.to_string());
+    }
+}
+
 fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     use std::io::Write as _;
 
@@ -499,7 +520,21 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
         .ok_or_else(|| "no parent dir".to_string())?
         .to_path_buf();
     let tmp = dir.join(format!("workspaces.{}.tmp", std::process::id()));
-    let text = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
+    let mut text = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
+
+    // Re-read before writing. The fast path — nobody else touched the
+    // file — is the overwhelmingly common one and costs a single read.
+    // The decision itself lives in `workspaces_merge::reconcile` so it is
+    // testable without a GUI: an idle app never saves, so the interesting
+    // path cannot be reached by launching one and waiting.
+    let base_text = LAST_KNOWN.lock().ok().and_then(|g| g.clone());
+    let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+    let (reconciled, notes) =
+        workspaces_merge::reconcile(&text, base_text.as_deref(), &on_disk);
+    for n in &notes {
+        log_warn("WORKSPACE", &format!("save_to_disk: {n}"));
+    }
+    text = reconciled;
 
     {
         let mut f = std::fs::OpenOptions::new()
@@ -514,6 +549,7 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     }
 
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    remember_file_text(&text);
     // The tree shape goes in the line, not just the count. Two pinned
     // folders lost `parent_id` and `is_project_root` with nothing in the
     // log to say when or why — every writer mutates in place, serde
@@ -558,6 +594,8 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
     log_debug("WORKSPACE", &format!("load_from_disk: read {} bytes", text.len()));
     let mut file: WorkspacesFile = serde_json::from_str(&text)
         .map_err(|e| format!("parse {:?}: {e}", path))?;
+    // Base for the three-way merge in save_to_disk.
+    remember_file_text(&text);
     log_debug("WORKSPACE", &format!(
         "load_from_disk: parsed OK, version={}, {} workspaces, active={:?}",
         file.version,
