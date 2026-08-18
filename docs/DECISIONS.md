@@ -25,6 +25,16 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-18 — Why do tmux sessions vanish server-side after an abrupt disconnect? NO MECHANISM FOUND
+- **The report:** Yossi unplugged a laptop from AC and every tmux session on `runner@185.237.252.130` was gone. Crucially, closing the app cleanly does NOT do this — the sessions survive and reattach. He confirms `tmux ls` was already empty **before** the manual reboot he performed, so the reboot is not the explanation.
+- **Three hypotheses falsified, in order:**
+  1. *`systemd-logind` with `KillUserProcesses=yes`.* Killed by Yossi's own observation: a clean app shutdown also ends every login session, and there the tmux survives. `loginctl`/`linger` appear nowhere in the repo (only a comment at `winmux-addons/src/lib.rs:222` acknowledging the daemon's nohup fallback).
+  2. *An external reboot.* The 22:21 reboot was Yossi's, done by hand because he could not connect. It is downstream of the bug.
+  3. *Any kill path in this repo.* All were read and excluded: the 4 `tmux kill-session` sites are behind explicit user action; `kill_session_inner` (`lib.rs:3288`) explicitly preserves tmux; the bootstrap `pkill` never matched tmux's cmdline (`tmux -f $HOME/.winmux/tmux.conf new-session…`); the port-watch and addons pkills are scoped; the Go hygiene daemon (`server/internal/insights/hygiene.go`) permits only duplicate port-watchers by PID and never auto-kills claude. No `destroy-unattached`/`exit-empty` in the shipped conf.
+- **What IS explained:** the reconnect cascade (`App.tsx`, fixed 2026-08-18) meant a full outage abandoned every pane but the last, and the SFTP storm meant the one survivor failed all five attempts. That fully accounts for "I could not reconnect, so I rebooted" — it does not account for sessions already being gone.
+- **Two candidates left, both needing evidence rather than code reading:** (a) something outside winmux — the OOM killer on a shared box sitting at load average 22 with 10 users; (b) the `tmux ls` was pointed at a different socket (other user, other `TMUX_TMPDIR`) while the sessions were alive.
+- **Decision: do not ship a fix on a guess.** Three confident hypotheses have already been wrong. `lib.rs` now logs a `tmux-inventory:` line before every attach so the disappearance gets a timestamp from our side; the rest is `journalctl` on the server. Tracked as FOLLOWUPS P0.
+
 ### 2026-08-12 — Tickets now write to the project ON THE AGENT'S MACHINE: LIVE SMOKE PENDING
 - **What changed:** the 2026-08-11 design stored tickets app-locally for SSH workspaces and kept the remote path as metadata. Yossi: *"הרי הסוכן קוד יושב על השרת"* — correct, and it defeated the feature. A `Store` enum whose `Remote` arm carries a live SSH handle now writes into `<project>/.winmux-tickets/` on the host (`12cf043`), with the UI showing `srv-01:/path` before saving (`e0c32d6`). Local and WSL unchanged in intent, but WSL's git-root bug is fixed.
 - **No second SSH connection.** The browser's port-forward and the ticket I/O are channels on the SAME russh session (`open_auto_forward`, `lib.rs:3473`, uses the same handle lookup). One TCP connection, one login. This also means "disconnected" is nearly unreachable during a capture: no SSH → no tunnel → no page to right-click.
@@ -116,6 +126,12 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 ---
 
 ## Decided
+
+### 2026-08-18 — sha256 stays the bootstrap comparison; no version compare, no backoff
+- **Context:** a previous session proposed replacing the bootstrap's sha256 check with a version comparison, and adding backoff to the "upload storm".
+- **Rejected — version compare.** The desktop speaks the RPC protocol of the CLI binary it embeds, not of whatever is newer on the server. Comparing versions would let a protocol-skewed binary pass silently, which is the exact failure the same session flagged elsewhere (unattributable reverse-tunnel handshake rejections). sha256 is the correct invariant: the remote must be byte-identical to what we ship.
+- **Rejected — backoff.** There is no retry loop in the bootstrap to back off; it runs once per connect, and connects are driven by the user and the reconnect driver. The right shape is a per-host lock (so concurrent panes don't race) plus a short negative cache keyed by (host, wanted sha), so a just-failed upload isn't retried on every reconnect. Implemented in `app/src-tauri/src/bootstrap_guard.rs`.
+- **Accepted — skew must stay visible.** `BootstrapStatus::Skew` is now distinct from `Err`, and drives a persistent banner plus a gate on the CLI-dependent features (hooks, tickets, port-watch). The old five-second `schedule_status_clear` status line is what let a wrong-version CLI run unnoticed for a whole debugging session. The terminal and tmux are never gated — a skewed CLI must not cost the user their shell.
 
 ### 2026-07-28 — Phase 80 / 80.1 — session restore on app start + file-manager last directory
 - **Context:** Yossi asked for two things: (1) every terminal should come back to the conversation it was in when the app closed; (2) the file manager should open where it was last, not at `$HOME`. He also asked for pane drag-swap — **already shipped** (`paneDrag.ts` + `workspace_swap_panes`, merged in `fb43e71`/`2ded9c4`); only drag-to-*split* ("Intent Zones", COMPETITIVE-SCAN #4.1) is still unbuilt. Scope agreed: **SSH only, for now.**

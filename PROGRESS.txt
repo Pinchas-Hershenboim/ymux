@@ -2266,3 +2266,55 @@ THREE CORRECTIONS I MADE TO MYSELF THIS SESSION (all were confident and wrong):
   - Earlier in the branch: "the // URL form corrupts base64 case". It does not;
     the real reason for the opaque form is that the payload lands in host_str()
     and path() comes back empty.
+
+================================================================================
+2026-08-18 — Reconnect storm + SFTP bootstrap hardening (worktree follow-up-options-d63140)
+================================================================================
+TRIGGER: Yossi pasted a full transcript from his second machine — repeated
+"sftp write: Timeout" against runner@185.237.252.130, followed by "unplugging
+the laptop from AC closed every tmux session on the server".
+
+WHAT I CHANGED
+  app/src/App.tsx                 per-pane reconnect state (was 3 globals)
+  app/src/i18n/{en,he,ar,ru}.json reconnect.*_multi + cli_skew.banner.*
+  crates/winmux-bootstrap/lib.rs  unique .tmp, cleanup on failure,
+                                  set_timeout(60), anchored pkill, Skew variant
+  crates/winmux-core/lib.rs       BridgeSpawner carries the peer address
+  crates/winmux-tunnel/lib.rs     handshake errors name the peer
+  src/addons.rs                   same .tmp + timeout + cleanup treatment
+  src/local_setup.rs              WSL bridge passes its accept() peer
+  src/bootstrap_guard.rs          NEW — per-host lock, negative cache, alignment
+  src/lib.rs                      wired the guard, gated port-watch,
+                                  tmux-inventory log before attach
+
+RESULT: cargo check clean, cargo test 316 pass / 0 fail (6 new), tsc 0,
+vite build OK. COMPILES AND TESTS — NOT YET RUN LIVE. The decisive checks
+(4 panes surviving one network drop; exactly one SFTP stream on a
+hash-mismatched host) both need a real build against a real server.
+
+CORRECTIONS TO THE PREVIOUS SESSION'S CONCLUSIONS (from the pasted transcript)
+  - "the server rebooted at 22:21, so this is not a winmux bug" — wrong
+    premise. Yossi did that reboot BY HAND because he could not connect. The
+    reboot is a consequence of the bug, not an independent cause.
+  - "russh-sftp writes 32KB chunks, ~74 round trips" — no. MAX_WRITE_LENGTH is
+    261,120. The 522,240-byte leftover on the server is exactly 2 chunks, which
+    is what pinned the failure to the third write.
+  - "the default timeout is ~15s" — it is 10s (rawsession.rs:183). The measured
+    15s was wall-clock for the whole sequence.
+  - "compare version instead of hash" — rejected. The desktop speaks the
+    protocol of the binary it embeds; a version compare would pass protocol
+    skew through silently.
+  - "add backoff" — there is no retry loop to back off. The storm is one
+    attempt per connect; a negative cache is the matching fix.
+
+STILL OPEN — tmux vanishing server-side
+  Yossi confirms `tmux ls` was already empty BEFORE his manual reboot. I could
+  not find a mechanism. Ruled out by reading every kill path in the repo: the 4
+  tmux kill-session call sites (all behind explicit user action),
+  kill_session_inner (explicitly preserves tmux), the bootstrap pkill (tmux's
+  cmdline does not contain the pattern), the port-watch reaper (scoped), the
+  addons pkill (scoped), and the Go hygiene daemon (hygiene.go killPids only
+  permits duplicate port-watchers by PID; orphan claude needs >24h and is never
+  auto-killed). No destroy-unattached / exit-empty in the shipped conf.
+  Remaining candidates need server evidence, not more code reading — see
+  FOLLOWUPS P0 and docs/DECISIONS.md.
