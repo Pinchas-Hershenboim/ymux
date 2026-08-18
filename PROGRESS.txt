@@ -2670,3 +2670,39 @@ ZELLIJ (Part B) — no code written, spike gates everything.
   multi-tab layout, #5360 Ctrl+Alt dead. Manual spike outside the repo first;
   if detach/reattach or layout rendering fails, the idea is dead until upstream
   moves. Logged as an Open decision.
+
+--------------------------------------------------------------------------------
+2026-08-18 (same day, later) — CI build + boot verification for the RTL restore
+--------------------------------------------------------------------------------
+  Merged origin/main (27 commits) into claude/zellinj-tmux-windows-3a5afe first,
+  so the test build would not be stale. One conflict, PROGRESS.txt, both sides
+  kept. The three RTL code files were untouched upstream, so the restore applied
+  cleanly. tsc clean + 47/47 on the merged tree. Pushed the branch (no push to
+  main, no force-push).
+
+  build-windows.yml via workflow_dispatch: run 32181379397, SUCCESS in 16m39s.
+  v0.4.5. Rule #13's guard RAN and PASSED, it did not skip:
+    "OK: production build — 'index-CKmxjA94.js' is embedded"
+  SHA256 app.exe c106677557938f56de04aee25e03b36d16cd1f933f9596cb2d782454b4503cde
+         setup   79ca5d6e00e0cae004f7f84fe14fb4268a8debf7763534ea5adbcae71e2082e2
+         msi     5814f5718caa1c00909de09fa082ecfb4bcfb7899d0373e214f0be68b793abc7
+
+  Rule #14 (a build that compiles is not a build that runs): downloaded the bare
+  exe, SHA verified against CI, and LAUNCHED it. Decisive evidence it really
+  boots is the frontend-tagged line in debug.log —
+    [UI:APP] longtask self 304ms
+  [UI:*] only exists if the embedded JS bundle executed, i.e. boot got PAST
+  "rpc server spawned", which is exactly where a dev-mode binary dies silently.
+
+  Launched with WINMUX_CONFIG_DIR=%APPDATA%\winmux-rtl-smoke, NOT the real
+  config, because of the FOLLOWUPS P1: two winmux builds sharing %APPDATA%
+  means the older one strips parent_id / is_project_root on every save. This
+  build carries the project-folders v4 schema, so it is exactly the pairing
+  that entry warns about. Instance stopped and the smoke config dir removed
+  afterwards; the real %APPDATA%\winmux was never opened.
+
+  STATUS: boots. RTL itself is STILL NOT VERIFIED — that needs Hebrew in a live
+  Claude pane and a human looking at it. docs/RTL-TEST.md "TUI-owns-bidi smoke",
+  8 steps; steps 5 (two full cycles in one pane, catches a latched-ON state) and
+  7 (inside tmux over SSH, decides the set-titles question) are the ones that
+  cannot be inferred from anything already checked.
