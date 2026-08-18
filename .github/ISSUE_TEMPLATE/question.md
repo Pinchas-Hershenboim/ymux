@@ -1,6 +1,6 @@
 ---
 name: Question / support
-about: Ask how to do something with winmux
+about: Ask how to do something with ymux
 title: "[Question] "
 labels: question
 ---
@@ -15,6 +15,6 @@ labels: question
 
 ## Environment
 
-- winmux version:
+- ymux version:
 - Windows version:
 - Remote (if relevant):

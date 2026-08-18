@@ -124,7 +124,7 @@ const SIDEBAR_MIN_W = 160;
 const SIDEBAR_MAX_W = 480;
 const SIDEBAR_DEFAULT_W = 224;
 const SIDEBAR_ICONS_W = 48;
-const SIDEBAR_W_KEY = "winmux.sidebar-width";
+const SIDEBAR_W_KEY = "ymux.sidebar-width";
 function loadSidebarWidth(): number {
   try {
     const n = Number(localStorage.getItem(SIDEBAR_W_KEY));
@@ -196,7 +196,7 @@ function App() {
     await armWorkspaceConnection();
     openPanel(id);
   };
-  const NOTIF_READ_KEY = "winmux.notif.read";
+  const NOTIF_READ_KEY = "ymux.notif.read";
   const loadNotifRead = (): Set<number> => {
     try {
       return new Set(JSON.parse(localStorage.getItem(NOTIF_READ_KEY) ?? "[]") as number[]);
@@ -285,9 +285,9 @@ function App() {
     mismatchOld?: string;
   } | null>(null);
   const [paneStatus, setPaneStatus] = createSignal<Record<string, PaneStatus>>({});
-  // Live pane status text (e.g. "bootstrapping winmux…") set by backend events.
+  // Live pane status text (e.g. "bootstrapping ymux…") set by backend events.
   const [paneStatusText, setPaneStatusText] = createSignal<Record<string, string>>({});
-  // issue #4 (winmux-tools chrome Ticker): per-pane agent turn timing. The
+  // issue #4 (ymux-tools chrome Ticker): per-pane agent turn timing. The
   // backend emits pane:agent-run only on turn start/end; the label ticks
   // locally off `pulseTick` (see agentRunLabel). startedAt=null → no live turn.
   const [agentRuns, setAgentRuns] = createSignal<
@@ -483,7 +483,7 @@ function App() {
   // at a time; the user dismisses (skip-this-version persists), defers
   // (banner gone until next connect), or triggers an in-place update.
   const [hooksBanner, setHooksBanner] = createSignal<HooksOutdatedInfo | null>(null);
-  // The remote `winmux` CLI could not be converged onto the build this
+  // The remote `ymux` CLI could not be converged onto the build this
   // desktop embeds. Kept per workspace and shown as a banner rather than a
   // pane status line: the status line self-clears after five seconds, which
   // is precisely how a version-skewed CLI stayed invisible while it broke
@@ -639,12 +639,12 @@ function App() {
       // Pipe the setup-hooks command through the active SSH pane via
       // the existing tunnel by reusing the connect-with-cmd path. We
       // can't shell out from Rust without an SSH handle; the user's
-      // own pane runs the CLI under their PATH (which AddWinmuxToPath
+      // own pane runs the CLI under their PATH (which AddYmuxToPath
       // sets up). The command writes settings.json, then a fresh
       // restart of Claude picks up the new hooks.
       await invoke("ssh_exec_in_workspace", {
         workspaceId: b.workspace_id,
-        cmd: "winmux setup-hooks --agent claude --force --source github",
+        cmd: "ymux setup-hooks --agent claude --force --source github",
       }).catch(async () => {
         // Older builds without ssh_exec_in_workspace — fall back to a
         // pane.send: ask the user to run the command themselves.
@@ -786,20 +786,20 @@ function App() {
     const sid = paneToSession.get(paneId);
     const ti = terms.get(paneId);
     if (!sid || !ti) return;
-    const label = activeWs()?.name ?? "winmux";
+    const label = activeWs()?.name ?? "ymux";
     const dir = document.documentElement.dir === "rtl" ? "rtl" : "ltr";
     // Seed the popout's Ctrl+wheel zoom from the configured terminal size the
     // first time only — later wheel zooms own it (localStorage, shared origin).
-    if (localStorage.getItem("winmux.popout.font_size_pt") == null) {
+    if (localStorage.getItem("ymux.popout.font_size_pt") == null) {
       localStorage.setItem(
-        "winmux.popout.font_size_pt",
+        "ymux.popout.font_size_pt",
         String(settings()?.font.terminal_size_pt ?? 13),
       );
     }
     try {
       await invoke("popout_pane", {
         sessionId: sid,
-        title: `${label} — winmux`,
+        title: `${label} — ymux`,
         cols: ti.term.cols,
         rows: ti.term.rows,
         dir,
@@ -936,7 +936,7 @@ function App() {
       { id: "pane.maximize", label: t("cmd.pane.maximize"), enabled: () => hasPane, handler: () => toggleMaximize() },
       // Phase 55-B: distribute splits evenly (Ctrl+Alt+=).
       { id: "pane.distributeEvenly", label: t("cmd.pane.distributeEvenly"), enabled: () => hasPane, handler: () => void distributeEvenly() },
-      { id: "pane.rename", label: t("cmd.pane.rename"), enabled: () => hasPane, handler: () => { if (pid) window.dispatchEvent(new CustomEvent("winmux:pane-rename", { detail: pid })); } },
+      { id: "pane.rename", label: t("cmd.pane.rename"), enabled: () => hasPane, handler: () => { if (pid) window.dispatchEvent(new CustomEvent("ymux:pane-rename", { detail: pid })); } },
       { id: "ssh.connect", label: t("cmd.ssh.connect"), enabled: () => hasPane, handler: () => { if (pid) void connectPane(pid); } },
       { id: "ssh.disconnect", label: t("cmd.ssh.disconnect"), enabled: () => hasPane, handler: () => { if (pid) void disconnectPane(pid); } },
       { id: "pane.reset", label: t("cmd.reset_terminal"), enabled: () => hasPane, handler: () => { if (pid) terms.get(pid)?.resetTerminal(); } },
@@ -1051,8 +1051,8 @@ function App() {
   // workspace). With pane-level identity, Yossi can see in Alt+Tab
   // which client he's looking at even when multiple panes from
   // different clients share the same workspace. Format:
-  //   "🟣 ClientB ● — winmux"        (focused pane has title/identity)
-  //   "🟦 ClientA — winmux"          (no focused pane → workspace fallback)
+  //   "🟣 ClientB ● — ymux"        (focused pane has title/identity)
+  //   "🟦 ClientA — ymux"          (no focused pane → workspace fallback)
   // The ● appears when any pane in the active workspace is waiting
   // (cmux-style dirty indicator on the window itself).
   createEffect(() => {
@@ -1061,7 +1061,7 @@ function App() {
       // Phase 65 (bug CC): swallow rejection — needs the
       // core:window:allow-set-title capability; a missing/denied perm
       // shouldn't surface as an unhandled promise rejection.
-      void getCurrentWindow().setTitle("winmux").catch(() => {});
+      void getCurrentWindow().setTitle("ymux").catch(() => {});
       return;
     }
     const parts: string[] = [];
@@ -1074,7 +1074,7 @@ function App() {
       (focused?.connection ? describeConnection(focused.connection) : null);
     parts.push(focusedName ?? ws.name);
     if (waitingWorkspaceIds().has(ws.id)) parts.push("●");
-    const title = parts.join(" ") + " — winmux";
+    const title = parts.join(" ") + " — ymux";
     void getCurrentWindow().setTitle(title).catch(() => {});
   });
 
@@ -2347,7 +2347,7 @@ function App() {
     // Esc restores ONLY when something is maximized (otherwise we
     // step on terminal escape sequences). Hardcoded (not in the
     // shortcut table) — tmux uses Ctrl+b z for the same gesture, but
-    // raw Ctrl+Enter is a winmux-specific convenience.
+    // raw Ctrl+Enter is a ymux-specific convenience.
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === "Enter") {
       e.preventDefault();
       toggleMaximize();
@@ -3078,7 +3078,7 @@ function App() {
       const detail = (e as CustomEvent).detail as { paneId?: string };
       if (detail?.paneId) toggleMaximize(detail.paneId);
     };
-    window.addEventListener("winmux:pane-maximize", handlePaneMaximize);
+    window.addEventListener("ymux:pane-maximize", handlePaneMaximize);
 
     // Phase 62.B (item J): a terminal OSC 8 file:// link was clicked.
     // SFTP-download it to the user's Downloads folder, with toasts.
@@ -3104,7 +3104,7 @@ function App() {
           flashSummaryToast("err", t("osc.download.failed", { msg: String(err) })),
         );
     };
-    window.addEventListener("winmux:osc-file-link", handleOscFileLink);
+    window.addEventListener("ymux:osc-file-link", handleOscFileLink);
 
     // Phase 64 (J, Track B): a plain-text `[file]` link with a RELATIVE
     // path was clicked. We can't resolve it against the pane's remote cwd
@@ -3126,7 +3126,7 @@ function App() {
           ),
       );
     };
-    window.addEventListener("winmux:file-link-relative", handleFileLinkRelative);
+    window.addEventListener("ymux:file-link-relative", handleFileLinkRelative);
 
     // Session restore runs LAST in onMount: the `pty:data` listener above has
     // to be live before any pane attaches, or the first screenful tmux paints
@@ -3139,10 +3139,10 @@ function App() {
       window.removeEventListener("keydown", handleKey);
       window.removeEventListener("keydown", blockDevtoolsKeys, true);
       window.removeEventListener("keyup", handleKeyUp);
-      window.removeEventListener("winmux:pane-maximize", handlePaneMaximize);
-      window.removeEventListener("winmux:osc-file-link", handleOscFileLink);
+      window.removeEventListener("ymux:pane-maximize", handlePaneMaximize);
+      window.removeEventListener("ymux:osc-file-link", handleOscFileLink);
       window.removeEventListener(
-        "winmux:file-link-relative",
+        "ymux:file-link-relative",
         handleFileLinkRelative,
       );
       for (const [pid] of paneToSession) {
@@ -3684,10 +3684,10 @@ function App() {
         icon={<IconBell />}
         title={t("notif.title")}
         bodyClass="notif-body"
-        drawerStorageKey="winmux.drawer-width.notifications"
+        drawerStorageKey="ymux.drawer-width.notifications"
         drawerDefaultWidth={440}
         drawerMinWidth={320}
-        floatStorageKey="winmux.panel-notifications-geometry"
+        floatStorageKey="ymux.panel-notifications-geometry"
         floatDefault={{ x: 220, y: 90, w: 440, h: 640 } satisfies Geometry}
         floatMinW={320}
         floatMinH={360}
@@ -3731,11 +3731,11 @@ function App() {
         surface={surfaceOf("files")}
         icon={<IconFolder />}
         title={t("files.window.title", { workspace: activeWs()?.name ?? "" })}
-        drawerStorageKey="winmux.drawer-width.files"
+        drawerStorageKey="ymux.drawer-width.files"
         drawerDefaultWidth={900}
         drawerMinWidth={520}
         bodyClass="files-body"
-        floatStorageKey={`winmux.panel-files-geometry.${file().active_workspace_id ?? "none"}`}
+        floatStorageKey={`ymux.panel-files-geometry.${file().active_workspace_id ?? "none"}`}
         floatDefault={{ x: 160, y: 100, w: 1100, h: 700 } satisfies Geometry}
         floatMinW={600}
         floatMinH={380}
@@ -4027,7 +4027,7 @@ function App() {
       <Show when={updateBanner()}>
         <div class="update-banner" role="status">
           <div class="update-banner-body">
-            <strong>winmux {updateBanner()!.latest_version}</strong>{" "}
+            <strong>ymux {updateBanner()!.latest_version}</strong>{" "}
             is available — current {updateBanner()!.current_version}.
             {/* Phase 65 (U): when auto-install fails, tell the user they
                 can still get the update manually so they're never stuck. */}

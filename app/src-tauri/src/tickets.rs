@@ -9,7 +9,7 @@
 //! Tickets belong to a PROJECT, not just to a workspace — the whole
 //! point is to hand one to Claude Code inside the right repo. So when
 //! the workspace's project is reachable from this machine they are
-//! written to `<project>/.winmux-tickets/`; otherwise they fall back to
+//! written to `<project>/.ymux-tickets/`; otherwise they fall back to
 //! `<config_dir>/tickets/<workspace_id>/` and still record the project
 //! path as metadata, so nothing is ever orphaned.
 //!
@@ -49,7 +49,7 @@ const TICKETS_DIRNAME: &str = "tickets";
 /// Folder created inside a project to hold its tickets. Dot-prefixed so
 /// it sorts out of the way; committing it or gitignoring it is the
 /// user's call — we never touch their .gitignore.
-const PROJECT_DIRNAME: &str = ".winmux-tickets";
+const PROJECT_DIRNAME: &str = ".ymux-tickets";
 
 #[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
@@ -120,7 +120,7 @@ pub struct ProjectResolution {
     /// Which machine `tickets_dir` names: "local" | "wsl" | "ssh".
     pub transport: String,
     /// Host for ssh, distro for wsl, empty for local — so the UI can say
-    /// "srv-01:/home/y/proj/.winmux-tickets" rather than a bare path.
+    /// "srv-01:/home/y/proj/.ymux-tickets" rather than a bare path.
     pub host_label: String,
     /// True iff a write would succeed right now. When false the UI must
     /// not present Save as an ordinary action.
@@ -204,7 +204,7 @@ fn posix_join(dir: &str, name: &str) -> String {
     format!("{}/{}", dir.trim_end_matches('/'), name)
 }
 
-/// `<project>/.winmux-tickets` for an absolute POSIX project path.
+/// `<project>/.ymux-tickets` for an absolute POSIX project path.
 fn remote_project_dir(project: &str) -> Result<String, String> {
     let p = project.trim_end_matches('/');
     if !p.starts_with('/') {
@@ -217,7 +217,7 @@ fn remote_project_dir(project: &str) -> Result<String, String> {
 }
 
 fn q(s: &str) -> String {
-    winmux_core::shell_quote(s)
+    ymux_core::shell_quote(s)
 }
 
 /// `git -C <cwd> rev-parse --show-toplevel`. One round trip, and it
@@ -741,7 +741,7 @@ async fn resolve(
 
     match conn {
         // ── SSH: the project lives on the host, and so must the tickets.
-        Some(winmux_types::Connection::Ssh { ref host, .. }) => {
+        Some(ymux_types::Connection::Ssh { ref host, .. }) => {
             let handle = pick_ssh_handle_for_workspace(state, workspace_id);
             // An override for an SSH workspace has to be a remote POSIX
             // path. Saying so beats a baffling remote mkdir error.
@@ -885,7 +885,7 @@ async fn resolve(
         }
 
         // ── WSL: reachable from Windows through the UNC share.
-        Some(winmux_types::Connection::Wsl { ref distro }) => {
+        Some(ymux_types::Connection::Wsl { ref distro }) => {
             let label = distro.clone().unwrap_or_default();
             // Translate BEFORE walking. git_root_of runs on the Windows
             // side, and a Linux path never exists there — walking first
@@ -1139,7 +1139,7 @@ fn decode_data_url_png(data_url: &str) -> Result<Vec<u8>, String> {
 /// Accepts both the standard (`+/`) and URL-safe (`-_`) alphabets and
 /// tolerates missing padding, so the browser bridge can hand us
 /// base64url straight out of the page. Shared with
-/// `workspace_browser`'s `winmux-ticket:` navigation bridge.
+/// `workspace_browser`'s `ymux-ticket:` navigation bridge.
 pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     fn idx(b: u8) -> Result<u32, String> {
         match b {
@@ -1573,7 +1573,7 @@ mod tests {
     /// Everything after the first quote must live inside single quotes,
     /// with the only escape being the '"'"'\''"'"' idiom shell_quote emits.
     fn assert_neutralized(cmd: &str, raw: &str) {
-        let quoted = winmux_core::shell_quote(raw);
+        let quoted = ymux_core::shell_quote(raw);
         assert!(
             cmd.contains(&quoted),
             "path was not shell-quoted into the command.\n  cmd={cmd}\n  want={quoted}"
@@ -1608,26 +1608,26 @@ mod tests {
     fn cmd_rm_f_quotes_each_path_separately() {
         let cmd = cmd_rm_f(&["/a/x.json".to_string(), "/a/x; reboot.png".to_string()]);
         assert!(cmd.starts_with("rm -f "));
-        assert!(cmd.contains(&winmux_core::shell_quote("/a/x.json")));
-        assert!(cmd.contains(&winmux_core::shell_quote("/a/x; reboot.png")));
+        assert!(cmd.contains(&ymux_core::shell_quote("/a/x.json")));
+        assert!(cmd.contains(&ymux_core::shell_quote("/a/x; reboot.png")));
         assert!(!cmd.contains("; reboot.png'") || cmd.matches("'").count() >= 4);
     }
 
     #[test]
     fn cmd_tmux_pane_cwd_asks_for_the_pane_path() {
-        let cmd = cmd_tmux_pane_cwd("winmux-p_abc_1");
+        let cmd = cmd_tmux_pane_cwd("ymux-p_abc_1");
         // The tmux format literal must survive Rust's brace escaping.
         assert!(
             cmd.contains("'#{pane_current_path}'"),
             "tmux format was mangled: {cmd}"
         );
         assert!(cmd.contains("display-message -p -t"));
-        assert!(cmd.contains(&winmux_core::shell_quote("winmux-p_abc_1")));
+        assert!(cmd.contains(&ymux_core::shell_quote("ymux-p_abc_1")));
     }
 
     #[test]
     fn cmd_list_uses_portable_base64() {
-        let cmd = cmd_list_json_b64("/p/.winmux-tickets");
+        let cmd = cmd_list_json_b64("/p/.ymux-tickets");
         // -w0 is GNU-only; BSD/macOS remotes need the tr form.
         assert!(!cmd.contains("-w0"), "must not depend on GNU base64");
         assert!(cmd.contains("tr -d"));
@@ -1722,12 +1722,12 @@ mod tests {
     fn remote_project_dir_requires_an_absolute_posix_path() {
         assert_eq!(
             remote_project_dir("/home/u/proj").unwrap(),
-            "/home/u/proj/.winmux-tickets"
+            "/home/u/proj/.ymux-tickets"
         );
         // trailing slash must not double up
         assert_eq!(
             remote_project_dir("/home/u/proj/").unwrap(),
-            "/home/u/proj/.winmux-tickets"
+            "/home/u/proj/.ymux-tickets"
         );
         assert!(remote_project_dir("proj").is_err());
         // A Windows path on an SSH workspace is a user mistake worth naming.

@@ -46,7 +46,7 @@ The backend's "everything else" module. By far the largest. Sections (in order):
   file (with optional passphrase) → default `~/.ssh/id_*` keys → password.
 - **`spawn_ssh`** — connects, authenticates, runs bootstrap (best-effort), opens the
   reverse tunnel via `tcpip_forward(0)`, writes the env file via `tunnel`, opens the
-  shell channel with `set_env` for `WINMUX_*`, request_pty, request_shell, spawns the
+  shell channel with `set_env` for `YMUX_*`, request_pty, request_shell, spawns the
   channel-pump task.
 - **Tauri commands** — every `#[tauri::command]` lives here:
   `workspaces_load`, `workspace_create`, `workspace_rename`, `workspace_delete`,
@@ -72,11 +72,11 @@ catalog: `list-workspaces`, `select-workspace`, `new-workspace`, `delete-workspa
 
 ### `remote_bootstrap.rs` (~285 lines)
 
-Phase 6.2: ensures the remote has the right `winmux-linux-x64` binary at
-`~/.winmux/bin/`. Reads `resources/remote-manifest.json` (with BOM strip — defensive),
+Phase 6.2: ensures the remote has the right `ymux-linux-x64` binary at
+`~/.ymux/bin/`. Reads `resources/remote-manifest.json` (with BOM strip — defensive),
 detects the remote arch via `uname -s -m`, hashes any existing remote binary, and if
 mismatched/missing uploads via SFTP (russh-sftp), then chmod 0755 and refreshes the
-`~/.winmux/bin/winmux` symlink. Heavy `dlog()` instrumentation throughout — that
+`~/.ymux/bin/ymux` symlink. Heavy `dlog()` instrumentation throughout — that
 visibility is what unlocked the BOM diagnosis.
 
 ### `tunnel.rs` (~223 lines)
@@ -89,8 +89,8 @@ constant-time via `Hmac::verify_slice`). After OK, opens a fresh Named Pipe
 client and runs `tokio::io::copy_bidirectional` until either side closes.
 `generate_token` produces a 32-char alphanumeric token per SSH connection.
 `write_remote_env_file` is the SFTP-less fallback: heredoc-write
-`~/.winmux/run/last.env` via `cat > ... <<'__WINMUX_EOF__'` so the CLI on the
-remote can pick up `WINMUX_SOCKET_ADDR`/`WINMUX_TUNNEL_TOKEN`/`WINMUX_PANE_ID`
+`~/.ymux/run/last.env` via `cat > ... <<'__YMUX_EOF__'` so the CLI on the
+remote can pick up `YMUX_SOCKET_ADDR`/`YMUX_TUNNEL_TOKEN`/`YMUX_PANE_ID`
 even on sshd setups that strip per-channel env vars.
 
 ## Rust CLI (`app/src-tauri/cli/src/main.rs` — ~571 lines)
@@ -102,13 +102,13 @@ the same source compile cleanly for both Windows MSVC and Linux musl.
 
 - `Cli` / `Cmd` — clap derive types. Subcommands match the RPC method names
   (dash-cased): `list-workspaces`, `select-workspace`, etc.
-- `default_pipe_name()` (Windows-only) — `\\.\pipe\winmux-<USER>`.
-- `rpc_call` — picks transport: TCP if `WINMUX_SOCKET_ADDR` is set
+- `default_pipe_name()` (Windows-only) — `\\.\pipe\ymux-<USER>`.
+- `rpc_call` — picks transport: TCP if `YMUX_SOCKET_ADDR` is set
   (also runs `load_fallback_env_file` first), else named pipe on Windows.
 - `rpc_via` — generic over the stream. For TCP: runs the HMAC handshake first.
   Then writes a single newline-delimited JSON-RPC request, reads one response.
-- `perform_handshake` (client side) — reads `WINMUX-CHALLENGE <hex>`, computes
-  HMAC-SHA256, writes `WINMUX-RESPONSE <hex>`, expects `WINMUX-OK` or fails.
+- `perform_handshake` (client side) — reads `YMUX-CHALLENGE <hex>`, computes
+  HMAC-SHA256, writes `YMUX-RESPONSE <hex>`, expects `YMUX-OK` or fails.
 - `derive_hook_title` / `derive_hook_summary` — heuristic title/summary for
   the agent feed cards from the stdin JSON.
 - `Cmd::ClaudeHook` — the only complex command. Reads stdin, parses JSON,
@@ -211,7 +211,7 @@ Shared frontend types: `Connection`, `SplitDirection`, `LayoutNode`, `Workspace`
 ### `app/scripts/build-linux-cli.ps1`
 
 Cross-compiles the CLI for `x86_64-unknown-linux-musl` via `cargo build --release`,
-copies the binary to `src-tauri/resources/winmux-linux-x64`, computes its
+copies the binary to `src-tauri/resources/ymux-linux-x64`, computes its
 SHA-256, and writes `remote-manifest.json` using
 `[System.IO.File]::WriteAllText` with `UTF8Encoding(emit_bom: false)` —
 **not** `Set-Content -Encoding utf8`, which on Windows PowerShell 5.1 would add a
@@ -225,10 +225,10 @@ GNU linker for cross-compile from Windows.
 ### `app/src-tauri/Cargo.toml`
 
 Workspace root: members `.` (the Tauri lib + `app` bin) and `cli` (the standalone
-`winmux` bin). Phase 6 split the CLI out specifically because Tauri/webview2-com
+`ymux` bin). Phase 6 split the CLI out specifically because Tauri/webview2-com
 deps don't compile for Linux.
 
 ### `app/src-tauri/tauri.conf.json`
 
-`bundle.resources` lists `resources/winmux-linux-x64` and `resources/remote-manifest.json`
+`bundle.resources` lists `resources/ymux-linux-x64` and `resources/remote-manifest.json`
 so they ship next to `app.exe`. Window starts at 1100×700.

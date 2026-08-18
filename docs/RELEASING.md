@@ -1,7 +1,27 @@
-# Releasing winmux
+# Releasing ymux
 
 Cutting a new version is a six-step manual checklist for now. CI is on
 the roadmap; until then this is your runbook.
+
+## One-time: the 0.5.0 rename cut
+
+The winmux → YMUX rename (2026-08-18) changed the bundle identifier
+from `com.winmux.app` to `com.ymux.app`. That identifier IS the
+MSI/NSIS upgrade key, so Windows treats 0.5.0 as a **different
+product**: it installs alongside the old winmux instead of replacing
+it, and the 0.4.5 updater will not offer it as an in-place upgrade.
+Nothing can shim this — plan for it instead:
+
+- Cut the rename release as **0.5.0**, never 0.4.6. A patch-looking
+  version number on a side-by-side install is the confusing case.
+- The release notes must say, in this order: install YMUX, launch it
+  once and confirm your workspaces are there (the first launch renames
+  `%APPDATA%\winmux` → `%APPDATA%\ymux`), *then* uninstall the old
+  winmux from Programs and Features. Uninstalling first is harmless;
+  running both at once is not.
+- The step-5 `manifest.json` edit is what actually publishes the
+  update. Until it lands, users on 0.4.5 stay on 0.4.5 — which is the
+  safe default while the notes are being written.
 
 ## 1. Bump the version
 
@@ -27,8 +47,8 @@ panic-location strings don't carry the build machine's `$HOME`. The
 output is:
 
 - `app/src-tauri/target/release/app.exe`
-- `app/src-tauri/target/release/bundle/msi/winmux_X.Y.Z_x64_en-US.msi`
-- `app/src-tauri/target/release/bundle/nsis/winmux_X.Y.Z_x64-setup.exe`
+- `app/src-tauri/target/release/bundle/msi/ymux_X.Y.Z_x64_en-US.msi`
+- `app/src-tauri/target/release/bundle/nsis/ymux_X.Y.Z_x64-setup.exe`
 
 Verify the scrub:
 
@@ -40,7 +60,7 @@ grep -aoc $env:USERNAME app/src-tauri/target/release/app.exe
 ## 3. Tag
 
 ```pwsh
-git tag -a vX.Y.Z -m "winmux vX.Y.Z — <one-line summary>"
+git tag -a vX.Y.Z -m "ymux vX.Y.Z — <one-line summary>"
 git push origin vX.Y.Z
 ```
 
@@ -48,10 +68,10 @@ git push origin vX.Y.Z
 
 ```pwsh
 gh release create vX.Y.Z `
-  --title "winmux vX.Y.Z" `
+  --title "ymux vX.Y.Z" `
   --notes-file release_notes.md `
-  app/src-tauri/target/release/bundle/msi/winmux_X.Y.Z_x64_en-US.msi `
-  app/src-tauri/target/release/bundle/nsis/winmux_X.Y.Z_x64-setup.exe
+  app/src-tauri/target/release/bundle/msi/ymux_X.Y.Z_x64_en-US.msi `
+  app/src-tauri/target/release/bundle/nsis/ymux_X.Y.Z_x64-setup.exe
 ```
 
 ## 4½. Bump hook specs (only when hooks changed)
@@ -59,7 +79,7 @@ gh release create vX.Y.Z `
 If this release changes any of `hooks/*.json` (added a Claude Code
 event, switched a matcher, renamed a subcommand…):
 
-1. Bump `winmux_hooks_version` in the affected `hooks/<agent>.json`
+1. Bump `ymux_hooks_version` in the affected `hooks/<agent>.json`
    file (semver: bump major if events were removed/renamed, minor for
    additive changes, patch for matcher tweaks).
 2. Bump the matching `BUNDLED_CLAUDE_VERSION` constant in
@@ -70,7 +90,7 @@ event, switched a matcher, renamed a subcommand…):
    on the next SSH connect.
 
 The desktop's `check_remote_hooks` (in `updater.rs`) compares each
-remote's `~/.claude/settings.json::winmux_meta.hooks_version` against
+remote's `~/.claude/settings.json::ymux_meta.hooks_version` against
 manifest's `hooks.claude-code.version`. When a server is on an older
 version AND the user hasn't dismissed that version (Settings → Claude
 → Hook updates), a banner fires.
@@ -78,7 +98,7 @@ version AND the user hasn't dismissed that version (Settings → Claude
 ## 5. Update `manifest.json`
 
 The updater (`updater.rs`) polls
-`https://raw.githubusercontent.com/yyhezkel/winmux/main/manifest.json`
+`https://raw.githubusercontent.com/yyhezkel/ymux/main/manifest.json`
 on startup and surfaces a banner when a newer version is available.
 **This file must be updated for every release** — otherwise existing
 installs won't know there's an update.
@@ -99,11 +119,11 @@ Workflow:
    {
      "version": "X.Y.Z",
      "released_at": "<ISO8601 UTC timestamp>",
-     "notes_url": "https://github.com/yyhezkel/winmux/releases/tag/vX.Y.Z",
-     "msi_url": "https://github.com/yyhezkel/winmux/releases/download/vX.Y.Z/winmux_X.Y.Z_x64_en-US.msi",
+     "notes_url": "https://github.com/yyhezkel/ymux/releases/tag/vX.Y.Z",
+     "msi_url": "https://github.com/yyhezkel/ymux/releases/download/vX.Y.Z/ymux_X.Y.Z_x64_en-US.msi",
      "msi_sha256": "<from gh release view>",
      "msi_size": <bytes>,
-     "nsis_url": "https://github.com/yyhezkel/winmux/releases/download/vX.Y.Z/winmux_X.Y.Z_x64-setup.exe",
+     "nsis_url": "https://github.com/yyhezkel/ymux/releases/download/vX.Y.Z/ymux_X.Y.Z_x64-setup.exe",
      "nsis_sha256": "<from gh release view>",
      "nsis_size": <bytes>,
      "min_supported_version": "<oldest version that should be told to upgrade>"
@@ -119,7 +139,7 @@ On a previous-version install:
 
 1. Wait for the 3-second startup grace period; the updater task fires
    after that.
-2. Look for the floating banner at the bottom centre: `winmux X.Y.Z is
+2. Look for the floating banner at the bottom centre: `ymux X.Y.Z is
    available — current X.Y.(Z-1)`. "Release notes" link should open
    the new tag's page.
 3. Alternatively: Settings → Updates → "Check now" force-runs the
@@ -127,9 +147,9 @@ On a previous-version install:
 
 If the banner doesn't appear:
 
-- `winmux dev check-updates --pretty` from a terminal shows the parsed
+- `ymux dev check-updates --pretty` from a terminal shows the parsed
   manifest + the version comparison result + the last-check ISO.
-- Check `%APPDATA%\winmux\debug.log` for any `updater: fetch … failed`
+- Check `%APPDATA%\ymux\debug.log` for any `updater: fetch … failed`
   lines — typically DNS, certificate, or proxy issues.
 
 ## Caveats

@@ -10,8 +10,8 @@ package hooks
 import (
 	"net"
 
-	"winmux-server/internal/core"
-	"winmux-server/internal/logging"
+	"ymux-server/internal/core"
+	"ymux-server/internal/logging"
 )
 
 // logger is the hook-RPC listener's component logger (Phase 79.D).

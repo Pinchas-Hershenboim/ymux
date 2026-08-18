@@ -15,7 +15,7 @@
 // either. The one channel that exists is navigation, so the injected
 // script hands its payload over as a URL:
 //
-//     location.href = "winmux-ticket:<base64url of JSON>"
+//     location.href = "ymux-ticket:<base64url of JSON>"
 //
 // `workspace_browser.rs::handle_ticket_navigation` decodes it, emits
 // `browser:ticket-captured`, and cancels the navigation. Any other URL
@@ -34,7 +34,7 @@ const log = createLogger("TICKETS");
  *  geometry / port / path / tabs — localStorage, not the Workspace
  *  schema, so enabling Dev Mode needs no workspaces.json migration. */
 const DEVMODE_KEY = (workspaceId: string) =>
-  `winmux.workspace-browser-devmode.${workspaceId}`;
+  `ymux.workspace-browser-devmode.${workspaceId}`;
 
 export function loadDevMode(workspaceId: string): boolean {
   try {
@@ -58,7 +58,7 @@ export function saveDevMode(workspaceId: string, on: boolean): void {
  *  workspaces.json migration for a per-machine preference. The backend
  *  still owns the resolution ladder; this is only the top rung. */
 const PROJECT_OVERRIDE_KEY = (workspaceId: string) =>
-  `winmux.tickets-project.${workspaceId}`;
+  `ymux.tickets-project.${workspaceId}`;
 
 export function loadProjectOverride(workspaceId: string): string | null {
   try {
@@ -181,7 +181,7 @@ export function captureToMarkdown(capture: ElementCapture, description: string):
  *  much page content can land in a ticket file. */
 const HTML_MAX = 4096;
 
-/** Snapshot limits. The PNG rides the same `winmux-ticket:` URL as the
+/** Snapshot limits. The PNG rides the same `ymux-ticket:` URL as the
  *  rest of the capture, so it has to stay sane: oversized elements are
  *  scaled down, and a data-url past the byte cap is dropped rather than
  *  risking the navigation. */
@@ -199,20 +199,20 @@ const SHOT_MAX_NODES = 400;
  *  Self-contained ES5 (the target page can be anything, including one
  *  with a strict parser or an old framework). Idempotent: re-running it
  *  tears down a previous instance first. Everything it adds is reachable
- *  from `window.__winmuxTicket.stop()`.
+ *  from `window.__ymuxTicket.stop()`.
  */
 export function inspectScript(): string {
   return `
 (function(){
-  if (window.__winmuxTicket) { try { window.__winmuxTicket.stop(); } catch(e){} }
+  if (window.__ymuxTicket) { try { window.__ymuxTicket.stop(); } catch(e){} }
   var HTML_MAX = ${HTML_MAX};
   var hi = document.createElement('div');
-  hi.setAttribute('data-winmux-ticket-ui','1');
+  hi.setAttribute('data-ymux-ticket-ui','1');
   hi.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;'
     + 'border:2px solid #e0567a;background:rgba(224,86,122,0.12);'
     + 'border-radius:2px;display:none;transition:none;';
   var tip = document.createElement('div');
-  tip.setAttribute('data-winmux-ticket-ui','1');
+  tip.setAttribute('data-ymux-ticket-ui','1');
   tip.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;'
     + 'background:#e0567a;color:#fff;font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;'
     + 'padding:1px 5px;border-radius:2px;display:none;max-width:60vw;'
@@ -359,7 +359,7 @@ export function inspectScript(): string {
 
   function targetFrom(e){
     var el = e.target;
-    if (!el || el.nodeType !== 1 || el.getAttribute('data-winmux-ticket-ui')) {
+    if (!el || el.nodeType !== 1 || el.getAttribute('data-ymux-ticket-ui')) {
       el = document.elementFromPoint(e.clientX, e.clientY);
     }
     return (el && el.nodeType === 1) ? el : null;
@@ -402,13 +402,13 @@ export function inspectScript(): string {
       shot: null
     };
     // Freeze the highlight while rasterizing so the click feels handled.
-    tip.textContent = 'winmux: capturing…';
+    tip.textContent = 'ymux: capturing…';
     // The snapshot is best-effort: it always calls back, and a null just
     // means this ticket has no image. It must never lose the capture.
     snapshot(el, function(shot){
       payload.shot = shot;
       try {
-        location.href = 'winmux-ticket:' + b64url(JSON.stringify(payload));
+        location.href = 'ymux-ticket:' + b64url(JSON.stringify(payload));
       } catch (err) { /* nothing we can surface from in here */ }
     });
   }
@@ -416,12 +416,12 @@ export function inspectScript(): string {
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('contextmenu', onCtx, true);
 
-  window.__winmuxTicket = { stop: function(){
+  window.__ymuxTicket = { stop: function(){
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('contextmenu', onCtx, true);
     if (hi.parentNode) hi.parentNode.removeChild(hi);
     if (tip.parentNode) tip.parentNode.removeChild(tip);
-    window.__winmuxTicket = null;
+    window.__ymuxTicket = null;
   }};
 })();
 `;
@@ -430,7 +430,7 @@ export function inspectScript(): string {
 /** Removes everything `inspectScript` added. Safe to run when nothing
  *  is installed. */
 export function teardownScript(): string {
-  return "if (window.__winmuxTicket) { try { window.__winmuxTicket.stop(); } catch(e){} }";
+  return "if (window.__ymuxTicket) { try { window.__ymuxTicket.stop(); } catch(e){} }";
 }
 
 /** Inject (or remove) the inspect script in a workspace's browser

@@ -20,7 +20,7 @@ import type { Geometry } from "./floatingWindow";
 import type { ClaudeUsage } from "./types";
 
 // Phase 68.D: Server Insights monitor. Pull-based — fetches the live
-// snapshot from the remote `winmux-insights` daemon (via the insights_fetch
+// snapshot from the remote `ymux-insights` daemon (via the insights_fetch
 // Tauri command, which curls 127.0.0.1:7879 over the workspace SSH session).
 // No mock data: if the daemon isn't installed/running the panel says so and
 // points at Settings → Add-ons.
@@ -556,11 +556,11 @@ export function InsightsWindow(p: Props) {
       surface={p.surface}
       icon={<IconActivity />}
       title={titleText()}
-      drawerStorageKey="winmux.drawer-width.monitor"
+      drawerStorageKey="ymux.drawer-width.monitor"
       drawerDefaultWidth={600}
       drawerMinWidth={420}
       bodyClass="insights-body"
-      floatStorageKey={`winmux.panel-monitor-geometry.${p.workspaceId ?? "none"}`}
+      floatStorageKey={`ymux.panel-monitor-geometry.${p.workspaceId ?? "none"}`}
       floatDefault={DEFAULT_GEOMETRY}
       floatMinW={MIN_W}
       floatMinH={MIN_H}

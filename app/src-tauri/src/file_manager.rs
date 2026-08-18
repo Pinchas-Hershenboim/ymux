@@ -798,7 +798,7 @@ pub(crate) async fn file_create_remote(
 // bridge and the transfer streams with progress.
 
 /// Phase 49-A: drag-drop into a Terminal pane. For SSH workspaces the
-/// dropped file is uploaded via SFTP to `~/winmux-drops/<file_name>`
+/// dropped file is uploaded via SFTP to `~/ymux-drops/<file_name>`
 /// (created on demand) and the remote path is returned. The frontend
 /// then types that path into the pane (single-quoted) so the user can
 /// reference the just-uploaded file from their shell.
@@ -830,8 +830,8 @@ pub(crate) async fn pane_upload_dropped(
     let sftp = open_sftp(&handle).await?;
     // SFTP starts in the user's home dir; relative path puts us inside it.
     // create_dir errors if already present — ignore that case.
-    let _ = sftp.create_dir("winmux-drops").await;
-    let remote_path = format!("winmux-drops/{safe}");
+    let _ = sftp.create_dir("ymux-drops").await;
+    let remote_path = format!("ymux-drops/{safe}");
     // Streamed like every other transfer (was: slurp to Vec + one
     // write_all), so dropping a large file onto a terminal pane shows a
     // progress row and can be canceled.
@@ -1016,9 +1016,9 @@ fn remote_temp_path(workspace_id: &str, remote_path: &str) -> PathBuf {
     let basename = std::path::Path::new(remote_path)
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_else(|| "winmux-download".to_string());
+        .unwrap_or_else(|| "ymux-download".to_string());
     let mut p = std::env::temp_dir();
-    p.push("winmux");
+    p.push("ymux");
     p.push(workspace_id);
     p.push(basename);
     p
@@ -1421,7 +1421,7 @@ pub(crate) async fn file_manager_unzip_remote_check(
             "no active SSH session for this workspace — connect a terminal pane first"
                 .to_string()
         })?;
-    let cmd = format!("test -e {}", winmux_core::shell_quote(&dest));
+    let cmd = format!("test -e {}", ymux_core::shell_quote(&dest));
     let (_out, code) = remote_exec(&handle, &cmd).await?;
     Ok(code == 0)
 }
@@ -1538,7 +1538,7 @@ pub(crate) async fn remote_exec(
 /// Phase 57: zip on the remote side. Requires the standard `zip`
 /// binary on the remote (Debian/Ubuntu/Fedora all ship it). The
 /// remote command does `cd <cwd> && zip -r <out> <items>...`. Every
-/// caller-supplied string is shell-quoted via winmux_core::shell_quote
+/// caller-supplied string is shell-quoted via ymux_core::shell_quote
 /// per Absolute Rule #3 — no string concatenation of user input.
 #[tauri::command]
 pub(crate) async fn file_manager_zip_remote(
@@ -1561,11 +1561,11 @@ pub(crate) async fn file_manager_zip_remote(
         })?;
     let mut parts: Vec<String> = Vec::with_capacity(paths.len() + 4);
     parts.push("cd".into());
-    parts.push(winmux_core::shell_quote(&cwd));
+    parts.push(ymux_core::shell_quote(&cwd));
     parts.push("&& zip -r".into());
-    parts.push(winmux_core::shell_quote(&output_name));
+    parts.push(ymux_core::shell_quote(&output_name));
     for p in &paths {
-        parts.push(winmux_core::shell_quote(p));
+        parts.push(ymux_core::shell_quote(p));
     }
     let cmd = parts.join(" ");
     let (out, code) = remote_exec(&handle, &cmd).await?;
@@ -1609,11 +1609,11 @@ pub(crate) async fn file_manager_targz_remote(
         })?;
     let mut parts: Vec<String> = Vec::with_capacity(paths.len() + 4);
     parts.push("cd".into());
-    parts.push(winmux_core::shell_quote(&cwd));
+    parts.push(ymux_core::shell_quote(&cwd));
     parts.push("&& tar -czf".into());
-    parts.push(winmux_core::shell_quote(&output_name));
+    parts.push(ymux_core::shell_quote(&output_name));
     for p in &paths {
-        parts.push(winmux_core::shell_quote(p));
+        parts.push(ymux_core::shell_quote(p));
     }
     let cmd = parts.join(" ");
     let (out, code) = remote_exec(&handle, &cmd).await?;
@@ -1658,8 +1658,8 @@ pub(crate) async fn file_manager_unzip_remote(
         })?;
     let cmd = format!(
         "mkdir -p {dest} && unzip -o {zip} -d {dest}",
-        dest = winmux_core::shell_quote(&dest),
-        zip = winmux_core::shell_quote(&zip_path),
+        dest = ymux_core::shell_quote(&dest),
+        zip = ymux_core::shell_quote(&zip_path),
     );
     let (out, code) = remote_exec(&handle, &cmd).await?;
     if code != 0 {

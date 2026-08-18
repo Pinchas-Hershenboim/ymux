@@ -1,12 +1,12 @@
-// winmux CLI client.
+// ymux CLI client.
 //
 // Transport selection:
-// - On Windows, by default the CLI talks to the running winmux app over a per-user
-//   named pipe at `\\.\pipe\winmux-<USER>`. Override with the `WINMUX_PIPE_PATH` env var.
+// - On Windows, by default the CLI talks to the running ymux app over a per-user
+//   named pipe at `\\.\pipe\ymux-<USER>`. Override with the `YMUX_PIPE_PATH` env var.
 // - On Linux/Unix (and as a Windows fallback when set), the CLI connects over TCP using
-//   the address in `WINMUX_SOCKET_ADDR` (e.g. `127.0.0.1:8765`). This is the path used
+//   the address in `YMUX_SOCKET_ADDR` (e.g. `127.0.0.1:8765`). This is the path used
 //   when the binary runs on a remote SSH server tunneled back to a local listener.
-// - If a Linux build can't find `WINMUX_SOCKET_ADDR`, it errors with exit code 2.
+// - If a Linux build can't find `YMUX_SOCKET_ADDR`, it errors with exit code 2.
 
 mod hooks;
 mod port_watch;
@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 /// Phase 18.1: append a single-line trace entry to
-/// `~/.winmux/hook-debug.log` (remote-side debug file). Used by the
+/// `~/.ymux/hook-debug.log` (remote-side debug file). Used by the
 /// claude-hook subcommand to record every invocation + branch
 /// decision so user-reported permission-mode / matcher issues can
 /// be diagnosed by looking at the log instead of reproducing live.
@@ -39,7 +39,7 @@ fn hook_dlog(msg: &str) {
     hook_log(HookLevel::Info, msg);
 }
 
-/// Severity for hook log lines. Mirrors `winmux_core::LogLevel` (the CLI
+/// Severity for hook log lines. Mirrors `ymux_core::LogLevel` (the CLI
 /// stays dependency-light, so it carries its own copy) and renders in the
 /// system-wide unified format: `[ts] [LEVEL] [HOOK] msg`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,8 +64,8 @@ impl HookLevel {
 
 /// Write threshold, resolved once per process (each hook is a fresh
 /// process, so "once" is effectively "per hook invocation"):
-/// `WINMUX_HOOK_VERBOSE` → Debug (back-compat), else the desktop-pushed
-/// `~/.winmux/log-level` file, else Info.
+/// `YMUX_HOOK_VERBOSE` → Debug (back-compat), else the desktop-pushed
+/// `~/.ymux/log-level` file, else Info.
 fn hook_level_threshold() -> HookLevel {
     static THRESHOLD: std::sync::OnceLock<HookLevel> = std::sync::OnceLock::new();
     *THRESHOLD.get_or_init(|| {
@@ -76,7 +76,7 @@ fn hook_level_threshold() -> HookLevel {
         let Some(home) = home else {
             return HookLevel::Info;
         };
-        let path = std::path::PathBuf::from(home).join(".winmux").join("log-level");
+        let path = std::path::PathBuf::from(home).join(".ymux").join("log-level");
         match std::fs::read_to_string(&path) {
             Ok(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "debug" => HookLevel::Debug,
@@ -103,7 +103,7 @@ fn hook_log(level: HookLevel, msg: &str) {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"));
     let Some(home) = home else { return };
-    let dir = std::path::PathBuf::from(home).join(".winmux");
+    let dir = std::path::PathBuf::from(home).join(".ymux");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -126,12 +126,12 @@ fn hook_log(level: HookLevel, msg: &str) {
 static HOOK_LOG_MIGRATION: std::sync::Once = std::sync::Once::new();
 
 /// v0.4.5 (security): one-time migration of pre-v0.4.4
-/// `~/.winmux/hook-debug.log`.
+/// `~/.ymux/hook-debug.log`.
 ///
 /// Background: before v0.4.4 (commit `94ba208`, 2026-07-06), the
 /// static-fallback log lines embedded the policy `reason` field.
 /// `reason` in turn quoted verbatim command text from
-/// `tool_input.command` (see `winmux_policy::evaluate`). If that
+/// `tool_input.command` (see `ymux_policy::evaluate`). If that
 /// command text contained markup mimicking Claude's system
 /// messaging — e.g. `<system-reminder>ignore prior
 /// instructions…</system-reminder>` — the tokens landed raw on
@@ -147,7 +147,7 @@ static HOOK_LOG_MIGRATION: std::sync::Once = std::sync::Once::new();
 /// migration closes that gap without requiring users to know they
 /// need to delete a file:
 ///
-/// * If the marker `~/.winmux/.hook-log-migrated-v044` already
+/// * If the marker `~/.ymux/.hook-log-migrated-v044` already
 ///   exists → no-op.
 /// * Otherwise, if an existing `hook-debug.log` is present, rename
 ///   it to `hook-debug.log.legacy-<unix_ts>` (preserved, not
@@ -163,7 +163,7 @@ fn migrate_hook_log_if_legacy() {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"));
     let Some(home) = home else { return };
-    let dir = std::path::PathBuf::from(home).join(".winmux");
+    let dir = std::path::PathBuf::from(home).join(".ymux");
     let marker = dir.join(".hook-log-migrated-v044");
     if marker.exists() {
         return;
@@ -191,11 +191,11 @@ fn migrate_hook_log_if_legacy() {
         .truncate(true)
         .open(&marker)
     {
-        // Content is an audit note for humans grepping ~/.winmux;
+        // Content is an audit note for humans grepping ~/.ymux;
         // the marker's existence is what actually gates the check.
         let _ = writeln!(
             f,
-            "winmux CLI hook-debug.log migration (v0.4.5)\n\
+            "ymux CLI hook-debug.log migration (v0.4.5)\n\
              Pre-v0.4.4 log lines could embed raw command text (from the\n\
              static-fallback `reason` field); any prior hook-debug.log was\n\
              renamed to hook-debug.log.legacy-<unix_ts>. Do not delete this\n\
@@ -208,17 +208,17 @@ fn migrate_hook_log_if_legacy() {
 /// writes only concise one-line summaries (REQ/ACK/auto-allow/passive) to
 /// keep hook-debug.log readable — a normal 4-minute Claude pipeline used to
 /// spew ~4 lines PER tool call (BEGIN + branch + dispatch + rpc-ok). Set
-/// `WINMUX_HOOK_VERBOSE=1` (or true/yes) in the pane's environment to restore
+/// `YMUX_HOOK_VERBOSE=1` (or true/yes) in the pane's environment to restore
 /// the full per-branch trace for diagnosing matcher / permission-mode issues.
 fn hook_verbose() -> bool {
     matches!(
-        std::env::var("WINMUX_HOOK_VERBOSE").ok().as_deref(),
+        std::env::var("YMUX_HOOK_VERBOSE").ok().as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }
 
 /// Debug-level trace line: lands only when the threshold is Debug (via
-/// `WINMUX_HOOK_VERBOSE` or a desktop-pushed `~/.winmux/log-level` of
+/// `YMUX_HOOK_VERBOSE` or a desktop-pushed `~/.ymux/log-level` of
 /// "debug"). Interesting/rare events (denials, timeouts, static fallbacks,
 /// RPC errors) use `hook_log(Warn/Error, ..)` so they always land.
 /// Like `hook_dlog`, callers pass metadata only — never PTY / prompt content.
@@ -244,17 +244,17 @@ fn static_fallback_decision(payload: &Value) -> (&'static str, String) {
         .get("tool_input")
         .and_then(|ti| ti.get("command"))
         .and_then(|c| c.as_str());
-    let verdict = winmux_policy::evaluate(tool_name, bash_cmd);
+    let verdict = ymux_policy::evaluate(tool_name, bash_cmd);
     match verdict.decision {
-        winmux_policy::Decision::Block => ("deny", verdict.reason),
-        winmux_policy::Decision::Gate => (
+        ymux_policy::Decision::Block => ("deny", verdict.reason),
+        ymux_policy::Decision::Gate => (
             "allow",
             format!(
                 "{} [static fallback: desktop unreachable, allowing]",
                 verdict.reason
             ),
         ),
-        winmux_policy::Decision::Auto => ("allow", verdict.reason),
+        ymux_policy::Decision::Auto => ("allow", verdict.reason),
     }
 }
 
@@ -326,11 +326,11 @@ async fn feed_push_with_retry(params: &Value, max_attempts: u32) -> Result<Value
     Err(last)
 }
 
-/// Read the local winmux-server API token (`~/.winmux/server/token`). Used to
+/// Read the local ymux-server API token (`~/.ymux/server/token`). Used to
 /// authenticate the B-path hook forward. Best-effort — None if absent.
 fn read_server_token() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".winmux/server/token");
+    let path = std::path::Path::new(&home).join(".ymux/server/token");
     std::fs::read_to_string(path)
         .ok()
         .map(|s| s.trim().to_string())
@@ -338,7 +338,7 @@ fn read_server_token() -> Option<String> {
 }
 
 /// B path (Phase 77 push): fire-and-forget POST of a desktop-origin hook to the
-/// LOCAL winmux-server (127.0.0.1:7879) so paired phones get a push. The desktop
+/// LOCAL ymux-server (127.0.0.1:7879) so paired phones get a push. The desktop
 /// stays the decision authority in this stage. Best-effort over a raw TCP HTTP
 /// request (no extra deps); ANY failure is swallowed so the desktop/A path is
 /// never affected. The token is never logged (Rule #8).
@@ -389,9 +389,9 @@ async fn forward_hook_to_server(
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "winmux",
+    name = "ymux",
     version,
-    about = "winmux CLI client (talks to a running winmux app via named pipe or TCP)"
+    about = "ymux CLI client (talks to a running ymux app via named pipe or TCP)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -607,7 +607,7 @@ enum Cmd {
         timeout_ms: u64,
     },
 
-    /// Phase 8.E: developer / introspection tools. See `winmux dev --help`.
+    /// Phase 8.E: developer / introspection tools. See `ymux dev --help`.
     Dev {
         #[command(subcommand)]
         op: DevOp,
@@ -739,14 +739,14 @@ enum Cmd {
         subcommand: String,
     },
 
-    /// Quick-capture notes (Phase 7.B). See `winmux note --help` for subcommands.
+    /// Quick-capture notes (Phase 7.B). See `ymux note --help` for subcommands.
     Note {
         #[command(subcommand)]
         op: NoteOp,
     },
 
     /// Register agent hooks (e.g. Claude Code's hooks.json) so AI agents pipe
-    /// permission requests + lifecycle events through winmux. Idempotent and additive.
+    /// permission requests + lifecycle events through ymux. Idempotent and additive.
     SetupHooks {
         /// Which agent's config to install. `claude` (default) or `all`.
         #[arg(long, default_value = "claude")]
@@ -754,32 +754,32 @@ enum Cmd {
         /// Print what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
-        /// Replace any existing winmux hook entries even if already registered.
+        /// Replace any existing ymux hook entries even if already registered.
         #[arg(long)]
         force: bool,
         /// Phase 18: where to load the hook spec from. `github` (default) pulls
-        /// from raw.githubusercontent.com/yyhezkel/winmux/main/hooks/<agent>.json
-        /// with a `~/.winmux/cache/hooks/<agent>.json` fallback; `bundled`
+        /// from raw.githubusercontent.com/yyhezkel/ymux/main/hooks/<agent>.json
+        /// with a `~/.ymux/cache/hooks/<agent>.json` fallback; `bundled`
         /// uses the hardcoded spec compiled into this CLI; `url=<custom>`
         /// fetches from an arbitrary HTTPS URL.
         #[arg(long, default_value = "github")]
         source: String,
         /// Optional version pin. Currently informational — emitted into
-        /// settings.json's `winmux_hooks_version` field so the desktop's
+        /// settings.json's `ymux_hooks_version` field so the desktop's
         /// outdated-check can compare to manifest.
         #[arg(long, default_value = "latest")]
         hooks_version: String,
         /// Phase 18.1: which PreToolUse matcher to install. `restrictive`
         /// (default) keeps whatever the loaded spec uses — currently
         /// `Bash|Write|Edit|MultiEdit|NotebookEdit|Task`; `all` overrides
-        /// it to `.*` so every tool routes through winmux's card;
+        /// it to `.*` so every tool routes through ymux's card;
         /// `custom` is a no-op — caller is hand-managing the matcher.
         #[arg(long, default_value = "restrictive")]
         matcher_mode: String,
     },
 
     /// Phase 9.A: read or modify persisted app settings.
-    /// See `winmux settings --help` for subcommands.
+    /// See `ymux settings --help` for subcommands.
     Settings {
         #[command(subcommand)]
         op: SettingsOp,
@@ -818,7 +818,7 @@ enum Cmd {
 
     /// Phase 36 (#2.2): long-running listening-port watcher. Scans
     /// /proc/net/tcp(6) every 500ms and reports new/closed LISTEN ports
-    /// to the winmux app, which opens/closes SSH local-forwards.
+    /// to the ymux app, which opens/closes SSH local-forwards.
     /// Launched automatically by the app on SSH connect — not meant to
     /// be run by hand. Runs until killed (the exec channel dies with
     /// the workspace's SSH session).
@@ -828,12 +828,12 @@ enum Cmd {
         workspace: String,
     },
     /// Phase 48-C: print a JSON diagnostic snapshot of the running
-    /// winmux app (version, workspaces, PTY count, RPC handlers served,
+    /// ymux app (version, workspaces, PTY count, RPC handlers served,
     /// bundled Linux CLI sha256, recent errors). Calls the `doctor`
     /// RPC method — requires the desktop app to be running.
     Doctor,
 
-    /// Multi-machine sync: read/update `~/.winmux/session-meta.json`,
+    /// Multi-machine sync: read/update `~/.ymux/session-meta.json`,
     /// the server-side tmux-session → Claude-session/label/origin map.
     /// Purely local file ops — no RPC, works without the desktop app.
     SessionMeta {
@@ -881,7 +881,7 @@ enum DevOp {
     /// Snapshot of app state: version, git hash, workspaces summary, active
     /// sessions, tunnel state, feed/notes counts, debug.log tail, console tail.
     GetState {
-        /// Pretty-print JSON (default for `winmux dev` is compact).
+        /// Pretty-print JSON (default for `ymux dev` is compact).
         #[arg(long)]
         pretty: bool,
         /// Human-readable summary instead of JSON.
@@ -893,13 +893,13 @@ enum DevOp {
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: usize,
     },
-    /// Last N lines of `<appdata>/winmux/debug.log`.
+    /// Last N lines of `<appdata>/ymux/debug.log`.
     DebugLogTail {
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: usize,
     },
     /// Capture a bug report (state snapshot + description) under
-    /// `<appdata>/winmux/bug-reports/bug-<unix>.json`. Reads description from
+    /// `<appdata>/ymux/bug-reports/bug-<unix>.json`. Reads description from
     /// stdin (terminate with empty line + Ctrl-Z+Enter on Windows / Ctrl-D on
     /// Unix) when --description is omitted.
     ReportBug {
@@ -959,7 +959,7 @@ enum NoteOp {
         /// Workspace id to associate with the note (auto-detected from --pane if not set).
         #[arg(long)]
         workspace: Option<String>,
-        /// Pane id to associate with the note (defaults to $WINMUX_PANE_ID env if set).
+        /// Pane id to associate with the note (defaults to $YMUX_PANE_ID env if set).
         #[arg(long)]
         pane: Option<String>,
     },
@@ -1005,14 +1005,25 @@ fn default_pipe_name() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| whoami::username());
+    format!(r"\\.\pipe\ymux-{}", user)
+}
+
+/// Pre-rename pipe name, tried only as a fallback — see the connect site
+/// in `rpc_call`. Drop once 0.5.0 is the floor.
+#[cfg(windows)]
+fn default_pipe_name_legacy() -> String {
+    let user = std::env::var("USERNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| whoami::username());
     format!(r"\\.\pipe\winmux-{}", user)
 }
 
-/// Load env vars from `$HOME/.winmux/run/last.env` if the relevant ones aren't already set.
+/// Load env vars from `$HOME/.ymux/run/last.env` if the relevant ones aren't already set.
 /// Phase 6.3: written by the Windows app for each SSH workspace as a fallback for
 /// sshd configurations that strip per-channel env vars.
 fn load_fallback_env_file() {
-    if std::env::var("WINMUX_SOCKET_ADDR").is_ok() {
+    if std::env::var("YMUX_SOCKET_ADDR").is_ok() {
         return;
     }
     // Phase 80: USERPROFILE fallback for native-Windows runs.
@@ -1020,7 +1031,7 @@ fn load_fallback_env_file() {
         Some(h) => h,
         None => return,
     };
-    let path = std::path::Path::new(&home).join(".winmux/run/last.env");
+    let path = std::path::Path::new(&home).join(".ymux/run/last.env");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return,
@@ -1074,12 +1085,12 @@ fn render_snapshot_text(node: &Value, depth: usize, out: &mut String) {
     }
 }
 
-// Phase 8.E: render `winmux dev get-state` as a short human summary instead
+// Phase 8.E: render `ymux dev get-state` as a short human summary instead
 // of dumping the full JSON. Used when --text is passed.
 fn render_dev_state_text(v: &Value) -> String {
     let mut out = String::new();
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("?").to_string();
-    out.push_str(&format!("winmux {} ({})\n", s("version"), s("git_hash")));
+    out.push_str(&format!("ymux {} ({})\n", s("version"), s("git_hash")));
     out.push_str(&format!("appdata: {}\n", s("appdata_dir")));
     if let Some(ws) = v.get("workspaces") {
         out.push_str(&format!(
@@ -1144,33 +1155,45 @@ fn render_dev_state_text(v: &Value) -> String {
 async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
     load_fallback_env_file();
 
-    // Prefer TCP if WINMUX_SOCKET_ADDR is set (works on any OS, including remote tunnels).
-    if let Ok(addr) = std::env::var("WINMUX_SOCKET_ADDR") {
+    // Prefer TCP if YMUX_SOCKET_ADDR is set (works on any OS, including remote tunnels).
+    if let Ok(addr) = std::env::var("YMUX_SOCKET_ADDR") {
         let stream = tokio::net::TcpStream::connect(&addr)
             .await
             .map_err(|e| format!("connect tcp {}: {}", addr, e))?;
-        let token = std::env::var("WINMUX_TUNNEL_TOKEN").ok();
+        let token = std::env::var("YMUX_TUNNEL_TOKEN").ok();
         return rpc_via(stream, method, params, token.as_deref()).await;
     }
 
     // Otherwise on Windows, use a named pipe.
     #[cfg(windows)]
     {
-        let name = std::env::var("WINMUX_PIPE_PATH").unwrap_or_else(|_| default_pipe_name());
-        let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(&name)
-            .map_err(|e| {
-                format!(
-                    "connect to {}: {} (is the winmux app running?)",
-                    name, e
-                )
-            })?;
+        let explicit = std::env::var("YMUX_PIPE_PATH").ok();
+        let name = explicit.clone().unwrap_or_else(default_pipe_name);
+        let open = |n: &str| tokio::net::windows::named_pipe::ClientOptions::new().open(n);
+        let pipe = match open(&name) {
+            Ok(p) => p,
+            // winmux → ymux rename: an app still running from before the
+            // rename only serves the old pipe name. Only worth trying when
+            // we picked the default — an explicit YMUX_PIPE_PATH is the
+            // caller telling us exactly where to go.
+            Err(e) if explicit.is_none() => {
+                let legacy = default_pipe_name_legacy();
+                open(&legacy).map_err(|_| {
+                    format!("connect to {name}: {e} (is the ymux app running?)")
+                })?
+            }
+            Err(e) => {
+                return Err(format!(
+                    "connect to {name}: {e} (is the ymux app running?)"
+                ))
+            }
+        };
         return rpc_via(pipe, method, params, None).await;
     }
 
     #[cfg(not(windows))]
     {
-        Err("no transport configured: set WINMUX_SOCKET_ADDR=host:port".into())
+        Err("no transport configured: set YMUX_SOCKET_ADDR=host:port".into())
     }
 }
 
@@ -1203,9 +1226,15 @@ where
         Err(_) => return Err("challenge read timed out".into()),
     }
     let trimmed = line.trim();
-    let nonce_hex = trimmed
-        .strip_prefix("WINMUX-CHALLENGE ")
-        .ok_or_else(|| format!("expected WINMUX-CHALLENGE, got {:?}", trimmed))?;
+    // winmux → ymux rename: read either dialect and mirror it for the rest
+    // of the exchange, so this binary works against both a pre-rename
+    // desktop (which only speaks WINMUX-*) and a post-flip one. See the
+    // wire-tag note in `ymux-tunnel`.
+    let (tag, nonce_hex) = trimmed
+        .strip_prefix("YMUX-CHALLENGE ")
+        .map(|x| ("YMUX", x))
+        .or_else(|| trimmed.strip_prefix("WINMUX-CHALLENGE ").map(|x| ("WINMUX", x)))
+        .ok_or_else(|| format!("expected YMUX-CHALLENGE, got {:?}", trimmed))?;
     let nonce = hex_decode(nonce_hex)?;
 
     // Compute HMAC and respond.
@@ -1213,7 +1242,7 @@ where
         .map_err(|e| format!("hmac key: {e}"))?;
     mac.update(&nonce);
     let response = mac.finalize().into_bytes();
-    let resp_line = format!("WINMUX-RESPONSE {}\n", hex_encode(&response));
+    let resp_line = format!("{tag}-RESPONSE {}\n", hex_encode(&response));
     writer
         .write_all(resp_line.as_bytes())
         .await
@@ -1234,9 +1263,15 @@ where
         Err(_) => return Err("verdict timed out".into()),
     }
     let verdict = ok.trim();
-    if verdict == "WINMUX-OK" {
+    // Accept the verdict in either dialect regardless of which one we sent:
+    // a mixed-version server may answer on the tag it prefers rather than
+    // the one it was addressed in.
+    if verdict == "YMUX-OK" || verdict == "WINMUX-OK" {
         Ok(())
-    } else if let Some(reason) = verdict.strip_prefix("WINMUX-DENIED") {
+    } else if let Some(reason) = verdict
+        .strip_prefix("YMUX-DENIED")
+        .or_else(|| verdict.strip_prefix("WINMUX-DENIED"))
+    {
         Err(format!("auth denied:{}", reason))
     } else {
         Err(format!("unexpected handshake verdict: {:?}", verdict))
@@ -1439,7 +1474,93 @@ fn build_connection(
 // with tokio's runtime + serde — overflows that 1 MB during arg parsing on
 // some invocations. Spawn the real work on a worker thread with an 8 MB
 // stack and join.
+/// winmux → ymux rename bridge. For every `WINMUX_*` variable in the
+/// environment, set the matching `YMUX_*` name when it isn't already
+/// set.
+///
+/// The desktop writes both spellings, but a pane can outlive the app
+/// that opened it: a long-lived tmux session carries whatever
+/// `set-environment -g` put there when it was first created, and a
+/// pre-rename desktop only ever set `WINMUX_*`. Promoting once here
+/// means every read site downstream (`YMUX_SOCKET_ADDR`,
+/// `YMUX_TUNNEL_TOKEN`, `YMUX_PANE_ID`, `YMUX_PIPE_PATH`,
+/// `YMUX_HOOK_VERBOSE`, `YMUX_PORTFORWARD_EXCLUDE`) works unchanged,
+/// instead of thirteen fallbacks that have to stay in sync.
+///
+/// Runs before any thread is spawned — `set_var` is only sound
+/// single-threaded. Drop this once every deployed desktop is ≥0.5.0.
+fn adopt_legacy_env() {
+    let legacy: Vec<(String, std::ffi::OsString)> = std::env::vars_os()
+        .filter_map(|(k, v)| {
+            let name = k.to_str()?;
+            let suffix = name.strip_prefix("WINMUX_")?;
+            Some((format!("YMUX_{suffix}"), v))
+        })
+        .collect();
+    for (new_name, value) in legacy {
+        if std::env::var_os(&new_name).is_none() {
+            std::env::set_var(&new_name, &value);
+        }
+    }
+}
+
+/// winmux → ymux rename: fold a pre-rename `~/.winmux` into `~/.ymux`.
+///
+/// Sibling of the desktop bootstrap's `migrate_legacy_remote_dir`, for
+/// the hosts the bootstrap never touches — WSL local setup, and remotes
+/// where the daemon spawns `claude` children directly. Whichever runs
+/// first wins; both leave the same marker so the other becomes a no-op.
+///
+/// Copy-then-mark rather than rename: both directories can already
+/// exist, and anything already written under the new name stays
+/// authoritative. Best-effort — this is a convenience, not a
+/// precondition, so every failure is swallowed rather than blocking a
+/// hook the user is waiting on.
+fn migrate_legacy_home_dir() {
+    let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(h) => std::path::PathBuf::from(h),
+        None => return,
+    };
+    let legacy = home.join(".winmux");
+    if !legacy.is_dir() || legacy.join(".migrated-to-ymux").exists() {
+        return;
+    }
+    let target = home.join(".ymux");
+    if std::fs::create_dir_all(&target).is_err() {
+        return;
+    }
+    copy_tree_no_clobber(&legacy, &target);
+    let _ = std::fs::write(legacy.join(".migrated-to-ymux"), b"");
+}
+
+/// Recursive copy that never overwrites an existing destination entry.
+fn copy_tree_no_clobber(from: &std::path::Path, to: &std::path::Path) {
+    let entries = match std::fs::read_dir(from) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => {
+                if std::fs::create_dir_all(&dst).is_ok() {
+                    copy_tree_no_clobber(&src, &dst);
+                }
+            }
+            Ok(_) => {
+                if !dst.exists() {
+                    let _ = std::fs::copy(&src, &dst);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    adopt_legacy_env();
+    migrate_legacy_home_dir();
     match std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(real_main)
@@ -1879,7 +2000,7 @@ async fn real_main() -> ExitCode {
             } => {
                 let pane_eff = pane
                     .clone()
-                    .or_else(|| std::env::var("WINMUX_PANE_ID").ok())
+                    .or_else(|| std::env::var("YMUX_PANE_ID").ok())
                     .filter(|s| !s.is_empty());
                 rpc_call(
                     "note-add",
@@ -2046,13 +2167,13 @@ async fn real_main() -> ExitCode {
         }
         Cmd::ClaudeHook { subcommand } => {
             // Phase 66 (wiring fix): load the fallback env file FIRST, before
-            // the env-gate / permission-mode checks read WINMUX_PANE_ID.
-            // sshd usually rejects `set_env` for WINMUX_* (AcceptEnv only
+            // the env-gate / permission-mode checks read YMUX_PANE_ID.
+            // sshd usually rejects `set_env` for YMUX_* (AcceptEnv only
             // lists LANG/LC_*), so on a plain (non-tmux) shell those vars
-            // never reach the process env — only `~/.winmux/run/last.env`
+            // never reach the process env — only `~/.ymux/run/last.env`
             // has them. Previously this file was loaded lazily inside
             // rpc_call (AFTER the env-gate), so the env-gate saw PANE_ID
-            // unset → it treated a real winmux session as "not winmux"
+            // unset → it treated a real ymux session as "not ymux"
             // (old CLI: ask/block; new CLI: allow-but-never-gate, no cards).
             // Loading it here makes the env-gate, permission-mode shortcut,
             // and the RPC dial all see the real pane id + socket + token.
@@ -2066,7 +2187,7 @@ async fn real_main() -> ExitCode {
             };
 
             // Phase 18.1: comprehensive diagnostic log of every hook
-            // invocation. The file lives at `~/.winmux/hook-debug.log`
+            // invocation. The file lives at `~/.ymux/hook-debug.log`
             // (server-side, where this CLI runs). Used to debug
             // permission_mode mismatches, matcher coverage gaps, and
             // post-action card surprises. Best-effort — silent on any
@@ -2080,7 +2201,7 @@ async fn real_main() -> ExitCode {
             //   Stop: { session_id, stop_hook_active, … }
             // We dump the keys + selected values rather than the whole
             // body so secrets / large prompts don't leak to disk.
-            let pane_id_log = std::env::var("WINMUX_PANE_ID")
+            let pane_id_log = std::env::var("YMUX_PANE_ID")
                 .unwrap_or_else(|_| "(unset)".into());
             let tool_name_log = payload
                 .get("tool_name")
@@ -2108,19 +2229,19 @@ async fn real_main() -> ExitCode {
             // Phase setup-hooks-fix v4: env-gate. The hooks are written to
             // ~/.claude/settings.json which is global — they fire for EVERY
             // Claude Code invocation on this machine, not just the ones
-            // launched inside a winmux pane. Unrelated terminals (plain
+            // launched inside a ymux pane. Unrelated terminals (plain
             // pwsh, VS Code's own terminal, an external WSL session) would
-            // otherwise dial winmux on every tool call. We tag winmux-spawned
-            // shells with WINMUX_PANE_ID — if it's missing, Claude Code is
-            // not running under us and winmux has no business in the loop.
+            // otherwise dial ymux on every tool call. We tag ymux-spawned
+            // shells with YMUX_PANE_ID — if it's missing, Claude Code is
+            // not running under us and ymux has no business in the loop.
             // Phase 66.D.x: ALLOW (not "ask"). Returning "ask" made Claude
             // Code pop its built-in "Do you want to proceed?" prompt on every
-            // tool call in non-winmux terminals — pure noise, and the original
-            // reason the hooks were hated. If winmux isn't involved there's no
+            // tool call in non-ymux terminals — pure noise, and the original
+            // reason the hooks were hated. If ymux isn't involved there's no
             // policy to apply, so get out of the way and let Claude run.
-            if std::env::var("WINMUX_PANE_ID").is_err() {
+            if std::env::var("YMUX_PANE_ID").is_err() {
                 hook_vlog(&format!(
-                    "claude-hook BRANCH=env-gate (WINMUX_PANE_ID unset) \
+                    "claude-hook BRANCH=env-gate (YMUX_PANE_ID unset) \
                      decision=allow-or-noop subcommand={subcommand}"
                 ));
                 match subcommand.as_str() {
@@ -2129,7 +2250,7 @@ async fn real_main() -> ExitCode {
                             "hookSpecificOutput": {
                                 "hookEventName": "PreToolUse",
                                 "permissionDecision": "allow",
-                                "permissionDecisionReason": "winmux not in this session — not gating"
+                                "permissionDecisionReason": "ymux not in this session — not gating"
                             }
                         });
                         println!("{}", serde_json::to_string(&out).unwrap_or_default());
@@ -2147,7 +2268,7 @@ async fn real_main() -> ExitCode {
             // (Shift+Tab in the agent, or starting `claude --dangerously-skip-permissions`),
             // Claude Code does not actually wait on our hook decision before
             // proceeding — but it still INVOKES us. If we then synchronously
-            // ring the user's winmux for a card they have to manually
+            // ring the user's ymux for a card they have to manually
             // dismiss, that's pure noise. Short-circuit with allow + reason
             // so the user sees nothing and Claude Code is happy.
             if subcommand == "pre-tool-use" {
@@ -2169,7 +2290,7 @@ async fn real_main() -> ExitCode {
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "allow",
                             "permissionDecisionReason": format!(
-                                "winmux: agent has permission_mode={permission_mode}, deferring to it"
+                                "ymux: agent has permission_mode={permission_mode}, deferring to it"
                             )
                         }
                     });
@@ -2179,7 +2300,7 @@ async fn real_main() -> ExitCode {
                     hook_vlog(&format!(
                         "claude-hook BRANCH=permission_mode-passthrough \
                          permission_mode={permission_mode} tool_name={tool_name_log} \
-                         (will dispatch to winmux card)"
+                         (will dispatch to ymux card)"
                     ));
                 }
             }
@@ -2198,9 +2319,9 @@ async fn real_main() -> ExitCode {
 
             // Multi-machine sync: on every `stop` (fires each turn) record
             // this pane's tmux-session → Claude-session mapping + title in
-            // the server-side `~/.winmux/session-meta.json`; `session-end`
+            // the server-side `~/.ymux/session-meta.json`; `session-end`
             // prunes dead sessions. Best-effort — a failure never blocks
-            // the hook. Runs only for winmux panes (env-gate above).
+            // the hook. Runs only for ymux panes (env-gate above).
             // Rule #1: log the error KIND only, never the title text.
             let (meta_claude_title, meta_tmux_session) =
                 if matches!(subcommand.as_str(), "stop" | "session-end") {
@@ -2228,7 +2349,7 @@ async fn real_main() -> ExitCode {
                     .map(|d| d.as_nanos())
                     .unwrap_or(0)
             );
-            let pane_id = std::env::var("WINMUX_PANE_ID").ok();
+            let pane_id = std::env::var("YMUX_PANE_ID").ok();
             let title = derive_hook_title(subcommand, &payload);
             let summary = derive_hook_summary(subcommand, &payload);
 
@@ -2242,7 +2363,7 @@ async fn real_main() -> ExitCode {
             // Phase setup-hooks-fix v2: keep stderr clean. Claude Code's UI
             // surfaces stderr and our diagnostic line was cluttering the chat.
             // The same data is already captured server-side via the feed.push
-            // RPC and shows up in `winmux dev debug-log-tail`.
+            // RPC and shows up in `ymux dev debug-log-tail`.
 
             // v0.4.4: concise always-on summary — one line per request.
             // Blocking permission requests get a REQ line (paired with the
@@ -2292,7 +2413,7 @@ async fn real_main() -> ExitCode {
             if subcommand == "pre-tool-use" && !tunnel_healthy().await {
                 let (decision, reason) = static_fallback_decision(&payload);
                 // Rule #1: `reason` can embed a truncated segment of the tool
-                // command (winmux_policy) — never write it to the log file.
+                // command (ymux_policy) — never write it to the log file.
                 // Metadata only. (It still goes to Claude via print below.)
                 hook_log(
                     HookLevel::Warn,
@@ -2306,7 +2427,7 @@ async fn real_main() -> ExitCode {
             }
 
             // B path (Phase 77 push): also forward a pre-tool-use hook to the
-            // LOCAL winmux-server so paired phones get a push. Fire-and-forget —
+            // LOCAL ymux-server so paired phones get a push. Fire-and-forget —
             // the desktop stays the decision authority; a failure never affects
             // the blocking desktop call below (A path untouched).
             if subcommand == "pre-tool-use" {
@@ -2361,17 +2482,17 @@ async fn real_main() -> ExitCode {
                         "pre-tool-use" => {
                             let (perm, reason) = match decision {
                                 "allow" | "passive" => ("allow", None),
-                                "deny" => ("deny", Some("User denied via winmux".to_string())),
+                                "deny" => ("deny", Some("User denied via ymux".to_string())),
                                 "timeout" => (
                                     "deny",
                                     Some(
-                                        "winmux permission request timed out — denying conservatively"
+                                        "ymux permission request timed out — denying conservatively"
                                             .to_string(),
                                     ),
                                 ),
                                 other => (
                                     "ask",
-                                    Some(format!("winmux returned unknown decision: {other}")),
+                                    Some(format!("ymux returned unknown decision: {other}")),
                                 ),
                             };
                             let mut hso = json!({
@@ -2417,7 +2538,7 @@ async fn real_main() -> ExitCode {
                 }
                 Err(e) => {
                     // Phase setup-hooks fix v3.5 — graceful pipe failure.
-                    // If we can't talk to winmux (pipe not running, EOF
+                    // If we can't talk to ymux (pipe not running, EOF
                     // mid-frame, timeout) we don't want to fail the entire
                     // hook. For pre-tool-use we emit `permissionDecision:
                     // "ask"` so Claude Code falls back to its built-in UI
@@ -2433,7 +2554,7 @@ async fn real_main() -> ExitCode {
                         ),
                     );
                     eprintln!(
-                        "winmux claude-hook: pipe error: {} (using static fallback policy)",
+                        "ymux claude-hook: pipe error: {} (using static fallback policy)",
                         e
                     );
                     match subcommand.as_str() {

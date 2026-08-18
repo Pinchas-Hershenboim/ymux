@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-  Put the machine back to "never ran winmux's local setup" so the Smart
+  Put the machine back to "never ran ymux's local setup" so the Smart
   Install wizard can be tested from a clean state.
 
 .DESCRIPTION
@@ -12,10 +12,10 @@
 
   Two levels:
 
-    Soft (default) - remove winmux's own artifacts only.
-      Windows : the winmux hooks block in ~/.claude/settings.json,
+    Soft (default) - remove ymux's own artifacts only.
+      Windows : the ymux hooks block in ~/.claude/settings.json,
                 ~/.claude/hooks.json
-      WSL     : ~/.winmux (bin, tmux.conf, run), and the winmux hooks
+      WSL     : ~/.ymux (bin, tmux.conf, run), and the ymux hooks
                 block in the distro's ~/.claude/settings.json
       Leaves the distro, the linux user, tmux and /etc/wsl.conf alone, so
       re-running the wizard exercises the deploy steps but not the
@@ -29,9 +29,9 @@
   Nothing runs without -Apply. Without it you get a dry run that prints
   exactly what would be touched.
 
-  NEVER touched: %APPDATA%\winmux\workspaces.json and settings.json -
+  NEVER touched: %APPDATA%\ymux\workspaces.json and settings.json -
   your workspaces, panes and preferences. This resets the setup wizard's
-  footprint, it does not wipe winmux.
+  footprint, it does not wipe ymux.
 
   ASCII only, deliberately: Windows PowerShell 5.1 reads a .ps1 as ANSI
   when the file has no BOM, so a stray em-dash breaks the parser.
@@ -60,7 +60,7 @@
 .NOTES
   The hooks in ~/.claude/settings.json belong to Claude Code sessions
   running ON THIS MACHINE. Sessions on a remote server are unaffected.
-  settings.json is backed up to settings.json.winmux-reset.<timestamp>
+  settings.json is backed up to settings.json.ymux-reset.<timestamp>
   before any edit.
 #>
 [CmdletBinding()]
@@ -106,7 +106,7 @@ function Test-WslUp {
 }
 
 Write-Host ""
-Write-Host "winmux local-setup reset - level: $Level" -ForegroundColor Cyan
+Write-Host "ymux local-setup reset - level: $Level" -ForegroundColor Cyan
 if (-not $Apply) {
     Write-Host "DRY RUN. Nothing will be changed. Add -Apply to make it real." -ForegroundColor Cyan
 }
@@ -120,22 +120,22 @@ $hooksPath = Join-Path $claudeDir "hooks.json"
 
 if (Test-Path $settingsPath) {
     $raw = Get-Content $settingsPath -Raw
-    if ($raw -match "winmux_hooks_version") {
-        Would "strip the winmux hooks block from $settingsPath"
+    if ($raw -match "ymux_hooks_version") {
+        Would "strip the ymux hooks block from $settingsPath"
         if ($Apply) {
             $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-            $bk = "$settingsPath.winmux-reset.$stamp"
+            $bk = "$settingsPath.ymux-reset.$stamp"
             Copy-Item $settingsPath $bk -Force
             Step "backup -> $bk"
             $j = $raw | ConvertFrom-Json
-            # Remove only what winmux added; the rest is the user's.
+            # Remove only what ymux added; the rest is the user's.
             $j.PSObject.Properties.Remove("hooks")
-            $j.PSObject.Properties.Remove("winmux_hooks_version")
+            $j.PSObject.Properties.Remove("ymux_hooks_version")
             ($j | ConvertTo-Json -Depth 40) | Set-Content $settingsPath -Encoding utf8
             Step "rewrote $settingsPath"
         }
     } else {
-        Step "no winmux hooks in $settingsPath - leaving it"
+        Step "no ymux hooks in $settingsPath - leaving it"
     }
 } else {
     Step "no $settingsPath"
@@ -150,7 +150,7 @@ if (Test-Path $hooksPath) {
 
 # --- 2. WSL-side artifacts -------------------------------------------
 Write-Host ""
-Write-Host "WSL - winmux artifacts" -ForegroundColor White
+Write-Host "WSL - ymux artifacts" -ForegroundColor White
 
 if (-not (Test-WslUp)) {
     Step "WSL is not available - skipping the linux side"
@@ -158,33 +158,33 @@ if (-not (Test-WslUp)) {
     $target = if ($Distro) { $Distro } else { "(default distro)" }
     Step "target: $target"
 
-    $probe = Invoke-Wsl -Script 'ls -d "$HOME"/.winmux >/dev/null 2>&1 && echo HAVE || echo NONE; echo "user=$(id -nu) home=$HOME"'
+    $probe = Invoke-Wsl -Script 'ls -d "$HOME"/.ymux >/dev/null 2>&1 && echo HAVE || echo NONE; echo "user=$(id -nu) home=$HOME"'
     Step "state: $($probe -replace "`n", ' | ')"
 
     if ($probe -match "NONE") {
-        Step "no ~/.winmux in the distro - nothing to remove"
+        Step "no ~/.ymux in the distro - nothing to remove"
     } else {
-        Would "remove ~/.winmux from the distro (bin, tmux.conf, run)"
+        Would "remove ~/.ymux from the distro (bin, tmux.conf, run)"
         if ($Apply) {
-            $r = Invoke-Wsl -Script 'rm -rf "$HOME"/.winmux && echo REMOVED'
+            $r = Invoke-Wsl -Script 'rm -rf "$HOME"/.ymux && echo REMOVED'
             Step "  -> $r"
         }
     }
 
-    $hookProbe = Invoke-Wsl -Script 'grep -q winmux_hooks_version "$HOME"/.claude/settings.json 2>/dev/null && echo HAVE || echo NONE'
+    $hookProbe = Invoke-Wsl -Script 'grep -q ymux_hooks_version "$HOME"/.claude/settings.json 2>/dev/null && echo HAVE || echo NONE'
     if ($hookProbe -match "NONE") {
-        Step "no winmux hooks in the distro's ~/.claude/settings.json"
+        Step "no ymux hooks in the distro's ~/.claude/settings.json"
     } else {
-        Would "strip the winmux hooks block inside the distro"
+        Would "strip the ymux hooks block inside the distro"
         if ($Apply) {
             # python3 ships with Ubuntu; jq does not. One-liner rather
             # than a heredoc - a heredoc nested in a PowerShell
             # here-string does not survive PowerShell's parser.
             $py = 'import json,sys;p=sys.argv[1];d=json.load(open(p));' +
-                  'd.pop("hooks",None);d.pop("winmux_hooks_version",None);' +
+                  'd.pop("hooks",None);d.pop("ymux_hooks_version",None);' +
                   'json.dump(d,open(p,"w"),indent=2);print("REWROTE")'
             $sh = 'f="$HOME/.claude/settings.json"; ' +
-                  'cp "$f" "$f.winmux-reset.$(date +%Y%m%d-%H%M%S)"; ' +
+                  'cp "$f" "$f.ymux-reset.$(date +%Y%m%d-%H%M%S)"; ' +
                   "python3 -c '$py' " + '"$f"'
             $r = Invoke-Wsl -Script $sh
             Step "  -> $r"

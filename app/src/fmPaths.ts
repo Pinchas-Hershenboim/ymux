@@ -12,7 +12,7 @@
 // hosts, and the local column usually tracks whatever project that workspace
 // is about.
 
-const KEY = "winmux.fm.paths.v1";
+const KEY = "ymux.fm.paths.v1";
 
 export type FmPaths = { local?: string; remote?: string };
 type Store = Record<string, FmPaths>;

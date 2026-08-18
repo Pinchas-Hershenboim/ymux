@@ -1,6 +1,6 @@
-# winmux Native Push Protocol (v1)
+# ymux Native Push Protocol (v1)
 
-Self-hosted push. **No Firebase / FCM / APNs.** The winmux server is the sole
+Self-hosted push. **No Firebase / FCM / APNs.** The ymux server is the sole
 source of truth; the mobile app receives real-time events over a long-lived
 WebSocket held open by an Android foreground service. Events that arrive while
 the device is offline are queued server-side and replayed on reconnect.
@@ -22,7 +22,7 @@ notification is mandatory on Android 8+). The socket survives Doze because
 foreground services + their network are exempted; on network loss the client
 reconnects with backoff and drains the offline queue.
 
-Trade-off accepted: one persistent "winmux is connected" notification + modest
+Trade-off accepted: one persistent "ymux is connected" notification + modest
 battery cost, in exchange for true real-time delivery with zero third-party
 push dependency.
 
@@ -201,7 +201,7 @@ Pre-upgrade auth failure is a plain **HTTP 401** (no WS, no close code).
 
 - Hold the WS inside a **foreground service** (`FOREGROUND_SERVICE` +
   `FOREGROUND_SERVICE_DATA_SYNC` on Android 14+) with a low-priority persistent
-  notification ("winmux connected").
+  notification ("ymux connected").
 - `POST_NOTIFICATIONS` runtime permission (Android 13+) for the hook alerts.
 - A **partial wake-lock** held only while processing an incoming event (release
   immediately after ack) — never a persistent wake-lock.

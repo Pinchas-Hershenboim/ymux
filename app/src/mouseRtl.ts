@@ -8,7 +8,7 @@
 // cellWidth)`, so a click at what the user SEES as cell 5 lands on cell
 // (cols - 5 - 1) in the buffer. The user's selection and click positioning
 // both look "mirrored to the wrong side" on Hebrew/Arabic lines. Same story
-// inside Claude's CLI running in winmux.
+// inside Claude's CLI running in ymux.
 //
 // Fix in beta.4: intercept mouse events on the terminal element in CAPTURE
 // phase (before xterm's own bubble-phase handlers run), and for events over

@@ -8,7 +8,7 @@ import type { AddonAction } from "./AddonAction";
  */
 export type AddonManifest = { 
 /**
- * Stable key: "winmux-cli" | "tmux-conf" | "hooks" | "insights".
+ * Stable key: "ymux-cli" | "tmux-conf" | "hooks" | "insights".
  */
 id: string, name: string, description: string, 
 /**

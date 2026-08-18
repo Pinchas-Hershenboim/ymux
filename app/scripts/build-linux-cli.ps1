@@ -1,9 +1,9 @@
 #!/usr/bin/env pwsh
 # Stages CLI binaries into src-tauri/resources/ for the Tauri bundler.
-#  - winmux-linux-x64 (cross-compiled, static-musl) — uploaded to remote SSH servers
+#  - ymux-linux-x64 (cross-compiled, static-musl) — uploaded to remote SSH servers
 #    by `remote_bootstrap`
-#  - winmux-cli.exe (Windows release build) — bundled in the MSI alongside the app
-#    so installing winmux gets you both the GUI and the CLI in one shot
+#  - ymux-cli.exe (Windows release build) — bundled in the MSI alongside the app
+#    so installing ymux gets you both the GUI and the CLI in one shot
 # Also (re)writes remote-manifest.json (UTF-8 without BOM).
 $ErrorActionPreference = "Stop"
 
@@ -37,14 +37,14 @@ if (-not ($targets -contains "x86_64-unknown-linux-musl")) {
 
 Push-Location $tauriDir
 try {
-    & cargo build --release --target x86_64-unknown-linux-musl -p winmux
+    & cargo build --release --target x86_64-unknown-linux-musl -p ymux
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location
 }
 
-$src = Join-Path $tauriDir "target\x86_64-unknown-linux-musl\release\winmux"
-$dst = Join-Path $resourcesDir "winmux-linux-x64"
+$src = Join-Path $tauriDir "target\x86_64-unknown-linux-musl\release\ymux"
+$dst = Join-Path $resourcesDir "ymux-linux-x64"
 New-Item -ItemType Directory -Path $resourcesDir -Force | Out-Null
 Copy-Item -Path $src -Destination $dst -Force
 
@@ -52,24 +52,24 @@ $hash = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
 $size = (Get-Item $dst).Length
 $iso = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-# winmux-tmux.conf — bundled scrollback-friendly tmux config. Read its
+# ymux-tmux.conf — bundled scrollback-friendly tmux config. Read its
 # bytes + SHA so the bootstrap can detect drift and refresh without
 # touching the binary. The file is hand-written (not built), so it
 # lives in resources/ directly and we just hash it.
-$tmuxConfPath = Join-Path $resourcesDir "winmux-tmux.conf"
+$tmuxConfPath = Join-Path $resourcesDir "ymux-tmux.conf"
 $tmuxConfHash = (Get-FileHash $tmuxConfPath -Algorithm SHA256).Hash.ToLower()
 $tmuxConfSize = (Get-Item $tmuxConfPath).Length
 
 $manifestPath = Join-Path $resourcesDir "remote-manifest.json"
 $manifest = @{
     "x86_64-linux" = @{
-        path     = "winmux-linux-x64"
+        path     = "ymux-linux-x64"
         sha256   = $hash
         size     = $size
         built_at = $iso
     }
     "tmux-conf" = @{
-        path     = "winmux-tmux.conf"
+        path     = "ymux-tmux.conf"
         sha256   = $tmuxConfHash
         size     = $tmuxConfSize
         built_at = $iso
@@ -79,22 +79,22 @@ $manifest = @{
 # which serde_json refuses with "expected value at line 1 column 1").
 [System.IO.File]::WriteAllText($manifestPath, $manifest, [System.Text.UTF8Encoding]::new($false))
 
-Write-Host "Built winmux-linux-x64: $size bytes, sha256=$hash"
-Write-Host "Staged winmux-tmux.conf: $tmuxConfSize bytes, sha256=$tmuxConfHash"
+Write-Host "Built ymux-linux-x64: $size bytes, sha256=$hash"
+Write-Host "Staged ymux-tmux.conf: $tmuxConfSize bytes, sha256=$tmuxConfHash"
 
 # Also build the Windows release of the CLI and stage it for the MSI bundler.
 Push-Location $tauriDir
 try {
-    & cargo build --release -p winmux
-    if ($LASTEXITCODE -ne 0) { throw "cargo build winmux (Windows release) failed (exit $LASTEXITCODE)" }
+    & cargo build --release -p ymux
+    if ($LASTEXITCODE -ne 0) { throw "cargo build ymux (Windows release) failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location
 }
-$srcWin = Join-Path $tauriDir "target\release\winmux.exe"
-$dstWin = Join-Path $resourcesDir "winmux-cli.exe"
+$srcWin = Join-Path $tauriDir "target\release\ymux.exe"
+$dstWin = Join-Path $resourcesDir "ymux-cli.exe"
 Copy-Item -Path $srcWin -Destination $dstWin -Force
 $winSize = (Get-Item $dstWin).Length
-Write-Host "Staged winmux-cli.exe: $winSize bytes"
+Write-Host "Staged ymux-cli.exe: $winSize bytes"
 
 # Stage the LICENSE next to src-tauri so Tauri's MSI bundler picks it up via the
 # relative `licenseFile` setting. We don't commit this copy — the repo's canonical

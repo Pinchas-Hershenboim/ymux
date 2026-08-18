@@ -1,13 +1,13 @@
-# `winmux` CLI
+# `ymux` CLI
 
-A small client that talks to the running winmux app over JSON-RPC. The same
+A small client that talks to the running ymux app over JSON-RPC. The same
 binary works on Windows (over a per-user named pipe) and on a remote Linux server
 (over a reverse SSH tunnel + HMAC handshake — see [PROTOCOLS.md](./PROTOCOLS.md)).
 
 ## Synopsis
 
 ```
-winmux [--raw] [--quiet] <command> [args...]
+ymux [--raw] [--quiet] <command> [args...]
 ```
 
 | Global flag | Default | Effect |
@@ -19,9 +19,9 @@ winmux [--raw] [--quiet] <command> [args...]
 
 | Where | Default transport | Override |
 |---|---|---|
-| Windows (no `WINMUX_SOCKET_ADDR`) | Named pipe `\\.\pipe\winmux-<USER>` | `WINMUX_PIPE_PATH` |
-| Anywhere with `WINMUX_SOCKET_ADDR` set | TCP to that address; HMAC handshake using `WINMUX_TUNNEL_TOKEN` | env vars only |
-| Linux (no `WINMUX_SOCKET_ADDR`) | the CLI tries to load `~/.winmux/run/last.env`; if it has the vars, TCP. Otherwise: error. | populate `last.env` (auto-done by SSH connect) or set the env vars manually |
+| Windows (no `YMUX_SOCKET_ADDR`) | Named pipe `\\.\pipe\ymux-<USER>` | `YMUX_PIPE_PATH` |
+| Anywhere with `YMUX_SOCKET_ADDR` set | TCP to that address; HMAC handshake using `YMUX_TUNNEL_TOKEN` | env vars only |
+| Linux (no `YMUX_SOCKET_ADDR`) | the CLI tries to load `~/.ymux/run/last.env`; if it has the vars, TCP. Otherwise: error. | populate `last.env` (auto-done by SSH connect) or set the env vars manually |
 
 ## Exit codes (general)
 
@@ -37,13 +37,13 @@ winmux [--raw] [--quiet] <command> [args...]
 ### `list-workspaces`
 
 ```
-winmux list-workspaces
+ymux list-workspaces
 ```
 
 Print the full `WorkspacesFile` (see [CONFIG.md](./CONFIG.md#workspacesjson)).
 
 ```
-$ winmux list-workspaces
+$ ymux list-workspaces
 {
   "version": 1,
   "active_workspace_id": "w_aaa",
@@ -54,20 +54,20 @@ $ winmux list-workspaces
 ### `select-workspace`
 
 ```
-winmux select-workspace --id <workspace_id>
+ymux select-workspace --id <workspace_id>
 ```
 
 Sets the active workspace. The app's sidebar and main view update live.
 
 ```
-$ winmux select-workspace --id w_18abc
+$ ymux select-workspace --id w_18abc
 { "ok": true, "active": "w_18abc" }
 ```
 
 ### `new-workspace`
 
 ```
-winmux new-workspace --name <name>
+ymux new-workspace --name <name>
                      [--type local|ssh] [--shell <path>]
                      [--host <host>] [--user <user>] [--port <port>]
                      [--key-path <path>]
@@ -82,14 +82,14 @@ For `--type ssh`: `--host` and `--user` are required. `--port` defaults to 22.
 / password).
 
 ```
-$ winmux new-workspace --name "Local CMD" --type local --shell cmd.exe --color "#5cd87f"
+$ ymux new-workspace --name "Local CMD" --type local --shell cmd.exe --color "#5cd87f"
 { "id": "w_18ac1...", "name": "Local CMD", … }
 ```
 
 ### `delete-workspace`
 
 ```
-winmux delete-workspace --id <workspace_id>
+ymux delete-workspace --id <workspace_id>
 ```
 
 Kills any running sessions in that workspace and removes it.
@@ -97,22 +97,22 @@ Kills any running sessions in that workspace and removes it.
 ### `send`
 
 ```
-winmux send --pane <pane_id> --data '<text>'
+ymux send --pane <pane_id> --data '<text>'
 ```
 
 Writes raw bytes to a connected pane. The pane must already be connected
 (via the GUI Connect button or by wiring up your own automation). Find pane IDs
-via `winmux tree` or `winmux list-workspaces`.
+via `ymux tree` or `ymux list-workspaces`.
 
 ```
-$ winmux send --pane p_18abc_0 --data 'echo hello'
-$ winmux send-key --pane p_18abc_0 --key enter
+$ ymux send --pane p_18abc_0 --data 'echo hello'
+$ ymux send-key --pane p_18abc_0 --key enter
 ```
 
 ### `send-key`
 
 ```
-winmux send-key --pane <pane_id> --key <name>
+ymux send-key --pane <pane_id> --key <name>
 ```
 
 Translates a named key to the right escape bytes and writes them. Recognized:
@@ -122,26 +122,26 @@ Translates a named key to the right escape bytes and writes them. Recognized:
 ### `notify`
 
 ```
-winmux notify --title <title> [--body <body>] [--workspace-id <id>]
+ymux notify --title <title> [--body <body>] [--workspace-id <id>]
 ```
 
 Show a Windows toast and add to the in-memory notifications list.
 
 ```
-$ winmux notify --title "build done" --body "all green"
+$ ymux notify --title "build done" --body "all green"
 { "ok": true, "id": 0 }
 ```
 
 ### `tree`
 
 ```
-winmux tree [--workspace-id <id>]
+ymux tree [--workspace-id <id>]
 ```
 
 Print the layout tree of one workspace (active by default).
 
 ```
-$ winmux tree
+$ ymux tree
 {
   "workspace_id": "w_aaa",
   "name": "runner1",
@@ -152,7 +152,7 @@ $ winmux tree
 ### `set-status`
 
 ```
-winmux set-status --pane <pane_id> --text <text>
+ymux set-status --pane <pane_id> --text <text>
 ```
 
 Set a transient status text on the pane's header in the UI.
@@ -160,7 +160,7 @@ Set a transient status text on the pane's header in the UI.
 ### `claude-hook`
 
 ```
-winmux claude-hook <subcommand> [< stdin-json]
+ymux claude-hook <subcommand> [< stdin-json]
 ```
 
 Designed for use as a hook command from an AI agent (Claude Code, etc).
@@ -195,7 +195,7 @@ the summary is the JSON-stringified payload truncated to ~280 chars.
 | `allow` / `passive` | 0 | proceed |
 | `deny` | 1 | abort |
 | `timeout` | 2 | timed out without decision |
-| anything else / wire error | 3 | look at stderr + `%APPDATA%\winmux\debug.log` |
+| anything else / wire error | 3 | look at stderr + `%APPDATA%\ymux\debug.log` |
 
 #### Examples
 
@@ -203,7 +203,7 @@ Block on tool permission with a 5 s timeout:
 
 ```bash
 echo '{"tool":"Bash","command":"rm -rf /tmp/test","wait_timeout_seconds":5}' \
-  | ~/.winmux/bin/winmux claude-hook tool-permission
+  | ~/.ymux/bin/ymux claude-hook tool-permission
 echo "exit=$?"
 ```
 
@@ -211,7 +211,7 @@ Passive notification:
 
 ```bash
 echo '{"summary":"Claude finished thinking"}' \
-  | ~/.winmux/bin/winmux claude-hook session-idle
+  | ~/.ymux/bin/ymux claude-hook session-idle
 ```
 
 ## Where each command works
@@ -222,13 +222,13 @@ echo '{"summary":"Claude finished thinking"}' \
 | `send`, `send-key` | yes | yes | **yes** — pane must be connected |
 | `claude-hook` | yes (will use the local pipe) | yes (the typical use) | no for passive; for blocking, the app must be running and the user must respond |
 
-## `winmux dev` — introspection (Phase 8.E)
+## `ymux dev` — introspection (Phase 8.E)
 
 A small developer-facing subcommand tree for inspecting the running app and
 producing bug reports. Useful for debugging your own setup and for handing
 support a complete state snapshot in one file.
 
-### `winmux dev get-state [--text]`
+### `ymux dev get-state [--text]`
 
 Snapshot of the app's current in-memory + on-disk state. JSON by default,
 suitable for piping to `jq`. Pass `--text` for a short human summary.
@@ -245,22 +245,22 @@ The JSON has these top-level fields:
   workspace_id, remote_port, local_port }`.
 - `feed` — `{ open, done, by_kind }`.
 - `notes` — `{ open, done, by_tag }`.
-- `log_tail` — last 50 lines of `<appdata>/winmux/debug.log`.
+- `log_tail` — last 50 lines of `<appdata>/ymux/debug.log`.
 - `console_tail` — last 50 captured frontend console events (errors + warns).
 
-### `winmux dev console-tail [-n N]`
+### `ymux dev console-tail [-n N]`
 
 Last N (default 50) frontend console events. Each entry is `{ level, message,
 ts }`. The frontend wraps `console.error` and `console.warn` to forward into
 this ring buffer (capped at 200) without breaking original console output.
 
-### `winmux dev debug-log-tail [-n N]`
+### `ymux dev debug-log-tail [-n N]`
 
-Last N (default 50) lines of `<appdata>/winmux/debug.log`. Same as
+Last N (default 50) lines of `<appdata>/ymux/debug.log`. Same as
 `Get-Content -Tail N` against the log, but works through the running app's
 RPC so you don't need to know the path.
 
-### `winmux dev check-updates [--pretty]`  *(Phase 9.B)*
+### `ymux dev check-updates [--pretty]`  *(Phase 9.B)*
 
 Polls the manifest URL configured in `settings.updates.manifest_url`,
 returns the parsed `UpdateInfo` with `current_version`, `latest_version`,
@@ -268,59 +268,66 @@ returns the parsed `UpdateInfo` with `current_version`, `latest_version`,
 Persists `last_check_iso` and `last_seen_version` into `settings.json`. If
 the manifest URL is unreachable, returns `error` rather than failing.
 
-### `winmux dev report-bug [--description "..."] [--repro-steps "..."]`
+### `ymux dev report-bug [--description "..."] [--repro-steps "..."]`
 
-Captures a bug report at `<appdata>/winmux/bug-reports/bug-<unix>.json`
+Captures a bug report at `<appdata>/ymux/bug-reports/bug-<unix>.json`
 containing `{ description, repro_steps, captured_at_unix, state }` where
 `state` is the full `dev get-state` output (with larger log + console tails).
 
 If `--description` is omitted, reads from stdin until EOF (Ctrl-Z + Enter on
 Windows, Ctrl-D on Unix). Prints the saved file path on success.
 
-## `winmux settings` — read/modify persisted settings  *(Phase 9.A)*
+## `ymux settings` — read/modify persisted settings  *(Phase 9.A)*
 
 Wrapper around the `settings.*` RPC methods. Useful for theming from a
 script or for CI snapshots of a known-good config.
 
 | Subcommand | What it does |
 |---|---|
-| `winmux settings show [--json]` | Print the full settings JSON (pretty by default). |
-| `winmux settings set --key <dotted.path> --value <v>` | Patch a single field, e.g. `--key theme.preset --value dracula` or `--key terminal.scrollback_lines --value 8000`. |
-| `winmux settings preset <name>` | Apply a built-in theme preset (`tokyo-night`, `dracula`, `solarized-dark`, `nord`, `solarized-light`). |
-| `winmux settings presets [--json]` | List available presets with their swatch colors. |
-| `winmux settings export --output <file>` | Write the current settings to a file. |
-| `winmux settings import --input <file>` | Replace settings with the file contents (full overwrite). |
+| `ymux settings show [--json]` | Print the full settings JSON (pretty by default). |
+| `ymux settings set --key <dotted.path> --value <v>` | Patch a single field, e.g. `--key theme.preset --value dracula` or `--key terminal.scrollback_lines --value 8000`. |
+| `ymux settings preset <name>` | Apply a built-in theme preset (`tokyo-night`, `dracula`, `solarized-dark`, `nord`, `solarized-light`). |
+| `ymux settings presets [--json]` | List available presets with their swatch colors. |
+| `ymux settings export --output <file>` | Write the current settings to a file. |
+| `ymux settings import --input <file>` | Replace settings with the file contents (full overwrite). |
 
 All mutations emit `settings:changed` so the running app re-applies the
 theme live.
 
-## `winmux-mcp` — MCP server for agents (Phase 8.F.4)
+## `ymux-mcp` — MCP server for agents (Phase 8.F.4)
 
 A standalone stdio MCP server that lets MCP-aware agents (Claude Code,
-Cursor, Cline, etc.) drive winmux's browser panes natively. Each tool call
+Cursor, Cline, etc.) drive ymux's browser panes natively. Each tool call
 becomes a JSON-RPC request through the local named pipe to the running
-winmux app.
+ymux app.
 
 ### Setup
 
-After building or installing winmux, register it with your agent. For
+After building or installing ymux, register it with your agent. For
 Claude Code, edit `~/.claude/mcp.json` (or the project-local equivalent):
 
 ```json
 {
   "mcpServers": {
-    "winmux": {
-      "command": "C:\Users\<user>\Documents\programing\winmux\app\src-tauri\target\release\winmux-mcp.exe"
+    "ymux": {
+      "command": "C:\Users\<user>\Documents\programing\ymux\app\src-tauri\target\release\ymux-mcp.exe"
     }
   }
 }
 ```
 
-If installed via the MSI: `C:\Program Files\winmux\winmux-mcp.exe`.
+If installed via the MSI: `C:\Program Files\ymux\ymux-mcp.exe`.
 
-The winmux desktop app must be running. Each tool call opens a fresh
-named-pipe connection to `\.\pipe\winmux-<USER>` and closes after the
-response. Set `WINMUX_PIPE_PATH` to override the pipe path.
+**Upgrading from winmux:** an existing `mcp.json` still names
+`winmux-mcp.exe` under `C:\Program Files\winmux\`. That keeps working
+without an edit — the old exe is still on disk (the rename installs
+side by side, see docs/RELEASING.md) and the app answers on the
+pre-rename pipe name too. Point it at `ymux-mcp.exe` when convenient;
+the compatibility listener goes away one release after 0.5.0.
+
+The ymux desktop app must be running. Each tool call opens a fresh
+named-pipe connection to `\.\pipe\ymux-<USER>` and closes after the
+response. Set `YMUX_PIPE_PATH` to override the pipe path.
 
 ### Tools exposed
 
@@ -336,7 +343,7 @@ Browser automation (via the postMessage iframe bridge): `browser_eval`,
 Agent affordances: `notify`, `note_add`.
 
 Each tool's `inputSchema` mirrors the matching CLI subcommand's flags. See
-`winmux dev` and the per-subcommand `--help` output for argument shapes.
+`ymux dev` and the per-subcommand `--help` output for argument shapes.
 
 ### Manual protocol probe
 
@@ -344,9 +351,9 @@ The server speaks newline-delimited JSON-RPC 2.0 over stdio. Test without
 an agent:
 
 ```pwsh
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | winmux-mcp.exe
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | winmux-mcp.exe
-echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_workspaces","arguments":{}}}' | winmux-mcp.exe
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ymux-mcp.exe
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ymux-mcp.exe
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_workspaces","arguments":{}}}' | ymux-mcp.exe
 ```
 
 The first response carries `serverInfo` + `capabilities.tools`. The

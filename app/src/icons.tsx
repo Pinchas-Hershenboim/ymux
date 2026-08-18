@@ -1,4 +1,4 @@
-// Shared icon layer — Lucide SVG icons with winmux defaults.
+// Shared icon layer — Lucide SVG icons with ymux defaults.
 //
 // One place maps the app's iconography to `lucide-solid` components so sizing
 // and stroke stay consistent and the `icon?:` panel-prop chain + dynamic
@@ -81,7 +81,7 @@ type LucideCmp = typeof Bell;
 export type IconProps = ComponentProps<LucideCmp>;
 export type IconComponent = (props: IconProps) => JSX.Element;
 
-// Wrap a Lucide icon with the winmux default (16px, decorative). Any prop the
+// Wrap a Lucide icon with the ymux default (16px, decorative). Any prop the
 // caller passes — size, class, aria-label, stroke-width — overrides the default.
 function mk(Cmp: LucideCmp): IconComponent {
   return (props: IconProps) => <Cmp aria-hidden={true} size={16} {...props} />;

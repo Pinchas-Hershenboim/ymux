@@ -1,6 +1,6 @@
 # RTL per-line direction — test matrix (v0.4.4, Approach C)
 
-winmux gives every **visible** terminal row an explicit `dir` computed from its
+ymux gives every **visible** terminal row an explicit `dir` computed from its
 text by `detectDirection()` (`app/src/textDirection.ts`), replacing xterm.js's
 `dir="auto"` ("first strong directional character wins"), which mis-rendered a
 mixed Hebrew+Latin line that happened to start with Latin.

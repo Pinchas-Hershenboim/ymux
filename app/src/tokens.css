@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────
-   winmux — design tokens (Design Pass 01, #2)  ·  --wmx-*
+   ymux — design tokens (Design Pass 01, #2)  ·  --wmx-*
    Imported AFTER App.css so the alias layer wins over App.css's literal
    :root defaults. Two things live here:
      1. NEW scales that App.css never had: spacing, elevation, motion,
@@ -10,7 +10,7 @@
         needs zero per-component CSS.
    Colour source of truth stays the preset engine (settings.ts applyTheme
    writes --w-* inline). Presets "float above" mode in dark; Light mode is
-   winmux's own daylight palette and overrides preset chrome (accents kept
+   ymux's own daylight palette and overrides preset chrome (accents kept
    readable on white). See docs/DESIGN-PASS-01.md §3.
    ───────────────────────────────────────────────────────────────────── */
 
@@ -64,7 +64,7 @@
   --wmx-info: var(--w-purple);
 }
 
-/* ── Light mode — winmux's daylight palette (cool, brand-consistent:
+/* ── Light mode — ymux's daylight palette (cool, brand-consistent:
    Tokyo Night in daytime, not cream/GitHub-light). `!important` so it
    overrides applyTheme's inline --w-* on <html>; the whole app reads
    these vars, so no per-component rules are needed. Terminal (xterm)

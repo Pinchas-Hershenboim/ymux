@@ -219,10 +219,10 @@ export function TicketsPanel(p: Props) {
           ? t("tickets.panel.titleWs", { ws: p.workspaceName })
           : t("tickets.panel.title")
       }
-      drawerStorageKey="winmux.tickets-drawer-width"
+      drawerStorageKey="ymux.tickets-drawer-width"
       drawerDefaultWidth={420}
       drawerMinWidth={320}
-      floatStorageKey={`winmux.tickets-float.${p.workspaceId ?? "none"}`}
+      floatStorageKey={`ymux.tickets-float.${p.workspaceId ?? "none"}`}
       floatDefault={{ x: 160, y: 100, w: 720, h: 560 }}
       floatMinW={420}
       floatMinH={320}

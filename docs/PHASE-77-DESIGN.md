@@ -1,4 +1,4 @@
-# Phase 77 — `winmux-server` as a First-Class Component
+# Phase 77 — `ymux-server` as a First-Class Component
 
 > **STATUS: APPROVED — in implementation (Sprint 1).** Yossi approved the design
 > and chose to enter S1 directly, updating this doc in-flight. Renamed from
@@ -6,7 +6,7 @@
 
 ## 0. Resolved decisions (Yossi's answers)
 - **Q0 — Number:** **Phase 77** (74 taken). ✓
-- **Q1 — Location:** inside the winmux repo at **`app/src-tauri/server/`**. ✓
+- **Q1 — Location:** inside the ymux repo at **`app/src-tauri/server/`**. ✓
 - **Q3 — Workspace shared state:** = **active sessions + subscribers-per-session
   + pending requests.** Two use-cases: **8a Multi-client attach** (several
   clients on the *same* Claude session see the same chat / tool-use progression
@@ -32,7 +32,7 @@
 
 ## 1. Motivation
 
-The metrics daemon `winmux-insights` has quietly grown from a CPU/RAM sampler
+The metrics daemon `ymux-insights` has quietly grown from a CPU/RAM sampler
 (Phase 68) into a real multi-subsystem server: metrics, **Claude chat sessions**
 (Phase 69), **mobile pairing** (Phase 70/74-QR), a **hook policy bridge** (Phase
 66/69.C), and **process hygiene** (Phase 76). It is one flat `package main`
@@ -55,8 +55,8 @@ share one source of truth.
 - **Normalized, versioned API** (`/api/v2/...`) with request/response schemas.
 - **Auto-generated OpenAPI** → generated **Kotlin + TypeScript SDKs**, version-locked.
 - **Per-client auth scoping** (desktop vs. each paired mobile device).
-- **Zero-downtime migration** from `winmux-insights` 1.x with data preserved.
-- Monorepo — everything stays in the `winmux` repo.
+- **Zero-downtime migration** from `ymux-insights` 1.x with data preserved.
+- Monorepo — everything stays in the `ymux` repo.
 
 ### Non-goals (explicitly deferred)
 - **Splitting into separate repos.** Only if/when iOS lands or the overhead
@@ -72,7 +72,7 @@ share one source of truth.
 ## 2. Current state (what exists today, v1.2.7)
 
 ```
-app/src-tauri/insights/           module winmux-insights, package main (flat)
+app/src-tauri/insights/           module ymux-insights, package main (flat)
   main.go        boot, flags, log rotation (Phase 75.1), goroutine wiring
   api.go         http.ServeMux, auth(), metrics handlers
   sampler.go     gopsutil CPU/RAM/disk/net + /current cache (Phase 72.3)
@@ -110,8 +110,8 @@ moves. See §4.1.
 ### 3.1 Module layout (monorepo, under `app/src-tauri/server/`)
 
 ```
-app/src-tauri/server/                module winmux-server, v2.0.0
-  cmd/winmux-server/main.go          thin: parse flags, build deps, run api.Server
+app/src-tauri/server/                module ymux-server, v2.0.0
+  cmd/ymux-server/main.go          thin: parse flags, build deps, run api.Server
   internal/
     core/          # LEAF package: shared types + interfaces ONLY (no logic,
                    # no imports of siblings) — breaks the cycle. e.g.
@@ -140,7 +140,7 @@ app/src-tauri/server/                module winmux-server, v2.0.0
 ### 3.2 Dependency direction (ASCII)
 
 ```
-                         cmd/winmux-server
+                         cmd/ymux-server
                                 │  builds concrete impls, injects into api
                                 ▼
         ┌──────────────────── api ─────────────────────┐
@@ -217,7 +217,7 @@ log bucket so support can see one client's activity.
 GET /api/v2/logs/list                → { clients:[{client_id, size, updated}] }
 GET /api/v2/logs/read?client_id=X&tail=N → { client_id, lines:[...] }
 ```
-- Backed by `internal/logs` under `~/.winmux/server/logs/<client_id>.log`,
+- Backed by `internal/logs` under `~/.ymux/server/logs/<client_id>.log`,
   size-capped + age-pruned (reuse Phase 75/75.1 janitor logic).
 
 **Workspace** (cross-client shared state + events). The least-defined piece —
@@ -233,7 +233,7 @@ WS   /api/v2/workspace/events            → stream {type, payload, client_id, t
 **Meta**
 ```
 GET /healthz                 (unauthed) → { ok, version }
-GET /api/version             → { name:"winmux-server", version, api_versions, min_client }
+GET /api/version             → { name:"ymux-server", version, api_versions, min_client }
 GET /api/openapi.json        → generated OpenAPI 3.1 spec
 ```
 
@@ -331,7 +331,7 @@ their shapes as the v2 contract:
 
 ## 5. Data & config (`internal/config`)
 - Consolidate the currently-separate SQLite files (`metrics.db`, `chat.db`)
-  under `~/.winmux/server/` with one opener + a migration runner. Keep them as
+  under `~/.ymux/server/` with one opener + a migration runner. Keep them as
   separate DBs (different lifecycles/retention) but behind one config package.
 - Device tokens, workspace state, per-client log index live here too.
 - Startup runs forward-only migrations keyed by a `schema_version` table.
@@ -347,7 +347,7 @@ their shapes as the v2 contract:
 > **generated from the handlers** (huma reflection, OpenAPI 3.1) — the
 > hand-authored `openapi.json` is deleted. Contract preserved byte-for-byte
 > (same params/status/headers/JSON); every pre-existing test passes unchanged.
-> Emit the spec with `winmux-server openapi` (nil providers, no running server)
+> Emit the spec with `ymux-server openapi` (nil providers, no running server)
 > — the SDK pipeline + CI drift-guard consume that.
 >
 > **Scope decision:** **Insights stays on raw stdlib handlers and is excluded
@@ -356,7 +356,7 @@ their shapes as the v2 contract:
 > **Rust** client (`insights_fetch` over SSH), never by a generated Kotlin/TS
 > SDK. Freezing those loose maps into huma types would be churn with no SDK
 > consumer. The SDK spec therefore describes exactly the client contract; the
-> Insights API is documented separately (`docs/winmux-server/API.md`).
+> Insights API is documented separately (`docs/ymux-server/API.md`).
 >
 > **Binary/streaming/multipart** kept identical via huma's native mechanisms:
 > Files read/download → `huma.StreamResponse` (raw octet-stream + custom
@@ -395,17 +395,17 @@ their shapes as the v2 contract:
 
 ## 7. Migration path & backward compatibility (74.D)
 
-**Binary rename with alias.** Installer lays down `winmux-server`; keeps a
-`winmux-insights` **symlink → winmux-server** so anything referencing the old
-name still resolves. `winmux-server --version` prints `2.x`; the old
-`winmux-insights --version` path (symlink) prints the same.
+**Binary rename with alias.** Installer lays down `ymux-server`; keeps a
+`ymux-insights` **symlink → ymux-server** so anything referencing the old
+name still resolves. `ymux-server --version` prints `2.x`; the old
+`ymux-insights --version` path (symlink) prints the same.
 
-**Systemd unit.** New `winmux-server.service`; installer `disable --now` the old
-`winmux-insights.service`, removes its unit, installs + starts the new one
+**Systemd unit.** New `ymux-server.service`; installer `disable --now` the old
+`ymux-insights.service`, removes its unit, installs + starts the new one
 (reuse the Phase 72.1 `sg docker` launch logic).
 
-**Data preserved.** `~/.winmux/insights/` → migrated/renamed to
-`~/.winmux/server/` on first 2.x boot: move `metrics.db`, `chat.db`, `token`,
+**Data preserved.** `~/.ymux/insights/` → migrated/renamed to
+`~/.ymux/server/` on first 2.x boot: move `metrics.db`, `chat.db`, `token`,
 `paired_devices`. Idempotent; keeps the same device tokens so **already-paired
 phones keep working**.
 
@@ -419,9 +419,9 @@ The desktop ships a tiny adapter that picks the path set by detected version.
 against a new server still works during rollout. Aliases are thin redirects to
 the v2 handlers, logged as deprecated.
 
-**Version lockstep.** `INSIGHTS_VERSION` (winmux-addons) becomes
+**Version lockstep.** `INSIGHTS_VERSION` (ymux-addons) becomes
 `SERVER_VERSION`, tracks the Go `Version` const (now `2.x`). The desktop's
-update-available check compares remote `winmux-server --version` to this.
+update-available check compares remote `ymux-server --version` to this.
 
 ---
 
@@ -441,7 +441,7 @@ update-available check compares remote `winmux-server --version` to this.
 ## 9. Testing strategy (74.F)
 - **Unit** per `internal/*` package (pure logic: markDuplicates-style, parsers,
   path-scoping, token scoping). Runs on the Windows dev box (CGO-free).
-- **Integration**: spawn `winmux-server` on a random port with a temp data dir,
+- **Integration**: spawn `ymux-server` on a random port with a temp data dir,
   hit real endpoints (auth, files traversal rejection, hygiene kill safety,
   chat happy-path with a fake `claude`).
 - **Contract**: generate SDKs, point them at the spawned server, assert the
@@ -454,7 +454,7 @@ update-available check compares remote `winmux-server --version` to this.
 ---
 
 ## 10. Version cadence
-- `winmux-server` **2.0.0** at the refactor cut; SemVer thereafter.
+- `ymux-server` **2.0.0** at the refactor cut; SemVer thereafter.
 - **PATCH** = server-internal fix, no API change (desktop needn't update).
 - **MINOR** = additive endpoints/fields; SDKs regenerate; clients optional-update.
 - **MAJOR** = breaking API ⇒ new `/api/vN` + compat window.
@@ -470,7 +470,7 @@ update-available check compares remote `winmux-server --version` to this.
 
 | Sprint | Scope | Deliverable | Est. |
 |---|---|---|---|
-| **S1** | Rename + module boundaries | `server/` monorepo dir, `core` interface layer breaking the WS↔session↔RPC cycle, all existing subsystems moved behind interfaces, **all current tests green**, binary+systemd rename with `winmux-insights` alias, legacy route aliases, version detection. No new features. | **3–4** |
+| **S1** | Rename + module boundaries | `server/` monorepo dir, `core` interface layer breaking the WS↔session↔RPC cycle, all existing subsystems moved behind interfaces, **all current tests green**, binary+systemd rename with `ymux-insights` alias, legacy route aliases, version detection. No new features. | **3–4** |
 | **S2** | Files API + Logs API | `/api/v2/files/*` (root-scoped, traversal-safe) + `/api/v2/logs/*` (per-client, janitor-bounded) + unit/integration tests. | **3** |
 | **S3** | Workspace API + shared state | `/api/v2/workspace/state` + WS event bus + versioned last-writer-wins; needs Q3 answered first. | **4–5** |
 | **S4** | SDK generation | huma/OpenAPI wiring, `openapi.json`, Kotlin + TS generators, build integration + CI drift guard, version-lock. | **3–4** |
@@ -507,7 +507,7 @@ UUID). **Still open** (non-blocking for S1):
 
 ## 13. Relationship to the parked work — RESOLVED
 The `72-docker-group` stack **shipped as v0.4.2** (merged to `main`, tagged,
-released, manifest updated). Phase 77 now proceeds on a **fresh `77-winmux-server`
+released, manifest updated). Phase 77 now proceeds on a **fresh `77-ymux-server`
 branch off the updated `main`**, exactly as recommended. No unmerged-stack
 merge risk.
 
@@ -534,21 +534,21 @@ to be the thing that doc pins against.
   `/api/v2/insights/*`, sharing one handler, for the compat window.
 
 ### 15.1 S1.d migration decisions (locked)
-- **Binary + symlink:** the installer uploads `winmux-server`, chmods it, and
-  symlinks `winmux-insights → winmux-server` so any old reference resolves.
-- **systemd:** installs `winmux-server.service`; disables + removes the old
-  `winmux-insights.service`.
-- **Data dir was `~/.winmux/insights` for S1** (the binary's default) so an
+- **Binary + symlink:** the installer uploads `ymux-server`, chmods it, and
+  symlinks `ymux-insights → ymux-server` so any old reference resolves.
+- **systemd:** installs `ymux-server.service`; disables + removes the old
+  `ymux-insights.service`.
+- **Data dir was `~/.ymux/insights` for S1** (the binary's default) so an
   in-place 1.x→2.x upgrade preserves the token + metrics.db + chat.db +
   paired_devices. `INSIGHTS_VERSION = "2.0.0"` (lockstep with `core.Version`).
-- **Detect** tries `winmux-server --version`, falling back to the
-  `winmux-insights` name (symlink / pre-2.x install) during the upgrade window.
+- **Detect** tries `ymux-server --version`, falling back to the
+  `ymux-insights` name (symlink / pre-2.x install) during the upgrade window.
   **Uninstall** tears down both names (unit, binary, symlink).
 
 ### 15.1a S5 data-dir rename — DONE (Yossi approved 2026-07-02)
-- **Data dir is now `~/.winmux/server`** (the 2.0 binary's default). On first
-  boot the daemon **migrates `~/.winmux/insights` → `~/.winmux/server`**
-  (`config.MigrateDataDir`, `cmd/winmux-server/main.go`): atomic whole-dir
+- **Data dir is now `~/.ymux/server`** (the 2.0 binary's default). On first
+  boot the daemon **migrates `~/.ymux/insights` → `~/.ymux/server`**
+  (`config.MigrateDataDir`, `cmd/ymux-server/main.go`): atomic whole-dir
   rename (same filesystem), with a per-entry move fallback for the case where
   the installer pre-created an empty `server/`. **Guarded + idempotent** — runs
   only when `insights/token` exists and `server/token` doesn't; an explicit
@@ -556,11 +556,11 @@ to be the thing that doc pins against.
   metrics.db + logs. Tested (`config/migrate_test.go`: whole-dir, pre-created
   empty, already-initialized skip, fresh-install no-op).
 - **Installer updated:** `addons.rs` mkdir + token-read + log-path now use
-  `~/.winmux/server`; systemd `ExecStart=winmux-server serve` (no `--dir`) picks
+  `~/.ymux/server`; systemd `ExecStart=ymux-server serve` (no `--dir`) picks
   up the new default; the daemon does the data move. **Rollback:** move
   `server/`→`insights/` before downgrading to 1.x (see `UPGRADE.md`).
 - **Superseded artifacts DELETED (S5):** the old `app/src-tauri/insights/` Go
-  module + `resources/winmux-insights-linux-*` binaries + their dead
+  module + `resources/ymux-insights-linux-*` binaries + their dead
   `tauri.conf.json` resource entries were removed once confirmed unreferenced.
 
 ## 16. S3 — Workspace shared state (implemented)
@@ -618,7 +618,7 @@ workspace substrate, closing the mobile loop (pair → session → **Claude answ
   run (a spawn failure surfaces as an `error` frame to the client).
 
 ## 17. S6 — SDK coverage of the mobile surface (implemented, 2026-07-02)
-The mobile session flagged an SDK gap: `WinmuxClient` covered only files/logs/
+The mobile session flagged an SDK gap: `YmuxClient` covered only files/logs/
 version, but a phone also needs to pair + drive workspace sessions. Those paths
 lived on **raw** handlers, so they were absent from the generated OpenAPI (hence
 the SDKs). S6 surfaces them as typed huma ops (composing chat + workspace),

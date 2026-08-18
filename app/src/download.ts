@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 // user saved to (or a caller-supplied dir), then SFTP-pulls the remote
 // file to the chosen path via the existing `file_download` command.
 
-const LAST_DIR_KEY = "winmux.last-download-dir";
+const LAST_DIR_KEY = "ymux.last-download-dir";
 
 function lastDir(): string | null {
   try {

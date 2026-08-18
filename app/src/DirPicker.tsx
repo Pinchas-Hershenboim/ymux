@@ -26,7 +26,7 @@ interface Props {
   onClose: () => void;
 }
 
-const recentsKey = (workspaceId: string) => `winmux.recent-dirs.${workspaceId}`;
+const recentsKey = (workspaceId: string) => `ymux.recent-dirs.${workspaceId}`;
 
 export function loadRecentDirs(workspaceId: string): string[] {
   try {

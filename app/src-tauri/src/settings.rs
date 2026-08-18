@@ -1,5 +1,5 @@
 //! Phase 9.A: app settings (theme + font + terminal + hooks + notifications +
-//! updates). Persisted in `%APPDATA%\winmux\settings.json` next to
+//! updates). Persisted in `%APPDATA%\ymux\settings.json` next to
 //! `workspaces.json` / `notes.json`. Same atomic-write + load-poison-gate
 //! pattern. Mutations emit `settings:changed` to the frontend so live theme
 //! updates from the CLI reflect into the UI without a reload.
@@ -385,14 +385,18 @@ pub(crate) struct TerminalSettings {
     #[serde(default = "default_rtl_mode")]
     pub rtl_mode: String,
     /// Phase tmux-conf: when true (default), tmux is launched with
-    /// `-f ~/.winmux/tmux.conf` so the bundled scrollback-friendly
+    /// `-f ~/.ymux/tmux.conf` so the bundled scrollback-friendly
     /// config applies (wheel scrolls the scrollback ring instead of
     /// shell history, 50k-line buffer, mouse on, sane truecolour).
     /// Set false to fall back to the user's own `~/.tmux.conf`. The
     /// conf file is uploaded by the bootstrap regardless, so the
     /// toggle takes effect on the NEXT pane connect.
-    #[serde(default = "default_true")]
-    pub use_winmux_tmux_config: bool,
+    /// `alias`: settings.json files written before the winmux → ymux
+    /// rename carry the old key. Without it a user who had explicitly
+    /// turned this OFF would silently get it back on after upgrading,
+    /// because the unknown key falls through to `default_true`.
+    #[serde(default = "default_true", alias = "use_winmux_tmux_config")]
+    pub use_ymux_tmux_config: bool,
     /// Phase HH: mirror the physical Left/Right arrow keys when the
     /// terminal line under the cursor is right-to-left (Hebrew/Arabic).
     /// In an RTL line the visual "right" is logical "left", so without
@@ -443,9 +447,9 @@ pub(crate) struct Hooks {
     /// Phase 18.1: which PreToolUse matcher to install in the agent's
     /// settings.json. `"restrictive"` (default) only matches risky tools
     /// (`Bash|Write|Edit|MultiEdit|NotebookEdit|Task`); `"all"` matches
-    /// every tool (`.*`) so EVERY action surfaces a winmux card; `"custom"`
+    /// every tool (`.*`) so EVERY action surfaces a ymux card; `"custom"`
     /// keeps whatever the user hand-edited locally and is never overwritten
-    /// by `winmux setup-hooks`. The setting is consumed by the desktop's
+    /// by `ymux setup-hooks`. The setting is consumed by the desktop's
     /// remote-side setup-hooks call (Phase 18 wraps `agent.setup_hooks`).
     #[serde(default = "default_matcher_mode")]
     pub matcher_mode: String,
@@ -457,7 +461,7 @@ pub(crate) struct Hooks {
     #[serde(default = "default_true")]
     pub policy_enabled: bool,
     /// Phase 66 (66.B): when true (default), the SSH bootstrap auto-runs
-    /// `winmux setup-hooks` on the remote after deploying the CLI, so a
+    /// `ymux setup-hooks` on the remote after deploying the CLI, so a
     /// fresh server starts surfacing permission cards without the user
     /// invoking setup-hooks by hand. No-op if Claude Code isn't installed
     /// remotely. Older settings.json loads with auto-install ON.
@@ -798,7 +802,7 @@ pub(crate) struct Settings {
     pub hook_notifications: HookSettings,
     /// Design Pass 01 (#2): dark/light appearance axis — "dark" | "light" |
     /// "system". Independent of the colour preset: dark reuses the preset
-    /// engine as-is, "light" applies winmux's daylight chrome palette,
+    /// engine as-is, "light" applies ymux's daylight chrome palette,
     /// "system" follows the OS (`prefers-color-scheme`). A String (not an
     /// enum) to match the sidebar_mode / rtl_mode pattern and keep the TS
     /// binding a plain union. `default = "system"` keeps older settings.json
@@ -836,7 +840,7 @@ fn default_theme_mode() -> String {
 }
 
 /// Current persisted log level ("debug"/"info"/…), for callers without
-/// AppState access (addon install paths pushing `~/.winmux/log-level`).
+/// AppState access (addon install paths pushing `~/.ymux/log-level`).
 pub(crate) fn log_level_setting() -> String {
     load_from_disk()
         .map(|s| s.logs.level)
@@ -852,8 +856,8 @@ pub(crate) struct LogsSettings {
     #[serde(default = "default_log_retention_days")]
     pub retention_days: u32,
     /// Unified-logger threshold: "debug" | "info" (internally warn/error
-    /// always pass). Applied via `winmux_core::set_log_level` on every load
-    /// and save, and pushed to connected remote hosts (`~/.winmux/log-level`).
+    /// always pass). Applied via `ymux_core::set_log_level` on every load
+    /// and save, and pushed to connected remote hosts (`~/.ymux/log-level`).
     #[serde(default = "default_log_level")]
     pub level: String,
     /// Pull the remote logs (server / hooks / install) into the local
@@ -1047,7 +1051,7 @@ impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
             rtl_mode: default_rtl_mode(),
-            use_winmux_tmux_config: true,
+            use_ymux_tmux_config: true,
             mirror_arrows_rtl: true,
             auto_direction: true,
             tui_owns_bidi: false,
@@ -1407,7 +1411,7 @@ fn save_to_disk(file: &Settings) -> Result<(), String> {
     // Every settings write funnels through here (mutate / RPC patch / reset),
     // so this is the one choke point where the logger threshold tracks the
     // persisted value.
-    winmux_core::set_log_level(winmux_core::LogLevel::from_str(&file.logs.level));
+    ymux_core::set_log_level(ymux_core::LogLevel::from_str(&file.logs.level));
     log_debug("SETTINGS", &format!("settings save: {} bytes -> {:?}", text.len(), path));
     Ok(())
 }
@@ -1421,11 +1425,11 @@ pub(crate) fn save_to_disk_pub(file: &Settings) -> Result<(), String> {
 
 /// The canonical update manifest (raw.githubusercontent — no API rate limit).
 const DEFAULT_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/yyhezkel/winmux/main/manifest.json";
+    "https://raw.githubusercontent.com/yyhezkel/ymux/main/manifest.json";
 
-/// One-shot fixups for an on-disk settings.json written by an older winmux.
+/// One-shot fixups for an on-disk settings.json written by an older ymux.
 /// Returns true if anything changed (so the caller re-persists). Phase 71:
-/// an early default shipped a placeholder `winmux.example.com` manifest URL
+/// an early default shipped a placeholder `ymux.example.com` manifest URL
 /// that can never resolve — it caused the recurring `hooks-check: fetch
 /// manifest failed` DNS spam. Replace any example/placeholder host with the
 /// real default so update checks (and the version banner) work.
@@ -2155,7 +2159,7 @@ mod tests {
     #[test]
     fn migrates_placeholder_manifest_url() {
         let mut s = Settings::default();
-        s.updates.manifest_url = Some("https://winmux.example.com/manifest.json".into());
+        s.updates.manifest_url = Some("https://ymux.example.com/manifest.json".into());
         assert!(migrate_settings(&mut s), "should report a change");
         assert_eq!(s.updates.manifest_url.as_deref(), Some(DEFAULT_MANIFEST_URL));
     }

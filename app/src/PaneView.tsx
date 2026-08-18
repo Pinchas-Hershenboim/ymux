@@ -374,7 +374,7 @@ export function PaneView(p: Props) {
     loading: boolean;
     error: string | null;
   } | null>(null);
-  const recentDirsKey = () => `winmux.recent-dirs.${p.workspaceId}`;
+  const recentDirsKey = () => `ymux.recent-dirs.${p.workspaceId}`;
   const loadRecentDirs = (): string[] => {
     try {
       const raw = localStorage.getItem(recentDirsKey());
@@ -700,7 +700,7 @@ export function PaneView(p: Props) {
   });
 
   onMount(() => {
-    window.addEventListener("winmux:pane-rename", onRenameRequest);
+    window.addEventListener("ymux:pane-rename", onRenameRequest);
 
     // Phase 49-A: subscribe to the window-wide drag-drop event. Each
     // PaneView registers its own listener and hit-tests against its own
@@ -755,7 +755,7 @@ export function PaneView(p: Props) {
   });
 
   onCleanup(() => {
-    window.removeEventListener("winmux:pane-rename", onRenameRequest);
+    window.removeEventListener("ymux:pane-rename", onRenameRequest);
     if (ti && ti.container.parentElement === slotRef) {
       ti.container.parentElement.removeChild(ti.container);
     }
@@ -918,7 +918,7 @@ export function PaneView(p: Props) {
       active: p.isMaximized,
       run: () => {
         window.dispatchEvent(
-          new CustomEvent("winmux:pane-maximize", {
+          new CustomEvent("ymux:pane-maximize", {
             detail: { paneId: p.pane.pane_id },
           }),
         );
@@ -1116,7 +1116,7 @@ export function PaneView(p: Props) {
         if (target.closest(".pane-header")) return;
         if (target.closest(".pane-drop-toast")) return;
         window.dispatchEvent(
-          new CustomEvent("winmux:pane-maximize", {
+          new CustomEvent("ymux:pane-maximize", {
             detail: { paneId: p.pane.pane_id },
           })
         );

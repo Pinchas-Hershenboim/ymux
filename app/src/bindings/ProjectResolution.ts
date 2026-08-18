@@ -34,7 +34,7 @@ fallback_reason: string,
 transport: string, 
 /**
  * Host for ssh, distro for wsl, empty for local — so the UI can say
- * "srv-01:/home/y/proj/.winmux-tickets" rather than a bare path.
+ * "srv-01:/home/y/proj/.ymux-tickets" rather than a bare path.
  */
 host_label: string, 
 /**

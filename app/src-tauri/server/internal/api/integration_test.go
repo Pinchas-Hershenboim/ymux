@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"winmux-server/internal/insights"
+	"ymux-server/internal/insights"
 )
 
 func realService(t *testing.T) *insights.Service {

@@ -13,7 +13,7 @@ platform_ready: boolean,
  */
 distro_present: boolean, 
 /**
- * This winmux process holds an elevated token.
+ * This ymux process holds an elevated token.
  */
 elevated: boolean, 
 /**

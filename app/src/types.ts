@@ -49,7 +49,7 @@ export interface CreateWorkspaceInput {
 // Phase 23.F: shape returned by pane_list_tmux_sessions. Used by
 // the Connect (tmux) picker.
 // Phase 81: optional fields joined from the server-side
-// ~/.winmux/session-meta.json (absent on old-CLI servers). Display
+// ~/.ymux/session-meta.json (absent on old-CLI servers). Display
 // precedence: label > claude_title > name.
 export interface TmuxSessionInfo {
   name: string;
@@ -63,7 +63,7 @@ export interface TmuxSessionInfo {
   claude_title?: string;
   /** Claude session UUID running inside this tmux session. */
   claude_session_id?: string;
-  /** machine-id of the winmux install that created the session. */
+  /** machine-id of the ymux install that created the session. */
   origin?: string;
 }
 
@@ -304,7 +304,7 @@ export function hasSftp(
 }
 
 // beta.3-lh-insights: native local Insights daemon shipped. Every workspace
-// now has a control-plane server — remote via SSH → `winmux-server`, local
+// now has a control-plane server — remote via SSH → `ymux-server`, local
 // via in-process sysinfo + bollard. So `hasServer` collapses to `true`, but
 // we keep the predicate (rather than deleting every call site) in case a
 // future workspace kind ("read-only", "sandbox") lands without a server.
@@ -340,7 +340,7 @@ export interface ConnCaps {
   fileTransfer: boolean;
   /** tmux sessions outlive the app, so panes can re-attach on boot. */
   tmuxPersistence: boolean;
-  /** A control-plane server (winmux-server / insights) can serve it. */
+  /** A control-plane server (ymux-server / insights) can serve it. */
   controlServer: boolean;
   portForward: PortForwardKind;
   /** Must a pane be connected before the capabilities are usable?

@@ -8,7 +8,7 @@ import { For } from "solid-js";
 //
 // Match heuristics (intentionally conservative — false negatives are
 // fine, false positives are visually noisy):
-//   • ALL_CAPS_IDENT  — DEV, MAIN, WINMUX_TUNNEL_TOKEN
+//   • ALL_CAPS_IDENT  — DEV, MAIN, YMUX_TUNNEL_TOKEN
 //   • path-ish        — contains `/` or `\`, OR ends with `.ext`
 //   • URLs            — http(s)://, ssh://, file://
 //   • short SHA / hex — 7–40 hex chars

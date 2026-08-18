@@ -12,7 +12,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"winmux-server/internal/core"
+	"ymux-server/internal/core"
 )
 
 // Service serves the Files API over a core.FilesProvider.
@@ -39,7 +39,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux, _ func(http.HandlerFunc) ht
 // endpoints and no $schema link transformer, so a locally-mounted API adds only
 // the operation routes and nothing else to the mux or the response bodies.
 func quietConfig() huma.Config {
-	c := huma.DefaultConfig("winmux-server files", core.Version)
+	c := huma.DefaultConfig("ymux-server files", core.Version)
 	c.CreateHooks = nil // drop the $schema/Link response transformer
 	c.OpenAPIPath = ""
 	c.DocsPath = ""

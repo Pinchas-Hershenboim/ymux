@@ -18,18 +18,18 @@ literal text in a bare SSH shell. These are **SGR 1006** mouse-report events
   when the *remote app* sends a DECSET (`\e[?1000h` / `\e[?1006h` …). Confirmed:
   a repo-wide grep for `1000h|1002h|1003h|1006h|1015h` across `app/src` (TS),
   `app/src-tauri/src` (Rust) and `app/src-tauri/server` (Go) finds **no**
-  mouse-*enable* sequence emitted by winmux.
+  mouse-*enable* sequence emitted by ymux.
 
-## Root cause — winmux turns tmux mouse ON
+## Root cause — ymux turns tmux mouse ON
 
 `app/src-tauri/src/lib.rs` (~line 2496), the tmux attach command chain:
 
 ```
-exec tmux -f $HOME/.winmux/tmux.conf new-session -A -s <name> \; set -g mouse on
+exec tmux -f $HOME/.ymux/tmux.conf new-session -A -s <name> \; set -g mouse on
 ```
 
-The bundled `winmux-tmux.conf` ships `mouse off` (Phase 65 bug EE — `mouse on`
-in the conf garbled Claude Code's live output), but winmux then **turns mouse
+The bundled `ymux-tmux.conf` ships `mouse off` (Phase 65 bug EE — `mouse on`
+in the conf garbled Claude Code's live output), but ymux then **turns mouse
 on at attach** via `\; set -g mouse on` — intentionally, so tmux-native **wheel
 scrollback** works (DECISIONS 2026-06-22, option **O-3**).
 
@@ -49,7 +49,7 @@ so it isn't ruled out. The fix below covers both sources.)
 ## The escape flow
 
 ```
-winmux connect ──► PTY ──► tmux new-session … \; set -g mouse on
+ymux connect ──► PTY ──► tmux new-session … \; set -g mouse on
                                      │
                                      ▼
                         tmux sends \e[?1000h \e[?1006h to xterm.js
@@ -66,7 +66,7 @@ winmux connect ──► PTY ──► tmux new-session … \; set -g mouse on
 ## Fix shipped (v0.4.4-beta.2)
 
 Client-side, in `terminalInstance.ts` — recovery that works regardless of the
-source (winmux/tmux OR a user app):
+source (ymux/tmux OR a user app):
 
 - **Reset on connect/attach:** `resetMouseModes()` writes
   `\e[?1000l\e[?1002l\e[?1003l\e[?1006l\e[?1015l\e[?9l` to xterm (the DISPLAY,
@@ -91,12 +91,12 @@ Rule #1: the disable string is a fixed control sequence — never PTY content.
 
 ## Open decision for Yossi
 
-The winmux-side source is the intentional `set -g mouse on` (wheel scrollback,
+The ymux-side source is the intentional `set -g mouse on` (wheel scrollback,
 O-3). Options:
 
 1. **Keep as-is + rely on the reset** (shipped) — wheel scrollback stays; the
    post-tmux-exit leak is cleared on next connect or via Ctrl+Alt+R.
-2. **Drop `set -g mouse on`** — no more winmux-side mouse enable, so the bare
+2. **Drop `set -g mouse on`** — no more ymux-side mouse enable, so the bare
    shell can't inherit it; **cost:** lose tmux-native wheel scrollback (reverts
    O-3; wheel would scroll xterm's own scrollback instead).
 3. **Belt-and-suspenders:** keep mouse on inside tmux, but append a mouse-off /

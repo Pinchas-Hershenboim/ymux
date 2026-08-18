@@ -51,10 +51,10 @@ export interface FontSettings {
 export interface TerminalSettings {
   /** Phase 15.A: how to render Hebrew / Arabic. */
   rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
-  /** Phase tmux-conf: when true (default), winmux launches tmux with
-   *  `-f ~/.winmux/tmux.conf` for sane scrollback / mouse behaviour.
+  /** Phase tmux-conf: when true (default), ymux launches tmux with
+   *  `-f ~/.ymux/tmux.conf` for sane scrollback / mouse behaviour.
    *  Set false to fall back to the user's own ~/.tmux.conf. */
-  use_winmux_tmux_config?: boolean;
+  use_ymux_tmux_config?: boolean;
   /** Phase HH: mirror Left/Right arrows on RTL (Hebrew/Arabic) lines.
    *  Only active when the cursor's line is RTL; default true. */
   mirror_arrows_rtl?: boolean;
@@ -73,13 +73,13 @@ export interface TerminalSettings {
 export interface HooksSettings {
   /** Phase 18.1: which PreToolUse matcher to install when setup-hooks
    *  runs. "restrictive" (default) only catches risky tools; "all"
-   *  matches `.*` (every tool surfaces a winmux card); "custom" leaves
+   *  matches `.*` (every tool surfaces a ymux card); "custom" leaves
    *  whatever the user hand-edited and never overwrites. */
   matcher_mode?: "restrictive" | "all" | "custom";
   /** Phase 66 (66.D): master switch for the 3-state policy engine
    *  (auto/gate/block) in the desktop feed.push handler. Default true. */
   policy_enabled?: boolean;
-  /** Phase 66 (66.B): auto-run `winmux setup-hooks` on the remote during
+  /** Phase 66 (66.B): auto-run `ymux setup-hooks` on the remote during
    *  bootstrap so a fresh server starts surfacing cards. Default true. */
   auto_install?: boolean;
   /** Phase 66.F: user-defined BLOCK patterns (one per entry), merged into
@@ -380,7 +380,7 @@ export interface FontFamilies {
   mono: FontEntry[];
 }
 
-/** A font winmux can download and install per-user (no admin needed). */
+/** A font ymux can download and install per-user (no admin needed). */
 export interface FontCatalogItem {
   id: string;
   /** CSS family name — matches the picker row this install would satisfy. */
@@ -554,7 +554,7 @@ export function watchSystemTheme(getSettings: () => Settings): void {
 }
 
 function applyWebFont(url: string): void {
-  const existing = document.getElementById("winmux-web-font") as
+  const existing = document.getElementById("ymux-web-font") as
     | HTMLLinkElement
     | null;
   const trimmed = (url || "").trim();
@@ -566,7 +566,7 @@ function applyWebFont(url: string): void {
   if (existing && existing.href === trimmed) return;
   if (existing) existing.remove();
   const link = document.createElement("link");
-  link.id = "winmux-web-font";
+  link.id = "ymux-web-font";
   link.rel = "stylesheet";
   link.href = trimmed;
   link.crossOrigin = "anonymous";

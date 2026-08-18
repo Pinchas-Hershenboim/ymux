@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"winmux-server/internal/config"
+	"ymux-server/internal/config"
 )
 
 // randHex delegates to config so the whole codebase shares one token generator.

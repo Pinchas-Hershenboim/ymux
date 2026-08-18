@@ -18,7 +18,7 @@
 // nothing alive on the server, so reconnecting it would produce an empty
 // prompt rather than a restored session. Those keep their [Connect] button.
 
-const KEY = "winmux.paneSessions.v1";
+const KEY = "ymux.paneSessions.v1";
 
 // Entries older than this are dropped on read. A tmux session the user
 // hasn't touched in two weeks is almost certainly gone (server reboot,
