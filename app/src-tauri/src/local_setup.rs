@@ -803,7 +803,7 @@ fn unix_canonical(name: &str) -> Vec<PathBuf> {
 /// PATH for children we spawn on unix: the canonical dirs prepended to
 /// whatever we inherited. An env value, not a shell string (Rule #3).
 #[cfg(not(target_os = "windows"))]
-fn unix_path_env() -> std::ffi::OsString {
+pub(crate) fn unix_path_env() -> std::ffi::OsString {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs = unix_tool_dirs();
     dirs.extend(std::env::split_paths(&inherited));
@@ -828,6 +828,15 @@ fn canonical_claude() -> Vec<PathBuf> {
     // The official install.sh target (~/.local/bin/claude) plus the
     // usual dirs a `npm i -g @anthropic-ai/claude-code` lands in.
     unix_canonical("claude")
+}
+
+/// The local Claude Code binary, if installed: PATH first, then the
+/// canonical install dirs (a Finder-launched app has a minimal PATH).
+/// Shared by the usage indicator and anything else that shells out to a
+/// local `claude`.
+pub(crate) fn resolve_claude_binary() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "claude.exe" } else { "claude" };
+    crate::local_wizard::which(name).or_else(|| canonical_claude().into_iter().find(|p| p.is_file()))
 }
 
 /// Parse `wsl -l -v` — the default distro carries a `*` marker (stable

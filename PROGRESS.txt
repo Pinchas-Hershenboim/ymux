@@ -1749,3 +1749,17 @@ BUGS (Yossi, live on mac):
      pipeline; no full-file read). FE isAbsolutePath also accepts `C:\…`.
      +2 unit tests.
 RESULT: CI pending, untested live.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 4
+BUG (Yossi): usage ticker on a local workspace kept showing the SSH
+  account's quota. ROOT CAUSE claude_usage_fetch only had an SSH probe
+  (pick_handle → Err for local) and the FE kept the last value on error.
+FIX claude_usage.rs — run_usage_probe(): SSH handle → remote exec (as
+  before); Wsl → wsl_exec inside the distro; Local/None → local
+  `claude -p /usage --output-format json` (resolve_claude_binary: PATH +
+  ~/.local/bin etc., hidden window, 20s timeout, kill_on_drop, unix PATH
+  env). ClaudeUsageIndicator resets the pill on every workspace/live
+  change so a failed fetch never shows another host's numbers.
+  local_setup.rs: resolve_claude_binary() + unix_path_env pub(crate).
+RESULT: CI pending, untested live.

@@ -272,19 +272,7 @@ pub(crate) async fn claude_usage_fetch(
                 .ok_or_else(|| "usage fetch already in progress".to_string());
         }
     };
-    let handle = crate::addons::pick_handle(&state, &workspace_id)
-        .ok_or("no active SSH session for this workspace")?;
-    // Login shell so `claude` is on PATH in a non-interactive session; stderr
-    // dropped so `result` stays clean JSON. `timeout 18` on the REMOTE side
-    // guarantees the `claude` process dies even if our local exec timeout
-    // fires and we drop the channel — no orphans left on the server.
-    let out = match crate::addons::exec(
-        &handle,
-        "bash -lc 'timeout 18 claude -p \"/usage\" --output-format json 2>/dev/null'",
-        20,
-    )
-    .await
-    {
+    let out = match run_usage_probe(&state, &workspace_id).await {
         Ok(s) => s,
         Err(e) => {
             mark_failed(&workspace_id);
@@ -313,6 +301,65 @@ pub(crate) async fn claude_usage_fetch(
             cache_stale(&workspace_id).ok_or(e)
         }
     }
+}
+
+/// `claude -p "/usage" --output-format json` on the host the WORKSPACE
+/// lives on — the account shown must be the one this workspace's panes
+/// actually use: the remote's for SSH, the distro's for WSL, and the local
+/// login for a local workspace. Before this, a local workspace had no
+/// probe at all, so the ticker kept showing whichever SSH account was
+/// fetched last.
+async fn run_usage_probe(state: &AppState, workspace_id: &str) -> Result<String, String> {
+    const REMOTE_SCRIPT: &str =
+        "bash -lc 'timeout 18 claude -p \"/usage\" --output-format json 2>/dev/null'";
+    if let Some(handle) = crate::addons::pick_handle(state, workspace_id) {
+        // Login shell so `claude` is on PATH in a non-interactive session;
+        // stderr dropped so `result` stays clean JSON. `timeout 18` on the
+        // REMOTE side guarantees the `claude` process dies even if our local
+        // exec timeout fires and we drop the channel — no orphans left.
+        return crate::addons::exec(&handle, REMOTE_SCRIPT, 20).await;
+    }
+    let conn = {
+        let file = state.workspaces.lock().map_err(|_| "workspaces lock poisoned".to_string())?;
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .and_then(|w| w.connection.clone())
+    };
+    match conn {
+        Some(winmux_types::Connection::Ssh { .. }) => {
+            Err("no active SSH session for this workspace".into())
+        }
+        Some(winmux_types::Connection::Wsl { distro }) => {
+            // Same script, run inside the distro (its own claude login).
+            let (_code, text) = crate::local_setup::wsl_exec(
+                distro.as_deref(),
+                None,
+                "timeout 18 claude -p \"/usage\" --output-format json 2>/dev/null",
+            )
+            .await?;
+            Ok(text)
+        }
+        Some(winmux_types::Connection::Local { .. }) | None => run_local_usage_probe().await,
+    }
+}
+
+/// Local `claude -p /usage`. argv array (Rule #3), hidden window on
+/// Windows, wall-clock timeout with kill_on_drop so a hung CLI can't pile
+/// up (the local twin of the remote `timeout 18`).
+async fn run_local_usage_probe() -> Result<String, String> {
+    let claude = crate::local_setup::resolve_claude_binary()
+        .ok_or_else(|| "claude is not installed on this machine".to_string())?;
+    let mut c = crate::local_setup::hidden_cmd(&claude.to_string_lossy());
+    c.args(["-p", "/usage", "--output-format", "json"]);
+    c.kill_on_drop(true);
+    #[cfg(not(target_os = "windows"))]
+    c.env("PATH", crate::local_setup::unix_path_env());
+    let out = tokio::time::timeout(Duration::from_secs(20), c.output())
+        .await
+        .map_err(|_| "local claude /usage timed out".to_string())?
+        .map_err(|e| format!("spawn {}: {e}", claude.display()))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn now_unix() -> i64 {
