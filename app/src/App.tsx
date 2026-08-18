@@ -3846,9 +3846,12 @@ function App() {
             workspaceId={d().workspaceId}
             onClose={() => setDirPickerFor(null)}
             onPick={(dir) => {
-              const conn = d().connection;
+              // Read EVERYTHING off the accessor before clearing the
+              // signal: `setDirPickerFor(null)` unmounts this <Show>, and
+              // `d()` past that point is not guaranteed to still resolve.
+              const { workspaceId, connection } = d();
               setDirPickerFor(null);
-              void pinProjectFolder(d().workspaceId, dir, conn);
+              void pinProjectFolder(workspaceId, dir, connection);
             }}
           />
         )}
