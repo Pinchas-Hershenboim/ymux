@@ -2939,3 +2939,138 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
     upgrade key, so the new package installs SIDE BY SIDE and the old one
     stays in Programs and Features. No shim exists for this -- the
     identifier IS the identity. Release notes need an uninstall step.
+
+================================================================================
+2026-08-19 02:00-03:00 | Build speed: measure first, then cut
+  Branch claude/optimize-build-process-18f637, worktree optimize-build-process-18f637
+  Commits: 6234dac (perf), b2217d0 (docs), + this entry
+
+  TASK: Yossi -- "the build takes 12-15 min, let's go over it and make it faster."
+
+  MEASURED BEFORE CHANGING ANYTHING. Most of the intuitive suspects were wrong.
+  gh run view on two build-windows runs, same week, same workflow:
+    run 32187049792 (branch hook-pane-resolve) "No cache found" -> 813s in
+      the single "Build release bundles" step, 15m37s total
+    run 32193464505 (branch that had already run)  ~696 MB restored -> 420s,
+      9m24s total
+  Everything else in both runs is noise (checkout 5-7s, npm ci 14s, uploads
+  2-3s). So the spread IS the cold dependency graph, nothing else.
+
+  CAUSE 1 -- app/src-tauri/Cargo.toml:22 built the lib THREE TIMES.
+    crate-type = ["staticlib", "cdylib", "rlib"] is the Tauri MOBILE template
+    default; there is no gen/android or gen/apple in this repo and the only
+    mobile reference anywhere is lib.rs:7851. Desktop links the rlib only
+    (main.rs is `app_lib::run()`). Verified in the existing target dir, all
+    stamped 15:41 one minute before app.exe:
+      libapp_lib.rlib   228 MB  needed
+      app_lib.lib       215 MB  staticlib, nothing reads it
+      app_lib.dll       456 KB  cdylib, a second full link of the whole
+                                object graph, dead-stripped down to this
+    Now ["rlib"]. AFTER the change a full release build emitted only
+    libapp_lib-64fa7e8b379eeebd.rlib -- no .lib, no .dll (the Aug 13 ones are
+    leftovers cargo does not sweep). Put the other two back if mobile lands;
+    there is a worktree named winmux-mobile-version-4e7e1b, so say so out loud.
+
+  CAUSE 2 -- GitHub cache reads are scoped to the current branch + the DEFAULT
+    branch. build-windows.yml runs only on workflow_dispatch and v* tags, i.e.
+    never on main, so it never wrote a cache any other branch could read.
+    ADDED .github/workflows/warm-rust-cache.yml: push-to-main on Cargo.lock /
+    Cargo.toml, plus Mon+Thu cron (GitHub evicts unused caches at 7 days),
+    plus dispatch. Builds `-p app --lib` only -- rust-cache prunes workspace
+    members before saving, so only the dependency graph is worth warming; no
+    exe link, no bundlers. shared-key: windows-release, same key as
+    build-windows.yml. ci-windows.yml gets shared-key: windows-dev so the
+    dev-profile cache does not fight it.
+
+  ALSO FIXED (each one was quietly forcing a full app-crate rebuild):
+  - resources/ are pulled in with include_bytes!/include_str!
+    (remote_bootstrap.rs:28-29, addons.rs:34-35, lib.rs:7659) and cargo's
+    staleness check is MTIME-based, so `Copy-Item -Force` of a byte-identical
+    binary recompiled the 9.4k-line lib every build. build-linux-cli.ps1 now
+    compares SHA256 and leaves identical files alone -- including
+    remote-manifest.json, whose built_at churn ci-windows.yml has a whole
+    step apologising for.
+  - build.rs + cli/build.rs baked SystemTime::now() into YMUX_BUILD_TIME, so
+    no two builds of identical source ever agreed -> the staged musl binary
+    differed every run -> see above. It is `git log -1 --format=%ct` now,
+    which also makes build-linux-cli.ps1's "byte-identical regardless of who
+    built it" claim true and pairs with YMUX_GIT_HASH. Consumer is
+    rpc_server.rs:2152 (dev.get-state) only.
+  - target/release/{wix,nsis} sit INSIDE the directory rust-cache prunes, so
+    CI re-downloaded both bundler toolchains every run. actions/cache now
+    keeps them, keyed on package-lock.json.
+  - workflow_dispatch builds get --bundles nsis; v* tags still get both,
+    because the published manifest.json advertises msi_url. updater.rs treats
+    msi_url as Option throughout (48, 88, 675, 777-788), so nothing breaks.
+
+  THE SCRUB PROTECTION WAS FICTION.
+    build-release.ps1:33-35 deleted app.exe and deps/app-* "so the new remap
+    is applied". `Get-ChildItem -Filter app-*` matches NOTHING (bin artifacts
+    in deps/ are unhashed: app.exe, app.d, app.pdb), and release/app.exe is a
+    hardlink cargo re-creates for fresh units without recompiling. The real
+    guarantee is RUSTFLAGS being part of cargo's fingerprint. Block deleted;
+    build-windows.yml now ASSERTS $USERNAME is absent from app.exe -- the
+    check docs/RELEASING.md:56 has always documented and CI never ran.
+
+  TRIED AND REVERTED: rust-lld for the MSVC host link. Same relink (touch
+    main.rs, tauri build --no-bundle, warm tree): 199s with link.exe, 191s
+    with rust-lld. 4%, inside the noise -- that window is dominated by
+    recompiling app_lib at opt-level 3, not by linking. Not worth an unusual
+    linker on a shipped binary for 7 seconds. Logged in DECISIONS.md so it is
+    not re-litigated without a new measurement.
+
+  TWO THINGS THE EXPERIMENT SETTLED, kept because they are load-bearing:
+  - target.<triple>.linker IS in cargo's fingerprint on 1.95. Adding the
+    section and removing it BOTH forced a large rebuild (6m56s, 6m47s), so
+    toggling a linker carries no stale-artifact hazard here.
+  - The last measurement build ran `npm run tauri build` DIRECTLY, bypassing
+    build-release.ps1, and `grep -c -a mlastudent371 app.exe` came back 296
+    where a wrapper build gives 0. That is the new build-windows.yml assert
+    firing on exactly the case it was written for -- demonstrated, not
+    assumed. It also shows the RUSTFLAGS fingerprint doing its job: a release
+    cannot silently reuse that binary, because the wrapper's flags force a
+    rebuild. (The app.exe left in target/release right now is that unscrubbed
+    measurement build. Harmless -- gitignored, and build-release.ps1 rebuilds
+    it -- but do not hand-copy it anywhere.)
+  - remote-manifest.json showed NO git churn across five builds. That is the
+    ci-windows.yml "always-on drift notice" complaint (FOLLOWUPS P2) fixed.
+
+  LANDMINE FOUND THE HARD WAY: Windows PowerShell 5.1 reads BOM-less UTF-8 as
+    ANSI. A UTF-8 em-dash inside a .ps1 STRING LITERAL decodes to a smart
+    quote the tokenizer accepts as a string delimiter -- the file then fails
+    to parse with a cascade of "Missing closing '}'" errors pointing at
+    innocent lines 10-100 lines away. Em-dashes in # comments are fine, which
+    is why build-linux-cli.ps1 (full of them) had never bitten.
+    ci-windows.yml now parse-checks app/scripts/*.ps1 with `shell: powershell`
+    in seconds. FOLLOWUPS P3 for the real fix (write them with a BOM).
+
+  VERIFIED (Rules 13 + 14, on a real run -- not a compile):
+  - Full release build from the worktree, BOTH bundlers: 374s. Produced
+    ymux_0.4.5_x64_en-US.msi (23.4 MB) and ymux_0.4.5_x64-setup.exe (16.7 MB).
+  - Rule 13: index-d2jVOVvY.js (this build's hashed asset) found inside
+    app.exe -> production build, not dev-mode.
+  - Scrub: `grep -c -a mlastudent371 app.exe` -> 0.
+  - Rule 14: LAUNCHED IT. Yossi had 7 app.exe running, so it went up under
+    YMUX_CONFIG_DIR pointed at a scratch dir (the isolation FOLLOWUPS
+    recommends) rather than sharing %APPDATA%\ymux. Log reached
+    `[UI:APP] longtask self 5752ms` -- a FRONTEND-originated line, which a
+    dev-mode binary can never produce because no frontend ever loads. Killed
+    by exact image path afterwards; Yossi's 7 untouched.
+  - ci-windows.yml parse-check run locally against all three scripts: ok.
+
+  NOT VERIFIED: none of the CI changes have run on CI yet. warm-rust-cache.yml
+    has never executed. Next step is a workflow_dispatch of build-windows on
+    this branch (expect NSIS only, and a cold cache until warm-rust-cache runs
+    on main), then merge and let the warmer populate.
+
+  WORKTREE NOTE: this worktree had no target/, so it was junctioned to the
+    main checkout's (mklink /J). Documented in CONTRIBUTING.md with its
+    footgun -- `git clean -xdf` or `rm -rf` of the worktree FOLLOWS the
+    junction and deletes the shared 42 GB. REMOVED before finishing.
+
+  FILES: app/src-tauri/Cargo.toml, app/src-tauri/build.rs,
+    app/src-tauri/cli/build.rs, app/scripts/build-release.ps1,
+    app/scripts/build-linux-cli.ps1, app/package.json,
+    .github/workflows/{build-windows,ci-windows,warm-rust-cache}.yml,
+    CLAUDE.md, BACKLOG.md, FOLLOWUPS.md,
+    docs/{BUILD,CONTRIBUTING,RELEASING,DECISIONS}.md
