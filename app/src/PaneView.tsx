@@ -1,4 +1,5 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -76,6 +77,10 @@ interface Props {
   // / Browser / ClaudeChat panes, or a fresh Terminal pane). Threaded
   // from App.tsx via LayoutView.
   workspaceConnection?: Connection;
+  /** The workspace's own directory, when it has one — a pinned project
+   *  folder or a worktree opened under it. Its presence is what turns
+   *  the connection wizard into the scoped mini version. */
+  workspaceCwd?: string;
   // Phase 23.I: the workspace name. The pane header falls back to it
   // when the user hasn't set a pane-specific title, replacing the
   // noisy "ssh user@host:port" auto-label.
@@ -212,6 +217,14 @@ export function PaneView(p: Props) {
   // the workspace's canonical connection so SSH-only menu items
   // (tmux) show up from FM / Browser / Chat panes too.
   // What the pane's effective target CAN DO (own connection > workspace).
+  // A workspace with its own directory (a pinned project folder, or a
+  // worktree opened under one) anchors every pane it hosts. The wizard
+  // drops its Directory field in that case: wandering out of the folder
+  // is precisely what the sub-workspace exists to prevent.
+  const folderAnchor = () => {
+    const c = p.workspaceCwd?.trim();
+    return c ? c : null;
+  };
   const caps = () => paneCaps(p.pane, p.workspaceConnection);
   // Kept for the genuinely SSH-only bits — the SFTP directory picker, which
   // has no WSL backend yet. Do not reach for this to answer "does it have
@@ -302,9 +315,16 @@ export function PaneView(p: Props) {
     setNcSessionsLoading(true);
     setNcSessionsErr(null);
     try {
+      // Scoped to the folder when there is one. Not cosmetic: since
+      // Claude Code 2.1.223 `--resume <id>` searches "the current
+      // project directory and its git worktrees, THEN every other
+      // project on this machine", so picking a foreign session does not
+      // fail — it succeeds, resuming another repo's conversation inside
+      // this folder.
       const list = await invoke<ClaudeSessionInfo[]>("pane_list_claude_sessions", {
         workspaceId: p.workspaceId,
         limit: 40,
+        projectPath: folderAnchor(),
       });
       setNcSessions(list);
     } catch (e) {
@@ -438,15 +458,11 @@ export function PaneView(p: Props) {
     setDirPickForNewConn(false);
     setNcView("form");
   };
-  // v0.4.4 (Task 2): close the folder picker; if it was serving the
-  // new-connection modal, reopen that modal (keeping the previous ncDir).
-  const closeDirPicker = () => {
-    setDirPicker(null);
-    if (dirPickForNewConn()) {
-      setDirPickForNewConn(false);
-      setNewConnModal(true);
-    }
-  };
+  // `closeDirPicker` lived here to dismiss the standalone picker and
+  // reopen the new-connection modal behind it. It went with the picker
+  // (now DirPicker.tsx) — the inline browse view is dismissed by
+  // `cancelBrowse`, which returns to the form without ever having
+  // closed the modal.
   // v0.4.4-beta.2: open the unified new-connection modal with defaults.
   const openNewConnModal = () => {
     setNcView("form");
@@ -537,10 +553,16 @@ export function PaneView(p: Props) {
     opts.persistent = ncType() === "tmux";
     const c = ncCmd();
     const picked = ncPickedSession();
-    // A picked resume session overrides the directory with its own project
-    // path (so resume lands where the session was created), if absolute.
-    let dir = ncDir().trim();
-    if (picked && picked.project_path?.startsWith("/")) dir = picked.project_path;
+    // A picked resume session normally overrides the directory with its
+    // own project path (so resume lands where the session was created).
+    // Inside a folder-anchored workspace that is exactly wrong — the
+    // pane must stay in the folder, and the list is already scoped to
+    // it, so the override is skipped rather than fought.
+    const anchor = folderAnchor();
+    let dir = anchor ?? ncDir().trim();
+    if (!anchor && picked && picked.project_path?.startsWith("/")) {
+      dir = picked.project_path;
+    }
     // Empty stays empty: no cwdOverride → the backend lands in the user's $HOME
     // root (default). Only send an override when the user actually typed a path
     // (or a picked session supplied its project dir).
@@ -799,6 +821,273 @@ export function PaneView(p: Props) {
     return cls.join(" ");
   };
 
+  // ── header overflow (priority+ pattern) ──────────────────────────────
+  // The header is a no-wrap flex row and `.pane` is `overflow:hidden`, so
+  // with many panes open the right-hand buttons used to be silently
+  // clipped — no hint they existed. Every button now lives in this array;
+  // `visibleCount()` decides how many render inline and the rest fall into
+  // a chevron menu. `close` deliberately stays OUT of the array (rendered
+  // after the chevron) so the one action you can't afford to lose never
+  // moves.
+  type HeaderAction = {
+    id: string;
+    /** inline tooltip */
+    title: string;
+    /** label in the overflow menu */
+    label: string;
+    icon: () => JSX.Element;
+    active?: boolean;
+    run?: () => void;
+    /** custom inline form (used by the disconnect split-button) */
+    render?: () => JSX.Element;
+    /** what this becomes inside the menu when it overflows */
+    menuItems?: { label: string; danger?: boolean; run: () => void }[];
+  };
+
+  const [visibleCount, setVisibleCount] = createSignal(99);
+  const [showOverflow, setShowOverflow] = createSignal(false);
+  let headerRef: HTMLDivElement | undefined;
+
+  const actions = createMemo<HeaderAction[]>(() => {
+    const list: HeaderAction[] = [];
+    if (p.pane.annotation) {
+      list.push({
+        id: "annot",
+        title: t("pane.tooltip.show_annotation"),
+        label: t("pane.tooltip.show_annotation"),
+        icon: () => <IconInfo size={14} />,
+        // NOTE: deliberately does not read showAnnot() — `actions()` is a
+        // memo and any signal it reads rebuilds the whole button row.
+        run: () => setShowAnnot(!showAnnot()),
+      });
+    }
+    list.push({
+      id: "meta",
+      title: t("pane.tooltip.edit_meta"),
+      label: t("pane.tooltip.edit_meta"),
+      icon: () => <IconPencil size={14} />,
+      run: openMeta,
+    });
+    if (p.isConnected) {
+      // Atomic item: the inline form keeps the existing power+caret
+      // split-button (and its own menu) untouched; in the overflow menu
+      // it expands into its two entries instead.
+      list.push({
+        id: "disc",
+        title: isTmux() ? t("pane.tooltip.detach") : t("pane.tooltip.disconnect"),
+        label: isTmux() ? t("common.detach") : t("common.disconnect"),
+        icon: () => <IconPower size={14} />,
+        render: () => renderDiscButton(),
+        menuItems: [
+          {
+            label: isTmux() ? t("common.detach") : t("common.disconnect"),
+            run: () => p.onDisconnect(p.pane.pane_id),
+          },
+          ...(isTmux()
+            ? [{
+                label: t("common.kill_session"),
+                danger: true,
+                run: () => p.onKillSession(p.pane.pane_id),
+              }]
+            : []),
+        ],
+      });
+    }
+    list.push({
+      id: "bidi",
+      title:
+        t(p.pane.smart_bidi === true ? "pane.smartBidi.on" : "pane.smartBidi.off")
+        + " — " + t("pane.smartBidi.hint"),
+      label: t(p.pane.smart_bidi === true ? "pane.smartBidi.on" : "pane.smartBidi.off"),
+      icon: () => <IconArrowLeftRight size={14} />,
+      active: p.pane.smart_bidi === true,
+      run: () => {
+        const next = !(p.pane.smart_bidi === true);
+        void invoke("pane_set_smart_bidi", {
+          workspaceId: p.workspaceId,
+          paneId: p.pane.pane_id,
+          enabled: next,
+        }).catch((err) => log.error("pane_set_smart_bidi failed", err));
+      },
+    });
+    list.push({
+      id: "maximize",
+      title: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
+      label: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
+      icon: () => (p.isMaximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />),
+      active: p.isMaximized,
+      run: () => {
+        window.dispatchEvent(
+          new CustomEvent("winmux:pane-maximize", {
+            detail: { paneId: p.pane.pane_id },
+          }),
+        );
+      },
+    });
+    list.push({
+      id: "split-h",
+      title: t("pane.tooltip.split_right"),
+      label: t("pane.tooltip.split_right"),
+      icon: () => <IconColumns size={14} />,
+      run: () => p.onSplit(p.pane.pane_id, "horizontal"),
+    });
+    list.push({
+      id: "split-v",
+      title: t("pane.tooltip.split_down"),
+      label: t("pane.tooltip.split_down"),
+      icon: () => <IconRows size={14} />,
+      run: () => p.onSplit(p.pane.pane_id, "vertical"),
+    });
+    if (p.isConnected) {
+      list.push({
+        id: "popout",
+        title: t("pane.tooltip.popout"),
+        label: t("pane.tooltip.popout"),
+        icon: () => <IconExternalLink size={14} />,
+        run: () => void p.onPopOut(p.pane.pane_id),
+      });
+    }
+    return list;
+  });
+
+  const hiddenActions = createMemo(() => actions().slice(visibleCount()));
+
+  // Sum of the laid-out children + gaps. Deliberately NOT `scrollWidth`:
+  // in an RTL header the run overflows towards the inline start, and
+  // scrollWidth's behaviour there is the historically messy corner of the
+  // API. Summing offsetWidth is direction-agnostic and exact — once the
+  // flex items are at min-content, the sum exceeds clientWidth by however
+  // much is being clipped. The absolutely-positioned dropdowns live inside
+  // `position:relative` wrappers, so they contribute nothing here.
+  const contentWidth = (el: HTMLElement): number => {
+    const kids = el.children;
+    if (kids.length === 0) return 0;
+    const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+    let w = gap * (kids.length - 1);
+    for (let i = 0; i < kids.length; i++) w += (kids[i] as HTMLElement).offsetWidth;
+    return w;
+  };
+
+  /**
+   * The width the children actually get: `clientWidth` is the PADDING
+   * box, so comparing a sum of child widths against it hands the run an
+   * extra `padding-inline` of slack (20px here) and leaves that much
+   * still overflowing. The header used to clip, which hid the mistake.
+   */
+  const availableWidth = (el: HTMLElement): number => {
+    const cs = getComputedStyle(el);
+    const pad = (parseFloat(cs.paddingInlineStart) || 0) + (parseFloat(cs.paddingInlineEnd) || 0);
+    return el.clientWidth - pad;
+  };
+
+  // Shrink until the header stops overflowing. Solid applies signal writes
+  // to the DOM synchronously, so each setVisibleCount is reflected in the
+  // next measurement. The loop is self-correcting: as soon as n < total the
+  // chevron renders and adds its own width to the measure. Bounded by
+  // actions().length (<= 8), and only ever runs from rAF.
+  const fit = () => {
+    const el = headerRef;
+    if (!el) return;
+    let n = actions().length;
+    setVisibleCount(n);
+    const avail = availableWidth(el);
+    while (n > 0 && contentWidth(el) > avail + 1) {
+      n -= 1;
+      setVisibleCount(n);
+    }
+  };
+
+  let fitFrame = 0;
+  const scheduleFit = () => {
+    if (fitFrame) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = 0;
+      fit();
+    });
+  };
+
+  onMount(() => {
+    if (!headerRef) return;
+    const ro = new ResizeObserver(scheduleFit);
+    ro.observe(headerRef);
+    onCleanup(() => {
+      ro.disconnect();
+      if (fitFrame) cancelAnimationFrame(fitFrame);
+    });
+  });
+
+  // Re-fit when anything that occupies header width appears or
+  // disappears without a resize event: the action set itself
+  // (connect/disconnect, annotation, pop-out) and the non-action badges.
+  // `agentRunLabel()` is deliberately NOT tracked — it ticks every second
+  // and its width is fixed by `font-variant-numeric: tabular-nums`.
+  createEffect(() => {
+    actions().length;
+    !!p.statusText;
+    isTmux();
+    p.isMaximized && (p.backgroundPaneCount ?? 0) > 0;
+    scheduleFit();
+  });
+
+  // Close the overflow menu on an outside click or Escape.
+  createEffect(() => {
+    if (!showOverflow()) return;
+    const onDocDown = (e: MouseEvent) => {
+      const t2 = e.target as HTMLElement | null;
+      if (t2?.closest(".pane-overflow-wrap")) return;
+      setShowOverflow(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowOverflow(false);
+    };
+    document.addEventListener("mousedown", onDocDown, true);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDocDown, true);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+
+  const renderDiscButton = () => (
+    <div class="pane-disc-wrap">
+      <button
+        class="pane-btn"
+        title={isTmux() ? t("pane.tooltip.detach") : t("pane.tooltip.disconnect")}
+        onClick={() => p.onDisconnect(p.pane.pane_id)}
+      >
+        <IconPower size={14} />
+      </button>
+      <button
+        class="pane-btn pane-disc-caret"
+        title={t("pane.tooltip.kill_session")}
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowDiscMenu(!showDiscMenu());
+        }}
+      >
+        <IconChevronDown size={13} />
+      </button>
+      <Show when={showDiscMenu()}>
+        <div
+          class="pane-disc-menu"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowDiscMenu(false);
+          }}
+        >
+          <button onClick={() => p.onDisconnect(p.pane.pane_id)}>
+            {isTmux() ? t("common.detach") : t("common.disconnect")}
+          </button>
+          <Show when={isTmux()}>
+            <button class="danger" onClick={() => p.onKillSession(p.pane.pane_id)}>
+              {t("common.kill_session")}
+            </button>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+
   return (
     <div
       ref={(el) => (paneRef = el)}
@@ -847,6 +1136,7 @@ export function PaneView(p: Props) {
       </Show>
       <div
         class="pane-header"
+        ref={(el) => (headerRef = el)}
         onPointerDown={(e) => {
           // beta.3 (pane-dragdrop) Fix 1: the whole header is the drag
           // surface (was just the title span — too small to hit).
@@ -901,34 +1191,15 @@ export function PaneView(p: Props) {
                   : "—")
           } />
         </span>
-        <Show when={p.pane.annotation}>
-          <button
-            class="pane-btn"
-            title={t("pane.tooltip.show_annotation")}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowAnnot(!showAnnot());
-            }}
-          >
-            <IconInfo size={14} />
-          </button>
-        </Show>
         <Show when={p.statusText}>
           <span class="pane-status-text">{p.statusText}</span>
         </Show>
         <Show when={agentRunLabel()}>
           <span class="pane-agent-run">{agentRunLabel()}</span>
         </Show>
-        <button
-          class="pane-btn"
-          title={t("pane.tooltip.edit_meta")}
-          onClick={(e) => {
-            e.stopPropagation();
-            openMeta();
-          }}
-        >
-          <IconPencil size={14} />
-        </button>
+        {/* Badges are not actions — they never move into the overflow
+            menu. They sit between the title and the button run so the
+            fitted button row starts at a stable offset. */}
         <Show when={isTmux()}>
           <span
             class="pane-tmux-badge"
@@ -937,68 +1208,8 @@ export function PaneView(p: Props) {
             T
           </span>
         </Show>
-        <Show when={p.isConnected}>
-          <div class="pane-disc-wrap">
-            <button
-              class="pane-btn"
-              title={isTmux() ? t("pane.tooltip.detach") : t("pane.tooltip.disconnect")}
-              onClick={() => p.onDisconnect(p.pane.pane_id)}
-            >
-              <IconPower size={14} />
-            </button>
-            <button
-              class="pane-btn pane-disc-caret"
-              title={t("pane.tooltip.kill_session")}
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowDiscMenu(!showDiscMenu());
-              }}
-            >
-              <IconChevronDown size={13} />
-            </button>
-            <Show when={showDiscMenu()}>
-              <div
-                class="pane-disc-menu"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowDiscMenu(false);
-                }}
-              >
-                <button onClick={() => p.onDisconnect(p.pane.pane_id)}>
-                  {isTmux() ? t("common.detach") : t("common.disconnect")}
-                </button>
-                <Show when={isTmux()}>
-                  <button class="danger" onClick={() => p.onKillSession(p.pane.pane_id)}>
-                    {t("common.kill_session")}
-                  </button>
-                </Show>
-              </div>
-            </Show>
-          </div>
-        </Show>
-        {/* Phase 52 (BiDi 33B): per-pane opt-in PTY-stream bidi filter.
-            Default off; click toggles via pane_set_smart_bidi. ⇆ glyph
-            picked from "left right arrow" since the filter swaps RTL
-            isolates around Latin runs. */}
-        <button
-          class={`pane-btn ${p.pane.smart_bidi === true ? "active" : ""}`}
-          title={t(p.pane.smart_bidi === true ? "pane.smartBidi.on" : "pane.smartBidi.off") + " — " + t("pane.smartBidi.hint")}
-          onClick={(e) => {
-            e.stopPropagation();
-            const next = !(p.pane.smart_bidi === true);
-            void invoke("pane_set_smart_bidi", {
-              workspaceId: p.workspaceId,
-              paneId: p.pane.pane_id,
-              enabled: next,
-            }).catch((err) => log.error("pane_set_smart_bidi failed", err));
-          }}
-        >
-          <IconArrowLeftRight size={14} />
-        </button>
-        {/* Phase 65.T: focus/zoom badge + toggle. The badge shows how
-            many panes keep running in the background while this one is
-            focused. The button dispatches the same winmux:pane-maximize
-            event as double-click / Ctrl+Shift+M. */}
+        {/* Phase 65.T: focus/zoom badge. Shows how many panes keep
+            running in the background while this one is focused. */}
         <Show when={p.isMaximized && (p.backgroundPaneCount ?? 0) > 0}>
           <span
             class="pane-bg-badge"
@@ -1009,35 +1220,72 @@ export function PaneView(p: Props) {
             <IconMaximize size={13} /> {p.backgroundPaneCount}
           </span>
         </Show>
-        <button
-          class={`pane-btn ${p.isMaximized ? "active" : ""}`}
-          title={p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus")}
-          onClick={(e) => {
-            e.stopPropagation();
-            window.dispatchEvent(
-              new CustomEvent("winmux:pane-maximize", {
-                detail: { paneId: p.pane.pane_id },
-              }),
-            );
-          }}
-        >
-          {p.isMaximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
-        </button>
-        <button class="pane-btn" title="Split right (Ctrl+Shift+D)" onClick={() => p.onSplit(p.pane.pane_id, "horizontal")}><IconColumns size={14} /></button>
-        <button class="pane-btn" title="Split down (Ctrl+Shift+E)" onClick={() => p.onSplit(p.pane.pane_id, "vertical")}><IconRows size={14} /></button>
-        {/* Unshipped-fivefer (#4): pop this terminal into its own window.
-            Only meaningful for a live session — hidden until connected. */}
-        <Show when={p.isConnected}>
-          <button
-            class="pane-btn"
-            title={t("pane.tooltip.popout")}
-            onClick={(e) => {
-              e.stopPropagation();
-              void p.onPopOut(p.pane.pane_id);
-            }}
-          >
-            <IconExternalLink size={14} />
-          </button>
+        {/* Fitted button run — see `actions()` / `fit()` above. */}
+        <For each={actions().slice(0, visibleCount())}>
+          {(a) => (
+            <Show
+              when={!a.render}
+              fallback={a.render?.()}
+            >
+              <button
+                class={`pane-btn ${a.active ? "active" : ""}`}
+                title={a.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  a.run?.();
+                }}
+              >
+                {a.icon()}
+              </button>
+            </Show>
+          )}
+        </For>
+        <Show when={hiddenActions().length > 0}>
+          <div class="pane-overflow-wrap">
+            <button
+              class="pane-btn pane-overflow-btn"
+              title={t("pane.tooltip.more_actions")}
+              aria-haspopup="menu"
+              aria-expanded={showOverflow()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowOverflow(!showOverflow());
+              }}
+            >
+              <IconChevronDown size={14} />
+            </button>
+            <Show when={showOverflow()}>
+              <div
+                class="pane-disc-menu pane-overflow-menu"
+                role="menu"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowOverflow(false);
+                }}
+              >
+                <For each={hiddenActions()}>
+                  {(a) => (
+                    <Show
+                      when={!a.menuItems}
+                      fallback={
+                        <For each={a.menuItems!}>
+                          {(mi) => (
+                            <button class={mi.danger ? "danger" : ""} onClick={() => mi.run()}>
+                              {a.icon()} {mi.label}
+                            </button>
+                          )}
+                        </For>
+                      }
+                    >
+                      <button class={a.active ? "active" : ""} onClick={() => a.run?.()}>
+                        {a.icon()} {a.label}
+                      </button>
+                    </Show>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
         </Show>
         <button class="pane-btn pane-close" title={t("pane.tooltip.close")} onClick={() => p.onClose(p.pane.pane_id)}><IconClose size={14} /></button>
       </div>
@@ -1456,27 +1704,41 @@ export function PaneView(p: Props) {
                     </p>
                   </div>
 
-                  {/* 2. Directory (optional — empty = the user's $HOME root) */}
-                  <div class="nc-section">
-                    <label class="nc-label">
-                      {t("connect.newConn.directory")}{" "}
-                      <span class="nc-optional">{t("connect.newConn.dirDefault")}</span>
-                    </label>
-                    <div class="nc-dir-row">
-                      <input
-                        class="nc-input"
-                        autofocus
-                        placeholder="/home/user/project"
-                        value={ncDir()}
-                        onInput={(e) => setNcDir(e.currentTarget.value)}
-                      />
-                      <Show when={isSsh()}>
-                        <button class="nc-browse" onClick={browseNewConnDir}>
-                          {t("connect.newConn.browse")}
-                        </button>
-                      </Show>
+                  {/* 2. Directory. Anchored workspaces show it read-only:
+                         the folder IS the workspace, so there is nothing
+                         to choose. Everyone else keeps the free field. */}
+                  <Show
+                    when={!folderAnchor()}
+                    fallback={
+                      <div class="nc-section">
+                        <label class="nc-label">{t("connect.newConn.directory")}</label>
+                        <div class="nc-locked-dir" title={folderAnchor()!}>
+                          <IconFolder size={13} /> <span>{folderAnchor()}</span>
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div class="nc-section">
+                      <label class="nc-label">
+                        {t("connect.newConn.directory")}{" "}
+                        <span class="nc-optional">{t("connect.newConn.dirDefault")}</span>
+                      </label>
+                      <div class="nc-dir-row">
+                        <input
+                          class="nc-input"
+                          autofocus
+                          placeholder="/home/user/project"
+                          value={ncDir()}
+                          onInput={(e) => setNcDir(e.currentTarget.value)}
+                        />
+                        <Show when={isSsh()}>
+                          <button class="nc-browse" onClick={browseNewConnDir}>
+                            {t("connect.newConn.browse")}
+                          </button>
+                        </Show>
+                      </div>
                     </div>
-                  </div>
+                  </Show>
 
                   {/* 3. Command (dropdown; custom field only when chosen) */}
                   <div class="nc-section">
@@ -1630,67 +1892,13 @@ export function PaneView(p: Props) {
       {/* Phase 65 (bug AA): remote folder picker for "Open in directory". */}
       {/* v0.4.4-beta.2: only the standalone "open dir" flow uses this popup;
           the new-connection wizard renders the tree inline (ncView="browse"). */}
-      <Show when={dirPicker() && !dirPickForNewConn()}>
-        <div class="modal-backdrop" onClick={closeDirPicker}>
-          <div
-            class="modal claude-picker"
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div class="settings-head">
-              <h3>{t("connect.dirPicker.title")}</h3>
-              <button class="feed-x" title={t("common.close")} onClick={closeDirPicker}><IconClose size={14} /></button>
-            </div>
-            <div class="dir-picker-path" title={dirPicker()!.path}>{dirPicker()!.path}</div>
-            <Show when={recentDirs().length > 0}>
-              <div class="dir-picker-recent">
-                <div class="dir-picker-recent-label">{t("connect.dirPicker.recent")}</div>
-                <For each={recentDirs()}>
-                  {(d) => (
-                    <button class="dir-picker-recent-row" title={d} onClick={() => chooseDir(d)}>
-                      <IconClock size={14} /> {d}
-                    </button>
-                  )}
-                </For>
-              </div>
-            </Show>
-            <div class="claude-picker-body">
-              <Show when={dirPicker()!.loading}>
-                <p class="status-line">{t("connect.dirPicker.loading")}</p>
-              </Show>
-              <Show when={dirPicker()!.error}>
-                <p class="status-line err"><IconWarning size={13} /> {dirPicker()!.error}</p>
-              </Show>
-              <ul class="dir-picker-list">
-                <Show when={dirPicker()!.path !== "/"}>
-                  <li class="dir-picker-row up" onClick={() => void navigateDirPicker(dirPickerParent(dirPicker()!.path))}>
-                    <IconFolder size={14} /> ..
-                  </li>
-                </Show>
-                <For each={dirPicker()!.dirs}>
-                  {(name) => (
-                    <li
-                      class="dir-picker-row"
-                      onClick={() => void navigateDirPicker(dirPickerJoin(dirPicker()!.path, name))}
-                    >
-                      <IconFolder size={14} /> {name}
-                    </li>
-                  )}
-                </For>
-                <Show when={!dirPicker()!.loading && dirPicker()!.dirs.length === 0 && !dirPicker()!.error}>
-                  <li class="dir-picker-empty">{t("connect.dirPicker.empty")}</li>
-                </Show>
-              </ul>
-            </div>
-            <div class="modal-buttons">
-              <button onClick={closeDirPicker}>{t("common.cancel")}</button>
-              <button class="primary" onClick={() => chooseDir(dirPicker()!.path)}>
-                {t("connect.dirPicker.useThis")}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Show>
+      {/* The standalone directory picker that used to live here was
+          UNREACHABLE — its guard was `dirPicker() && !dirPickForNewConn()`
+          and the only caller of openDirPicker sets dirPickForNewConn
+          first. It is now app/src/DirPicker.tsx, with a live caller: the
+          workspace context menu's "pin project folder". The inline
+          browse view above (ncView() === "browse") is a second copy of
+          the same list with wizard chrome — see FOLLOWUPS. */}
 
       {/* v0.4.4-beta.2: standalone Claude session picker + tmux session picker
           removed — session resume lives in the wizard ("choose from list"),

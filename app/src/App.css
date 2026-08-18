@@ -334,6 +334,232 @@ body {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
+/* -- project folders + worktrees ------------------------------------
+   A pinned repo renders as a sidebar SECTION (sibling to a workspace
+   group) whose children are workspaces, one per git worktree. Rows for
+   worktrees that already have a workspace are ordinary .ws-item rows;
+   the dim .pf-unopened rows are the ones you click to create one. */
+.pf-header { cursor: pointer; }
+.pf-chevron,
+.pf-icon,
+.wt-icon { display: flex; flex-shrink: 0; opacity: 0.75; }
+
+/* Header buttons stay out of the way until hover — the tree is scanned
+   far more often than it is edited. */
+.pf-btn {
+  background: transparent;
+  border: none;
+  color: var(--w-text-faint);
+  padding: 0 3px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  font-size: var(--w-fs-xs);
+  transition: opacity 80ms ease, color 80ms ease, background 80ms ease;
+}
+.pf-header:hover .pf-btn,
+.ws-item:hover .pf-btn { opacity: 1; }
+.pf-btn:hover { color: var(--w-text); background: var(--w-surface); }
+.pf-btn:focus-visible { opacity: 1; }
+
+/* Tree depth. Scoped to .full on purpose: `.sidebar.icons .ws-item`
+   centers its content, and an inline-start pad would shove every nested
+   row off-center. `padding-inline-start` rather than margin so the row's
+   hover/active background still spans the full width, and so RTL mirrors
+   for free. */
+.sidebar.full .ws-item,
+.sidebar.full .pf-hint {
+  padding-inline-start: calc(10px + var(--ws-depth, 0) * 14px);
+}
+
+/* Collapse toggle on any row that has a subtree. A <button> so the
+   drag-start handler's interactive-child exclusion already skips it. */
+.ws-chevron {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0;
+  margin-inline-start: -4px;
+  border: none;
+  background: none;
+  color: var(--w-text-dim);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.ws-chevron:hover { opacity: 1; color: var(--w-text); }
+.sidebar.icons .ws-chevron { display: none; }
+
+/* A worktree with no workspace yet. Indented one level past its repo;
+   margin-inline-start so it reads correctly in RTL. */
+.pf-unopened {
+  margin-inline-start: 10px;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: var(--w-fs-sm);
+  color: var(--w-text-dim);
+  opacity: 0.75;
+}
+.pf-unopened:hover { opacity: 1; }
+.wt-branch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+.wt-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: end;
+  color: var(--w-text-faint);
+  font-size: var(--w-fs-xs);
+}
+.wt-flag { flex-shrink: 0; font-size: var(--w-fs-xs); }
+.pf-unopened.prunable .wt-branch { text-decoration: line-through; opacity: 0.7; }
+
+.pf-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 16px;
+  font-size: var(--w-fs-xs);
+  color: var(--w-text-faint);
+  /* A git error can be long; wrap instead of clipping it to nothing. */
+  overflow-wrap: anywhere;
+}
+.pf-hint.pf-error { color: var(--w-error); }
+/* Keep a hint on ONE line. git's messages are long enough to wrap into a
+   three-line red slab that reads as a crash rather than a status; the
+   full text stays available as the title. */
+.pf-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pf-hint > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Path field + optional native browse button, on one line. Paths are
+   logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
+/* A pinned repo: folder glyph with a small git mark riding on it, so a
+   project folder is distinguishable from any other workspace at a
+   glance. The badge is decorative — the row's title carries the words. */
+.pf-icon-repo { position: relative; }
+.pf-git-badge {
+  position: absolute;
+  inset-inline-end: -4px;
+  bottom: -3px;
+  display: flex;
+  color: var(--w-accent);
+  background: var(--w-bg);
+  border-radius: 50%;
+  padding: 1px;
+}
+
+/* Destructive-delete dialog. The danger is the LIST, not an adjective:
+   every workspace that dies is named, live ones are badged. */
+.confirm-delete { max-width: 420px; }
+.confirm-delete-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--w-error);
+}
+.confirm-delete-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.confirm-delete-lead { margin: 0; color: var(--w-text); }
+.confirm-delete-sub {
+  margin: 0;
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+}
+.confirm-delete-list {
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  max-height: 180px;
+  overflow-y: auto;
+  border-radius: var(--w-r-sm);
+  background: var(--w-surface);
+}
+.confirm-delete-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: var(--w-fs-sm);
+  color: var(--w-text);
+}
+.confirm-delete-icon { display: flex; flex-shrink: 0; opacity: 0.75; }
+.confirm-delete-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.confirm-delete-live {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: var(--w-fs-xs);
+  color: var(--w-error);
+  background: rgba(247, 118, 142, 0.14);
+}
+.confirm-delete-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--w-error);
+  font-size: var(--w-fs-sm);
+}
+.confirm-delete-safe {
+  margin: 0;
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-xs);
+}
+
+/* The connect wizard's directory row when the workspace IS a folder:
+   shown, not editable. LTR because it is always a POSIX/Windows path,
+   matching .pf-modal .pane-meta-title. */
+.nc-locked-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: var(--w-r-sm);
+  background: var(--w-surface);
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+  direction: ltr;
+  text-align: start;
+}
+.nc-locked-dir span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pf-modal-row { display: flex; gap: 8px; align-items: center; }
+.pf-modal-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  direction: ltr;
+  text-align: start;
+}
+.pf-modal .pane-meta-title { direction: ltr; text-align: start; }
+
 .ws-name {
   flex: 1;
   white-space: nowrap;
@@ -1032,6 +1258,12 @@ body {
   font-family: var(--w-font-mono);
   color: var(--w-text-dim);
   flex-shrink: 0;
+  /* NO `overflow: hidden` here. It was added for the JS fitter (PaneView
+     `fit()`) and it clipped the overflow dropdown to invisibility — the
+     menu is `position:absolute; top:100%` inside the header, so clipping
+     the header hides it entirely and the chevron looks dead. The fitter
+     never needed it: it sums the children's offsetWidth against the
+     header's own content width, which is unaffected by clipping. */
   /* beta.3 (pane-dragdrop) Fix 1: the whole header is the drag surface. */
   cursor: grab;
 }
@@ -1044,6 +1276,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--w-text-dim);
+  /* Keep a readable stub of the title instead of collapsing to zero —
+     the fitter starts moving buttons into the overflow menu once the
+     title has shrunk this far. */
+  min-width: 4ch;
 }
 
 .pane-status-text {
@@ -3979,6 +4215,21 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
      primary disc button regardless of writing direction. */
   margin-inline-start: -2px;
 }
+/* The overflow menu reuses the disconnect dropdown's chrome verbatim —
+   same position/shadow/hover rules, already logical-property safe for
+   RTL. Only the icon+label row layout is added below. */
+.pane-overflow-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.pane-overflow-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.pane-overflow-menu button.active { color: var(--w-accent); }
 .pane-disc-menu {
   position: absolute;
   top: 100%;
