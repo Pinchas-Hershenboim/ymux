@@ -27,6 +27,7 @@ import {
   IconFolder,
   IconGlobe,
   IconActivity,
+  IconBug,
   IconGitCompare,
 } from "./icons";
 import { createNarrow } from "./useNarrow";
@@ -36,6 +37,9 @@ import { SshKeyOfferModal } from "./SshKeyOfferModal";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { PortsWindow } from "./PortsWindow";
 import { BrowserWindow } from "./BrowserWindow";
+import { TicketModal } from "./TicketModal";
+import { TicketsPanel } from "./TicketsPanel";
+import { parseCapture, pendingCapture, setPendingCapture } from "./browserDevMode";
 import { FileManagerPane } from "./FileManagerPane";
 import { PanelSurface } from "./PanelSurface";
 import type { Geometry } from "./floatingWindow";
@@ -44,6 +48,7 @@ import {
   TerminalInstance,
   copyTerminalSelection,
   pasteIntoActiveTerminal,
+  readClipboardText,
   setCtrlCCopyOnSelect,
   setMirrorArrowsRtl,
 } from "./terminalInstance";
@@ -74,8 +79,9 @@ import {
   hasSftp,
   isLocalConn,
   isRemoteConn,
-  isRemoteEffective,
   isRemoteWorkspace,
+  paneCaps,
+  wsCaps,
   paneKindOf,
   pruneLayout,
   type Connection,
@@ -277,6 +283,12 @@ function App() {
   const [paneStatus, setPaneStatus] = createSignal<Record<string, PaneStatus>>({});
   // Live pane status text (e.g. "bootstrapping winmux…") set by backend events.
   const [paneStatusText, setPaneStatusText] = createSignal<Record<string, string>>({});
+  // issue #4 (winmux-tools chrome Ticker): per-pane agent turn timing. The
+  // backend emits pane:agent-run only on turn start/end; the label ticks
+  // locally off `pulseTick` (see agentRunLabel). startedAt=null → no live turn.
+  const [agentRuns, setAgentRuns] = createSignal<
+    Record<string, { startedAt: number | null; avgMs: number | null }>
+  >({});
   // cmux-A A1: pane_ids that received an OSC 9/99/777 notification and
   // haven't been focused since. Drives the amber pulse ring on the pane
   // + the sidebar aggregate badge. Cleared when the pane is focused.
@@ -474,7 +486,10 @@ function App() {
   // current rect once `anyModalOpen()` flips back to false.
   const anyModalOpen = () =>
     showSetup() !== false || editingWorkspace() !== null || showNotes() ||
-    showSettings() || showPalette() || showPortsWindow() || installingUpdate();
+    showSettings() || showPalette() || showPortsWindow() || installingUpdate() ||
+    // Dev-Mode ticket modal — same reason as the rest: the native
+    // Browser Webview paints above HTML and must be hidden for it.
+    pendingCapture() !== null;
   createEffect(() => {
     if (!anyModalOpen()) return;
     // Broadcast hide to every workspace's Browser Webview. At most
@@ -938,24 +953,33 @@ function App() {
   // change; the cutoff is recomputed each read). Blocking items are already
   // caught by `waitingWorkspaceIds` — this only adds the passive stream.
   const HOOK_PULSE_WINDOW_MS = 4_000;
+  // Notification routing — the subkinds that "require something from you".
+  // These get the OS sound (via the retained toast) + a blink (sidebar row +
+  // pane border) + a Notification-Center entry with the workspace name.
+  // Everything else is quiet history in the Notification Center only.
+  // `pre-tool-use` normally arrives as a BLOCKING permission card (handled by
+  // the blocking branch + `waitingWorkspaceIds`), so the pulse path effectively
+  // fires for stop/notification; listing it here is harmless + future-proof.
+  const MEANINGFUL_SUBKINDS = new Set(["stop", "notification", "pre-tool-use"]);
+  // Sidebar pulse source, decoupled from feedItems(): passive `stop` no longer
+  // lands in the feed, so we track {workspace_id -> last-meaningful-ts} here.
+  // Decoupling also fixes the old FEED_AUTO_DISMISS_MS(3s) < window(4s) bug that
+  // cut the pulse short.
+  const [meaningfulPulses, setMeaningfulPulses] = createSignal<Map<string, number>>(new Map());
+  const pulseWorkspace = (wsId: string) =>
+    setMeaningfulPulses((prev) => {
+      const now = Date.now();
+      const n = new Map(prev);
+      n.set(wsId, now);
+      // Bound growth: drop entries already past the window.
+      for (const [k, ts] of n) if (now - ts > HOOK_PULSE_WINDOW_MS) n.delete(k);
+      return n;
+    });
   const activeHookWorkspaceIds = (): Set<string> => {
     const s = new Set<string>();
     const now = Date.now();
-    const passiveSubkinds = new Set([
-      "pre-tool-use",
-      "stop",
-      "notification",
-      "session-end",
-      "post-tool-use",
-      "subagent-stop",
-      "user-prompt-submit",
-      "pre-compact",
-    ]);
-    for (const it of feedItems()) {
-      if (!it.workspace_id) continue;
-      if (!passiveSubkinds.has(it.subkind)) continue;
-      if (now - it.created_ms > HOOK_PULSE_WINDOW_MS) continue;
-      s.add(it.workspace_id);
+    for (const [wsId, ts] of meaningfulPulses()) {
+      if (now - ts <= HOOK_PULSE_WINDOW_MS) s.add(wsId);
     }
     return s;
   };
@@ -965,6 +989,12 @@ function App() {
   const [pulseTick, setPulseTick] = createSignal(0);
   const pulseTimer = setInterval(() => setPulseTick((n) => n + 1), 250);
   onCleanup(() => clearInterval(pulseTimer));
+  // issue #4: a reactive wall-clock the Ticker label reads through, so the
+  // "M:SS" elapsed re-renders every pulse without any per-second backend event.
+  const agentClockMs = (): number => {
+    void pulseTick();
+    return Date.now();
+  };
   // Re-evaluate on tick — the closure reads pulseTick() so Solid tracks the dep.
   const activeHookWorkspaceIdsReactive = (): Set<string> => {
     void pulseTick();
@@ -1645,10 +1675,19 @@ function App() {
     void refreshPersistence();
   };
 
-  // Phase 80: session restore (SSH only, for now) — on app start, re-attach the ACTIVE
-  // workspace's terminal panes to the tmux sessions they were on when the app
-  // last closed, so the user lands back in their conversations instead of a
-  // grid of [Connect] buttons.
+  // Phase 80: session restore — on app start, re-attach the ACTIVE workspace's
+  // terminal panes to the tmux sessions they were on when the app last closed,
+  // so the user lands back in their conversations instead of a grid of
+  // [Connect] buttons.
+  //
+  // SSH *and* WSL. The gate is `caps.tmuxPersistence`, not "is it SSH": a WSL
+  // pane keeps its tmux session across an app restart exactly like a remote
+  // one does. The hints were already being recorded for WSL by
+  // refreshPersistence (pane_persistence_list reports WSL tmux names too) —
+  // the restore loop was simply throwing them away.
+  //
+  // WSL restores WITHOUT the auth gate below: `wsl.exe` answers from cold, so
+  // there is no handle to open and no prompt to throw. That is `sessionBound`.
   //
   // Why this works at all: closing a pane/app DETACHES tmux, never kills it
   // (DECISIONS "DD"), so the remote sessions are still alive. All we're
@@ -1749,7 +1788,7 @@ function App() {
 
     const candidates: { paneId: string; tmux: string }[] = [];
     let seenTerminals = 0;
-    let skippedLocal = 0;
+    let skippedNoTmux = 0;
     let skippedLive = 0;
     let skippedNoHint = 0;
     let skippedNotTerminal = 0;
@@ -1766,14 +1805,8 @@ function App() {
         continue;
       }
       seenTerminals++;
-      // macOS port: a local pane on mac may sit in a LOCAL tmux session
-      // (pane_connect wraps the shell in tmux when persistent) — restorable
-      // like SSH. Windows-local / WSL panes stay skipped (no tmux persistence).
-      if (
-        !isRemoteEffective(pane, ws.connection) &&
-        !(isMac() && isLocalConn(pane.connection ?? ws.connection))
-      ) {
-        skippedLocal++;
+      if (!paneCaps(pane, ws.connection).tmuxPersistence) {
+        skippedNoTmux++;
         continue;
       }
       if (paneToSession.has(paneId)) {
@@ -1786,7 +1819,7 @@ function App() {
     }
     restoreLog(
       `workspace=${wsId} terminals=${seenTerminals} candidates=${candidates.length} ` +
-        `(skipped: not-a-terminal=${skippedNotTerminal} local=${skippedLocal} ` +
+        `(skipped: not-a-terminal=${skippedNotTerminal} no-tmux=${skippedNoTmux} ` +
         `already-connected=${skippedLive} no-remembered-session=${skippedNoHint})`,
     );
     // no-remembered-session on a FIRST run with this build is expected: the
@@ -1794,18 +1827,27 @@ function App() {
     // come back to until the app has been closed once with a session attached.
     if (candidates.length === 0) return;
 
-    // The liveness check runs only for a workspace that declares its OWN SSH
-    // connection. Both commands below are workspace-scoped:
-    // `workspace_ensure_connected` reads `workspace.connection` and no-ops
-    // without one, and `pane_list_tmux_sessions` needs a live workspace-level
-    // handle. A workspace whose PANES each carry their own connection (what
-    // `isRemoteEffective` exists for) has neither at boot — so gating on it
-    // meant that whole setup silently never restored. Now it re-attaches
-    // directly and the pane's own connection does the authenticating.
+    // The liveness check runs for a workspace that declares its own
+    // tmux-capable connection. Both commands below are workspace-scoped:
+    // `workspace_ensure_connected` reads `workspace.connection`, and
+    // `pane_list_tmux_sessions` answers at the workspace level. A workspace
+    // whose PANES each carry their own connection (what `paneCaps` exists
+    // for) has neither at boot — so gating on it meant that whole setup
+    // silently never restored. Now it re-attaches directly and the pane's own
+    // connection does the authenticating.
+    //
+    // WSL takes this same path: `pane_list_tmux_sessions` already has a WSL
+    // branch that shells out through wsl_exec and needs no handle, and
+    // `workspace_ensure_connected` returns Ok(()) for any non-SSH connection —
+    // so the call below is a harmless no-op rather than a special case. That
+    // is why `sessionBound` gates only the ensure-connected call.
+    const wsc = wsCaps(ws);
     let alive: Set<string> | null = null;
-    if (isRemoteWorkspace(ws)) {
+    if (wsc.tmuxPersistence) {
       try {
-        await invoke("workspace_ensure_connected", { workspaceId: ws.id });
+        if (wsc.sessionBound) {
+          await invoke("workspace_ensure_connected", { workspaceId: ws.id });
+        }
       } catch (e) {
         restoreLog(`abort: ensure_connected failed — ${String(e)}`);
         return;
@@ -1819,15 +1861,20 @@ function App() {
         restoreLog(`abort: list_tmux_sessions failed — ${String(e)}`);
         return;
       }
-      // An EMPTY list is ambiguous: it also means "no live SSH handle" (the
+      // An EMPTY list is ambiguous: on SSH it also means "no live handle" (the
       // command returns Ok([]) rather than erroring — password-auth workspaces
-      // land here). Treat it as "can't tell" and keep every hint, so a
-      // workspace that merely needs a prompt today still restores tomorrow.
+      // land here), and on WSL it is what a wsl_exec failure degrades to.
+      // Treat it as "can't tell" and keep every hint, so a workspace that
+      // merely needs a prompt — or a distro that was asleep — still restores
+      // tomorrow. Erring this way is deliberate: attaching on a guess would
+      // have `tmux new-session -A` CREATE an empty session under the
+      // remembered name, destroying the very hint we came back for.
       if (sessions.length === 0) {
         restoreLog(
-          "abort: server reported 0 tmux sessions — ambiguous (this is also what " +
-            "'no live SSH handle' looks like, e.g. a password-auth workspace the " +
-            "headless connect can't open). Hints kept, nothing restored.",
+          "abort: reported 0 tmux sessions — ambiguous (also what 'no live SSH " +
+            "handle' looks like, e.g. a password-auth workspace the headless " +
+            "connect can't open, or a WSL distro that failed to answer). " +
+            "Hints kept, nothing restored.",
         );
         return;
       }
@@ -2156,7 +2203,10 @@ function App() {
     }
     if (matches(e, sc.paste)) {
       e.preventDefault();
-      navigator.clipboard.readText().then((text) => {
+      // readClipboardText, not navigator.clipboard.readText: WebView2 denies
+      // clipboard READ (while allowing write), so this shortcut silently did
+      // nothing. Host-side read via the Rust command instead.
+      readClipboardText().then((text) => {
         if (text) pasteIntoActiveTerminal(text);
       }).catch((err) => log.warn("paste failed", err));
       return;
@@ -2419,6 +2469,21 @@ function App() {
     // pane's terminal (input + resize) if its session is still live. If the
     // popout closed *because* of pty:exit, the exit handler above already
     // cleared the maps, so this is a no-op.
+    // Dev Mode: an element was right-clicked in a workspace Browser.
+    // The payload crossed a JSON boundary from an untrusted page, so it
+    // is narrowed before anything opens (see parseCapture).
+    unlistens.push(
+      await listen<unknown>("browser:ticket-captured", (e) => {
+        const raw = e.payload;
+        if (typeof raw !== "object" || raw === null) return;
+        const o = raw as Record<string, unknown>;
+        const wsId = typeof o.workspace_id === "string" ? o.workspace_id : "";
+        const capture = parseCapture(o.capture);
+        if (!wsId || !capture) return;
+        setPendingCapture({ workspaceId: wsId, capture });
+      }),
+    );
+
     unlistens.push(
       await listen<string>("popout:closed", (e) => {
         const sid = e.payload;
@@ -2442,24 +2507,42 @@ function App() {
     // Initial feed load.
     try {
       const items = await invoke<FeedItem[]>("feed_list");
-      // Show most recent first.
-      setFeedItems([...items].reverse());
-      // Auto-dismiss already-resolved items so we don't show stale verdicts.
-      for (const it of items) {
-        if (it.state !== "pending") scheduleFeedDismiss(it.request_id);
-      }
+      // The live feed now carries ONLY actionable blocking permission cards;
+      // passive hooks (stop / notification / …) live in the Notification
+      // Center. Re-hydrate just the still-pending permission requests so a
+      // restart doesn't resurrect stale passive cards.
+      setFeedItems(
+        items.filter((i) => i.kind === "permission_request" && i.state === "pending").reverse(),
+      );
     } catch (e) {
       log.warn("feed_list failed", e);
     }
     // Phase 6.5 feed events.
     unlistens.push(
       await listen<FeedItem>("feed:item-added", (e) => {
-        setFeedItems((prev) => [e.payload, ...prev.filter((i) => i.request_id !== e.payload.request_id)]);
-        if (e.payload.state !== "pending") scheduleFeedDismiss(e.payload.request_id);
-        // #1 fix: feed items (Claude hooks / permissions / passive) are the
-        // stream the user actually sees — mirror them into the Notification
-        // Center too (it previously only tapped OSC + RPC notifications).
-        pushNotif(feedToNotif(e.payload));
+        const f = e.payload;
+        const isBlocking = f.kind === "permission_request" && f.state === "pending";
+        const isMeaningful = !isBlocking && MEANINGFUL_SUBKINDS.has(f.subkind);
+        // BLOCKING permission asks are the ONLY items that get a transient
+        // live-feed card — they're actionable (allow/deny) and drive the
+        // waiting red-dot highlight. Passive hooks never touch the feed.
+        if (isBlocking) {
+          setFeedItems((prev) => [f, ...prev.filter((i) => i.request_id !== f.request_id)]);
+        }
+        // Every hook is recorded in the Notification Center history; feedToNotif
+        // carries the workspace_id so the entry shows which workspace it's from.
+        pushNotif(feedToNotif(f));
+        // MEANINGFUL passive events ("your turn" / "Claude asked") blink the
+        // sidebar workspace row + the pane border, without cluttering the feed.
+        if (isMeaningful) {
+          if (f.workspace_id) pulseWorkspace(f.workspace_id);
+          const pid = f.pane_id;
+          if (pid) {
+            addPaneNotified(pid);
+            // Focused pane: brief one-shot flash, then auto-clear (mirrors OSC).
+            if (activePaneId() === pid) setTimeout(() => clearPaneNotified(pid), 2000);
+          }
+        }
       })
     );
     unlistens.push(
@@ -2485,25 +2568,13 @@ function App() {
       await listen<{ pane_id: string; title: string; body: string; kind: string }>(
         "osc-notification",
         (e) => {
-          const { title, body, kind } = e.payload;
+          const { title, body } = e.payload;
           const hasTitle = title.trim().length > 0;
-          const item: FeedItem = {
-            request_id:
-              (globalThis.crypto?.randomUUID?.() ?? `osc-${Date.now()}-${Math.random()}`),
-            kind: "notification",
-            subkind: kind,
-            pane_id: e.payload.pane_id,
-            workspace_id: null,
-            title: hasTitle ? title : body,
-            summary: hasTitle ? body : "",
-            payload: e.payload,
-            state: "passive",
-            created_ms: Date.now(),
-            blocking: false,
-          };
-          setFeedItems((prev) => [item, ...prev]);
-          scheduleFeedDismiss(item.request_id);
-          // #1: also record it in the Notification Center timeline.
+          // OSC 9/99/777 notifications are passive: they no longer get a
+          // transient feed card (the live feed carries only blocking permission
+          // asks). They still land in the Notification Center and pulse the
+          // originating pane border below.
+          // #1: record it in the Notification Center timeline.
           pushNotif({
             id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
             title: hasTitle ? title : body,
@@ -2647,6 +2718,27 @@ function App() {
           delete next[e.payload.pane_id];
         }
         setPaneStatusText(next);
+      })
+    );
+    // issue #4: per-pane agent turn timing for the chrome Ticker.
+    unlistens.push(
+      await listen<{
+        pane_id: string;
+        started_at: number | null;
+        avg_ms: number | null;
+        running: boolean;
+      }>("pane:agent-run", (e) => {
+        const next = { ...agentRuns() };
+        if (!e.payload.running && e.payload.avg_ms == null) {
+          // session-end / full clear
+          delete next[e.payload.pane_id];
+        } else {
+          next[e.payload.pane_id] = {
+            startedAt: e.payload.running ? e.payload.started_at : null,
+            avgMs: e.payload.avg_ms,
+          };
+        }
+        setAgentRuns(next);
       })
     );
     // Live refresh when an external mutation happens (RPC over named pipe).
@@ -3074,6 +3166,16 @@ function App() {
                 <IconActivity />
                 <span class="ws-header-btn-label">{t("sidebar.insights.label")}</span>
               </button>
+              {/* Dev-Mode tickets. Local files, no connection needed —
+                  openPanel, not openPanelConnected. */}
+              <button
+                class="ws-header-btn"
+                title={t("sidebar.tickets.tooltip")}
+                onClick={() => openPanel("tickets")}
+              >
+                <IconBug />
+                <span class="ws-header-btn-label">{t("sidebar.tickets.label")}</span>
+              </button>
               {/* Feedback reorg: Notifications button lives at the header edge,
                   after Monitor. Moved here from the sidebar so all workspace
                   tools sit together. Badge shows the unread count. */}
@@ -3210,6 +3312,8 @@ function App() {
                     pendingHostTrust={pendingHostTrust()}
                     paneStatus={paneStatus()}
                     paneStatusText={paneStatusText()}
+                    agentRuns={agentRuns()}
+                    agentClockMs={agentClockMs}
                     panePersistence={panePersistence()}
                     ensureTerm={ensureTerm}
                     onFocus={(pid) => {
@@ -3315,6 +3419,7 @@ function App() {
               });
             }}
             onMarkRead={markNotifRead}
+            workspaceName={(id) => file().workspaces.find((w) => w.id === id)?.name}
           />
         )}
       />
@@ -3434,6 +3539,18 @@ function App() {
         }}
       />
 
+      {/* Dev-Mode tickets for the active workspace. Same drawer → float
+          → fullscreen lifecycle as the other side panels. */}
+      <TicketsPanel
+        surface={surfaceOf("tickets")}
+        workspaceId={file().active_workspace_id ?? undefined}
+        workspaceName={activeWs()?.name}
+        onClose={() => closePanel("tickets")}
+        onDrawer={() => openPanel("tickets")}
+        onFloat={() => floatPanel("tickets")}
+        onFullscreen={() => expandPanel("tickets")}
+      />
+
       {/* Phase 68 (UX): per-workspace Add-ons window (from right-click). */}
       <AddonsWindow
         open={!!addonsWin()}
@@ -3521,6 +3638,23 @@ function App() {
           return startForward(id, remotePort);
         }}
       />
+
+      {/* Dev Mode ticket capture. Opened by browser:ticket-captured;
+          folded into anyModalOpen() above so the Browser Webview is
+          hidden while it's up (it would otherwise paint over this). */}
+      <Show when={pendingCapture()}>
+        {(pc) => (
+          <TicketModal
+            workspaceId={pc().workspaceId}
+            capture={pc().capture}
+            onClose={() => setPendingCapture(null)}
+            onSaved={() => {
+              setPendingCapture(null);
+              flashSummaryToast("ok", t("browser.dev.captured"));
+            }}
+          />
+        )}
+      </Show>
 
       {/* Phase 58: voice-input recording indicator + error toast.
           Floating top-right, dismissible only by stopping the

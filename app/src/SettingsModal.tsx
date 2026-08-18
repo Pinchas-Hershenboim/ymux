@@ -35,6 +35,7 @@ import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
+import { WinmuxToolsTab } from "./WinmuxToolsTab";
 import { createLogger } from "./logger";
 
 const log = createLogger("SETTINGS");
@@ -1516,6 +1517,7 @@ export function SettingsModal(p: Props) {
                   </Show>
                 </section>
                 <AddonsTab workspaceId={p.activeWorkspaceId} />
+                <WinmuxToolsTab workspaceId={p.activeWorkspaceId} />
               </Show>
             </div>
           </div>

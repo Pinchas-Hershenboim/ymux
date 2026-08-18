@@ -540,7 +540,12 @@ fn sort_entries(out: &mut Vec<FileEntry>) {
 
 /// Find an active SSH handle for the workspace by scanning the session
 /// map for the first Session::Ssh whose workspace_id matches.
-fn pick_ssh_handle_for_workspace(
+///
+/// `pub(crate)` so `tickets` can reach the SAME session the browser's
+/// port-forward already rides on (`open_auto_forward` in lib.rs resolves
+/// its handle the same way). SSH multiplexes, so an SFTP or exec channel
+/// costs no extra connection and no extra authentication.
+pub(crate) fn pick_ssh_handle_for_workspace(
     state: &AppState,
     workspace_id: &str,
 ) -> Option<Arc<SshHandle<SshClient>>> {
@@ -555,7 +560,7 @@ fn pick_ssh_handle_for_workspace(
     None
 }
 
-async fn open_sftp(handle: &SshHandle<SshClient>) -> Result<SftpSession, String> {
+pub(crate) async fn open_sftp(handle: &SshHandle<SshClient>) -> Result<SftpSession, String> {
     let chan = handle
         .channel_open_session()
         .await
@@ -1155,6 +1160,58 @@ pub(crate) fn file_write_local(path: String, text: String) -> Result<(), String>
     std::fs::write(&p, text).map_err(|e| format!("write {p:?}: {e}"))
 }
 
+/// Read a whole remote file over a fresh SFTP channel.
+pub(crate) async fn remote_read_bytes(
+    handle: &SshHandle<SshClient>,
+    path: &str,
+) -> Result<Vec<u8>, String> {
+    let sftp = open_sftp(handle).await?;
+    let mut file = sftp
+        .open(path)
+        .await
+        .map_err(|e| format!("sftp open {path}: {e}"))?;
+    let mut bytes = Vec::new();
+    let r = file
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| format!("read {path}: {e}"));
+    drop(file);
+    let _ = sftp.close().await;
+    r?;
+    Ok(bytes)
+}
+
+/// Truncating byte write over a fresh SFTP channel.
+///
+/// NOT atomic — callers needing atomicity write a `.tmp` and `mv -f` it
+/// into place over an exec channel. SFTP's own `rename` cannot be used
+/// for that: russh-sftp 2.1.1 negotiates no posix-rename extension, so
+/// `rename` is raw SSH_FXP_RENAME, which FAILS when the destination
+/// already exists.
+pub(crate) async fn remote_write_bytes(
+    handle: &SshHandle<SshClient>,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let sftp = open_sftp(handle).await?;
+    let mut file = sftp
+        .create(path)
+        .await
+        .map_err(|e| format!("sftp create {path}: {e}"))?;
+    let r = async {
+        file.write_all(bytes)
+            .await
+            .map_err(|e| format!("write {path}: {e}"))?;
+        file.flush().await.ok();
+        file.shutdown().await.ok();
+        Ok::<(), String>(())
+    }
+    .await;
+    drop(file);
+    let _ = sftp.close().await;
+    r
+}
+
 #[tauri::command]
 pub(crate) async fn file_read_remote(
     state: State<'_, AppState>,
@@ -1163,17 +1220,7 @@ pub(crate) async fn file_read_remote(
 ) -> Result<FileContents, String> {
     let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
         .ok_or_else(|| "no active SSH session".to_string())?;
-    let sftp = open_sftp(&handle).await?;
-    let mut file = sftp
-        .open(&path)
-        .await
-        .map_err(|e| format!("sftp open {path}: {e}"))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .await
-        .map_err(|e| format!("read: {e}"))?;
-    drop(file);
-    let _ = sftp.close().await;
+    let bytes = remote_read_bytes(&handle, &path).await?;
     let size = bytes.len() as u64;
     Ok(classify_bytes(&path, &bytes, size))
 }
@@ -1188,18 +1235,8 @@ pub(crate) async fn file_write_remote(
     let handle = pick_ssh_handle_for_workspace(&state, &workspace_id)
         .ok_or_else(|| "no active SSH session".to_string())?;
     let bytes = text.into_bytes();
-    let sftp = open_sftp(&handle).await?;
-    let mut file = sftp
-        .create(&path)
-        .await
-        .map_err(|e| format!("sftp create {path}: {e}"))?;
-    file.write_all(&bytes).await.map_err(|e| format!("write: {e}"))?;
-    file.flush().await.ok();
-    file.shutdown().await.ok();
-    let n = bytes.len() as u64;
-    drop(file);
-    let _ = sftp.close().await;
-    Ok(n)
+    remote_write_bytes(&handle, &path, &bytes).await?;
+    Ok(bytes.len() as u64)
 }
 
 /// Surface the large-file threshold so the frontend can warn before
@@ -1481,7 +1518,13 @@ pub(crate) async fn file_manager_unzip_local(
 /// runs a `bash -lc <command>` on the workspace's existing SSH handle
 /// and waits for it to exit. Returns the joined stdout+stderr text
 /// and the exit code. Caller decides how to surface non-zero codes.
-async fn remote_exec(
+/// Run a command over a fresh exec channel; returns (merged stdout+stderr, exit code).
+///
+/// NOTE: no timeout. Every caller here is a user-initiated long operation
+/// (zip / targz / unzip) where that is correct. Callers on a latency-
+/// sensitive path must wrap this themselves rather than change the
+/// signature under the existing ones.
+pub(crate) async fn remote_exec(
     handle: &SshHandle<SshClient>,
     command: &str,
 ) -> Result<(String, i32), String> {

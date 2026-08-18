@@ -5,4 +5,15 @@ export type WslInspect = { wsl_present: boolean, wsl_ready: boolean, distros: Ar
  * "ok" | "stale" | "missing" — winmux CLI inside the distro vs the
  * embedded manifest sha.
  */
-winmux_cli_state: string | null, tmux_conf_ok: boolean | null, claude_inside: boolean | null, hooks_version_inside: string | null, };
+winmux_cli_state: string | null, tmux_conf_ok: boolean | null, 
+/**
+ * Is the `claude` BINARY runnable inside the distro?
+ *
+ * This used to probe `[ -d "$HOME/.claude" ]`, which is the wrong
+ * question twice over: `winmux setup-hooks` creates that directory
+ * itself, so after one wizard run the field read `true` on a distro
+ * with no Claude Code at all — and the install step that depends on it
+ * would then skip forever. `command -v claude` is what the user
+ * actually experiences when they type `claude`.
+ */
+claude_inside: boolean | null, hooks_version_inside: string | null, };

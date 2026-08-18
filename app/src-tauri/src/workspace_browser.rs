@@ -35,10 +35,86 @@ use std::sync::{Arc, Mutex};
 
 use tauri::webview::WebviewBuilder;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, State, Url, Webview, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, Webview, WebviewUrl,
 };
 
 use crate::{config_dir, log_debug, log_info, log_warn, AppState};
+
+/// URL scheme the Dev-Mode inspect script uses to hand a captured
+/// element back to the app. See `install_ticket_bridge`.
+const TICKET_SCHEME: &str = "winmux-ticket";
+
+/// Event the main window listens on to open the ticket modal.
+const TICKET_EVENT: &str = "browser:ticket-captured";
+
+/// Payload delivered to the frontend for one captured element.
+#[derive(Clone, serde::Serialize)]
+struct TicketCapture {
+    workspace_id: String,
+    /// The raw object the inspect script built (xpath / selector /
+    /// html / style / url). Round-tripped as-is — `tickets_create`
+    /// is what gives it a schema.
+    capture: serde_json::Value,
+}
+
+/// The child webview is a plain external page: no Tauri IPC is injected
+/// into it (and injecting it would hand a tunneled third-party service
+/// the app's command surface). Tauri 2.10's `WebviewBuilder` has no
+/// `on_ipc` either. So the Dev-Mode inspect script talks back through
+/// the one hook that does exist — navigation.
+///
+/// The script sets `location.href = "winmux-ticket:<base64url>"`. This
+/// handler decodes it, emits `browser:ticket-captured`, and returns
+/// `false` so the navigation itself never happens. **Every other URL
+/// returns `true`** — normal browsing, the port+path model, tabs and
+/// `workspace_browser_navigate` all take the exact same code path they
+/// did before this existed.
+///
+/// Note the scheme is used WITHOUT `//`: `winmux-ticket:<data>` parses
+/// as a cannot-be-a-base URL, so the payload lands in `path()` verbatim.
+/// The `//` form would put it in the *authority* slot instead —
+/// `host_str()` gets the data and `path()` comes back empty — and routes
+/// it through host normalization. Case happens to survive there (this is
+/// a non-special scheme), but the payload is data, not an authority, so
+/// the opaque form is the correct shape. See `ticket_bridge_tests`.
+fn handle_ticket_navigation(app: &AppHandle, workspace_id: &str, url: &Url) -> bool {
+    if url.scheme() != TICKET_SCHEME {
+        return true; // not ours — let the webview navigate normally
+    }
+    // `winmux-ticket:AAAA` → path() is "AAAA" (cannot-be-a-base URL).
+    let encoded = url.path();
+    match decode_capture(encoded) {
+        Ok(capture) => {
+            let _ = app.emit(
+                TICKET_EVENT,
+                TicketCapture {
+                    workspace_id: workspace_id.to_string(),
+                    capture,
+                },
+            );
+            // Rule #1: the capture holds page markup. Length only.
+            log_info(
+                "TICKETS",
+                &format!(
+                    "capture from browser ws={} payload_len={}",
+                    workspace_id,
+                    encoded.len()
+                ),
+            );
+        }
+        Err(e) => log_warn(
+            "TICKETS",
+            &format!("bad capture payload ws={workspace_id}: {e}"),
+        ),
+    }
+    false // never actually navigate to the sentinel
+}
+
+fn decode_capture(encoded: &str) -> Result<serde_json::Value, String> {
+    let bytes = crate::tickets::base64_decode(encoded)?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("capture is not utf-8: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("capture is not json: {e}"))
+}
 
 /// Map of `workspace_id -> Webview`. Exactly one entry per workspace
 /// that has opened its Browser at least once this session. Cleared
@@ -147,7 +223,13 @@ pub(crate) async fn workspace_browser_show(
     for attempt in 1..=MAX_ATTEMPTS {
         // Default environment — shared with the main window + every other
         // workspace browser. One WebView2 environment per process.
-        let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url.clone()));
+        // Only addition to the builder: the ticket bridge. It is inert
+        // for every URL that isn't `winmux-ticket:` (returns true =
+        // navigate as before), and nothing is injected into the page.
+        let bridge_app = app.clone();
+        let bridge_ws = workspace_id.clone();
+        let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url.clone()))
+            .on_navigation(move |url| handle_ticket_navigation(&bridge_app, &bridge_ws, url));
         match main_window.add_child(
             builder,
             LogicalPosition::new(x, y),
@@ -324,3 +406,101 @@ pub(crate) fn cleanup_workspace_sessions(workspace_id: &str) {
         )),
     }
 }
+
+#[cfg(test)]
+mod ticket_bridge_tests {
+    use super::*;
+
+    /// The whole bridge rests on this: `winmux-ticket:<data>` must parse
+    /// as an opaque URL that hands the payload back byte-for-byte. Base64
+    /// is case-sensitive, so any host-style normalization would corrupt it.
+    #[test]
+    fn opaque_scheme_preserves_base64_case() {
+        let payload = "SGVsbG8tV29ybGRfMTIz"; // mixed case + `-` + `_`
+        let url: Url = format!("{TICKET_SCHEME}:{payload}")
+            .parse()
+            .expect("sentinel url parses");
+        assert_eq!(url.scheme(), TICKET_SCHEME);
+        assert!(url.cannot_be_a_base(), "must be opaque, not host-based");
+        assert_eq!(url.path(), payload, "payload must survive verbatim");
+    }
+
+    /// Contrast, and the actual reason for the opaque form: with `//`
+    /// the payload is parsed as the authority, so `path()` — what the
+    /// handler reads — comes back EMPTY and the capture would be lost.
+    /// (Case survives either way; this is a non-special scheme.)
+    #[test]
+    fn authority_form_would_strand_the_payload_in_the_host() {
+        let url: Url = format!("{TICKET_SCHEME}://SGVsbG8=")
+            .parse()
+            .expect("parses");
+        assert_eq!(url.host_str(), Some("SGVsbG8="));
+        assert_eq!(url.path(), "", "handler reads path() — would get nothing");
+    }
+
+    /// base64 padding and the standard alphabet's `/` and `+` must also
+    /// survive the opaque form, so the bridge is not silently dependent
+    /// on the JS side stripping padding.
+    #[test]
+    fn opaque_form_survives_padding_and_standard_alphabet() {
+        let url: Url = format!("{TICKET_SCHEME}:a/b+c=").parse().expect("parses");
+        assert_eq!(url.path(), "a/b+c=");
+    }
+
+    #[test]
+    fn decode_capture_round_trips_json() {
+        // base64url of {"selector":"#a","xpath":"/html[1]"}
+        // r##…##: the payload contains `"#`, which would close an r#"…"#.
+        let json = r##"{"selector":"#a","xpath":"/html[1]"}"##;
+        let b64 = base64_encode_for_test(json.as_bytes());
+        let v = decode_capture(&b64).expect("decodes");
+        assert_eq!(v["selector"], "#a");
+        assert_eq!(v["xpath"], "/html[1]");
+    }
+
+    #[test]
+    fn decode_capture_rejects_garbage() {
+        assert!(decode_capture("!!!not-base64!!!").is_err());
+        // valid base64, but not JSON
+        assert!(decode_capture(&base64_encode_for_test(b"hello")).is_err());
+    }
+
+    /// Non-ticket URLs must be left completely alone. We can't build an
+    /// AppHandle in a unit test, so assert the scheme check directly —
+    /// it is the first line of `handle_ticket_navigation`.
+    #[test]
+    fn ordinary_urls_are_not_ours() {
+        for raw in [
+            "http://127.0.0.1:5173/",
+            "https://example.com/a?b=c",
+            "about:blank",
+        ] {
+            let url: Url = raw.parse().expect("parses");
+            assert_ne!(url.scheme(), TICKET_SCHEME, "{raw} must pass through");
+        }
+    }
+
+    fn base64_encode_for_test(bytes: &[u8]) -> String {
+        const ALPH: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let v = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+            let n = chunk.len();
+            out.push(ALPH[(v >> 18) as usize & 63] as char);
+            out.push(ALPH[(v >> 12) as usize & 63] as char);
+            if n > 1 {
+                out.push(ALPH[(v >> 6) as usize & 63] as char);
+            }
+            if n > 2 {
+                out.push(ALPH[v as usize & 63] as char);
+            }
+        }
+        out
+    }
+}
+

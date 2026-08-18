@@ -1283,10 +1283,23 @@ async fn dispatch(
                 .get("pane_id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            // The CLI hook push only carries `pane_id` (it has no cheap way to
+            // know the workspace). Derive the workspace from the pane when the
+            // client didn't send one — otherwise every hook feed item lands
+            // with workspace_id=None and the sidebar "something happened over
+            // there" pulse (App.tsx activeHookWorkspaceIds, which skips items
+            // with no workspace_id) can never fire on Stop. Mirrors how the
+            // pane.* handlers already resolve a pane's workspace.
             let workspace_id = params
                 .get("workspace_id")
                 .and_then(|v| v.as_str())
-                .map(String::from);
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .or_else(|| {
+                    pane_id.as_deref().and_then(|p| {
+                        find_workspace_for_pane(&state.workspaces.lock().unwrap(), p)
+                    })
+                });
             let title = params
                 .get("title")
                 .and_then(|v| v.as_str())
@@ -1316,6 +1329,49 @@ async fn dispatch(
                     .and_then(|v| v.as_str())
                     .unwrap_or("?")
             ));
+
+            // ── issue #4 (winmux-tools chrome Ticker): per-pane turn timing ──
+            // turn-start = UserPromptSubmit, turn-end = Stop, cleared on
+            // SessionEnd. UserPromptSubmit fires in EVERY permission mode
+            // (pre-tool-use does not — the CLI short-circuits it in
+            // acceptEdits/bypass), so it's the reliable turn boundary. It's
+            // kept OFF the feed entirely: it updates agent_runs, emits
+            // pane:agent-run, and returns before any FeedItem/toast is made.
+            // `stop`/`session-end` update the timing too but fall through to
+            // their existing handling below.
+            if let Some(pane) = pane_id.as_deref() {
+                match subkind.as_str() {
+                    "user-prompt-submit" => {
+                        let (started, avg) = {
+                            let mut runs = state.agent_runs.lock().unwrap();
+                            let e = runs.entry(pane.to_string()).or_default();
+                            e.turn_started_at = Some(SystemTime::now());
+                            (e.started_at_ms(), e.avg_ms())
+                        };
+                        crate::emit_agent_run_event(app, pane, started, avg);
+                        return Ok(json!({ "request_id": req_id, "decision": "passive" }));
+                    }
+                    "stop" => {
+                        let avg = {
+                            let mut runs = state.agent_runs.lock().unwrap();
+                            let e = runs.entry(pane.to_string()).or_default();
+                            if let Some(start) = e.turn_started_at.take() {
+                                if let Ok(d) = SystemTime::now().duration_since(start) {
+                                    e.record_turn(d.as_millis());
+                                }
+                            }
+                            e.avg_ms()
+                        };
+                        // started_at = None clears the live timer; avg persists.
+                        crate::emit_agent_run_event(app, pane, None, avg);
+                    }
+                    "session-end" => {
+                        state.agent_runs.lock().unwrap().remove(pane);
+                        crate::emit_agent_run_event(app, pane, None, None);
+                    }
+                    _ => {}
+                }
+            }
 
             let blocking = matches!(kind.as_str(), "permission_request");
 
@@ -1358,16 +1414,16 @@ async fn dispatch(
                     ));
                     match verdict.decision {
                         winmux_policy::Decision::Auto => {
-                            push_policy_audit(
-                                state,
-                                app,
-                                &req_id,
-                                "policy-auto",
-                                &format!("✓ {tool_name}"),
-                                &verdict.reason,
-                                pane_id.clone(),
-                                workspace_id.clone(),
-                            );
+                            // Auto is the 99% common case (every safe Bash /
+                            // Write / Edit). Pushing a passive "✓ matched no
+                            // risky pattern" audit item for each one floods the
+                            // feed — a single session produced 300 unread dots,
+                            // which read as "winmux keeps asking me to ack
+                            // things". The forensic trail already lives in
+                            // debug.log (the log_debug line above), so DON'T
+                            // surface Auto in the feed. Block still audits
+                            // (rare + security-relevant). See FOLLOWUPS if an
+                            // opt-in audit view is ever wanted.
                             return Ok(json!({
                                 "request_id": req_id,
                                 "decision": "allow",
@@ -1454,18 +1510,26 @@ async fn dispatch(
             {
                 let s = settings::load_from_disk().unwrap_or_default();
                 if hook_toast_enabled(&s.notifications, &s.hook_notifications, &subkind) {
+                    // beta.3 Fix 1: sound-gated by hook_notifications.
+                    let sound = hook_toast_should_sound(&s.hook_notifications, &subkind);
                     // v0.4.4: `stop` fires at the END OF EVERY TURN, so a toast
                     // per turn would be noise when the user is already watching
                     // winmux (they see the feed card + sidebar highlight).
-                    // Suppress the stop toast when the main window is focused;
-                    // still toast when winmux is in the background ("your turn"
-                    // while you're doing something else). SessionEnd (rare)
-                    // always toasts.
-                    let suppress_stop = subkind == "stop"
-                        && app
-                            .get_webview_window("main")
-                            .and_then(|w| w.is_focused().ok())
-                            .unwrap_or(false);
+                    // Historically we suppressed the stop toast whenever the main
+                    // window was focused — but that silently overrode an explicit
+                    // stop-SOUND opt-in: the user ticks "play a sound on Stop" and
+                    // then hears nothing while watching winmux. The OS couples a
+                    // native toast with its sound (no sound-only banner), so honor
+                    // the opt-in: if a Stop sound was requested, fire the full
+                    // notification even when focused. Only keep suppressing the
+                    // focused-window Stop toast when NO sound was requested, so the
+                    // anti-noise default still holds for everyone else. SessionEnd
+                    // (rare) always toasts.
+                    let main_focused = app
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_focused().ok())
+                        .unwrap_or(false);
+                    let suppress_stop = subkind == "stop" && main_focused && !sound;
                     if !suppress_stop {
                         // beta.3 Fix 2: resolve workspace name for the toast body.
                         let ws_name =
@@ -1476,8 +1540,6 @@ async fn dispatch(
                             &ws_name,
                             &s.i18n.language,
                         );
-                        // beta.3 Fix 1: sound-gated by hook_notifications.
-                        let sound = hook_toast_should_sound(&s.hook_notifications, &subkind);
                         show_toast_with_sound(&tt, &tb, sound);
                     }
                 }

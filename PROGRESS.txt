@@ -1787,3 +1787,694 @@ FIX insights_local.rs — probe DOCKER_HOST (unix://), /var/run/docker.sock,
   ~/.docker/run, ~/.orbstack/run, ~/.colima, ~/.rd, podman machine sock;
   first that pings wins; connect_docker returns the answering path and
   the card shows it (both OSes).
+=== 2026-08-10 — ROOT CAUSE of the whole WSL saga: wsl_exec lost every shell variable ===
+
+Yossi re-ran the wizard on the repaired distro and CreateWslUser now
+failed LOUDLY: "Step 'CreateWslUser' failed (exit 1) — EXISTS " followed
+by "could not determine the linux username". That is yesterday's guard
+working: $U was empty, and instead of writing garbage the step stopped.
+
+But why was $U empty when `id -nu 1000` returns mlastudent371 by hand?
+
+MEASURED, isolating one construct at a time through the exact transport
+std::process::Command uses (no cmd.exe re-parsing in between):
+    id -nu 1000                  -> mlastudent371     ok
+    echo A[$(id -nu 1000)]B      -> A[mlastudent371]B ok
+    X=$(id -nu 1000); echo [$X]  -> []                BROKEN
+    X=hello;          echo [$X]  -> []                BROKEN
+    echo [$HOME]                 -> [/root]           ok
+    echo [$0]                    -> [/bin/bash]       <- the tell
+
+Something between wsl.exe and the distro expands the script text ONCE
+before our shell sees it. $HOME survives because it exists in the
+expanding context too; $0 comes back as /bin/bash, i.e. that context is a
+bash. Any variable the script itself assigns is expanded before it is
+ever set, so it reads back empty.
+
+THIS IS THE ORIGIN OF EVERYTHING:
+  - `useradd -m -u 1000 -s /bin/bash "$U"` ran with an EMPTY username,
+    failed, and the old code swallowed the status -> no user was created,
+    while the step reported success.
+  - `printf '\n[user]\ndefault=%s\n' "$U"` wrote a literal `default=`
+    with no value -> exactly the /etc/wsl.conf we found.
+  - WSL then called getpwnam("") on every invocation, failed, and fell
+    back to root -> the CLI deploy wrote under one HOME and verified
+    under /root -> "SHA MISMATCH got " with an empty hash.
+  Three separate symptoms across two days, one line of cause.
+
+FIX: wsl_exec now feeds the script on STDIN (`sh -ls`) instead of passing
+  it as an argv element. Proven on the same probe:
+    argv  : X=hello; echo [$X] -> []
+    stdin : X=hello; echo [$X] -> [hello]
+  and the real CreateWslUser script over the new transport returns
+    EXISTS mlastudent371 / wsl.conf default already mlastudent371 /
+    VERIFIED user=mlastudent371 default=mlastudent371   exit 0
+
+  wsl_pipe_to_file's stage 1 keeps its argv script deliberately — its
+  stdin is the file-bytes channel. That script assigns no variables; it
+  only uses "$HOME" and $(dirname ...), both of which survive expansion
+  with identical results.
+
+NOT A CODE BUG, worth recording: the same run also failed
+  InstallLocalHooks with "bundled winmux-cli.exe not found (dev build
+  without staged resources?)". That is because the bare app.exe artifact
+  was run standalone — the CLI is bundled by the installer, not carried
+  by the exe. I had recommended the bare exe as the quick way to test;
+  for anything touching setup, the MSI is the artifact to use.
+
+cargo test 266/0. The live proof above is the real verification — this
+interaction cannot be unit-tested.
+
+=== 2026-08-10 — reset-local-setup.ps1 (test helper) ===
+
+Yossi: "Smart Install shows everything as already installed - can we have
+a script that resets the machine so the steps actually run again?"
+
+Added app/scripts/reset-local-setup.ps1. Two levels:
+  Soft (default) - removes only winmux's own artifacts: the winmux hooks
+    block in ~/.claude/settings.json + ~/.claude/hooks.json on Windows,
+    and ~/.winmux plus the distro's winmux hooks block inside WSL. Leaves
+    the distro, the linux user, tmux and /etc/wsl.conf alone.
+  Full - Soft plus `wsl --unregister`, the only way to retest InstallWsl
+    and CreateWslUser. Deletes the whole linux filesystem, so it asks the
+    user to type the distro name back before doing it.
+Dry run unless -Apply. settings.json is backed up before any edit.
+NEVER touches %APPDATA%\winmux\workspaces.json / settings.json.
+
+Two things the writing of it taught, both recorded in the file:
+  - Windows PowerShell 5.1 reads a .ps1 as ANSI when the file has no BOM,
+    so the em-dashes in the first draft corrupted and broke the parser
+    with errors pointing at unrelated lines. The script is ASCII-only now
+    and asserts 0 bytes >127.
+  - A shell heredoc nested inside a PowerShell here-string does not
+    survive PowerShell's parser; the WSL-side JSON edit is a python3 -c
+    one-liner instead.
+  It pipes scripts to `sh -ls` on stdin for the same reason wsl_exec now
+  does - argv loses shell variables.
+
+DRY RUN ON THE CURRENT MACHINE was itself informative:
+    no winmux hooks in C:\Users\...\.claude\settings.json  <- InstallLocalHooks never succeeded
+    [plan] delete C:\Users\...\.claude\hooks.json          <- a leftover
+    WSL state: NONE | user=mlastudent371 home=/home/mlastudent371
+  i.e. ~/.winmux does not exist (the deploy steps have never completed),
+  and the user/HOME fix from earlier today is holding.
+
+  So there is nothing meaningful to reset: the wizard reports InstallWsl
+  and CreateWslUser as done because they genuinely ARE done. What is
+  blocking Yossi is that he is still launching the OLD binary - the
+  20:39 log still shows "EXISTS " with an empty name, which is the argv
+  transport, i.e. without 9bd44bc. The MSI from run 31413798581 is the
+  one to install.
+
+=== 2026-08-10 — Smart Install VERIFIED LIVE, WSL saga closed ===
+
+Yossi: "ההתקנה עובדת והWSL נפתח והעברית מוצגת מימין לשמאל".
+
+Log confirms it. Progression across the day, same machine:
+  18:55  finished with 2 failed: InstallLocalHooks, CreateWslUser
+         -- WSL workspace NOT created
+  20:39  same 2 failures ("EXISTS " empty = still the argv transport)
+  20:57  finished with 1 failed: InstallLocalHooks
+         -- WSL workspace CREATED    <- the stdin fix (9bd44bc) landing
+  21:23  preflight, then NO failure lines at all
+         -- the "finished with N failed" WARN only fires on failure,
+            so this run completed with zero failed steps.
+
+That makes these live-verified for the first time, having never run
+before today: EnableLinuxEnv, InstallTmuxInWsl, DeployWinmuxCliToWsl,
+DeployTmuxConfToWsl, InstallHooksInWsl, and InstallLocalHooks. Plus a
+working WSL workspace that opens, with Hebrew rendering right-to-left.
+
+The last blocker was not a code bug: InstallLocalHooks resolves the CLI
+from `resource_dir()`, which for a bare app.exe is its own folder. Yossi
+was running the downloaded artifact standalone, where nothing had staged
+winmux-cli.exe next to it. Copying the repo's staged copy alongside the
+exe cleared it. The MSI carries it properly; the bare exe is not
+self-sufficient for anything that touches setup. My earlier
+recommendation of the bare exe as "the quick way to test" was wrong and
+cost several rounds.
+
+ALSO CORRECTED: I claimed there were no parallel instances, reasoning
+from boot-count in debug.log. Wrong method — the process list showed BOTH
+running at once (target/release/app.exe from Aug 9 and the downloaded
+9bd44bc one), sharing one %APPDATA%\winmux: one debug.log, one
+workspaces.json, one named pipe. Yossi had said so and I talked past it.
+Check the process list, not the log, for that question. WINMUX_CONFIG_DIR
+is the right tool for running two builds side by side.
+
+STILL NOT VERIFIED LIVE (both unrelated to WSL):
+  - The bad-byte PTY stall fix (fe9b840). Hebrew RENDERING works, but
+    that is a different thing: the fix is about an invalid byte silencing
+    a pane forever, and debug.log still shows ZERO "[PTY] utf8" warnings,
+    i.e. no invalid byte has been fed to a pane yet. The test remains:
+    `Get-Content <any winmux-*-test.exe>` then `echo שלום` in a LOCAL
+    pane — expect garbage as replacement chars, Hebrew still arriving,
+    and exactly ONE [WARN] [PTY] utf8 line per pane. Worth repeating in
+    Command Prompt, which only gets `chcp 65001` and has no PTY test.
+  - Phase 81 transfer bar. WSL now gives a possible SFTP target
+    (`sudo apt install openssh-server`).
+
+[2026-08-10] winmux-tools Half A — modular statuslines + session Ticker (issue #4)
+==================================================================
+TASK: GitHub issue #4 (Dina) — "ETA per Claude session" so she can decide
+  whether to go do dishes or stay. Yossi widened it: build winmux-tools/,
+  a modular home split into skills/ + statuslines/, decomposing the sabra
+  statusline monolith so components install/toggle independently.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+HALF A (this commit) — statuslines, pure JS, no winmux build needed:
+  A winmux-tools/statuslines/compose.js        (single statusLine command;
+      runs enabled modules from ./config, joins output)
+  A winmux-tools/statuslines/modules/model-dir.js   (model + cwd)
+  A winmux-tools/statuslines/modules/ctx-meter.js   (ctx bar; extracted verbatim)
+  A winmux-tools/statuslines/modules/sabra-badge.js (🌵 badge; extracted verbatim)
+  A winmux-tools/statuslines/modules/turn-ticker.js (⏱ elapsed + rolling avg)
+  A winmux-tools/statuslines/hooks/turn-state.js    (start/end/session-end;
+      per-session state at ~/.claude/winmux-tools/turn-state/<sid>.json)
+  A winmux-tools/statuslines/config
+  A winmux-tools/README.md
+
+DESIGN: turn boundaries from UserPromptSubmit(start)+Stop(end) — fires in
+  EVERY permission mode, unlike pre-tool-use which winmux-cli short-circuits
+  in acceptEdits/bypass (cli/src/main.rs:2153-2177). total_duration_ms is
+  whole-session incl. idle, so it can't express "this turn" — hence the
+  state file. Turns <2s (text-only) excluded from the average.
+
+VERIFIED (node, real runs):
+  - Composer parity: ctx-meter+model-dir+sabra-badge output is BYTE-IDENTICAL
+    to the original ~/.claude/sabra/statusline.js on the same payload.
+  - Ticker lifecycle: ⏱ counts mid-turn; avg appears after a completed turn;
+    a <2s turn does NOT move the average; session-end clears state.
+
+REMAINING (per approved plan C:\Users\...\plans\precious-sparking-iverson.md):
+  - Half A chrome ticker: winmux backend UserPromptSubmit hook + per-pane
+    agent_runs state + pane:agent-run event; frontend ticking label.
+  - Half B: skills registry + per-workspace deploy (model on addons.rs).
+  - statusLine deploy via apply_to_settings merge-writer (must preserve the
+    user's manual sabra statusLine/UserPromptSubmit entries).
+------------------------------------------------------------------
+
+[2026-08-10] winmux-tools Half A — chrome Ticker (winmux backend + frontend)
+==================================================================
+TASK: second surface for the issue #4 Ticker — a live per-pane label in the
+  winmux chrome (not just Claude's statusline), visible across panes.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+BACKEND:
+  M cli/src/hooks.rs                  (bundled spec: register UserPromptSubmit;
+      BUNDLED_CLAUDE_VERSION 1.2.0 -> 1.3.0)
+  M hooks/claude-code.json            (UserPromptSubmit event; version 1.3.0;
+      _notes entry)
+  M src/lib.rs                        (AgentRunState {turn_started_at, sum_ms,
+      count} + methods avg_ms/started_at_ms/record_turn; AppState.agent_runs;
+      emit_agent_run_event helper; 2 unit tests)
+  M src/rpc_server.rs                 (feed.push state machine: user-prompt-submit
+      = turn start [OFF the feed, early return]; stop = fold+emit; session-end
+      = clear+emit; emits pane:agent-run)
+FRONTEND:
+  M src/App.tsx                       (agentRuns signal + pane:agent-run listener
+      + agentClockMs reactive clock from pulseTick; pass to LayoutView)
+  M src/LayoutView.tsx                (thread agentRun + agentClockMs to PaneView)
+  M src/PaneView.tsx                  (agentRunLabel "⏱ M:SS · avg Ns" in header)
+  M src/App.css                       (.pane-agent-run, tabular-nums, right-pinned)
+
+DESIGN: turn-start = UserPromptSubmit (fires in every permission mode);
+  turn-end = Stop (already wired). user-prompt-submit is kept off the feed
+  (no card/toast) — it only updates agent_runs + emits pane:agent-run. The
+  frontend ticks M:SS locally off the 250ms pulseTick, so the backend emits
+  only on turn start/end, never per second.
+
+VERIFIED: cargo check --workspace clean (1 pre-existing unrelated warning in
+  insights_local.rs); tsc --noEmit clean; cargo test agent_run 2/2 pass
+  (avg excludes <2s turns, means the rest; started_at_ms).
+NOT VERIFIED LIVE: app.exe is running (blocks a real build/link here), so the
+  end-to-end wiring (hook -> RPC -> event -> label) is COMPILES-ONLY. Needs a
+  live winmux run on Yossi's machine + re-run setup-hooks (v1.3.0) to emit
+  UserPromptSubmit. The statusline Ticker (prior commit) IS fully node-verified
+  and shares the identical timing logic.
+
+REMAINING: Half B (skills registry + per-workspace deploy, model on addons.rs);
+  statusLine deploy via apply_to_settings; wire winmux setup to deploy
+  winmux-tools/ + point statusLine at compose.js (preserving sabra's entries).
+------------------------------------------------------------------
+2026-08-10 20:36 UTC — Half B: winmux-tools skills registry (Rust backend only)
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+BACKEND:
+  A app/src-tauri/src/skills.rs        (new module — 4 Tauri commands:
+      skills_list, skill_install, skill_uninstall, skills_installed.
+      Source registry: config_dir()/winmux-tools/skills/<name>/ [missing dir
+      = empty, not an error]. Local install = recursive fs copy into
+      dirs::home_dir()/.claude/skills/<name>/. Remote install = mkdir -p over
+      SSH exec() + per-file sftp_upload() into $HOME/.claude/skills/<name>/,
+      $HOME resolved via addons::remote_home(). Uninstall = rm -rf local dir
+      or remote `rm -rf`. skills_installed lists dir names under the
+      workspace's ~/.claude/skills/ [local: read_dir; remote: `ls -1`].
+      SkillInfo{name,files} derives Serialize + ts_rs::TS, same export
+      pattern as claude_usage::ModelUsage. valid_skill_name() whitelists
+      [A-Za-z0-9._-] and rejects "", ".", ".." before `name` ever reaches a
+      path join or a remote shell string — Rule #3 (name is user-influenced
+      and lands in `mkdir -p`/`rm -rf`). 2 unit tests on the validator
+      covering traversal + shell-metacharacter payloads.)
+  M app/src-tauri/src/addons.rs        (sftp_upload, remote_home: private ->
+      pub(crate) so skills.rs can reuse them; no behavior change)
+  M app/src-tauri/src/lib.rs           (mod skills; + 4 commands registered
+      in invoke_handler next to the addon_*/insights_* block)
+
+Frontend: NOT touched (out of scope for this half — frontend is being
+  written against this exact command contract in parallel).
+
+VERIFIED (real runs, not just compile):
+  - `cargo check --workspace` from app/src-tauri: clean. Only the two
+    pre-existing warnings noted in the task (ts-rs serde-attribute parse
+    warnings on unrelated structs, and the unused `Duration` import in
+    insights_local.rs) — no new warnings or errors from this change.
+  - `cargo test --lib skills::` : 3/3 pass — the 2 validator unit tests plus
+    ts-rs's auto-generated `export_bindings_skillinfo` test, which also
+    confirms app/src/bindings/SkillInfo.ts was written correctly
+    ({ name: string, files: number }).
+  - `cargo test --lib addons::` : 3/3 pass, unchanged — confirms making
+    sftp_upload/remote_home pub(crate) didn't disturb addons.rs.
+NOT VERIFIED LIVE: app.exe was running per task constraints, so no real
+  install/uninstall against a live local or SSH workspace was exercised —
+  compile + unit-test verified only, as scoped by this task.
+
+REMAINING (tracked in the Half A entry above, unchanged): statusLine deploy
+  via apply_to_settings; wire winmux setup to deploy winmux-tools/ + point
+  statusLine at compose.js. Frontend half of the skills registry (Settings UI
+  calling skills_list/skill_install/skill_uninstall/skills_installed) is a
+  separate in-flight task, not part of this change.
+------------------------------------------------------------------
+
+[2026-08-10] winmux-tools Half B — skills registry UI (frontend)
+==================================================================
+TASK: frontend for the skills registry (backend landed in bc505d2 via
+  implementer-tester). Settings panel to install/uninstall skills per-workspace.
+BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
+
+  A app/src/WinmuxToolsTab.tsx   (skills list + per-workspace install/uninstall,
+      modeled on AddonsTab; drives skills_list/skill_install/skill_uninstall/
+      skills_installed)
+  M app/src/SettingsModal.tsx    (import + render WinmuxToolsTab next to AddonsTab)
+
+VERIFIED: tsc --noEmit clean (caught + fixed a Set<unknown> inference bug).
+  app.exe now CLOSED (Yossi closed it) → running cargo build (dev link) +
+  vite build to confirm the whole thing links and bundles.
+
+REMAINING: B3 statusLine deploy (apply_to_settings merge-writer to point each
+  env's statusLine at compose.js + wire turn-state hooks, preserving sabra's
+  entries) — deferred/follow-up. Live end-to-end (ticker turn-timing with a
+  real Claude session; skill install onto a workspace) best verified in the
+  running app.
+------------------------------------------------------------------
+
+================================================================================
+2026-08-11  Browser Dev Mode + Tickets (v2) — branch browser-tickets-v2
+================================================================================
+
+FOUND FIRST (this is the headline): the feature was already built and then
+  LOST. 13 commits ending at aefbba4 ("Phase 54") implemented tickets +
+  dev mode + browser tabs + popout, ~2267 lines. No branch contained them
+  — `git branch -a --contains aefbba4` returned empty. They survived only
+  as unreachable objects and would have been collected by `git gc`.
+  Rescued to branch `browser-dev-mode-tickets` (archive, do not build on).
+
+WHY PHASE 54 NEVER WORKED — the capture went nowhere. Its inspect script
+  wrote the captured element to `localStorage.__winmux_ticket__` inside
+  the child webview, and NOTHING read it back. One occurrence of that key
+  in the whole tree: the write. `workspace_browser_eval` returns
+  Result<(), String> (fire-and-forget) and the child webview was built as
+  a bare `WebviewBuilder::new(label, External(url))` — no IPC, no
+  initialization_script. So there was no channel back at all. The only
+  path to the modal was manualCapture(), which opened a ticket with
+  selector/xpath/html all EMPTY.
+
+DECISION (Yossi): do NOT restore Phase 54. Don't touch the existing
+  browser. Re-do tickets as a clean add-on; salvage only tickets.rs /
+  TicketModal / TicketsPanel. Phase 54's browser tabs are superseded by
+  main's own (0d4e9a4, landed 2h AFTER aefbba4 the same day).
+
+WHAT SHIPPED (5 commits on browser-tickets-v2, off origin/main 9bd44bc):
+  3025f5e  tickets.rs + 4 commands, storage at
+           <config_dir>/tickets/<workspace_id>/ticket-*.json
+  3f9b36e  winmux-ticket: navigation bridge  <- the gap, closed
+  873e060  Dev Mode toggle + right-click capture
+  59cdae3  capture modal wired to browser:ticket-captured
+  7f7445b  tickets panel on the shared PanelSurface shell
+
+THE BRIDGE (the part that was missing). Tauri 2.10.3's WebviewBuilder has
+  no on_ipc — verified against the vendored crate source, not from
+  memory. What it does have is on_navigation(Fn(&Url) -> bool). So:
+    script:  location.href = "winmux-ticket:<base64url of JSON>"
+    rust:    on_navigation -> decode -> emit browser:ticket-captured
+                            -> return false (navigation never happens)
+  Every other URL returns true, i.e. the exact pre-existing code path.
+  ONE line added to the builder; no initialization_script, so ordinary
+  pages get zero injection.
+
+  Scheme is used WITHOUT "//" on purpose. Probed both forms:
+    winmux-ticket://AAAA  -> host_str=Some("AAAA")  path=""   <- lost
+    winmux-ticket:AAAA    -> host_str=None          path="AAAA"
+  The handler reads path(), so the authority form would have silently
+  dropped every capture. (A first draft of the code comment claimed the
+  "//" form corrupts base64 case — probed it, that is FALSE for
+  non-special schemes. Comment and test now state the real mechanism.)
+
+NO WORKSPACE SCHEMA CHANGE. Phase 54 added dev_mode + project_path to the
+  Workspace struct = workspaces.json migration + 4 initializers +
+  provisioning.rs + rpc_server.rs. Dropped entirely:
+    dev_mode     -> localStorage, the same pattern BrowserWindow already
+                    uses for geometry/port/path/tabs
+    project_path -> unnecessary; tickets live in config_dir like
+                    settings.json. Also works for remote workspaces whose
+                    cwd is on another machine, and kills the SFTP folder
+                    picker + the dialog:allow-open it needed.
+
+BLAST RADIUS ON THE EXISTING BROWSER: BrowserWindow.tsx +43/-1, and the
+  single deletion is its icons import line. Tabs, port+path, navigation,
+  geometry, show/hide untouched. All Dev Mode behaviour lives in the new
+  browserDevMode.ts.
+
+right-click (contextmenu), not Phase 54's hover+left-click — left-click
+  made the page unusable while Dev Mode was armed.
+
+Selector generation rewritten: walks up until querySelectorAll returns
+  exactly one node, adding :nth-of-type on sibling collisions. The
+  archive emitted `div.a.b.c` and hoped.
+
+Dropped the archive's export: it opened a save dialog, discarded the
+  path, then used a browser download-anchor. Replaced with Copy as
+  Markdown (clipboard) + reveal folder via revealItemInDir — both already
+  covered by opener:default, no new capability.
+
+VERIFIED: 186 Rust lib tests (14 new: 8 tickets, 6 bridge), tsc clean,
+  vite build clean, i18n 1026 keys x 4 locales zero drift.
+NOT VERIFIED: nothing has run live. The open risk is whether WebView2
+  fires on_navigation for an unregistered scheme — if it does not, the
+  fallback is on_web_resource_request against a sentinel URL. Smoke steps
+  are in the session report; per CLAUDE.md this stays "compiles,
+  untested" until Yossi runs it.
+
+Note for whoever picks this up: the worktree needed
+  app/src-tauri/resources/winmux-cli.exe staged before any cargo step
+  (gitignored). Copied it from the main checkout rather than rebuilding.
+
+--------------------------------------------------------------------------------
+2026-08-11 (later, same session)  CORRECTION: tickets DO belong to a project
+--------------------------------------------------------------------------------
+
+The entry above says "project_path -> unnecessary" and stores everything
+app-local. That was wrong and Yossi caught it: "why did you give up on the
+folder — how can this be associated with the specific project in a smarter
+way?" A ticket not attached to a repo is orphaned metadata; you cannot hand
+it to Claude Code in the right project, which is the entire point of
+capturing an element.
+
+What I conflated: Phase 54's problem was NOT "associate with a project", it
+was WHERE it put the field. `project_path` on the Workspace struct is what
+forced the workspaces.json migration + 4 initializers + provisioning.rs +
+rpc_server.rs + the SFTP folder picker. Putting it on the TICKET gets the
+association with zero schema movement. Both goals were always available.
+
+Fixed in c66703c. resolve_project() ladder, most specific first:
+  1. explicit override (localStorage, per workspace)
+  2. git_worktree
+  3. git root walked UP from cwd   <- the "smarter" part
+  4. cwd
+  5. nothing -> app-local
+Rung 3 matters: a pane usually sits in a subdir, so raw cwd would scatter
+tickets across subfolders of one repo. No git-root walker existed —
+diff_pane.rs:40 only checks `cwd/.git` without climbing — so it is new.
+
+Phase 54 opened a folder BROWSER for information the app already had. The
+workspace carries git_worktree + cwd + connection; asking was the bug.
+
+Write target by connection:
+  Local -> <project>/.winmux-tickets/
+  Wsl   -> same via \wsl.localhost\<distro>\... when that share resolves;
+           there is no path-translation helper in the tree, so this is new
+           and degrades to app-local when the share is not reachable
+  Ssh   -> app-local (project is on another machine); SFTP write deferred
+Every fallback still records project_path, so a ticket is attributable even
+when it could not be co-located.
+
+The modal calls tickets_resolve_project BEFORE saving and shows the
+destination on every capture — writing into a user's repo is never silent,
+and a fallback shows its reason. .gitignore is never touched.
+
+191 Rust tests (5 new: git walk from subdir, worktree .git-as-a-FILE,
+not-a-repo, WSL translation declining). tsc + vite clean. i18n 1027 x 4.
+Still NOT verified live — same open risk as before (on_navigation).
+
+────────────────────────────────────────────────────────────────────
+[2026-08-12 20:39 +0300] Hooks feed-flood + Stop-pulse fixes (branch claude/hooks-animation-worktrees-6345b2)
+Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "too many worktrees".
+
+#1 FEED FLOOD (the real "never-ending hooks"): rpc_server.rs feed.push
+   pushed a passive audit item for EVERY Decision::Auto (safe Bash/Write/
+   Edit). One session = 300 "✓ matched no risky pattern" unread dots that
+   read as "winmux keeps asking me to ack things". Removed the Auto audit
+   push (the forensic trail already lives in debug.log via log_debug).
+   Block still audits (rare + security-relevant). policy_enabled was ON
+   the whole time — this was noise, never real blocking.
+   File: app/src-tauri/src/rpc_server.rs (Decision::Auto arm).
+
+#2 STOP PULSE DEAD PATH: hook feed items never carried workspace_id (CLI
+   push sends pane_id only; feed.push read workspace_id from params only,
+   never derived it). App.tsx activeHookWorkspaceIds skips items with no
+   workspace_id, so the sidebar "something happened over there" amber
+   pulse could NEVER fire on Stop. feed.push now derives workspace_id
+   from pane_id via find_workspace_for_pane when the client omits it
+   (mirrors the pane.* handlers). File: app/src-tauri/src/rpc_server.rs.
+   NOTE: pane-BORDER pulse is a separate OSC 9/99/777 path (Claude Code's
+   terminal bell) — untouched. NOT VERIFIED LIVE yet (needs a real winmux
+   pane running Claude + this build). cargo check -p winmux = clean.
+
+#3 WORKTREES: removed backlog-follow-up-review-5840fe (detached @
+   origin/main, clean — pure junk). Remaining 3 carry UNMERGED commits,
+   NOT safe to nuke: browser-tickets-v2 (ahead 10, touched today —
+   possibly a live session), claude/winmux-github-issue-4-9233e2 (ahead
+   7), wsl-parity (ahead 3). Left for Yossi to decide (merge/abandon).
+
+[2026-08-12 21:57 +0300] #2 follow-up — stop sound honored when focused (Yossi approved).
+   feed.push suppressed the stop toast+sound whenever the main window was
+   focused, silently overriding an explicit sound_types=[stop] opt-in — so
+   Yossi (who ticked stop-sound) heard nothing while watching winmux. OS
+   couples toast+sound (no sound-only native banner), so: suppress_stop now
+   = stop && focused && !sound. Opted-in stop-sound → full notification even
+   focused; no opt-in → anti-noise suppression unchanged. File:
+   rpc_server.rs. STILL needs live verify (build branch, run a turn with
+   winmux both focused and backgrounded).
+
+[2026-08-13 14:58 +0300] #1b — orphaned user-prompt-submit hook emitted invalid JSON.
+   Surfaced while live-testing the new app.exe: "UserPromptSubmit hook
+   error — Hook JSON output validation failed" in a winmux pane. Root
+   cause: winmux-cli claude-hook user-prompt-submit, when WINMUX_PANE_ID
+   is set and the desktop is UP, fell through the rpc-ok match to the
+   legacy _ arm and PRINTED the raw RPC payload ({"decision":"passive",
+   "request_id":...}) — not a valid Claude Code hook-output shape. Only
+   manifested once the desktop was running (down → rpc-error → exit 3, no
+   print). The user-prompt-submit hook is ORPHANED: the current bundled
+   spec (hooks.rs) only registers PreToolUse/SessionEnd/Stop, but Yossi's
+   settings.json still carried an older user-prompt-submit winmux entry
+   that setup-hooks never removes (it only replaces its own per-event
+   entries for events IN the spec).
+   FIX A (immediate, effective now): removed the orphaned user-prompt-submit
+     winmux hook from ~/.claude/settings.json (backup:
+     settings.json.bak.pre-ups-fix.*). Now aligned to the current spec —
+     winmux hooks only on PreToolUse/SessionEnd/Stop.
+   FIX B (source, prevents recurrence): cli/src/main.rs — user-prompt-submit
+     + post-tool-use + subagent-stop + pre-compact now silent-ack in BOTH
+     the rpc-ok and rpc-error match arms instead of raw-printing. Needs a
+     winmux-cli.exe rebuild+redeploy to reach Yossi's deployed CLI
+     (C:\Users\...\winmux-cli.exe); FIX A is what stops it today.
+   cargo check -p winmux (CLI) = clean.
+   NOTE: Yossi must restart the Claude session in the test pane for the
+   settings.json hook change to take effect.
+
+[QUIET-MODE] notification routing rewrite (frontend only, plan keen-drifting-acorn)
+   2026-08-13 15:35 +0300. Yossi wanted, on Claude stop: sound+blink for meaningful events only,
+   quiet Notification-Center record WITH workspace name, and NO in-winmux feed
+   clutter (the Windows toast is fine — he controls it via Windows). Root design
+   flaw: feedToNotif throws away subkind and lumps everything into "agent", and
+   every hook produced 3 signals (Win toast + transient feed card + notif center).
+   Also both pulses were dead: sidebar pulse read feedItems() (broke once stop
+   left the feed) with a 3s-dismiss < 4s-window bug; pane-border pulse only ever
+   fired from OSC bells, never from a Claude stop.
+   CHANGES (all app/src, zero backend):
+   - MEANINGFUL_SUBKINDS = {stop, notification, pre-tool-use}. App.tsx.
+   - feed:item-added: 3-way route. BLOCKING (permission_request+pending) → feed
+     card (only these). ALL → Notification Center. MEANINGFUL passive → pulse
+     sidebar (pulseWorkspace) + pane border (addPaneNotified). Quiet subkinds →
+     notif center only.
+   - Decoupled sidebar pulse into meaningfulPulses Map<ws,ts> (own 4s window via
+     pulseTick) — fixes the 3s<4s cut-short bug.
+   - feed_list startup seed filtered to permission_request+pending only.
+   - OSC notifications: dropped their transient feed card (kept notif center +
+     pane pulse) so the feed carries ONLY blocking cards.
+   - NotificationCenter: new workspaceName resolver prop → .notif-item-ws chip.
+   NOT VERIFIED LIVE yet — build + run per plan. Windows "sound only first time"
+   left as a to-verify (likely notify_rust coalescing identical titles).
+--------------------------------------------------------------------------------
+2026-08-12  Tickets land on the machine the agent runs on (SSH/WSL/Local)
+--------------------------------------------------------------------------------
+
+Yossi: "למה תיקיית הכרטיסים היא מקומית ולא על השרת - הרי הסוכן קוד יושב על
+השרת". Correct, and the previous entry's design was wrong: an SSH workspace
+silently wrote to %APPDATA% and kept the remote path as metadata only. Claude
+Code runs in the project dir ON THE SERVER; a ticket it cannot see is not a
+ticket.
+
+Six commits: 4f58002, 95c0f31, 76ec575, 12cf043, e0c32d6 (+ this).
+
+THE CORE: a `Store` enum in tickets.rs whose Remote arm CARRIES a live SSH
+  handle, so it cannot be constructed without an authenticated session.
+  "Can we write there" is answered by the TYPE, not by a later check. That
+  deleted the hardcoded `Connection::Ssh => unwritable` gate and, with it,
+  three bugs at once.
+
+NO SECOND SSH CONNECTION — this was Yossi's question and it is worth
+  recording. `open_auto_forward` (lib.rs:3473), which builds the browser's
+  port-forward, resolves its session with `find_ssh_handle_for_workspace`,
+  the SAME lookup tickets now use, then opens a `direct-tcpip` CHANNEL on it
+  (lib.rs:3500). SSH multiplexes: the forward is one channel, an exec is a
+  second, SFTP is a third — one TCP connection, one login. lib.rs:2813 even
+  notes clones of the Arc<Handle> may open channels concurrently. So if the
+  browser is showing a tunnelled page, the handle to write the ticket is
+  already there, and no `workspace_ensure_connected` call is needed (it is
+  not a valid predicate anyway: lib.rs:5303 returns Ok(()) for password-auth
+  hosts and unknown host keys without connecting).
+
+THE LANDMINE, found by design review and verified against the crate source:
+  **SFTP rename CANNOT overwrite.** russh-sftp 2.1.1's `Extensions`
+  (client/session.rs:10-20) detects only hardlink/fsync/statvfs/limits — no
+  posix-rename — so `SftpSession::rename` is raw SSH_FXP_RENAME, which fails
+  when the destination exists. `tickets_update` rewrites an existing
+  <id>.json, so a pure-SFTP implementation would have passed every create
+  test and failed every update. Remote atomic write is therefore
+  `remote_write_bytes(<dst>.<pid>.tmp)` + `mv -f` over an exec channel, with
+  the tmp cleaned up if the mv fails so nothing dead is left in the repo.
+  `mv -f` is rename(2) => never a partial file; it is NOT durability across a
+  server power loss, and the comment says so rather than pretending.
+
+THREE BUGS DIED IN `resolve`:
+  1. project_override was applied then discarded for SSH — the escape hatch
+     could not rescue the one case it existed for. The ladder (`pick_project`)
+     is now pure and runs BEFORE a transport is chosen.
+  2. WSL always missed the git rung: `git_root_of` runs on the Windows side
+     and a Linux path never exists there, so tickets landed in a SUBDIRECTORY
+     of the repo. Now the UNC translation happens BEFORE the walk, and
+     project_path (Linux, what the agent sees) is a different variable from
+     the store (UNC, what std::fs opens). Conflating them WAS the bug.
+  3. tickets_dir_path hard-failed if mkdir failed; revealing a folder is
+     navigational and is now best-effort.
+
+LISTING IS ONE EXEC, not readdir + N reads: tens of tickets x 3 SFTP round
+  trips at 50ms RTT is a multi-second panel load. `name<TAB><base64>` per
+  line. base64 is NOT about screenshots (Yossi asked) — it is framing: ticket
+  descriptions are free text that can contain tabs/newlines, `remote_exec`
+  merges stderr into stdout (ChannelMsg::ExtendedData), and from_utf8_lossy
+  would silently corrupt bytes. base64 makes a stray stderr line fail the
+  tab-split and get skipped instead of poisoning a ticket. `tr -d` not
+  `base64 -w0`, which is GNU-only and breaks on BSD/macOS remotes.
+
+SCREENSHOT un-stubbed (76ec575) via SVG foreignObject — no library injected,
+  which html2canvas would have meant (~200KB of third-party code into the
+  user's page per capture). The non-obvious part: a node cloned into
+  foreignObject inherits NOTHING from the document's stylesheets, so computed
+  styles are inlined by hand or the result is unstyled black text. Everything
+  degrades to null (tainted canvas, >400 nodes, >1000x700, >512KB, 1.5s
+  timeout) rather than to a wrong ticket; the capture itself is never lost.
+
+NOT CONNECTED => clipboard, not a fallback file. Yossi's call and better than
+  what I planned: for an SSH workspace the browser only renders through the
+  tunnel, so this is only reachable when a session drops after the page
+  loaded. No Save button, no orphan file, no sync engine — Retry + "copy for
+  later" so the typed description survives. Removed two fields I had designed
+  (allow_local_fallback, stored_local_fallback).
+
+TESTS: 209 lib tests, 22 of them new pure-layer tests written BEFORE any I/O
+  existed. The Rule #3 guard feeds every command builder paths with a space,
+  quote, `;rm -rf /`, `$(id)`, backticks, `&&`, `|`, newline, glob — and I
+  mutation-checked it by removing shell_quote from cmd_mkdir_p, which made it
+  fail as intended. A security test that cannot fail is theatre.
+
+PROCESS NOTE worth remembering: shell heredocs silently ate backslashes twice
+  — once mangling Rust string literals (`'\r'` became a literal CR inside a
+  char literal) and once writing INVALID JSON into all four locale files. The
+  JSON case was caught only because the drift check parses every file. Fix
+  both times: write the patch as a script FILE and build backslashes with
+  chr(92). Do not pipe backslash-bearing content through a heredoc.
+
+STILL NOT VERIFIED LIVE. Nothing in the remote path has touched a real server.
+  Smoke list is in docs/DECISIONS.md; the one that matters most is
+  tickets_update, because it is the mv -f-over-existing case that SFTP rename
+  cannot do — smoke only create and the bug ships.
+
+--------------------------------------------------------------------------------
+2026-08-13  Dev-Mode tickets: LIVE SMOKE on Windows — the bridge WORKS
+--------------------------------------------------------------------------------
+
+Built through the Tauri CLI (Rule #13: verified index-DiQMKBr1.js is embedded in
+app.exe), launched it, Yossi drove the browser. Results:
+
+CLOSED — the open risk since this branch started:
+  on_navigation DOES fire for the unregistered `winmux-ticket:` scheme in
+  WebView2. The capture modal opened with the element filled in (a <pre>, 74
+  chars of HTML). The on_web_resource_request fallback is NOT needed. This was
+  the gate on everything else in the feature.
+
+FOUND LIVE — two bugs the unit tests could not have caught:
+  1. The SSH workspace resolved to "no project folder" and fell into
+     %APPDATA%\winmux\tickets\<ws>\ — the exact behaviour this branch exists to
+     remove. Root cause: I assumed an SSH workspace carries a `cwd`. It does
+     not. workspaces.json had cwd:"" and git_worktree:"" — the user connects and
+     `cd`s inside the pane, and nothing writes that back.
+     FIX (6612554): when cwd is empty, ask tmux where the pane actually is
+     (`tmux display-message -p -t <session> '#{pane_current_path}'`) and start
+     the git walk there. Verified against the live host: returns
+     /home/runner/club, which is a real git repo. Chain is now
+       no cwd -> pane cwd -> git root -> /home/runner/club/.winmux-tickets
+  2. The no-project branch hardcoded transport "local", so an SSH workspace was
+     described to the UI as local — visible in the screenshot as a bare Windows
+     path with no host. Now reports the real transport + host.
+
+VERIFIED against the live server (161.97.93.172) by running the exact command
+shapes the Rust builds, over ssh:
+  git rev-parse from a SUBDIR   -> /home/runner/wmx-smoke   (the git rung)
+  mkdir -p                       -> ok
+  mv -f to a fresh name          -> ok (create)
+  mv -f OVER AN EXISTING FILE    -> ok, content changed open->resolved (update)
+  bulk base64 listing            -> two `name<TAB>b64` lines, decoded fine
+  missing directory              -> exit 0, no output
+Fixture removed afterwards.
+
+VERIFIED for WSL: new #[ignore]d live test drives the real distro —
+/home/<u>/wmx-tk/app/src/components -> UNC -> walk up -> repo root -> back to
+/home/<u>/wmx-tk. That is the subdirectory bug proven fixed against reality.
+
+STILL NOT VERIFIED — do not claim these:
+  - No ticket has actually been written to the server yet. Checked after the
+    smoke: /home/runner/club/.winmux-tickets does not exist. So the russh-sftp
+    write, the mv -f through Store::write_atomic_named, tickets_list over the
+    remote, and tickets_update remain unexercised end-to-end. The command
+    SHAPES are proven; the Rust that issues them is not.
+  - Screenshot fidelity. In the smoke the preview rendered as an empty
+    checkerboard, i.e. a transparent PNG. A <pre> with no background is a
+    plausible reason, but it needs a coloured element to tell "correct" from
+    "foreignObject drew nothing".
+
+THREE CORRECTIONS I MADE TO MYSELF THIS SESSION (all were confident and wrong):
+  - "the WSL share dies on a cold distro" — no. \wsl.localhost\<d>\home
+    resolves even right after `wsl --terminate`. What actually happened: WSL
+    wipes /tmp on every distro stop and my test fixture lived there. A vanished
+    path is indistinguishable from a dead share. The retry stays (I did observe
+    two transient misses) but the comment now states observations, not a
+    mechanism I never established.
+  - The sftp-CLI rename test proved nothing about russh-sftp: the OpenSSH
+    client uses posix-rename@openssh.com and DID overwrite. russh-sftp does not
+    negotiate that extension (checked client/session.rs), so `mv -f` is still
+    required — but on crate-source evidence, not on that test.
+  - Earlier in the branch: "the // URL form corrupts base64 case". It does not;
+    the real reason for the opaque form is that the payload lands in host_str()
+    and path() comes back empty.

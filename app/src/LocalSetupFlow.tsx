@@ -66,6 +66,10 @@ const WSL_CHAIN = [
   "InstallTmuxInWsl",
   "DeployWinmuxCliToWsl",
   "DeployTmuxConfToWsl",
+  // Before the hooks step, which registers winmux's hooks with Claude:
+  // installing hooks for an agent that is not there produced a green run
+  // and then `claude: command not found` in the first pane.
+  "InstallClaudeCodeInWsl",
   "InstallHooksInWsl",
 ] as const;
 
@@ -199,6 +203,10 @@ export function LocalSetupFlow(p: Props) {
         if (s === "InstallTmuxInWsl" && r.wsl.tmux_installed === true) continue;
         if (s === "DeployWinmuxCliToWsl" && r.wsl.winmux_cli_state === "ok") continue;
         if (s === "DeployTmuxConfToWsl" && r.wsl.tmux_conf_ok === true) continue;
+        // claude_inside is `command -v claude` inside the distro, not the
+        // presence of ~/.claude — that directory is created by the hooks
+        // step itself, so the old probe would have skipped this forever.
+        if (s === "InstallClaudeCodeInWsl" && r.wsl.claude_inside === true) continue;
         steps.push(s);
       }
     }

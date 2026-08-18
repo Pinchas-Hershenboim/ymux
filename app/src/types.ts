@@ -23,6 +23,7 @@ export type { ClaudeUsage } from "./bindings/ClaudeUsage";
 export type { ModelUsage } from "./bindings/ModelUsage";
 
 import type { Connection } from "./bindings/Connection";
+import { isWindows } from "./platform";
 import type { EnvVar } from "./bindings/EnvVar";
 import type { LayoutNode } from "./bindings/LayoutNode";
 import type { PaneKind } from "./bindings/PaneKind";
@@ -202,11 +203,21 @@ export function effectiveIdentity(
   };
 }
 
+// A switch rather than an if-chain with a bare `return ssh …` tail: that
+// tail treated ANY unrecognised variant as SSH and rendered
+// `ssh undefined@undefined:undefined`. Same latent gap `capsOf` closes.
 export function describeConnection(c: Connection): string {
-  if (c.type === "local") return c.shell ? `local · ${c.shell}` : "local";
-  // Phase 80: WSL-tmux workspaces.
-  if (c.type === "wsl") return c.distro ? `wsl · ${c.distro}` : "wsl";
-  return `ssh ${c.user}@${c.host}:${c.port}`;
+  switch (c.type) {
+    case "local":
+      return c.shell ? `local · ${c.shell}` : "local";
+    // Phase 80: WSL-tmux workspaces.
+    case "wsl":
+      return c.distro ? `wsl · ${c.distro}` : "wsl";
+    case "ssh":
+      return `ssh ${c.user}@${c.host}:${c.port}`;
+    default:
+      return assertNever(c, "unhandled Connection variant in describeConnection");
+  }
 }
 
 
@@ -224,6 +235,29 @@ export function describeConnection(c: Connection): string {
 //   hasSftp(w)             → SFTP-capable? (workspace *or* any pane)
 //   hasServer(w)           → has a control-plane server? (today == remote)
 //   isRemoteEffective(...) → pane's own conn OR workspace's fallback
+//
+// ─── WSL parity: ask what a connection CAN DO, not what it IS ──────────
+//
+// Phase 80 added `Connection::Wsl` and none of the predicates above
+// learned about it. `isRemoteConn` is false for WSL (it isn't ssh) and so
+// is `isLocalConn` (it isn't local), so WSL fell through BOTH halves of
+// every two-way split — got routed down the SSH branch, and died on
+// "no active SSH session for this workspace".
+//
+// The fix is not a third boolean; it is asking a different question.
+// Three axes were conflated into one:
+//
+//   A. can I run POSIX commands there?   ssh ✔  wsl ✔  local ✘
+//   B. is it across a network?           ssh ✔  wsl ✘  local ✘
+//        (auth prompts, host-key trust, disconnects, latency)
+//   C. must a session be live first?     ssh ✔  wsl ✘  local ✘
+//        (wsl.exe answers cold; SSH needs a handle)
+//
+// WSL is A-yes / B-no / C-no, which no single boolean can express.
+// `capsOf` names the axes so a gate says what it means, and its switch
+// ends in `assertNever` — so connection kind #4 (devcontainer? podman?)
+// is a COMPILE ERROR here rather than another silent runtime gap.
+// That guard is the actual deliverable; the feature work is downstream.
 //
 // `hasServer` splits from `isRemote` deliberately: LOCAL-HOST plan #2
 // wires a native local server, at which point `hasServer(local)` flips
@@ -283,6 +317,137 @@ export function isRemoteEffective(
   workspaceConn: Connection | null | undefined,
 ): boolean {
   return isRemoteConn(pane.connection ?? workspaceConn);
+}
+
+/** How a port listening inside the target is reached from Windows. */
+export type PortForwardKind =
+  /** Needs an SSH direct-tcpip forward before anything can connect. */
+  | "ssh"
+  /** Already reachable on the same localhost port — nothing to forward.
+   *  WSL2 shares the loopback in mirrored mode, and proxies it in NAT
+   *  mode via `localhostForwarding` (the .wslconfig default). */
+  | "sharedLoopback"
+  /** Ports are not a concept here. */
+  | "none";
+
+export interface ConnCaps {
+  /** POSIX commands can be run there (`exec`-shaped work). */
+  posixExec: boolean;
+  /** A POSIX filesystem can be listed / read / written. */
+  fileTransfer: boolean;
+  /** tmux sessions outlive the app, so panes can re-attach on boot. */
+  tmuxPersistence: boolean;
+  /** A control-plane server (winmux-server / insights) can serve it. */
+  controlServer: boolean;
+  portForward: PortForwardKind;
+  /** Must a pane be connected before the capabilities are usable?
+   *  SSH needs a live handle; wsl.exe answers from cold. */
+  sessionBound: boolean;
+  /** Password / passphrase / host-key prompts apply. */
+  networkAuth: boolean;
+}
+
+const LOCAL_CAPS: ConnCaps = {
+  posixExec: false,
+  fileTransfer: false,
+  tmuxPersistence: false,
+  controlServer: true, // native insights_local
+  portForward: "none",
+  sessionBound: false,
+  networkAuth: false,
+};
+
+// macOS port: a local shell on a unix host IS a POSIX host with its own
+// tmux server — pane_connect wraps persistent panes in `tmux new-session`
+// and pane_list/probe_tmux_sessions answer from the local binary. Only
+// fileTransfer stays false for the same SFTP-backend reason as WSL.
+const LOCAL_UNIX_CAPS: ConnCaps = {
+  ...LOCAL_CAPS,
+  posixExec: true,
+  tmuxPersistence: true,
+};
+
+const SSH_CAPS: ConnCaps = {
+  posixExec: true,
+  fileTransfer: true,
+  tmuxPersistence: true,
+  controlServer: true,
+  portForward: "ssh",
+  sessionBound: true,
+  networkAuth: true,
+};
+
+const WSL_CAPS: ConnCaps = {
+  posixExec: true,
+  // FALSE ON PURPOSE, and not a statement about WSL. The distro's
+  // filesystem is perfectly reachable — but every file_* command is still
+  // implemented against an SFTP session, so flipping this would light up a
+  // dir picker that calls `file_home_remote` and gets back "no active SSH
+  // session". Flip it in the same commit that lands the WSL file backend;
+  // a capability table that lies is worse than the boolean it replaced.
+  fileTransfer: false,
+  tmuxPersistence: true,
+  controlServer: true,
+  portForward: "sharedLoopback",
+  sessionBound: false,
+  networkAuth: false,
+};
+
+/**
+ * The one place a connection kind is mapped to what it can do.
+ *
+ * The `default` arm is not dead code — it is the point. `assertNever`
+ * makes tsc reject a new `Connection` variant that forgets a case here,
+ * which is exactly what did NOT happen when `wsl` was added.
+ */
+export function capsOf(c: Connection | null | undefined): ConnCaps {
+  const local = isWindows() ? LOCAL_CAPS : LOCAL_UNIX_CAPS;
+  if (!c) return local; // a workspace with no connection is a local shell
+  switch (c.type) {
+    case "local":
+      return local;
+    case "ssh":
+      return SSH_CAPS;
+    case "wsl":
+      return WSL_CAPS;
+    default:
+      return assertNever(c, "unhandled Connection variant in capsOf");
+  }
+}
+
+/**
+ * Workspace-level capabilities: the workspace's own connection, widened
+ * by any pane that carries one of its own. Mirrors the layout walk
+ * `hasSftp` already did — a workspace with no declared connection but an
+ * SSH pane inside it is still SFTP-capable.
+ */
+export function wsCaps(w: {
+  connection: Connection | null;
+  layout?: LayoutNode | null;
+}): ConnCaps {
+  const own = capsOf(w.connection);
+  if (own.posixExec || !w.layout) return own;
+  let found: ConnCaps | null = null;
+  const walk = (n: LayoutNode): void => {
+    if (found) return;
+    if (n.kind === "pane") {
+      const c = capsOf(n.connection);
+      if (c.posixExec) found = c;
+      return;
+    }
+    walk(n.first);
+    walk(n.second);
+  };
+  walk(w.layout);
+  return found ?? own;
+}
+
+/** Pane's effective capabilities: own connection > workspace fallback. */
+export function paneCaps(
+  pane: { connection?: Connection | null },
+  workspaceConn: Connection | null | undefined,
+): ConnCaps {
+  return capsOf(pane.connection ?? workspaceConn);
 }
 
 // Exhaustiveness guard — if a future Connection variant is added the

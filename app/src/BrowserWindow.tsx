@@ -15,7 +15,8 @@ import {
   ResizeHandles,
   type Geometry,
 } from "./floatingWindow";
-import { IconGlobe, IconClose, IconRefresh, IconUnplug, IconWarning } from "./icons";
+import { IconGlobe, IconClose, IconRefresh, IconUnplug, IconWarning, IconBug } from "./icons";
+import { applyDevMode, loadDevMode, saveDevMode } from "./browserDevMode";
 import { createLogger } from "./logger";
 
 const log = createLogger("BROWSER");
@@ -268,6 +269,9 @@ export function BrowserWindow(p: Props) {
   // (tab → editors), gated by `suppressActiveSync` to avoid feedback.
   const [tabs, setTabs] = createSignal<BrowserTab[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
+  // Dev Mode: right-click an element in the page to open a ticket. All
+  // of the behaviour lives in browserDevMode.ts; this is just the flag.
+  const [devMode, setDevMode] = createSignal(false);
   let suppressActiveSync = false;
   // One-shot guard so the persisted "last port" auto-opens only once per
   // open session (not every time detectedPorts updates).
@@ -287,6 +291,7 @@ export function BrowserWindow(p: Props) {
     if (!id || id === lastWsId) return;
     lastWsId = id;
     setGeom(loadGeometry(id));
+    setDevMode(loadDevMode(id));
     // Beta.3: load tabs (migrating legacy PORT_KEY / PATH_KEY on first
     // run) and seed the port/path editors from the active tab.
     const { tabs: loaded, activeId } = loadTabs(id);
@@ -509,6 +514,33 @@ export function BrowserWindow(p: Props) {
     onCleanup(() => window.removeEventListener("keydown", handler));
   });
 
+  // Dev Mode arms the inspect script inside the page. A page load wipes
+  // it (the script lives in the document, not the webview), so re-arm
+  // whenever the loaded URL changes while Dev Mode is on. The script is
+  // idempotent — it tears down any previous instance first.
+  //
+  // The delay is a deliberate simplification: `workspace_browser_eval`
+  // is fire-and-forget with no load event to hook, so we wait for the
+  // new document instead of racing it. If a page is still loading after
+  // this, toggling Dev Mode off/on re-arms it.
+  createEffect(() => {
+    const ws = p.workspace;
+    const url = currentUrl();
+    if (!ws || !devMode() || !url) return;
+    const id = ws.id;
+    const timer = setTimeout(() => void applyDevMode(id, true), 500);
+    onCleanup(() => clearTimeout(timer));
+  });
+
+  const toggleDevMode = () => {
+    const ws = p.workspace;
+    if (!ws) return;
+    const next = !devMode();
+    setDevMode(next);
+    saveDevMode(ws.id, next);
+    void applyDevMode(ws.id, next);
+  };
+
   // Resolve the chosen remote port to a local tunnel port (reusing an
   // existing forward when present, else opening one) and point the
   // Webview at it.
@@ -677,6 +709,16 @@ export function BrowserWindow(p: Props) {
             title={t("browser.ports.go")}
           >
             {t("browser.ports.go")}
+          </button>
+          {/* Dev Mode. Off by default; while on, right-clicking any
+              element in the page opens a ticket for it. */}
+          <button
+            class={`bw-port-btn bw-devmode-btn ${devMode() ? "active" : ""}`}
+            onClick={toggleDevMode}
+            title={t(devMode() ? "browser.dev.off" : "browser.dev.on")}
+            aria-pressed={devMode()}
+          >
+            <IconBug size={14} />
           </button>
         </div>
         <div class="browser-window-slot">

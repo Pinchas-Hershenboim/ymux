@@ -51,6 +51,9 @@ interface Props {
   pendingHostTrust: HostTrustPending | null;
   paneStatus: Record<string, { msg: string; err: boolean }>;
   paneStatusText: Record<string, string>;
+  // issue #4: per-pane agent turn timing + a reactive clock for the Ticker.
+  agentRuns: Record<string, { startedAt: number | null; avgMs: number | null }>;
+  agentClockMs: () => number;
   ensureTerm: (paneId: string) => TerminalInstance;
   onFocus: (paneId: string) => void;
   onConnect: (paneId: string, opts?: ConnectOpts) => void;
@@ -172,6 +175,8 @@ function LeafPane(props: { all: Props; pane: Extract<LayoutNode, { kind: "pane" 
           pendingHostTrust={props.all.pendingHostTrust}
           status={props.all.paneStatus[props.pane.pane_id]}
           statusText={props.all.paneStatusText[props.pane.pane_id]}
+          agentRun={props.all.agentRuns[props.pane.pane_id]}
+          agentClockMs={props.all.agentClockMs}
           ensureTerm={props.all.ensureTerm}
           onFocus={props.all.onFocus}
           onConnect={props.all.onConnect}

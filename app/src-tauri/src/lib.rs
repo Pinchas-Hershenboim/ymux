@@ -27,7 +27,9 @@ mod pty_decode;
 mod remote_bootstrap;
 mod rpc_server;
 mod settings;
+mod skills;
 mod stt;
+mod tickets;
 mod tray;
 mod updater;
 // Phase 51.C: `mod tunnel` moved to its own crate winmux-tunnel.
@@ -142,6 +144,11 @@ pub(crate) struct AppState {
     pub(crate) load_state: Arc<Mutex<Option<LoadState>>>,
     pub(crate) notifications: Arc<Mutex<Vec<NotificationItem>>>,
     pub(crate) pane_status: Arc<Mutex<HashMap<String, String>>>,
+    /// issue #4 (winmux-tools Ticker): per-pane current-turn timing, keyed by
+    /// pane_id. turn-start = UserPromptSubmit hook, turn-end = Stop hook.
+    /// In-memory and session-scoped — the rolling average is a within-session
+    /// signal, meaningless after a restart, so it's never persisted.
+    pub(crate) agent_runs: Arc<Mutex<HashMap<String, AgentRunState>>>,
     pub(crate) feed: Arc<Mutex<FeedStore>>,
     pub(crate) notes: Arc<Mutex<notes::NotesFile>>,
     // Phase 9.A: persistent app settings (theme, fonts, terminal, hooks, etc.)
@@ -178,6 +185,78 @@ pub(crate) struct AppState {
     /// `workspace_browser_show` so at most one creation runs at a time.
     pub(crate) browser_create_lock: Arc<tokio::sync::Mutex<()>>,
 }
+
+/// issue #4: per-pane agent turn timing for the winmux-tools chrome Ticker.
+/// `turn_started_at` is `Some` while a turn is in flight (set on the
+/// UserPromptSubmit hook, cleared on Stop). `sum_ms`/`count` accumulate the
+/// durations of completed non-trivial turns for the rolling average. Turns
+/// shorter than `AGENT_RUN_MIN_TURN_MS` (text-only) are excluded from the mean.
+#[derive(Default, Clone)]
+pub(crate) struct AgentRunState {
+    pub(crate) turn_started_at: Option<std::time::SystemTime>,
+    pub(crate) sum_ms: u128,
+    pub(crate) count: u32,
+}
+
+impl AgentRunState {
+    /// Rolling average of completed turns, or None if none counted yet.
+    pub(crate) fn avg_ms(&self) -> Option<u128> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.sum_ms / self.count as u128)
+        }
+    }
+
+    /// Current turn's start as epoch-ms, or None if no turn is in flight.
+    pub(crate) fn started_at_ms(&self) -> Option<u128> {
+        self.turn_started_at
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis())
+    }
+
+    /// Fold a completed turn's duration into the rolling average — but only
+    /// if it ran long enough to be meaningful; text-only turns (< the min)
+    /// would drag the mean toward zero, so they're excluded.
+    pub(crate) fn record_turn(&mut self, dur_ms: u128) {
+        if dur_ms >= AGENT_RUN_MIN_TURN_MS {
+            self.sum_ms = self.sum_ms.saturating_add(dur_ms);
+            self.count = self.count.saturating_add(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_run_tests {
+    use super::AgentRunState;
+
+    #[test]
+    fn average_excludes_short_turns_and_means_the_rest() {
+        let mut r = AgentRunState::default();
+        assert_eq!(r.avg_ms(), None, "no turns yet");
+
+        r.record_turn(1_000); // < 2s → text-only, excluded
+        assert_eq!(r.count, 0);
+        assert_eq!(r.avg_ms(), None);
+
+        r.record_turn(40_000);
+        r.record_turn(20_000);
+        assert_eq!(r.count, 2);
+        assert_eq!(r.avg_ms(), Some(30_000));
+    }
+
+    #[test]
+    fn started_at_ms_none_when_idle() {
+        let mut r = AgentRunState::default();
+        assert_eq!(r.started_at_ms(), None);
+        r.turn_started_at = Some(std::time::SystemTime::UNIX_EPOCH);
+        assert_eq!(r.started_at_ms(), Some(0));
+    }
+}
+
+/// Minimum turn duration folded into the rolling average (mirrors the
+/// statusline hook's gate in winmux-tools/statuslines/hooks/turn-state.js).
+pub(crate) const AGENT_RUN_MIN_TURN_MS: u128 = 2000;
 
 pub(crate) static NOTIF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1702,6 +1781,27 @@ pub(crate) fn emit_pane_status_event(app: &AppHandle, pane_id: &str, text: &str)
     );
 }
 
+/// issue #4: emits the per-pane agent turn state for the chrome Ticker.
+/// `started_at_ms` = None clears the live timer (turn ended); `avg_ms` = None
+/// means no completed turns yet. The frontend ticks `M:SS` locally from
+/// `started_at`, so this fires only on turn start / end — never per second.
+pub(crate) fn emit_agent_run_event(
+    app: &AppHandle,
+    pane_id: &str,
+    started_at_ms: Option<u128>,
+    avg_ms: Option<u128>,
+) {
+    let _ = app.emit(
+        "pane:agent-run",
+        serde_json::json!({
+            "pane_id": pane_id,
+            "started_at": started_at_ms,
+            "avg_ms": avg_ms,
+            "running": started_at_ms.is_some(),
+        }),
+    );
+}
+
 /// Spawns a tokio task that clears a pane's status text after `secs` seconds.
 pub(crate) fn schedule_status_clear(app: AppHandle, pane_id: String, secs: u64) {
     tokio::spawn(async move {
@@ -1819,7 +1919,14 @@ fn spawn_local_pty(
     {
         cmd.env("LANG", default_utf8_locale());
     }
-    tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink env vars");
+    // winmux-tools (issue #4): tag the local pane's shell so claude-hook
+    // invocations (pre-tool-use gating, the chrome Ticker's user-prompt-submit
+    // / stop) pass the CLI's env-gate. Remote panes get this via the ssh
+    // channel / tmux set-environment; local panes had no equivalent, so every
+    // winmux-cli hook silently env-gated (main.rs `WINMUX_PANE_ID unset`) and
+    // the Ticker never fired outside manual injection.
+    cmd.env("WINMUX_PANE_ID", &pane_id);
+    tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + WINMUX_PANE_ID env vars");
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -5913,10 +6020,7 @@ async fn pane_list_tmux_sessions(
             })
     };
     if let Some(distro) = wsl_distro {
-        let script = format!(
-            "tmux list-sessions -F '{TMUX_LIST_FORMAT}' 2>/dev/null || true"
-        );
-        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, &script)
+        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, TMUX_LIST_SCRIPT)
             .await
             .unwrap_or((-1, String::new()));
         return Ok(parse_tmux_sessions(&text));
@@ -5989,17 +6093,46 @@ async fn pane_list_tmux_sessions(
 /// The `tmux list-sessions` half of `pane_list_tmux_sessions`, split out so the
 /// Phase 80 restore probe can reuse it over a handle it opened itself instead
 /// of one belonging to a live pane.
+/// Read the system clipboard as text, host-side.
+///
+/// Why this exists at all: in the terminal, Copy worked and Paste silently
+/// did nothing. `navigator.clipboard.writeText` is allowed in WebView2, but
+/// `readText` sits behind a clipboard-read permission the host has to grant
+/// and Tauri does not — so the promise rejected, and the only handler was a
+/// `console.warn` nobody sees. Reading here sidesteps the web permission
+/// model entirely.
+///
+/// Returns an empty string when the clipboard holds no text (an image, or
+/// nothing) — that is not an error, and the caller simply pastes nothing.
+#[tauri::command]
+fn clipboard_read_text() -> Result<String, String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| format!("clipboard open: {e}"))?;
+    match cb.get_text() {
+        Ok(t) => Ok(t),
+        // arboard reports "nothing here" as an error; the UI wants "".
+        Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+        Err(e) => Err(format!("clipboard read: {e}")),
+    }
+}
+
+/// tmux listing plus the session-meta side-car, in ONE round trip.
+///
+/// Phase 81: the same call also fetches the server-side session-meta map
+/// (Claude titles / labels / origins written by the Linux CLI). A missing
+/// file leaves an empty segment after the marker → no metadata, which is
+/// exactly the pre-81 behaviour, so `parse_tmux_sessions` degrades cleanly.
+/// The Phase 80 restore probe reuses this and ignores the meta segment.
+///
+/// Shared by the SSH and WSL paths deliberately. The WSL branch used to
+/// carry its own copy WITHOUT the meta segment, so a WSL tmux picker showed
+/// bare session names while an SSH one showed Claude titles — a difference
+/// nobody chose. One const means the format string cannot drift again.
+const TMUX_LIST_SCRIPT: &str = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
+
 async fn list_tmux_sessions_via_handle(
     handle: &client::Handle<SshClient>,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
-    // Phase 81: same roundtrip also fetches the server-side session-meta
-    // map (Claude titles / labels / origins written by the Linux CLI).
-    // Missing file → empty segment after the marker → no metadata, which
-    // is exactly the pre-81 behaviour. The Phase 80 restore probe reuses this
-    // helper and simply ignores the extra meta segment.
-    let script = format!(
-        "tmux list-sessions -F '{TMUX_LIST_FORMAT}' 2>/dev/null; printf '\\n{TMUX_META_MARKER}\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true"
-    );
+    let script = TMUX_LIST_SCRIPT;
     use russh::ChannelMsg;
     let mut ch = handle
         .channel_open_session()
@@ -6204,6 +6337,18 @@ async fn pane_probe_tmux_sessions(
         // a definite answer (possibly "no sessions"), never "couldn't ask".
         #[cfg(not(windows))]
         Some(Connection::Local { .. }) => return Ok(Some(list_local_tmux_sessions().await)),
+        // A WSL pane answers without any handshake — wsl.exe reaches the
+        // distro's tmux server cold. Returning Ok(None) here (the old `_`
+        // arm) meant "couldn't ask", and the restore loop correctly left
+        // such panes alone — so a WSL pane carrying its OWN connection
+        // inside a connection-less workspace could never restore.
+        Some(Connection::Wsl { distro }) => {
+            let (_code, text) =
+                local_setup::wsl_exec(distro.as_deref(), None, TMUX_LIST_SCRIPT)
+                    .await
+                    .unwrap_or((-1, String::new()));
+            return Ok(Some(parse_tmux_sessions(&text)));
+        }
         _ => return Ok(None),
     };
 
@@ -7569,6 +7714,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            clipboard_read_text,
             // Phase 68.B: add-on framework commands.
             addons::addon_list,
             addons::addon_install,
@@ -7579,6 +7725,11 @@ pub fn run() {
             addons::insights_fetch,
             addons::insights_docker_action,
             addons::insights_hygiene_kill,
+            // winmux-tools skills registry: per-workspace skill installer.
+            skills::skills_list,
+            skills::skill_install,
+            skills::skill_uninstall,
+            skills::skills_installed,
             // beta.3-lh-insights: native local Insights commands. The panel
             // primarily goes through `insights_fetch` (which routes local↔SSH
             // internally), but we expose these too for direct callers.
@@ -7629,6 +7780,13 @@ pub fn run() {
             workspace_browser::workspace_browser_eval,
             workspace_browser::workspace_browser_close,
             workspace_browser::workspace_browser_resize,
+            tickets::tickets_list,
+            tickets::tickets_resolve_project,
+            tickets::tickets_dir_path,
+            tickets::tickets_screenshot,
+            tickets::tickets_create,
+            tickets::tickets_update,
+            tickets::tickets_delete,
             ssh_key_offer_dismiss,
             // beta.3 (netfree, Track 1b): frontend calls this when the user
             // clicks "בטל" on the reconnect toast.

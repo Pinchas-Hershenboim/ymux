@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openNativeDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
-import { describeConnection, effectiveIdentity, isLocalConn, isRemoteConn, isRemoteEffective } from "./types";
+import { describeConnection, effectiveIdentity, isLocalConn, isRemoteConn, isRemoteEffective, paneCaps } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
 import { isMac } from "./platform";
@@ -110,6 +110,9 @@ interface Props {
   pendingHostTrust: HostTrustPending | null;
   status: { msg: string; err: boolean } | undefined;
   statusText?: string;
+  // issue #4: this pane's agent turn timing + a reactive clock for the Ticker.
+  agentRun?: { startedAt: number | null; avgMs: number | null };
+  agentClockMs?: () => number;
   // Phase 11.A: when this pane is bound to a tmux session, the name. Used
   // to render the "T" badge and to enable "Kill session" in the menu.
   tmuxSession?: string | null;
@@ -210,15 +213,19 @@ export function PaneView(p: Props) {
   // connection first (set on wired Terminal panes), then fall back to
   // the workspace's canonical connection so SSH-only menu items
   // (tmux) show up from FM / Browser / Chat panes too.
+  // What the pane's effective target CAN DO (own connection > workspace).
+  const caps = () => paneCaps(p.pane, p.workspaceConnection);
+  // Kept for the genuinely SSH-only bits — the SFTP directory picker, which
+  // has no WSL backend yet. Do not reach for this to answer "does it have
+  // tmux" or "can I exec there"; that is what `caps()` is for.
   const isSsh = () => isRemoteEffective(p.pane, p.workspaceConnection);
-  // macOS port: a LOCAL workspace on mac has a local tmux server too, so the
-  // tmux UX (Connect probe → picker, tmux/regular toggle) applies there as
-  // well. Windows-local and WSL stay on the plain path (backend decides).
-  // Single predicate — every tmux-only affordance gates on this, not on
-  // isSsh(); SSH-only commands (ensure_connected, SFTP, ports) keep isSsh().
+  // macOS port: a LOCAL workspace on mac has a local tmux server too —
+  // `caps().tmuxPersistence` says so (capsOf branches on the host OS), so
+  // the Connect probe → picker and the tmux/regular toggle apply there.
+  // These two only pick platform-specific copy / the native folder dialog;
+  // SSH-only commands (ensure_connected, SFTP, ports) keep isSsh().
   const isLocalPane = () => isLocalConn(p.pane.connection ?? p.workspaceConnection);
   const isMacLocal = () => isMac() && isLocalPane();
-  const hasTmux = () => isSsh() || isMacLocal();
   const isTmux = () => !!p.tmuxSession;
   // Phase 12.B Smart Connect — the "open in directory" text-input fallback
   // (local panes) still uses this small prompt.
@@ -280,6 +287,25 @@ export function PaneView(p: Props) {
     if (sec < 3600) return `${Math.floor(sec / 60)}m`;
     if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
     return `${Math.floor(sec / 86400)}d`;
+  };
+  // issue #4: the Ticker label for this pane, e.g. "⏱ 3:10 · avg 40s".
+  // Live elapsed ticks off agentClockMs() (reactive via pulseTick); avg is
+  // fixed per turn. Empty string when the pane has no agent-run state.
+  const clockMMSS = (sec: number): string =>
+    `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  const agentRunLabel = (): string => {
+    const run = p.agentRun;
+    if (!run) return "";
+    const parts: string[] = [];
+    if (run.startedAt != null) {
+      const clock = p.agentClockMs?.() ?? Date.now();
+      parts.push(`⏱ ${clockMMSS(Math.max(0, Math.floor((clock - run.startedAt) / 1000)))}`);
+    }
+    if (run.avgMs != null) {
+      const a = Math.round(run.avgMs / 1000);
+      parts.push(`avg ${a < 60 ? `${a}s` : clockMMSS(a)}`);
+    }
+    return parts.join(" · ");
   };
   const loadNcSessions = async () => {
     setNcSessionsLoading(true);
@@ -505,13 +531,17 @@ export function PaneView(p: Props) {
       void loadNcSessions();
     }
   });
-  // v0.4.4-beta.2: SMART [Connect]. Arm SSH headlessly → probe tmux → branch:
-  // live sessions → picker; otherwise a plain regular shell. Windows-local /
-  // WSL workspaces have no tmux picker, so they connect straight away.
-  // macOS-local: same probe against the LOCAL tmux server (no SSH arming —
-  // `workspace_ensure_connected` is SSH-only); any error → plain connect.
+  // v0.4.4-beta.2: SMART [Connect]. Arm the target headlessly → probe tmux →
+  // branch: live sessions → picker; otherwise a plain regular shell. A target
+  // with no tmux (a Windows shell) connects straight away.
+  //
+  // Gated on tmuxPersistence, not "is it SSH". A WSL pane keeps tmux sessions
+  // like a remote one, and the old `!isSsh()` branch connected it with
+  // `persistent: false` — i.e. no tmux at all. That silently defeated session
+  // restore at the source: there was never a session left behind to come back
+  // to, no matter what the restore loop did on the next boot.
   const smartConnect = async () => {
-    if (!hasTmux()) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
+    if (!caps().tmuxPersistence) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
     setConnectProbing(true);
     try {
       // Idempotent, PTY-free, tmux-free; no-ops on password-auth (can't prompt
@@ -526,7 +556,12 @@ export function PaneView(p: Props) {
       if (list.length > 0) {
         setTmuxPick(list);
       } else {
-        p.onConnect(p.pane.pane_id, { persistent: false });
+        // Omit `persistent` rather than forcing false: the backend applies
+        // the target's own default (SSH false, WSL true — pane_connect).
+        // Forcing false here meant a fresh WSL pane came up WITHOUT tmux, so
+        // nothing was ever left behind and the next boot had nothing to
+        // restore. SSH behaviour is unchanged — its default is false anyway.
+        p.onConnect(p.pane.pane_id, {});
       }
     } finally {
       setConnectProbing(false);
@@ -537,7 +572,9 @@ export function PaneView(p: Props) {
   const pickTmuxSession = (name: string | null) => {
     setTmuxPick(null);
     if (name) p.onConnect(p.pane.pane_id, { persistent: true, tmuxSession: name });
-    else p.onConnect(p.pane.pane_id, { persistent: false });
+    // "None of these" → the target's default persistence, same reasoning as
+    // smartConnect above.
+    else p.onConnect(p.pane.pane_id, {});
   };
   // Translate the modal's choices into a single ConnectOpts and connect.
   const submitNewConn = () => {
@@ -934,6 +971,9 @@ export function PaneView(p: Props) {
         </Show>
         <Show when={p.statusText}>
           <span class="pane-status-text">{p.statusText}</span>
+        </Show>
+        <Show when={agentRunLabel()}>
+          <span class="pane-agent-run">{agentRunLabel()}</span>
         </Show>
         <button
           class="pane-btn"

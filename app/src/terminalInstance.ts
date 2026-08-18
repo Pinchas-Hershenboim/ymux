@@ -31,6 +31,12 @@ const g_oscClipboardProvider: IClipboardProvider = {
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { reorderRtlForDisplay } from "./bidi";
+import { createLogger } from "./logger";
+
+// Rule #9: user-visible logging. The rest of this file still uses raw
+// console.* (pre-existing — see FOLLOWUPS); the clipboard paths were
+// converted because an invisible failure there is what hid the paste bug.
+const termLog = createLogger("TERM");
 import { detectDirection, detectRowDirections } from "./textDirection";
 import { transformMouseX, findRow } from "./mouseRtl";
 import { t } from "./i18n";
@@ -302,6 +308,27 @@ function swapArrowSeq(data: string): string {
   }
 }
 
+/**
+ * Read the system clipboard as text.
+ *
+ * `navigator.clipboard.readText()` is not usable here: WebView2 permits
+ * clipboard WRITE but gates READ behind a permission the host never grants,
+ * so it rejects. That is why terminal Copy worked and Paste did nothing —
+ * and why it was invisible: the only handler was a `console.warn`.
+ *
+ * Try the web API first anyway (it is synchronous-ish and works if a future
+ * runtime does allow it), then fall back to the host-side command.
+ */
+export async function readClipboardText(): Promise<string> {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (t) return t;
+  } catch {
+    // Expected in WebView2 — fall through rather than log noise per paste.
+  }
+  return await invoke<string>("clipboard_read_text");
+}
+
 /** Paste arbitrary text into the active terminal. xterm.js will wrap
  *  the bytes with bracketed-paste escape codes if the connected shell
  *  has enabled the mode (which most modern shells do). Falls back to
@@ -393,15 +420,17 @@ function showTerminalContextMenu(ti: TerminalInstance, x: number, y: number): vo
     }
   });
   addItem(t("term.ctx.paste"), true, () => {
-    navigator.clipboard
-      .readText()
+    readClipboardText()
       .then((text) => {
         if (text) ti.term.paste(text);
         // Phase 65 (bug X): the context menu stole focus; return it to
         // the terminal so the caret stays at the paste site.
         ti.term.focus();
       })
-      .catch((err) => console.warn("terminal paste failed", err));
+      // Rule #9: this used to be console.warn, so the one failure that
+      // mattered — clipboard read being denied — left no trace anywhere a
+      // user or a maintainer would look.
+      .catch((err) => termLog.warn("terminal paste failed", err));
   });
   addItem(t("term.ctx.selectAll"), true, () => ti.term.selectAll());
 
