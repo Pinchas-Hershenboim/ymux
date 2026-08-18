@@ -509,10 +509,20 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     }
 
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    // The tree shape goes in the line, not just the count. Two pinned
+    // folders lost `parent_id` and `is_project_root` with nothing in the
+    // log to say when or why — every writer mutates in place, serde
+    // round-trips clean, and the load-time repair logs each fix. Whatever
+    // did it, the next occurrence is now bracketed by the save before it.
+    let roots = file.workspaces.iter().filter(|w| w.parent_id.is_none()).count();
+    let repos = file.workspaces.iter().filter(|w| w.is_project_root).count();
     log_debug("WORKSPACE", &format!(
-        "save_to_disk: wrote {} bytes ({} workspaces) → {:?}",
+        "save_to_disk: wrote {} bytes ({} workspaces: {} root / {} nested / {} repo) → {:?}",
         text.len(),
         file.workspaces.len(),
+        roots,
+        file.workspaces.len() - roots,
+        repos,
         path
     ));
     Ok(())
@@ -8778,6 +8788,44 @@ mod project_folder_migration_tests {
             parent_id: parent.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_tree_fields_survive_a_full_file_round_trip() {
+        // Yossi lost parent_id AND is_project_root off two pinned folders
+        // with nothing in debug.log to explain it. Every command that
+        // writes a workspace mutates in place, so if they can vanish it
+        // has to be here, in the WorkspacesFile round trip that
+        // save_to_disk/load_from_disk perform on every persist.
+        let json = r#"{
+          "version": 1,
+          "active_workspace_id": "w_child",
+          "workspaces": [
+            { "id": "w_root", "name": "runner1", "auto_port_forward": false,
+              "last_active_at": 0, "claude_separate_account": false },
+            { "id": "w_child", "name": "club", "cwd": "/home/runner/club",
+              "parent_id": "w_root", "is_project_root": true,
+              "auto_port_forward": false, "last_active_at": 0,
+              "claude_separate_account": false }
+          ],
+          "groups": []
+        }"#;
+        let file: WorkspacesFile = serde_json::from_str(json).unwrap();
+        let child = file.workspaces.iter().find(|w| w.id == "w_child").unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some("w_root"), "parent_id lost on LOAD");
+        assert!(child.is_project_root, "is_project_root lost on LOAD");
+
+        // And back out again, the way save_to_disk writes it.
+        let text = serde_json::to_string_pretty(&file).unwrap();
+        assert!(text.contains("\"parent_id\""), "parent_id lost on SAVE:
+{text}");
+        assert!(text.contains("\"is_project_root\""), "is_project_root lost on SAVE:
+{text}");
+
+        let again: WorkspacesFile = serde_json::from_str(&text).unwrap();
+        let child = again.workspaces.iter().find(|w| w.id == "w_child").unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some("w_root"));
+        assert!(child.is_project_root);
     }
 
     #[test]

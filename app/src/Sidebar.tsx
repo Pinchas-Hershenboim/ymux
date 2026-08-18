@@ -830,10 +830,16 @@ export function Sidebar(p: Props) {
    * the UI with no error card and nothing in debug.log, which is
    * strictly worse than the crash it replaced.
    */
-  function renderWorkspaceSubtree(w: Workspace, depth: number, seen?: Set<string>) {
-    const guard = seen ?? new Set<string>();
-    if (guard.has(w.id) || depth > 8) return null;
-    guard.add(w.id);
+  function renderWorkspaceSubtree(w: Workspace, depth: number, ancestors: readonly string[] = []) {
+    // The cycle guard used to be a MUTABLE Set threaded down the tree.
+    // That is wrong across time, not just across depth: <For> re-runs its
+    // callback whenever the item references change — which is every
+    // `updateFile()`, since the workspaces are freshly parsed JSON — and
+    // the ids were already in the set, so every child rendered as null
+    // and the whole subtree silently vanished. An immutable ancestor
+    // chain has no state to go stale.
+    if (ancestors.includes(w.id) || depth > 8) return null;
+    const chain = [...ancestors, w.id];
     const kids = () => childrenOf().get(w.id) ?? [];
     const scan = () => scans()[w.id];
     // One rule covers every way a subtree ends up open: this click, a
@@ -845,7 +851,7 @@ export function Sidebar(p: Props) {
       <>
         {renderWorkspaceRow(w, depth)}
         <Show when={!w.is_collapsed}>
-          <For each={kids()}>{(k) => renderWorkspaceSubtree(k, depth + 1, guard)}</For>
+          <For each={kids()}>{(k) => renderWorkspaceSubtree(k, depth + 1, chain)}</For>
           <Show when={w.is_project_root}>
             <Show when={scan()?.status === "loading"}>
               <div class="pf-hint" style={`--ws-depth: ${depth + 1}`}>{t("pf.scanning")}</div>
