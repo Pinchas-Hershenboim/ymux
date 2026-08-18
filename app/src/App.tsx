@@ -90,7 +90,6 @@ import {
   type EnvVar,
   type FeedItem,
   type ForwardRow,
-  type ProjectFolder,
   type WorktreeEntry,
   type FeedResolvedEvent,
   type LayoutNode,
@@ -1216,14 +1215,57 @@ function App() {
     }
   };
 
+  /** Every workspace id under `id`, including it. Mirrors the backend
+   *  BFS, visited set and all — a cycle here would hang the confirm. */
+  const subtreeOf = (id: string): Workspace[] => {
+    const all = file().workspaces;
+    const out: Workspace[] = [];
+    const seen = new Set<string>([id]);
+    const queue = [id];
+    while (queue.length) {
+      const cur = queue.pop()!;
+      const w = all.find((x) => x.id === cur);
+      if (w) out.push(w);
+      for (const c of all) {
+        if (c.parent_id === cur && !seen.has(c.id)) {
+          seen.add(c.id);
+          queue.push(c.id);
+        }
+      }
+    }
+    return out;
+  };
+
   const handleDelete = async (id: string) => {
     const ws = file().workspaces.find((w) => w.id === id);
     if (!ws) return;
-    if (!window.confirm(`Delete workspace "${ws.name}"?`)) return;
-    // Phase 39: extra confirm when the workspace has notes (they'll be
-    // deleted with it). Counts notes strictly belonging to this ws —
-    // legacy unassigned (null) notes survive the delete.
-    const noteCount = notes().filter((n) => n.workspace_id === id).length;
+    // Deleting a workspace now takes its pinned project folders and
+    // every worktree workspace under them. Directories on the host are
+    // untouched, but the SESSIONS are not — so the confirm names them,
+    // and says how many are live, because "3 workspaces" and "3
+    // workspaces, 2 connected" are different decisions.
+    const subtree = subtreeOf(id);
+    const descendants = subtree.filter((w) => w.id !== id);
+    if (descendants.length > 0) {
+      const live = subtree.filter((w) => liveWorkspaceIds().has(w.id)).length;
+      const names = descendants.map((w) => `  • ${w.name}`).join("\n");
+      const ok = window.confirm(
+        t("workspace.delete.withChildren", {
+          name: ws.name,
+          count: descendants.length,
+          names,
+          live,
+        }),
+      );
+      if (!ok) return;
+    } else if (!window.confirm(t("workspace.delete.confirm", { name: ws.name }))) {
+      return;
+    }
+    // Phase 39: extra confirm when any workspace in the subtree has
+    // notes (they'll be deleted with it). Counts notes strictly
+    // belonging to those — legacy unassigned (null) notes survive.
+    const ids = new Set(subtree.map((w) => w.id));
+    const noteCount = notes().filter((n) => n.workspace_id && ids.has(n.workspace_id)).length;
     if (noteCount > 0) {
       if (!window.confirm(t("workspace.delete.notesWarning", { count: noteCount }))) return;
     }
@@ -1294,15 +1336,20 @@ function App() {
 
   /** Probe, then persist. The probe is what keeps a non-repo directory
    *  from landing as a dead section — git's own message comes back. */
-  const pinProjectFolder = async (path: string, connection: Connection | null) => {
+  const pinProjectFolder = async (
+    parentWorkspaceId: string,
+    path: string,
+    connection: Connection | null,
+  ) => {
     try {
-      await invoke<WorktreeEntry[]>("project_folder_probe", { path, connection });
-      const f = await invoke<WorkspacesFile>("project_folder_add", {
+      await invoke<WorktreeEntry[]>("git_probe_worktrees", { path, connection });
+      const f = await invoke<WorkspacesFile>("workspace_pin_project_folder", {
+        parentWorkspaceId,
         path,
         name: null,
-        connection,
       });
       updateFile(f);
+      if (f.active_workspace_id) await handleSetActive(f.active_workspace_id);
     } catch (e) {
       log.error("pin project folder failed", e);
       flashSummaryToast("err", String(e));
@@ -1327,11 +1374,11 @@ function App() {
     }
     if (conn === null || conn.type === "local") {
       const picked = await openFileDialog({ directory: true, multiple: false });
-      if (typeof picked === "string") await pinProjectFolder(picked, conn);
+      if (typeof picked === "string") await pinProjectFolder(workspaceId, picked, conn);
       return;
     }
     // WSL: no SFTP and no meaningful native path, so type it.
-    setProjectFolderModal({ kind: "pin", connection: conn });
+    setProjectFolderModal({ kind: "pin", workspaceId, connection: conn });
   };
 
   /** Last path component, for naming a detached worktree's workspace. */
@@ -1356,19 +1403,20 @@ function App() {
    * workspace's first pane connects through the normal restore path;
    * its cwd reaches a remote shell via `effectiveCwdOverride`.
    */
-  const openWorktree = async (folder: ProjectFolder, wt: WorktreeEntry) => {
+  const openWorktree = async (rootWorkspaceId: string, wt: WorktreeEntry) => {
+    const root = file().workspaces.find((w) => w.id === rootWorkspaceId);
     try {
-      const f = await invoke<WorkspacesFile>("project_folder_open_worktree", {
-        folderId: folder.id,
+      const f = await invoke<WorkspacesFile>("workspace_open_worktree", {
+        rootWorkspaceId,
         worktreePath: wt.path,
         // Branch name is what the user recognises; a detached worktree
         // falls back to the directory name rather than a bare sha.
-        name: wt.branch ?? pathTailOf(wt.path) ?? folder.name,
+        name: wt.branch ?? pathTailOf(wt.path) ?? root?.name ?? "worktree",
       });
       updateFile(f);
       if (f.active_workspace_id) await handleSetActive(f.active_workspace_id);
     } catch (e) {
-      log.error("project_folder_open_worktree failed", e);
+      log.error("workspace_open_worktree failed", e);
       flashSummaryToast("err", String(e));
     }
   };
@@ -3167,38 +3215,26 @@ function App() {
             // Phase 65.Q removed the "add_machine" action — joining an
             // existing server is handled by the main wizard (R).
           }}
-          // ── project folders ───────────────────────────────────────
-          projectFolders={file().project_folders ?? []}
-          onProjectFolderSetCollapsed={(folderId, isCollapsed) => {
+          // ── project-folder workspaces ─────────────────────────────
+          onSetCollapsed={(workspaceId, isCollapsed) => {
             void (async () => {
               try {
-                const f = await invoke<WorkspacesFile>("project_folder_update", {
-                  folderId,
-                  name: null,
-                  isCollapsed,
+                const f = await invoke<WorkspacesFile>("workspace_set_collapsed", {
+                  workspaceId,
+                  collapsed: isCollapsed,
                 });
                 updateFile(f);
-              } catch (e) { log.error("project_folder_update failed", e); }
+              } catch (e) { log.error("workspace_set_collapsed failed", e); }
             })();
           }}
-          onProjectFolderRemove={(folderId) => {
-            void (async () => {
-              try {
-                const f = await invoke<WorkspacesFile>("project_folder_remove", { folderId });
-                updateFile(f);
-              } catch (e) { log.error("project_folder_remove failed", e); }
-            })();
-          }}
-          onProjectFolderNewWorktree={(folder) =>
-            setProjectFolderModal({ kind: "worktree", folder })
-          }
+          onNewWorktree={(w) => setProjectFolderModal({ kind: "worktree", workspace: w })}
           // Rejection is meaningful here — the Sidebar renders git's own
           // message (bad path, no live SSH session) rather than an empty
           // list, which would read as "this repo has no worktrees".
-          onListWorktrees={(folderId, path) =>
-            invoke<WorktreeEntry[]>("project_folder_list_worktrees", { folderId, path })
+          onListWorktrees={(workspaceId) =>
+            invoke<WorktreeEntry[]>("workspace_list_worktrees", { workspaceId })
           }
-          onOpenWorktree={(folder, wt) => void openWorktree(folder, wt)}
+          onOpenWorktree={(rootWorkspaceId, wt) => void openWorktree(rootWorkspaceId, wt)}
           allForwards={portForwards()}
           onOpenPorts={(workspaceId) => {
             // Badge click: activate that workspace, then open the
@@ -3808,7 +3844,7 @@ function App() {
             onPick={(dir) => {
               const conn = d().connection;
               setDirPickerFor(null);
-              void pinProjectFolder(dir, conn);
+              void pinProjectFolder(d().workspaceId, dir, conn);
             }}
           />
         )}

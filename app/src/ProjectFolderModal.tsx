@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
 import { IconClose, IconFolder, IconGitBranch, IconWarning } from "./icons";
-import type { Connection, ProjectFolder, WorktreeEntry } from "./types";
+import type { Connection, Workspace, WorktreeEntry } from "./types";
 
 // Two small dialogs over the same chrome:
 //
@@ -18,11 +18,12 @@ import type { Connection, ProjectFolder, WorktreeEntry } from "./types";
 // browser (DirPicker.tsx, over SFTP), and Local gets the native dialog.
 // This mode is the WSL fallback, which has neither: `file_list_remote`
 // is SFTP-only and `WSL_CAPS.fileTransfer` is false, so there is nothing
-// to browse with and the path is typed.
+// to browse with and the path is typed. Deleting the mode outright, as
+// the plan first called for, would leave WSL no way to pin at all.
 
 export type ProjectFolderModalMode =
-  | { kind: "pin"; connection: Connection | null }
-  | { kind: "worktree"; folder: ProjectFolder };
+  | { kind: "pin"; workspaceId: string; connection: Connection | null }
+  | { kind: "worktree"; workspace: Workspace };
 
 interface Props {
   mode: ProjectFolderModalMode;
@@ -52,7 +53,7 @@ export function ProjectFolderModal(p: Props) {
       .replace(/[^A-Za-z0-9\-_./]/g, "-")
       .replace(/\//g, "-");
     if (!safe) return "";
-    const norm = p.mode.folder.path.replace(/\\/g, "/").replace(/\/+$/, "");
+    const norm = (p.mode.workspace.cwd ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
     const i = norm.lastIndexOf("/");
     if (i === -1) return `${norm}-${safe}`;
     const parent = norm.slice(0, i);
@@ -87,14 +88,14 @@ export function ProjectFolderModal(p: Props) {
       // Validate before persisting: a path that is not a repo (or a
       // workspace with no live session) fails here with git's own
       // message instead of landing a dead row in the sidebar.
-      await invoke<WorktreeEntry[]>("project_folder_probe", {
+      await invoke<WorktreeEntry[]>("git_probe_worktrees", {
         path: value,
         connection: p.mode.connection,
       });
-      await invoke("project_folder_add", {
+      await invoke("workspace_pin_project_folder", {
+        parentWorkspaceId: p.mode.workspaceId,
         path: value,
         name: null,
-        connection: p.mode.connection,
       });
       p.onDone();
       p.onClose();
@@ -113,9 +114,8 @@ export function ProjectFolderModal(p: Props) {
     setBusy(true);
     setError(null);
     try {
-      await invoke<WorktreeEntry[]>("project_folder_create_worktree", {
-        folderId: p.mode.folder.id,
-        projectPath: p.mode.folder.path,
+      await invoke<WorktreeEntry[]>("workspace_create_project_worktree", {
+        workspaceId: p.mode.workspace.id,
         branchName: b,
         baseBranch: bb,
         targetPath: target().trim() || null,
@@ -133,7 +133,7 @@ export function ProjectFolderModal(p: Props) {
     isPin()
       ? t("pf.dialog.title")
       : t("pf.wt.title", {
-          folder: p.mode.kind === "worktree" ? p.mode.folder.name : "",
+          folder: p.mode.kind === "worktree" ? p.mode.workspace.name : "",
         });
 
   return (

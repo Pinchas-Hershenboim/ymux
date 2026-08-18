@@ -1049,5 +1049,9 @@
   "fm.transfer.dismiss": "Закрыть",
   "fm.transfer.canceling": "Отмена…",
   "fm.transfer.canceled": "Отменено",
-  "fm.transfer.failed": "Ошибка"
+  "fm.transfer.failed": "Ошибка",
+  "workspace.delete.confirm": "Удалить рабочее пространство “{name}”?",
+  "workspace.delete.withChildren": "Удалить “{name}” и вложенные в него рабочие пространства ({count})?\n\n{names}\n\nУ {live} из них есть активные сессии, которые будут завершены. Каталоги на хосте не затрагиваются.",
+  "pf.expand": "Развернуть",
+  "pf.collapse": "Свернуть"
 }

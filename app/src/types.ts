@@ -17,11 +17,9 @@ export type { LayoutNode } from "./bindings/LayoutNode";
 export type { Workspace } from "./bindings/Workspace";
 // cmux-A A2: sidebar collapsible groups.
 export type { WorkspaceGroup } from "./bindings/WorkspaceGroup";
-// A pinned repo (with its own connection) and the git worktrees under
-// it. The folder lives on WorkspacesFile, not on a Workspace — each
-// worktree becomes its own workspace, bound back via
-// `Workspace.worktree_path`.
-export type { ProjectFolder } from "./bindings/ProjectFolder";
+// One row of `git worktree list --porcelain`, for a workspace flagged
+// `is_project_root`. There is no ProjectFolder type any more — a pinned
+// repo IS a workspace, nested under the one it was pinned from.
 export type { WorktreeEntry } from "./bindings/WorktreeEntry";
 export type { FeedItem } from "./bindings/FeedItem";
 export type { FeedItemState } from "./bindings/FeedItemState";
@@ -129,9 +127,6 @@ export type WorkspacesFile = {
   // cmux-A A2: sidebar groups. Older workspaces.json without this
   // key deserializes as an empty array (backend serde default).
   groups?: import("./bindings/WorkspaceGroup").WorkspaceGroup[];
-  // Pinned repos rendered as sections whose children are workspaces,
-  // one per git worktree. Optional for the same reason as `groups`.
-  project_folders?: import("./bindings/ProjectFolder").ProjectFolder[];
 };
 
 export type PtyDataEvent = { session_id: string; data: string };

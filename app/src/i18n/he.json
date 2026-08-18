@@ -1049,5 +1049,9 @@
   "fm.transfer.dismiss": "סגור",
   "fm.transfer.canceling": "מבטל…",
   "fm.transfer.canceled": "בוטל",
-  "fm.transfer.failed": "נכשל"
+  "fm.transfer.failed": "נכשל",
+  "workspace.delete.confirm": "למחוק את סביבת העבודה “{name}”?",
+  "workspace.delete.withChildren": "למחוק את “{name}” ואת {count} סביבות העבודה שמתחתיה?\n\n{names}\n\nל-{live} מהן יש סשנים חיים שייסגרו. התיקיות על השרת לא נוגעים בהן.",
+  "pf.expand": "הרחב",
+  "pf.collapse": "כווץ"
 }

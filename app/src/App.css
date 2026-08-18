@@ -359,12 +359,40 @@ body {
   font-size: var(--w-fs-xs);
   transition: opacity 80ms ease, color 80ms ease, background 80ms ease;
 }
-.pf-header:hover .pf-btn { opacity: 1; }
+.pf-header:hover .pf-btn,
+.ws-item:hover .pf-btn { opacity: 1; }
 .pf-btn:hover { color: var(--w-text); background: var(--w-surface); }
 .pf-btn:focus-visible { opacity: 1; }
 
-/* A worktree with no workspace yet. Indented to sit under the section
-   header; margin-inline-start so it reads correctly in RTL. */
+/* Tree depth. Scoped to .full on purpose: `.sidebar.icons .ws-item`
+   centers its content, and an inline-start pad would shove every nested
+   row off-center. `padding-inline-start` rather than margin so the row's
+   hover/active background still spans the full width, and so RTL mirrors
+   for free. */
+.sidebar.full .ws-item,
+.sidebar.full .pf-hint {
+  padding-inline-start: calc(10px + var(--ws-depth, 0) * 14px);
+}
+
+/* Collapse toggle on any row that has a subtree. A <button> so the
+   drag-start handler's interactive-child exclusion already skips it. */
+.ws-chevron {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0;
+  margin-inline-start: -4px;
+  border: none;
+  background: none;
+  color: var(--w-text-dim);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.ws-chevron:hover { opacity: 1; color: var(--w-text); }
+.sidebar.icons .ws-chevron { display: none; }
+
+/* A worktree with no workspace yet. Indented one level past its repo;
+   margin-inline-start so it reads correctly in RTL. */
 .pf-unopened {
   margin-inline-start: 10px;
   gap: 6px;

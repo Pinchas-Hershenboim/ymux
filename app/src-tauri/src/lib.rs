@@ -704,7 +704,7 @@ fn renumber_workspace_scope(file: &mut WorkspacesFile, scope: Option<&str>) {
         .workspaces
         .iter()
         .enumerate()
-        .filter(|(_, w)| w.group_id.as_deref() == scope)
+        .filter(|(_, w)| w.parent_id.is_none() && w.group_id.as_deref() == scope)
         .map(|(idx, w)| (idx, w.sort_order.unwrap_or(i32::MAX), idx))
         .collect();
     in_scope.sort_by_key(|(_, order, ins)| (*order, *ins));
@@ -4598,24 +4598,28 @@ fn workspace_reorder(
             .lock()
             .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
 
-        // Validate destination group_id if provided.
-        if let Some(gid) = group_id.as_deref() {
-            if !file.groups.iter().any(|g| g.id == gid) {
-                return Err(format!("no group {gid}"));
-            }
-        }
-
-        // Snapshot the workspace's current group so we know whether we
-        // also have to renumber a SOURCE scope after the move.
-        let (old_group, ws_index) = {
+        // Snapshot the workspace's scope. A CHILD is scoped to its
+        // parent, not to a group: it has no group, and renumbering it
+        // against a group's members would order it against workspaces
+        // it is not a sibling of. The frontend only ever offers
+        // same-level drops, so `group_id` is simply ignored here.
+        let (old_group, parent_id, ws_index) = {
             let (idx, ws) = file
                 .workspaces
                 .iter()
                 .enumerate()
                 .find(|(_, w)| w.id == workspace_id)
                 .ok_or_else(|| format!("no workspace {workspace_id}"))?;
-            (ws.group_id.clone(), idx)
+            (ws.group_id.clone(), ws.parent_id.clone(), idx)
         };
+        let group_id = if parent_id.is_some() { old_group.clone() } else { group_id };
+
+        // Validate destination group_id if provided.
+        if let Some(gid) = group_id.as_deref() {
+            if !file.groups.iter().any(|g| g.id == gid) {
+                return Err(format!("no group {gid}"));
+            }
+        }
 
         // Reassign group_id first — that changes the workspace's scope
         // membership, which the renumber pass below relies on.
@@ -4627,10 +4631,14 @@ fn workspace_reorder(
         // move (skip the target if it was already there, then splice
         // at new_index). Assign 0..N-1 by walking that list.
         let dest_scope = group_id.as_deref();
+        let in_scope = |w: &Workspace| match parent_id.as_deref() {
+            Some(pid) => w.parent_id.as_deref() == Some(pid),
+            None => w.parent_id.is_none() && w.group_id.as_deref() == dest_scope,
+        };
         let mut dest_ids: Vec<String> = file
             .workspaces
             .iter()
-            .filter(|w| w.group_id.as_deref() == dest_scope && w.id != workspace_id)
+            .filter(|w| in_scope(w) && w.id != workspace_id)
             .map(|w| {
                 // Sort by current sort_order (missing = end), tie-break
                 // by insertion; the collect step below reorders.
