@@ -4005,6 +4005,214 @@ fn conn_same_host(a: &Option<Connection>, b: &Option<Connection>) -> bool {
 }
 
 
+// ─── project-folder / worktree workspace commands ───────────────────
+
+/// Walk up from `id`, yielding ancestor ids nearest-first. Capped by the
+/// workspace count so a cycle that slipped past `normalize_parents`
+/// cannot spin here.
+fn ancestors_of(file: &WorkspacesFile, id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = id.to_string();
+    for _ in 0..file.workspaces.len() {
+        let parent = file
+            .workspaces
+            .iter()
+            .find(|w| w.id == cur)
+            .and_then(|w| w.parent_id.clone());
+        match parent {
+            Some(p) => {
+                out.push(p.clone());
+                cur = p;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Pin a git repo as a child workspace of `parent_workspace_id`.
+///
+/// The caller validates the path with `git_probe_worktrees` first, so a
+/// directory that is not a repo never reaches here — this command only
+/// persists. The child inherits a CLONE of the parent's connection: the
+/// folder must keep working when the parent is disconnected, and the SSH
+/// handle is resolved per call by user@host:port anyway.
+#[tauri::command]
+fn workspace_pin_project_folder(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    parent_workspace_id: String,
+    path: String,
+    name: Option<String>,
+) -> Result<WorkspacesFile, String> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err("project path is required".to_string());
+    }
+    let new_id = new_workspace_id();
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let parent = file
+            .workspaces
+            .iter()
+            .find(|w| w.id == parent_workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        let conn = parent.connection.clone();
+
+        // Two repos in one ancestor chain would each scan the same
+        // worktrees and render them under different parents.
+        if parent.is_project_root
+            || ancestors_of(&file, &parent_workspace_id)
+                .iter()
+                .any(|a| {
+                    file.workspaces
+                        .iter()
+                        .any(|w| &w.id == a && w.is_project_root)
+                })
+        {
+            return Err("this workspace is already inside a project folder".to_string());
+        }
+        if file.workspaces.iter().any(|w| {
+            w.parent_id.as_deref() == Some(parent_workspace_id.as_str())
+                && w.cwd.as_deref() == Some(path.as_str())
+        }) {
+            return Err("this folder is already pinned here".to_string());
+        }
+
+        let label = match name.map(|n| n.trim().to_string()) {
+            Some(n) if !n.is_empty() => n,
+            _ => {
+                let b = path_basename(&path);
+                if b.is_empty() { path.clone() } else { b }
+            }
+        };
+        let effective = conn.clone().unwrap_or(Connection::Local { shell: None });
+        file.workspaces.push(Workspace {
+            id: new_id.clone(),
+            name: label,
+            cwd: Some(path.clone()),
+            connection: Some(effective.clone()),
+            layout: Some(single_terminal_layout(effective)),
+            parent_id: Some(parent_workspace_id.clone()),
+            is_project_root: true,
+            ..Default::default()
+        });
+        file.active_workspace_id = Some(new_id.clone());
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    log_info(
+        "WORKSPACE",
+        &format!("pinned a project folder under ws={parent_workspace_id} as ws={new_id}"),
+    );
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
+/// Open one worktree of a project-folder workspace as its own child.
+///
+/// Idempotent: a worktree that already has a workspace is activated
+/// rather than duplicated. The first pane is a plain interactive shell —
+/// cmux#5032 spawned the setup command as PID 1 and the tab died the
+/// moment that command exited.
+#[tauri::command]
+fn workspace_open_worktree(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    root_workspace_id: String,
+    worktree_path: String,
+    name: String,
+) -> Result<WorkspacesFile, String> {
+    let worktree_path = worktree_path.trim().to_string();
+    if worktree_path.is_empty() {
+        return Err("worktree path is required".to_string());
+    }
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let root = file
+            .workspaces
+            .iter()
+            .find(|w| w.id == root_workspace_id)
+            .ok_or_else(|| "project folder workspace not found".to_string())?;
+        let conn = root
+            .connection
+            .clone()
+            .unwrap_or(Connection::Local { shell: None });
+
+        // The repo root's own entry in `git worktree list` IS this
+        // workspace. Opening it would create a child sharing its
+        // parent's directory.
+        if root.cwd.as_deref() == Some(worktree_path.as_str()) {
+            file.active_workspace_id = Some(root_workspace_id.clone());
+            drop(file);
+            persist(&state)?;
+            return Ok(state.workspaces.lock().unwrap().clone());
+        }
+        if let Some(existing) = file
+            .workspaces
+            .iter()
+            .find(|w| {
+                w.parent_id.as_deref() == Some(root_workspace_id.as_str())
+                    && w.cwd.as_deref() == Some(worktree_path.as_str())
+            })
+            .map(|w| w.id.clone())
+        {
+            file.active_workspace_id = Some(existing);
+            drop(file);
+            persist(&state)?;
+            return Ok(state.workspaces.lock().unwrap().clone());
+        }
+
+        let id = new_workspace_id();
+        file.workspaces.push(Workspace {
+            id: id.clone(),
+            name,
+            cwd: Some(worktree_path),
+            connection: Some(conn.clone()),
+            layout: Some(single_terminal_layout(conn)),
+            parent_id: Some(root_workspace_id.clone()),
+            ..Default::default()
+        });
+        file.active_workspace_id = Some(id);
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
+/// Persisted collapse state of a workspace's subtree.
+///
+/// Deliberately NOT routed through `workspace_set_active`, which stamps
+/// `last_active_at` and would make a chevron click look like a visit.
+#[tauri::command]
+fn workspace_set_collapsed(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    collapsed: bool,
+) -> Result<WorkspacesFile, String> {
+    {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let ws = file
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        ws.is_collapsed = collapsed;
+    }
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
 // ─── tree repair + the v2/v3 project-folder migration ───────────────
 
 /// Repair `parent_id` so every consumer may assume a forest.
@@ -5020,34 +5228,116 @@ fn workspace_delete(
     app: AppHandle,
     workspace_id: String,
 ) -> Result<WorkspacesFile, String> {
-    let panes_to_kill: Vec<String> = {
+    // A workspace now owns its subtree: pinned project folders and the
+    // worktree workspaces opened under them go with it. The directories
+    // on the host are never touched — but the SESSIONS are, which is why
+    // the frontend confirm names what is about to die.
+    //
+    // Collect ids and pane lists under ONE short lock, then drop it: the
+    // teardown below is I/O (PTY kill, webview close, filesystem) and
+    // must never run under the workspaces mutex.
+    let (ids, panes_by_ws) = {
         let file = state.workspaces.lock().unwrap();
-        file.workspaces
+        let ids = collect_subtree_ids(&file, &workspace_id);
+        let panes: Vec<(String, Vec<String>)> = ids
             .iter()
-            .find(|w| w.id == workspace_id)
-            .and_then(|w| w.layout.as_ref())
-            .map(|l| {
-                let mut v = Vec::new();
-                collect_panes(l, &mut v);
-                v
+            .map(|id| {
+                let panes = file
+                    .workspaces
+                    .iter()
+                    .find(|w| &w.id == id)
+                    .and_then(|w| w.layout.as_ref())
+                    .map(|l| {
+                        let mut v = Vec::new();
+                        collect_panes(l, &mut v);
+                        v
+                    })
+                    .unwrap_or_default();
+                (id.clone(), panes)
             })
-            .unwrap_or_default()
+            .collect();
+        (ids, panes)
     };
+    if ids.len() > 1 {
+        log_info(
+            "WORKSPACE",
+            &format!(
+                "delete ws={workspace_id} cascading to {} descendant workspace(s)",
+                ids.len() - 1
+            ),
+        );
+    }
+
+    for (id, panes) in &panes_by_ws {
+        teardown_workspace_runtime(&state, &app, id, panes);
+    }
+
+    // One retain, one reassignment, one persist. Doing this per id would
+    // leave the tree half-removed if a later teardown panicked.
+    {
+        let mut file = state.workspaces.lock().unwrap();
+        file.workspaces.retain(|w| !ids.contains(&w.id));
+        if file
+            .active_workspace_id
+            .as_deref()
+            .map(|a| ids.iter().any(|i| i == a))
+            .unwrap_or(false)
+        {
+            // Prefer a root: falling back to `first()` could land the
+            // user inside some unrelated repo's worktree.
+            file.active_workspace_id = file
+                .workspaces
+                .iter()
+                .find(|w| w.parent_id.is_none())
+                .or_else(|| file.workspaces.first())
+                .map(|w| w.id.clone());
+        }
+    }
+    persist(&state)?;
+    Ok(state.workspaces.lock().unwrap().clone())
+}
+
+/// Every id in the subtree rooted at `workspace_id`, including itself.
+///
+/// BFS with a visited set: `normalize_parents` guarantees a forest at
+/// load, but a delete that looped would take the whole file with it, so
+/// this does not rely on that guarantee.
+fn collect_subtree_ids(file: &WorkspacesFile, workspace_id: &str) -> Vec<String> {
+    let mut out = vec![workspace_id.to_string()];
+    let mut seen: std::collections::HashSet<String> =
+        std::iter::once(workspace_id.to_string()).collect();
+    let mut queue = vec![workspace_id.to_string()];
+    while let Some(cur) = queue.pop() {
+        for w in file.workspaces.iter() {
+            if w.parent_id.as_deref() == Some(cur.as_str()) && seen.insert(w.id.clone()) {
+                out.push(w.id.clone());
+                queue.push(w.id.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Runtime teardown for one workspace: everything except removing it
+/// from the file. Split out of `workspace_delete` so the cascade runs
+/// the identical sequence per id.
+fn teardown_workspace_runtime(
+    state: &State<'_, AppState>,
+    app: &AppHandle,
+    workspace_id: &str,
+    panes_to_kill: &[String],
+) {
     // Phase 53 (rebased): drop the workspace-level Browser Webview
     // (at most one per workspace, keyed by workspace_id) and delete
     // the per-workspace browser-sessions directory (cookies /
     // localStorage / cache). Sessions DO survive transient hide/show
     // cycles; this is the only cleanup path that should wipe them.
-    let webview = state
-        .workspace_browsers
-        .lock()
-        .unwrap()
-        .remove(&workspace_id);
+    let webview = state.workspace_browsers.lock().unwrap().remove(workspace_id);
     if let Some(w) = webview {
         let _ = w.close();
     }
-    workspace_browser::cleanup_workspace_sessions(&workspace_id);
-    for pane_id in &panes_to_kill {
+    workspace_browser::cleanup_workspace_sessions(workspace_id);
+    for pane_id in panes_to_kill {
         if let Some(sid) = state.core.pane_sessions.lock().unwrap().remove(pane_id) {
             if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {
                 kill_session_inner(&mut s);
@@ -5055,19 +5345,10 @@ fn workspace_delete(
         }
     }
     // Phase 8.B: tear down any port forwards for the workspace.
-    close_workspace_forwards(&state.core.forwards, &workspace_id);
+    close_workspace_forwards(&state.core.forwards, workspace_id);
     // Phase 39: drop the workspace's notes (the UI warns first when any
     // exist). Best-effort — failure here shouldn't block the delete.
-    notes::delete_for_workspace(&state, &app, &workspace_id);
-    {
-        let mut file = state.workspaces.lock().unwrap();
-        file.workspaces.retain(|w| w.id != workspace_id);
-        if file.active_workspace_id.as_deref() == Some(&workspace_id) {
-            file.active_workspace_id = file.workspaces.first().map(|w| w.id.clone());
-        }
-    }
-    persist(&state)?;
-    Ok(state.workspaces.lock().unwrap().clone())
+    notes::delete_for_workspace(state, app, workspace_id);
 }
 
 #[tauri::command]
@@ -7639,6 +7920,9 @@ pub fn run() {
             workspace_delete,
             workspace_set_active,
             workspace_create_worktree,
+            workspace_pin_project_folder,
+            workspace_open_worktree,
+            workspace_set_collapsed,
             worktrees::git_probe_worktrees,
             worktrees::workspace_list_worktrees,
             worktrees::workspace_create_project_worktree,
@@ -8192,7 +8476,8 @@ mod migration_tests {
 #[cfg(test)]
 mod project_folder_migration_tests {
     use super::{
-        migrate_legacy_project_folders, normalize_parents, Connection, Workspace, WorkspacesFile,
+        collect_subtree_ids, migrate_legacy_project_folders, normalize_parents, Connection,
+        Workspace, WorkspacesFile,
     };
 
     /// A v2/v3 file: one SSH workspace, one pinned folder on that host,
@@ -8324,6 +8609,39 @@ mod project_folder_migration_tests {
             parent_id: parent.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn subtree_collects_the_whole_branch_and_nothing_else() {
+        // root → folder → two worktrees, plus an unrelated root.
+        let mut file = WorkspacesFile {
+            workspaces: vec![
+                child("root", None),
+                child("folder", Some("root")),
+                child("wt1", Some("folder")),
+                child("wt2", Some("folder")),
+                child("other", None),
+            ],
+            ..Default::default()
+        };
+        let mut ids = collect_subtree_ids(&file, "root");
+        ids.sort();
+        assert_eq!(ids, vec!["folder", "root", "wt1", "wt2"]);
+
+        // Deleting the folder takes only its own branch.
+        let mut ids = collect_subtree_ids(&file, "folder");
+        ids.sort();
+        assert_eq!(ids, vec!["folder", "wt1", "wt2"]);
+
+        // A leaf is just itself.
+        assert_eq!(collect_subtree_ids(&file, "wt1"), vec!["wt1"]);
+
+        // And a cycle must not take the whole file with it: even though
+        // normalize_parents repairs these at load, a delete that looped
+        // would be unrecoverable.
+        file.workspaces[0].parent_id = Some("wt1".to_string());
+        let ids = collect_subtree_ids(&file, "root");
+        assert_eq!(ids.len(), 4, "visited set caps the walk");
     }
 
     #[test]
