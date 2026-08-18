@@ -11,13 +11,13 @@
 //!
 //! Everything here follows Rule #3: argv arrays only. Values interpolated
 //! into POSIX scripts run inside a distro go through
-//! `winmux_core::shell_quote` exclusively.
+//! `ymux_core::shell_quote` exclusively.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, State};
-use winmux_core::shell_quote;
+use ymux_core::shell_quote;
 
 use crate::provisioning::{ProvisioningError, RunHandle, StepProgress};
 use crate::{log_info, log_warn, AppState};
@@ -109,7 +109,7 @@ pub(crate) struct WslPreflight {
     pub platform_ready: bool,
     /// At least one distro is registered.
     pub distro_present: bool,
-    /// This winmux process holds an elevated token.
+    /// This ymux process holds an elevated token.
     pub elevated: bool,
     /// Installing the platform needs admin and we don't have it, so a UAC
     /// prompt is unavoidable. False once the platform is already up —
@@ -217,7 +217,7 @@ fn run_wsl_install_elevated(distro: &str) -> Result<(u32, String), ProvisioningE
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let log_path = std::env::temp_dir().join(format!(
-        "winmux-wsl-install-{}-{stamp}.log",
+        "ymux-wsl-install-{}-{stamp}.log",
         std::process::id()
     ));
     // Best-effort: a leftover from a crashed run would otherwise be read
@@ -252,7 +252,7 @@ fn run_wsl_install_elevated(distro: &str) -> Result<(u32, String), ProvisioningE
                 },
                 ERROR_ELEVATION_REQUIRED => ProvisioningError::ElevationRequired {
                     step: "InstallWsl".into(),
-                    hint: "Windows refused to elevate this process. Start winmux \
+                    hint: "Windows refused to elevate this process. Start ymux \
                            as administrator and re-run the step."
                         .into(),
                 },
@@ -362,7 +362,7 @@ pub(crate) fn classify_wsl_install(code: u32, output: &str) -> Result<(), Provis
 pub(crate) async fn restart_windows() -> Result<(), String> {
     log_warn("SETUP", "user confirmed restart to finish the WSL install");
     let mut c = hidden_cmd("shutdown.exe");
-    c.args(["/r", "/t", "0", "/c", "winmux: finishing the WSL install"]);
+    c.args(["/r", "/t", "0", "/c", "ymux: finishing the WSL install"]);
     let out = c
         .output()
         .await
@@ -413,7 +413,7 @@ pub(crate) fn clean_wsl_output(bytes: &[u8]) -> String {
 /// Run a script inside a distro via `wsl.exe [-d <distro>] [-u <user>]
 /// -- sh -s`, feeding the script on **stdin**, and return (exit_code,
 /// merged stdout+stderr). `script` must be a static string or built
-/// exclusively with `winmux_core::shell_quote` for interpolated values
+/// exclusively with `ymux_core::shell_quote` for interpolated values
 /// (same discipline as the remote tmux path).
 ///
 /// The script goes in on stdin rather than as an argv element because
@@ -508,12 +508,12 @@ async fn run_capture(
 
 // ─── WSL RPC bridge (hooks from inside WSL → app) ────────────────────
 //
-// The CLI inside a distro dials WINMUX_SOCKET_ADDR over TCP (the same
+// The CLI inside a distro dials YMUX_SOCKET_ADDR over TCP (the same
 // path a remote SSH server uses via the reverse tunnel); Windows named
 // pipes are unreachable from WSL2 Linux. This is a lazy, app-lifetime
 // TCP listener that HMAC-gates every connection with a per-run token
 // (Rule #8: the token never reaches logs) and bridges accepted streams
-// into the named-pipe RPC server via winmux_tunnel::bridge_stream_to_pipe.
+// into the named-pipe RPC server via ymux_tunnel::bridge_stream_to_pipe.
 //
 // Bind surface: 0.0.0.0 — in NAT mode the distro reaches the host via
 // the vEthernet gateway IP (which varies per boot), in mirrored mode via
@@ -526,7 +526,7 @@ static WSL_BRIDGE: tokio::sync::OnceCell<(u16, std::sync::Arc<String>)> =
 pub(crate) async fn ensure_wsl_bridge() -> Result<(u16, std::sync::Arc<String>), String> {
     WSL_BRIDGE
         .get_or_try_init(|| async {
-            let token = std::sync::Arc::new(winmux_tunnel::generate_token());
+            let token = std::sync::Arc::new(ymux_tunnel::generate_token());
             let listener = tokio::net::TcpListener::bind(("0.0.0.0", 0))
                 .await
                 .map_err(|e| format!("wsl-bridge bind: {e}"))?;
@@ -543,7 +543,7 @@ pub(crate) async fn ensure_wsl_bridge() -> Result<(u16, std::sync::Arc<String>),
                             let peer = peer.to_string();
                             tauri::async_runtime::spawn(async move {
                                 if let Err(e) =
-                                    winmux_tunnel::bridge_stream_to_pipe(stream, &tok, &peer).await
+                                    ymux_tunnel::bridge_stream_to_pipe(stream, &tok, &peer).await
                                 {
                                     // Handshake failures are expected noise from
                                     // port scanners — engineer-only log.
@@ -593,7 +593,7 @@ pub(crate) async fn resolve_wsl_host_addr(distro: Option<&str>, port: u16) -> Op
     Some(format!("{ip}:{port}"))
 }
 
-/// Write `~/.winmux/run/last.env` inside the distro so the CLI picks up
+/// Write `~/.ymux/run/last.env` inside the distro so the CLI picks up
 /// the bridge address + token even outside the tmux environment (the
 /// same file the remote bootstrap writes over SSH). Token never logged.
 pub(crate) async fn write_wsl_env_file(
@@ -603,9 +603,9 @@ pub(crate) async fn write_wsl_env_file(
     pane_id: &str,
 ) -> Result<(), String> {
     let script = format!(
-        "mkdir -p \"$HOME/.winmux/run\" && \
-         printf 'WINMUX_SOCKET_ADDR=%s\\nWINMUX_TUNNEL_TOKEN=%s\\nWINMUX_PANE_ID=%s\\n' {a} {t} {p} > \"$HOME/.winmux/run/last.env\" && \
-         chmod 0600 \"$HOME/.winmux/run/last.env\"",
+        "mkdir -p \"$HOME/.ymux/run\" && \
+         printf 'YMUX_SOCKET_ADDR=%s\\nYMUX_TUNNEL_TOKEN=%s\\nYMUX_PANE_ID=%s\\n' {a} {t} {p} > \"$HOME/.ymux/run/last.env\" && \
+         chmod 0600 \"$HOME/.ymux/run/last.env\"",
         a = shell_quote(socket_addr),
         t = shell_quote(token),
         p = shell_quote(pane_id)
@@ -645,14 +645,14 @@ pub(crate) struct WslInspect {
     pub distros: Vec<String>,
     pub default_distro: Option<String>,
     pub tmux_installed: Option<bool>,
-    /// "ok" | "stale" | "missing" — winmux CLI inside the distro vs the
+    /// "ok" | "stale" | "missing" — ymux CLI inside the distro vs the
     /// embedded manifest sha.
-    pub winmux_cli_state: Option<String>,
+    pub ymux_cli_state: Option<String>,
     pub tmux_conf_ok: Option<bool>,
     /// Is the `claude` BINARY runnable inside the distro?
     ///
     /// This used to probe `[ -d "$HOME/.claude" ]`, which is the wrong
-    /// question twice over: `winmux setup-hooks` creates that directory
+    /// question twice over: `ymux setup-hooks` creates that directory
     /// itself, so after one wizard run the field read `true` on a distro
     /// with no Claude Code at all — and the install step that depends on it
     /// would then skip forever. `command -v claude` is what the user
@@ -781,7 +781,7 @@ async fn inspect_wsl(distro_override: Option<&str>) -> WslInspect {
         distros: Vec::new(),
         default_distro: None,
         tmux_installed: None,
-        winmux_cli_state: None,
+        ymux_cli_state: None,
         tmux_conf_ok: None,
         claude_inside: None,
         hooks_version_inside: None,
@@ -826,8 +826,8 @@ async fn inspect_wsl(distro_override: Option<&str>) -> WslInspect {
     // cold-distro latency tolerable. Machine-readable lines, parsed here.
     let script = r#"
 echo "TMUX $(command -v tmux >/dev/null 2>&1 && echo yes || echo no)"
-if [ -f "$HOME/.winmux/bin/winmux-linux-x64" ]; then echo "CLI $(sha256sum "$HOME/.winmux/bin/winmux-linux-x64" | cut -d' ' -f1)"; else echo "CLI missing"; fi
-if [ -f "$HOME/.winmux/tmux.conf" ]; then echo "CONF $(sha256sum "$HOME/.winmux/tmux.conf" | cut -d' ' -f1)"; else echo "CONF missing"; fi
+if [ -f "$HOME/.ymux/bin/ymux-linux-x64" ]; then echo "CLI $(sha256sum "$HOME/.ymux/bin/ymux-linux-x64" | cut -d' ' -f1)"; else echo "CLI missing"; fi
+if [ -f "$HOME/.ymux/tmux.conf" ]; then echo "CONF $(sha256sum "$HOME/.ymux/tmux.conf" | cut -d' ' -f1)"; else echo "CONF missing"; fi
 echo "CLAUDE $(command -v claude >/dev/null 2>&1 && echo yes || echo no)"
 echo "HOOKSV $(sed -n 's/.*"hooks_version"[: ]*"\([^"]*\)".*/\1/p' "$HOME/.claude/settings.json" 2>/dev/null | head -1)"
 "#;
@@ -851,7 +851,7 @@ echo "HOOKSV $(sed -n 's/.*"hooks_version"[: ]*"\([^"]*\)".*/\1/p' "$HOME/.claud
         if let Some(v) = line.strip_prefix("TMUX ") {
             w.tmux_installed = Some(v == "yes");
         } else if let Some(v) = line.strip_prefix("CLI ") {
-            w.winmux_cli_state = Some(if v == "missing" {
+            w.ymux_cli_state = Some(if v == "missing" {
                 "missing".into()
             } else if cli_sha.as_deref() == Some(v) {
                 "ok".into()
@@ -875,7 +875,7 @@ fn local_hooks_version() -> Option<String> {
     let p = user_profile().join(".claude").join("settings.json");
     let text = std::fs::read_to_string(p).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("winmux_meta")?
+    v.get("ymux_meta")?
         .get("hooks_version")?
         .as_str()
         .map(|s| s.to_string())
@@ -998,7 +998,7 @@ pub(crate) async fn local_setup_start(
 }
 
 /// Sanitize a Linux username: lowercase, [a-z0-9-], must start with a
-/// letter, max 32 chars. Falls back to "winmux" when nothing survives.
+/// letter, max 32 chars. Falls back to "ymux" when nothing survives.
 fn sanitize_linux_username(raw: &str) -> String {
     let mut out = String::new();
     for c in raw.to_lowercase().chars() {
@@ -1014,7 +1014,7 @@ fn sanitize_linux_username(raw: &str) -> String {
         }
     }
     if out.is_empty() {
-        "winmux".into()
+        "ymux".into()
     } else {
         out
     }
@@ -1032,7 +1032,7 @@ async fn wsl_pipe_to_file(
     mode: &str,
 ) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
-    let tmp_name = format!("{dest_rel}.winmux-upload.tmp");
+    let tmp_name = format!("{dest_rel}.ymux-upload.tmp");
     // Stage 1: cat stdin into the temp file. The script only embeds
     // shell_quote()d values (Rule #3 discipline).
     let cat_script = format!(
@@ -1120,17 +1120,17 @@ async fn npm_install_global(pkg: &str) -> Result<(i32, String), String> {
     run_capture(c, "npm install -g", 600).await
 }
 
-/// Resolve the bundled Windows CLI (winmux-cli.exe). Installed builds
+/// Resolve the bundled Windows CLI (ymux-cli.exe). Installed builds
 /// carry it under the Tauri resource dir; dev builds fall back to the
 /// path the build script stages it at.
-fn resolve_winmux_cli(app: &AppHandle) -> Option<PathBuf> {
+fn resolve_ymux_cli(app: &AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
     let candidates = app
         .path()
         .resource_dir()
         .ok()
         .into_iter()
-        .flat_map(|r| [r.join("resources").join("winmux-cli.exe"), r.join("winmux-cli.exe")])
+        .flat_map(|r| [r.join("resources").join("ymux-cli.exe"), r.join("ymux-cli.exe")])
         .collect::<Vec<_>>();
     for c in candidates {
         if c.is_file() {
@@ -1159,7 +1159,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 | "CreateWslUser"
                 | "EnsureDistroReady"
                 | "InstallTmuxInWsl"
-                | "DeployWinmuxCliToWsl"
+                | "DeployYmuxCliToWsl"
                 | "DeployTmuxConfToWsl"
                 | "InstallClaudeCodeInWsl"
                 // Was missing: it ran against a non-existent distro after
@@ -1261,7 +1261,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                 }),
                 Err(e) => Err(ProvisioningError::Generic(e)),
             },
-            "InstallLocalHooks" => match resolve_winmux_cli(&app) {
+            "InstallLocalHooks" => match resolve_ymux_cli(&app) {
                 Some(cli) => {
                     let mut c = hidden_cmd(&cli.to_string_lossy());
                     c.args(["setup-hooks", "--agent", "claude", "--source", "bundled"]);
@@ -1276,7 +1276,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                     }
                 }
                 None => Err(ProvisioningError::Generic(
-                    "bundled winmux-cli.exe not found (dev build without staged resources?)"
+                    "bundled ymux-cli.exe not found (dev build without staged resources?)"
                         .into(),
                 )),
             },
@@ -1359,7 +1359,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                         .filter(|s| !s.trim().is_empty())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| {
-                            std::env::var("USERNAME").unwrap_or_else(|_| "winmux".into())
+                            std::env::var("USERNAME").unwrap_or_else(|_| "ymux".into())
                         })
                         .as_str(),
                 );
@@ -1477,7 +1477,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                     )),
                 }
             }
-            "DeployWinmuxCliToWsl" => {
+            "DeployYmuxCliToWsl" => {
                 if std::env::consts::ARCH != "x86_64" {
                     Err(ProvisioningError::Generic(format!(
                         "unsupported host arch {} — only x86_64 WSL deploys are bundled",
@@ -1493,7 +1493,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                         let mut log = wsl_pipe_to_file(
                             distro.as_deref(),
                             &bytes,
-                            ".winmux/bin/winmux-linux-x64",
+                            ".ymux/bin/ymux-linux-x64",
                             &entry.sha256,
                             "0755",
                         )
@@ -1501,7 +1501,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                         let (code, out) = wsl_exec(
                             distro.as_deref(),
                             None,
-                            "ln -sf \"$HOME/.winmux/bin/winmux-linux-x64\" \"$HOME/.winmux/bin/winmux\" && echo SYMLINK-OK",
+                            "ln -sf \"$HOME/.ymux/bin/ymux-linux-x64\" \"$HOME/.ymux/bin/ymux\" && echo SYMLINK-OK",
                         )
                         .await?;
                         if code != 0 {
@@ -1540,7 +1540,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
                     wsl_pipe_to_file(
                         distro.as_deref(),
                         &bytes,
-                        ".winmux/tmux.conf",
+                        ".ymux/tmux.conf",
                         &entry.sha256,
                         "0644",
                     )
@@ -1553,7 +1553,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
             }
             "InstallClaudeCodeInWsl" => {
                 // The gap Yossi hit: the chain installed tmux, the CLI, the
-                // tmux conf and winmux's Claude HOOKS into the distro — but
+                // tmux conf and ymux's Claude HOOKS into the distro — but
                 // never Claude Code itself. `claude: command not found` in a
                 // brand-new WSL pane, with hooks registered for an agent that
                 // was not there.
@@ -1606,7 +1606,7 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
             "InstallHooksInWsl" => {
                 // Best-effort, mirroring the remote bootstrap's posture —
                 // a distro without ~/.claude just reports and moves on.
-                let script = "\"$HOME/.winmux/bin/winmux\" setup-hooks --agent claude --source bundled 2>&1 || true";
+                let script = "\"$HOME/.ymux/bin/ymux\" setup-hooks --agent claude --source bundled 2>&1 || true";
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(120),
                     wsl_exec(distro.as_deref(), None, script),
@@ -1766,7 +1766,7 @@ mod tests {
     fn linux_username_sanitized() {
         assert_eq!(sanitize_linux_username("Yossi Hezkel"), "yossihezkel");
         assert_eq!(sanitize_linux_username("123abc"), "abc");
-        assert_eq!(sanitize_linux_username("!!!"), "winmux");
+        assert_eq!(sanitize_linux_username("!!!"), "ymux");
         assert_eq!(sanitize_linux_username("a-b-c"), "a-b-c");
     }
 
@@ -1850,7 +1850,7 @@ mod wsl_elevation_tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn cmd_safe_path_accepts_a_real_temp_path() {
-        let p = std::path::Path::new(r"C:\Users\some.user\AppData\Local\Temp\winmux-wsl-1-2.log");
+        let p = std::path::Path::new(r"C:\Users\some.user\AppData\Local\Temp\ymux-wsl-1-2.log");
         assert_eq!(cmd_safe_path(p).as_deref(), p.to_str());
         // A space is legitimate in a Windows path and must survive — the
         // command string quotes the value, so it needs no escaping.

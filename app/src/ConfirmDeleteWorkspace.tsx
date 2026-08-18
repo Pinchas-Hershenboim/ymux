@@ -17,7 +17,7 @@ import type { Workspace } from "./types";
 // while Cancel holds focus.
 //
 // What it deliberately does NOT claim: that anything on the host is
-// removed. winmux never created those directories and never deletes
+// removed. ymux never created those directories and never deletes
 // them, and saying so is the line that makes the rest readable.
 
 interface Props {

@@ -6,7 +6,7 @@
 > `internal/claude/` — a split package would create a WS↔session↔RPC import
 > cycle on a single-binary daemon, and flat matches the existing 6-file
 > daemon; (2) the 69.C hook round-trip is proven with a **Go client**
-> replicating the CLI wire format — a real `winmux claude-hook` round-trip
+> replicating the CLI wire format — a real `ymux claude-hook` round-trip
 > should run on Linux at 67.C integration. See `docs/DECISIONS.md`.
 > Branch: `69-claude-chat`. Nothing pushed to `main`.
 
@@ -15,7 +15,7 @@
 Yossi's call: **mobile is a Claude *chat client*, not a mirror of the
 desktop.** The phone does not render a terminal and does not attach to a
 desktop pane. Instead it talks to the **workspace daemon** (the Phase 68
-`winmux-insights` Go binary, extended here) which spawns its *own*
+`ymux-insights` Go binary, extended here) which spawns its *own*
 independent Claude Code sessions and streams structured chat events back.
 
 Consequences of the model:
@@ -38,7 +38,7 @@ Consequences of the model:
                 │ bearer token, per-device, workspace-scoped
                 │ [transport to localhost:7879 = Phase 67.C — see §9]
 ┌───────────────▼─────────────────────────────────────────────────────┐
-│ workspace server : winmux-insights daemon (extended)                 │
+│ workspace server : ymux-insights daemon (extended)                 │
 │                                                                      │
 │   internal/claude/  SessionManager ── spawns ──► claude CLI          │
 │                     StreamParser    ◄── stdout ─ (stream-json)       │
@@ -67,7 +67,7 @@ Key reuse:
 - **Not** the mobile app itself (that's 67.C / a separate repo).
 - **Not** the network path from phone → server. Phase 69 makes the daemon
   *speak* the chat protocol on `127.0.0.1:7879`; **how a phone reaches that
-  localhost port** (winmux tunnel relay, a mobile SSH local-forward, or a
+  localhost port** (ymux tunnel relay, a mobile SSH local-forward, or a
   cloud relay) is **Phase 67.C**. For Phase 69 dev/testing we forward 7879
   over SSH exactly as the desktop Monitor already does. This keeps the
   daemon localhost-only and inbound-exposure-free (same security posture as
@@ -227,9 +227,9 @@ This is what makes mobile approval work, and it reuses Phase 66 wholesale.
 
 ### 5.1 How Phase 66 works today (desktop)
 
-Claude fires a `PreToolUse` hook → runs `${WINMUX_BIN} claude-hook
-pre-tool-use` → the CLI loads `~/.winmux/run/last.env`, reads
-`WINMUX_SOCKET_ADDR` + `WINMUX_TUNNEL_TOKEN` + `WINMUX_PANE_ID`, opens an
+Claude fires a `PreToolUse` hook → runs `${YMUX_BIN} claude-hook
+pre-tool-use` → the CLI loads `~/.ymux/run/last.env`, reads
+`YMUX_SOCKET_ADDR` + `YMUX_TUNNEL_TOKEN` + `YMUX_PANE_ID`, opens an
 RPC connection, does the **HMAC challenge-response handshake**, and pushes
 a `permission_request` (`{request_id, kind, subkind, pane_id, payload,
 wait_timeout_seconds}`). The **desktop** evaluates policy (auto/gate/block),
@@ -242,9 +242,9 @@ When the **daemon** spawns Claude (§3.1), it injects into that process's
 environment:
 
 ```
-WINMUX_SOCKET_ADDR = 127.0.0.1:<rpc_port>     # daemon's own RPC listener
-WINMUX_TUNNEL_TOKEN = <per-session HMAC token> # daemon-generated, never sent to phone
-WINMUX_PANE_ID      = mob_<session_id>          # synthetic pane id for this session
+YMUX_SOCKET_ADDR = 127.0.0.1:<rpc_port>     # daemon's own RPC listener
+YMUX_TUNNEL_TOKEN = <per-session HMAC token> # daemon-generated, never sent to phone
+YMUX_PANE_ID      = mob_<session_id>          # synthetic pane id for this session
 ```
 
 So when Claude fires a hook **inside a mobile session**, the existing CLI
@@ -255,7 +255,7 @@ HMAC handshake (daemon holds the per-session token), and pushes the same
 1. Maps `pane_id = mob_<session_id>` → the live session.
 2. Applies the session's **policy** (default = gate everything, i.e. ask
    the phone; optionally an auto/block policy per device — see §6). The
-   daemon can reuse the `winmux-policy` semantics conceptually, but since
+   daemon can reuse the `ymux-policy` semantics conceptually, but since
    it's Go, round 1 implements the simple 3-state check directly.
 3. If gate: emits `hook_request` over the WS, parks the RPC call, and waits
    (up to `wait_timeout_seconds`, clamped [1,600]) for the phone's
@@ -271,17 +271,17 @@ is the single most important reuse in Phase 69 — we implement the *server*
 half of the existing protocol in Go.
 
 > **Build note:** the Go daemon must implement the HMAC challenge-response
-> exactly (`WINMUX-CHALLENGE <nonce>` → `WINMUX-RESPONSE <hmac>` →
-> `WINMUX-OK|DENIED`) and the length-framed `feed.push` JSON. We port this
+> exactly (`YMUX-CHALLENGE <nonce>` → `YMUX-RESPONSE <hmac>` →
+> `YMUX-OK|DENIED`) and the length-framed `feed.push` JSON. We port this
 > from `cli/src/main.rs:894-960` + `rpc_server.rs`. A round-trip
-> integration test (real `winmux claude-hook` against the Go RPC server) is
+> integration test (real `ymux claude-hook` against the Go RPC server) is
 > a required acceptance gate.
 
 ### 5.3 Why not "WS only, skip hooks"?
 
 stream-json *does* surface permission decisions via Claude's control
 protocol (`can_use_tool`), but that path is newer, less documented, and
-version-coupled. Hooks are the mechanism winmux already owns end-to-end and
+version-coupled. Hooks are the mechanism ymux already owns end-to-end and
 already ships to every server. **Reuse hooks.** (If a future Claude drops
 hook support we revisit; noted as a risk.)
 
@@ -294,7 +294,7 @@ Two distinct tokens, deliberately separate:
 | **Device token** (bearer) | phone → daemon REST/WS | long-lived, revocable | SQLite `devices`, hash-at-rest |
 | **Session RPC token** (HMAC) | CLI hook → daemon RPC | per session, ephemeral | in-memory only |
 
-- The insights bearer token (`~/.winmux/insights/token`) stays for the
+- The insights bearer token (`~/.ymux/insights/token`) stays for the
   Monitor endpoints. Mobile gets **its own** device tokens so they can be
   revoked per-phone without breaking the desktop Monitor. A device token is
   minted by the desktop (during 67.C pairing) and registered with the
@@ -382,7 +382,7 @@ mirrors tmux persistence semantics without tmux.
 pane's tmux session; mobile Claude is a daemon-owned process with its own
 conversation. They do **not** share state — unifying them *is* the mirror
 model you rejected. (Optional v2: the daemon can *list* desktop
-`winmux-*` tmux sessions read-only as "also running", but never drive
+`ymux-*` tmux sessions read-only as "also running", but never drive
 them.)
 
 **Q4 — Mobile→daemon transport** (the real networking question): tunnel
@@ -412,7 +412,7 @@ the existing x64/arm64 cross-compile. OK? (Alternative: stdlib
    `interrupt` on stdin. Chat works without approvals. (~2d)
 3. **69.C** — Go RPC server speaking the Phase 66 dialect (HMAC handshake +
    `feed.push`), inject session env, bridge `hook_request`/`hook_decision`.
-   Acceptance: real `winmux claude-hook` round-trips. (~2d)
+   Acceptance: real `ymux claude-hook` round-trips. (~2d)
 4. **69.D** — device-token table, workspace scoping, 50/device rate limit,
    timeout fallback policy. (~1d)
 

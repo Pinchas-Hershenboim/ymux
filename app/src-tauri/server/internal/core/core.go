@@ -1,5 +1,5 @@
 // Package core holds the cross-subsystem interfaces and shared value types for
-// winmux-server. It is a LEAF package: it imports no sibling internal package,
+// ymux-server. It is a LEAF package: it imports no sibling internal package,
 // so every subsystem depends on `core` and never on another subsystem. That is
 // the concrete fix for the Phase-69 WS↔session↔hookRPC import cycle that forced
 // the old daemon into one flat `package main` (see PHASE-77-DESIGN §15).
@@ -10,7 +10,7 @@ import (
 	"net"
 )
 
-// Version is the winmux-server release version. Major 2 marks the API-stability
+// Version is the ymux-server release version. Major 2 marks the API-stability
 // guarantee introduced in Phase 77. One constant, shared by every package + cmd.
 // 2.1.0 (v0.4.3): native self-hosted push + REST hook resolution + per-device
 // scopes. Bumped so the add-on offers the update (remote pulls the new binary).
@@ -20,9 +20,12 @@ import (
 // 34-container host in ~16 h). See app/src-tauri/server/internal/insights/docker.go.
 // 2.1.4 (Phase 79): unified logging — slog with the system-wide line format
 // ([ts] [LEVEL] [SRV:COMP] msg) into insights.log + a 30s watcher on
-// ~/.winmux/log-level so the desktop's Settings→Logs level applies without a
+// ~/.ymux/log-level so the desktop's Settings→Logs level applies without a
 // service restart. Bumped so the add-on offers the update.
-const Version = "2.1.4"
+// 2.2.0: the winmux -> ymux rename. The binary, the systemd unit and the
+// data dir all move, so every existing remote needs this update offer to
+// pick up the daemon that knows about the new paths.
+const Version = "2.2.0"
 
 // FrameVersion is the WebSocket frame-contract version (PHASE-77-DESIGN §4.4).
 // It is sent in the WS `hello` frame; a client that refuses an unknown value
@@ -39,7 +42,7 @@ type HookConnHandler interface {
 }
 
 // AddrSink receives the hook listener's bound localhost address so the session
-// manager can inject it (as WINMUX_SOCKET_ADDR) into spawned claude children.
+// manager can inject it (as YMUX_SOCKET_ADDR) into spawned claude children.
 type AddrSink interface {
 	SetHookAddr(addr string)
 }

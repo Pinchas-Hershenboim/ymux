@@ -8,9 +8,9 @@ import type { ProvisioningError, StepProgress, RunHandle } from "./provisioningT
 // Phase 80 (unified setup wizard): "local → new" — the smart local
 // (Windows) setup flow. Detects what's installed (git/node/Claude Code/
 // codex/gemini/WSL+tmux), offers to install what's missing (winget /
-// official installers / npm -g), installs winmux hooks for local Claude
+// official installers / npm -g), installs ymux hooks for local Claude
 // Code, and optionally provisions a PERSISTENT local environment: tmux
-// inside WSL + the winmux Linux CLI, then creates a `wsl` workspace whose
+// inside WSL + the ymux Linux CLI, then creates a `wsl` workspace whose
 // panes survive app restarts (NOT Windows restarts — the copy says so).
 //
 // Backend contract (src-tauri/src/local_setup.rs): commands
@@ -54,9 +54,9 @@ const WSL_CHAIN = [
   "CreateWslUser",
   "EnsureDistroReady",
   "InstallTmuxInWsl",
-  "DeployWinmuxCliToWsl",
+  "DeployYmuxCliToWsl",
   "DeployTmuxConfToWsl",
-  // Before the hooks step, which registers winmux's hooks with Claude:
+  // Before the hooks step, which registers ymux's hooks with Claude:
   // installing hooks for an agent that is not there produced a green run
   // and then `claude: command not found` in the first pane.
   "InstallClaudeCodeInWsl",
@@ -172,7 +172,7 @@ export function LocalSetupFlow(p: Props) {
       for (const s of WSL_CHAIN) {
         if (s === "InstallWsl" && r.wsl.wsl_ready && r.wsl.distros.length > 0) continue;
         if (s === "InstallTmuxInWsl" && r.wsl.tmux_installed === true) continue;
-        if (s === "DeployWinmuxCliToWsl" && r.wsl.winmux_cli_state === "ok") continue;
+        if (s === "DeployYmuxCliToWsl" && r.wsl.ymux_cli_state === "ok") continue;
         if (s === "DeployTmuxConfToWsl" && r.wsl.tmux_conf_ok === true) continue;
         // claude_inside is `command -v claude` inside the distro, not the
         // presence of ~/.claude — that directory is created by the hooks
@@ -250,7 +250,7 @@ export function LocalSetupFlow(p: Props) {
     if (!r.wsl.wsl_ready || r.wsl.distros.length === 0) return t("localSetup.wsl.none");
     const d = r.wsl.default_distro ?? r.wsl.distros[0];
     const tmux = r.wsl.tmux_installed ? "tmux ✓" : "tmux ✗";
-    const cli = r.wsl.winmux_cli_state === "ok" ? "winmux ✓" : "winmux ✗";
+    const cli = r.wsl.ymux_cli_state === "ok" ? "ymux ✓" : "ymux ✗";
     return `${d} · ${tmux} · ${cli}`;
   });
 

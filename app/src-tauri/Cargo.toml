@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "cli", "mcp", "crates/winmux-types", "crates/winmux-core", "crates/winmux-tunnel", "crates/winmux-bootstrap", "crates/winmux-ssh", "crates/winmux-policy", "crates/winmux-addons", "crates/winmux-protocol"]
+members = [".", "cli", "mcp", "crates/ymux-types", "crates/ymux-core", "crates/ymux-tunnel", "crates/ymux-bootstrap", "crates/ymux-ssh", "crates/ymux-policy", "crates/ymux-addons", "crates/ymux-protocol"]
 resolver = "2"
 
 # Pre-public hardening: strip symbols from release builds. The
@@ -13,7 +13,7 @@ strip = "symbols"
 [package]
 name = "app"
 version = "0.4.5"
-description = "winmux"
+description = "ymux"
 authors = ["yossi"]
 edition = "2021"
 
@@ -82,21 +82,21 @@ ureq = { version = "2", features = ["native-certs", "json"] }
 ts-rs = "8"
 # Phase 51.A (#3.1): pure data types live in a sub-crate so future
 # splits can depend on the type-set without dragging in tauri.
-winmux-types = { path = "crates/winmux-types" }
+ymux-types = { path = "crates/ymux-types" }
 # Phase 51.B: cross-cutting infra (dlog, shell_quote, helpers).
 # Landing in incremental sub-commits (51.B1, 51.B2, …); only the
 # lowest-coupling pieces live here initially.
-winmux-core = { path = "crates/winmux-core" }
+ymux-core = { path = "crates/ymux-core" }
 # Phase 51.C: HMAC handshake + bridge_to_pipe (the reverse-tunnel).
-winmux-tunnel = { path = "crates/winmux-tunnel" }
+ymux-tunnel = { path = "crates/ymux-tunnel" }
 # Phase 51.D: remote CLI bootstrap (russh+sftp deploy logic).
-winmux-bootstrap = { path = "crates/winmux-bootstrap" }
+ymux-bootstrap = { path = "crates/ymux-bootstrap" }
 # Phase 51.H: SSH auth primitives (try_authenticate + try_agent_auth).
-winmux-ssh = { path = "crates/winmux-ssh" }
+ymux-ssh = { path = "crates/ymux-ssh" }
 # Phase 66: shared 3-state tool-permission policy engine (auto/gate/block).
-winmux-policy = { path = "crates/winmux-policy" }
+ymux-policy = { path = "crates/ymux-policy" }
 # Phase 68.A: add-on manifest schema + registry (ts feature → bindings).
-winmux-addons = { path = "crates/winmux-addons", features = ["ts"] }
+ymux-addons = { path = "crates/ymux-addons", features = ["ts"] }
 # Phase 57: zip/unzip on the local side of the file manager. Default
 # features include `deflate` which covers the common-case .zip
 # everyone produces; AES + Bzip2 + Zstd are turned off to keep the

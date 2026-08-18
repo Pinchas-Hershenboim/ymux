@@ -23,8 +23,8 @@ const paths = [
   "sdk-gen/specs",
   "sdk/typescript/src/types.gen.ts",
   "sdk/typescript/src/frames.gen.ts",
-  "sdk/kotlin/src/main/kotlin/dev/winmux/sdk/Frames.kt",
-  "sdk/kotlin/src/main/kotlin/dev/winmux/sdk/Models.kt",
+  "sdk/kotlin/src/main/kotlin/dev/ymux/sdk/Frames.kt",
+  "sdk/kotlin/src/main/kotlin/dev/ymux/sdk/Models.kt",
 ];
 const diff = run("git", ["status", "--porcelain", "--", ...paths]).trim();
 if (diff) {

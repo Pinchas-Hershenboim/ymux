@@ -34,9 +34,9 @@ mod tickets;
 mod tray;
 mod updater;
 mod worktrees;
-// Phase 51.C: `mod tunnel` moved to its own crate winmux-tunnel.
+// Phase 51.C: `mod tunnel` moved to its own crate ymux-tunnel.
 // Existing crate::tunnel::* callsites still resolve via this alias.
-use winmux_tunnel as tunnel;
+use ymux_tunnel as tunnel;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -51,22 +51,22 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use russh::client;
 use russh::ChannelMsg;
-// Phase 51.H: russh-keys imports removed (now used only inside winmux-ssh).
+// Phase 51.H: russh-keys imports removed (now used only inside ymux-ssh).
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static PANE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SPLIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // Phase 51.B3: Session/LocalSession/SshSession/SshCmd + SessionMap
-// moved to winmux-core. Re-exported below so existing crate::Session,
+// moved to ymux-core. Re-exported below so existing crate::Session,
 // crate::SshSession, crate::SshCmd references resolve unchanged.
-pub(crate) use winmux_core::{LocalSession, Session, SessionMap, SshCmd, SshSession};
-// PaneSessionMap moved to winmux-core (51.B4).
+pub(crate) use ymux_core::{LocalSession, Session, SessionMap, SshCmd, SshSession};
+// PaneSessionMap moved to ymux-core (51.B4).
 type WorkspacesState = Arc<Mutex<WorkspacesFile>>;
 
-// Phase 51.B3: ForwardEntry + ForwardMap moved to winmux-core.
-// Phase 51.B4: PaneSessionMap + CoreState live in winmux-core too.
-pub(crate) use winmux_core::{CoreState, ForwardEntry, ForwardMap, PaneSessionMap};
+// Phase 51.B3: ForwardEntry + ForwardMap moved to ymux-core.
+// Phase 51.B4: PaneSessionMap + CoreState live in ymux-core too.
+pub(crate) use ymux_core::{CoreState, ForwardEntry, ForwardMap, PaneSessionMap};
 
 
 /// Tri-state for whether persistence is safe:
@@ -134,7 +134,7 @@ pub(crate) struct FeedStore {
 const FEED_MAX_ITEMS: usize = 50;
 
 /// Phase 51.B4: the 9 russh/session/forwards/tunnel runtime fields
-/// previously inline here moved into `winmux_core::CoreState`. The
+/// previously inline here moved into `ymux_core::CoreState`. The
 /// outer AppState now wraps it and adds the tauri/notes/settings/
 /// dev/feed/browser/claude/console/iframe fields that the
 /// application shell needs. Callsites access russh state through
@@ -146,7 +146,7 @@ pub(crate) struct AppState {
     pub(crate) load_state: Arc<Mutex<Option<LoadState>>>,
     pub(crate) notifications: Arc<Mutex<Vec<NotificationItem>>>,
     pub(crate) pane_status: Arc<Mutex<HashMap<String, String>>>,
-    /// issue #4 (winmux-tools Ticker): per-pane current-turn timing, keyed by
+    /// issue #4 (ymux-tools Ticker): per-pane current-turn timing, keyed by
     /// pane_id. turn-start = UserPromptSubmit hook, turn-end = Stop hook.
     /// In-memory and session-scoped — the rolling average is a within-session
     /// signal, meaningless after a restart, so it's never persisted.
@@ -168,7 +168,7 @@ pub(crate) struct AppState {
     /// the user's interactive PATH is otherwise invisible).
     pub(crate) claude_paths: Arc<Mutex<HashMap<String, String>>>,
     /// Phase 52 (BiDi 33B): per-pane PTY-stream bidi filter state. The
-    /// filter type lives in `app` (not winmux-core) since it's a
+    /// filter type lives in `app` (not ymux-core) since it's a
     /// feature concern, not core russh/sessions. Lazy-created on
     /// first chunk per pane; toggled via `pane_set_smart_bidi`.
     pub(crate) bidi_filters: bidi_filter::BidiFilterMap,
@@ -192,7 +192,7 @@ pub(crate) struct AppState {
     pub(crate) bootstrap_guard: bootstrap_guard::BootstrapGuard,
 }
 
-/// issue #4: per-pane agent turn timing for the winmux-tools chrome Ticker.
+/// issue #4: per-pane agent turn timing for the ymux-tools chrome Ticker.
 /// `turn_started_at` is `Some` while a turn is in flight (set on the
 /// UserPromptSubmit hook, cleared on Stop). `sum_ms`/`count` accumulate the
 /// durations of completed non-trivial turns for the rolling average. Turns
@@ -261,7 +261,7 @@ mod agent_run_tests {
 }
 
 /// Minimum turn duration folded into the rolling average (mirrors the
-/// statusline hook's gate in winmux-tools/statuslines/hooks/turn-state.js).
+/// statusline hook's gate in ymux-tools/statuslines/hooks/turn-state.js).
 pub(crate) const AGENT_RUN_MIN_TURN_MS: u128 = 2000;
 
 pub(crate) static NOTIF_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -281,14 +281,14 @@ struct PtyExitEvent {
 // ─── Workspace data model ────────────────────────────────────────────────────
 //
 // Phase 51.A: the data types previously defined inline here moved to
-// the `winmux-types` crate (app/src-tauri/crates/winmux-types/) so
+// the `ymux-types` crate (app/src-tauri/crates/ymux-types/) so
 // future split crates (ssh, pty, feed, rpc) can reference them without
 // pulling in tauri. Re-exported below so all existing
 // `crate::Connection` / `crate::Workspace` / etc. paths continue to
 // resolve unchanged. ts-rs bindings are generated by the sub-crate's
 // own derive — `cargo test` still regenerates `app/src/bindings/*.ts`
 // since the export_to path resolves to the same on-disk location.
-pub(crate) use winmux_types::{
+pub(crate) use ymux_types::{
     BrowserState, Connection, DiffSource, EnvVar, LayoutNode, PaneKind,
     SplitDirection, Workspace, WorkspaceGroup,
 };
@@ -364,11 +364,11 @@ pub(crate) fn new_workspace_id() -> String {
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
 // Phase 51.B1: config_dir + dlog + shell_quote + pure layout walkers
-// moved to winmux-core. Re-exported below so every existing
+// moved to ymux-core. Re-exported below so every existing
 // `crate::dlog` / `crate::shell_quote` / `crate::collect_panes` /
 // `crate::first_terminal_connection_pub` / `crate::backfill_terminal_connections`
 // callsite resolves unchanged.
-pub(crate) use winmux_core::{
+pub(crate) use ymux_core::{
     backfill_terminal_connections, clear_debug_log, collect_panes, collect_panes_with_kind,
     config_dir, config_dir_pub, first_terminal_connection, first_terminal_connection_pub,
     log_debug, log_error, log_info, log_warn, prune_logs, shell_quote,
@@ -432,7 +432,7 @@ fn config_path() -> Result<PathBuf, String> {
 /// Phase 81: stable per-install machine id — the `origin` value written
 /// into the server-side session-meta map so the picker can tell which
 /// machine created each tmux session. Lives in its own file
-/// (%APPDATA%/winmux/machine-id), NOT settings.json, so "Reset all
+/// (%APPDATA%/ymux/machine-id), NOT settings.json, so "Reset all
 /// settings" never changes this machine's identity. Generated once as
 /// `<sanitized COMPUTERNAME>-<4 hex>`; read back forever after.
 pub(crate) fn machine_id() -> String {
@@ -441,7 +441,7 @@ pub(crate) fn machine_id() -> String {
         .get_or_init(|| {
             let path = match config_dir() {
                 Ok(d) => d.join("machine-id"),
-                Err(_) => return "winmux-unknown".to_string(),
+                Err(_) => return "ymux-unknown".to_string(),
             };
             if let Ok(existing) = std::fs::read_to_string(&path) {
                 let existing = existing.trim().to_string();
@@ -452,7 +452,7 @@ pub(crate) fn machine_id() -> String {
             let host = std::env::var("COMPUTERNAME")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "winmux".to_string());
+                .unwrap_or_else(|| "ymux".to_string());
             let host: String = host
                 .trim()
                 .chars()
@@ -871,7 +871,7 @@ pub(crate) fn pane_id_exists_in(node: &LayoutNode, target: &str) -> bool {
 // ClaudeLog pane kinds. The browser walker stays (active feature);
 // claude_log_pane_set in claude_log.rs was also removed.
 
-// Phase 51.B1: collect_panes + collect_panes_with_kind moved to winmux-core.
+// Phase 51.B1: collect_panes + collect_panes_with_kind moved to ymux-core.
 
 // Phase 8.A: `new_kind` decides whether the spawned sibling is a terminal (default,
 // inherits the existing pane's connection) or a browser (with `new_browser_url` as
@@ -1548,7 +1548,7 @@ pub(crate) fn sanitize_tmux_session_name(pane_id: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
         .collect();
-    format!("winmux-{}", cleaned)
+    format!("ymux-{}", cleaned)
 }
 
 /// Phase 23.I: derive a tmux session name from a user-supplied pane
@@ -1880,14 +1880,18 @@ fn spawn_local_pty(
     cmd.env("CLAUDE_CODE_FORCE_HYPERLINKS", "1");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM", "xterm-256color");
-    // winmux-tools (issue #4): tag the local pane's shell so claude-hook
+    // ymux-tools (issue #4): tag the local pane's shell so claude-hook
     // invocations (pre-tool-use gating, the chrome Ticker's user-prompt-submit
     // / stop) pass the CLI's env-gate. Remote panes get this via the ssh
     // channel / tmux set-environment; local panes had no equivalent, so every
-    // winmux-cli hook silently env-gated (main.rs `WINMUX_PANE_ID unset`) and
+    // ymux-cli hook silently env-gated (main.rs `YMUX_PANE_ID unset`) and
     // the Ticker never fired outside manual injection.
+    cmd.env("YMUX_PANE_ID", &pane_id);
+    // winmux → ymux rename bridge: a `ymux-cli.exe` still on PATH from a
+    // pre-rename install reads the old spelling and would otherwise
+    // env-gate itself out. Drop once 0.5.0 is the floor.
     cmd.env("WINMUX_PANE_ID", &pane_id);
-    tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + WINMUX_PANE_ID env vars");
+    tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + YMUX_PANE_ID env vars");
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -1957,7 +1961,7 @@ fn spawn_local_pty(
 /// ~900ms after spawn (after env exports + setup_command have settled).
 /// Shared by persistent SSH panes (sent over the SSH channel) and WSL
 /// panes (written straight to the local PTY). An empty `socket_addr`
-/// skips the WINMUX_* env injection into tmux's global environment
+/// skips the YMUX_* env injection into tmux's global environment
 /// (WSL panes pass empty until the WSL RPC bridge hands them a real
 /// address). `fallback_msg` must not contain single quotes.
 fn build_tmux_attach_script(
@@ -1965,36 +1969,43 @@ fn build_tmux_attach_script(
     socket_addr: &str,
     token: &str,
     pane_id: &str,
-    use_winmux_tmux_conf: bool,
+    use_ymux_tmux_conf: bool,
     fallback_msg: &str,
 ) -> String {
     let mut script = String::new();
     // Push the env vars into tmux's global environment so a re-attach to
-    // a long-lived session sees the *current* WINMUX_SOCKET_ADDR/
+    // a long-lived session sees the *current* YMUX_SOCKET_ADDR/
     // TUNNEL_TOKEN/PANE_ID rather than the stale ones from the original
     // creation. The `2>/dev/null` swallows the harmless "no server
     // running" message when this is the first attach.
     if !socket_addr.is_empty() {
-        script.push_str(&format!(
-            "tmux set-environment -g WINMUX_SOCKET_ADDR {} 2>/dev/null; ",
-            shell_quote(socket_addr)
-        ));
-        script.push_str(&format!(
-            "tmux set-environment -g WINMUX_TUNNEL_TOKEN {} 2>/dev/null; ",
-            shell_quote(token)
-        ));
-        script.push_str(&format!(
-            "tmux set-environment -g WINMUX_PANE_ID {} 2>/dev/null; ",
-            shell_quote(pane_id)
-        ));
+        // Both spellings: `YMUX_*` for the current CLI, `WINMUX_*` for a
+        // pre-rename `ymux-linux-x64` that a remote may still be running
+        // until the next bootstrap re-uploads it. The new CLI promotes
+        // WINMUX_* → YMUX_* at startup, so the pair is safe in either
+        // direction. Drop the legacy triple once 0.5.0 is the floor.
+        for (var, value) in [
+            ("YMUX_SOCKET_ADDR", socket_addr),
+            ("WINMUX_SOCKET_ADDR", socket_addr),
+            ("YMUX_TUNNEL_TOKEN", token),
+            ("WINMUX_TUNNEL_TOKEN", token),
+            ("YMUX_PANE_ID", pane_id),
+            ("WINMUX_PANE_ID", pane_id),
+        ] {
+            script.push_str(&format!(
+                "tmux set-environment -g {} {} 2>/dev/null; ",
+                var,
+                shell_quote(value)
+            ));
+        }
     }
     // Phase tmux-conf: when enabled, point tmux at our bundled conf via
-    // `-f ~/.winmux/tmux.conf`. Falls through to the user's own
+    // `-f ~/.ymux/tmux.conf`. Falls through to the user's own
     // ~/.tmux.conf if the file is absent (tmux logs a warning and uses
     // defaults — non-fatal). When the setting is off, omit -f so the
     // user's conf alone applies.
-    let tmux_flags = if use_winmux_tmux_conf {
-        "-f $HOME/.winmux/tmux.conf "
+    let tmux_flags = if use_ymux_tmux_conf {
+        "-f $HOME/.ymux/tmux.conf "
     } else {
         ""
     };
@@ -2135,14 +2146,14 @@ fn spawn_wsl_pty(
     // into the shell 900ms after spawn, exactly like the SSH path (after
     // env exports + setup_command). If tmux isn't installed in the
     // distro the fallback echo leaves a plain shell. The WSL RPC bridge
-    // (TCP → named pipe, HMAC-gated) supplies the WINMUX_* env the CLI
+    // (TCP → named pipe, HMAC-gated) supplies the YMUX_* env the CLI
     // needs for hooks — the local twin of the SSH reverse tunnel.
     if let Some(name) = tmux_name {
-        let use_winmux_tmux_conf = state
+        let use_ymux_tmux_conf = state
             .settings
             .lock()
             .ok()
-            .map(|s| s.terminal.use_winmux_tmux_config)
+            .map(|s| s.terminal.use_ymux_tmux_config)
             .unwrap_or(true);
         let sessions_clone = state.core.sessions.clone();
         let id_clone = id.clone();
@@ -2179,18 +2190,18 @@ fn spawn_wsl_pty(
                 Err(e) => crate::log_warn("RPC", &format!("wsl-bridge: start failed: {e}")),
             }
             crate::log_info("PTY", &format!(
-                "tmux(wsl): new-session -A -s '{}' (pane {}, {} winmux conf)",
+                "tmux(wsl): new-session -A -s '{}' (pane {}, {} ymux conf)",
                 name,
                 pane_for_exec,
-                if use_winmux_tmux_conf { "with" } else { "without" }
+                if use_ymux_tmux_conf { "with" } else { "without" }
             ));
             let script = build_tmux_attach_script(
                 &name,
                 &socket_addr,
                 &token,
                 &pane_for_exec,
-                use_winmux_tmux_conf,
-                "[winmux] tmux not installed in WSL — falling back to plain shell",
+                use_ymux_tmux_conf,
+                "[ymux] tmux not installed in WSL — falling back to plain shell",
             );
             let mut sessions = sessions_clone.lock().unwrap();
             if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
@@ -2205,31 +2216,31 @@ fn spawn_wsl_pty(
 
 // Phase 51.B2: KnownHost + KnownHostsFile + load_known_hosts +
 // save_known_hosts + iso_now + HostCheckOutcome + SshClient + impl
-// Handler all moved to winmux-core. Only the symbols referenced from
-// outside winmux-core (HostCheckOutcome default + SshClient itself)
+// Handler all moved to ymux-core. Only the symbols referenced from
+// outside ymux-core (HostCheckOutcome default + SshClient itself)
 // need re-exporting; the rest stay internal to the new crate.
-pub(crate) use winmux_core::{HostCheckOutcome, SshClient};
+pub(crate) use ymux_core::{HostCheckOutcome, SshClient};
 
-// Phase 51.B2: SshClient + impl Handler moved to winmux-core
+// Phase 51.B2: SshClient + impl Handler moved to ymux-core
 // (re-exported above). The construction sites below now pass a
 // `bridge_spawner: Some(Arc::new(tunnel::spawn_bridge))` to plug the
-// real tunnel impl into the russh handler without making winmux-core
+// real tunnel impl into the russh handler without making ymux-core
 // depend on tunnel.
 
-// Phase 51.H: SSH auth primitives moved to winmux-ssh. Re-exported
+// Phase 51.H: SSH auth primitives moved to ymux-ssh. Re-exported
 // below so existing crate::pkwh / crate::pkwh_pub / crate::AuthMethod /
 // crate::try_authenticate / crate::try_agent_auth / crate::key_load_needs_passphrase
 // callsites resolve unchanged.
 #[allow(unused_imports)]
-pub(crate) use winmux_ssh::{
+pub(crate) use ymux_ssh::{
     key_load_needs_passphrase, pkwh, pkwh_pub, try_agent_auth, try_authenticate, AuthMethod,
 };
 
 
 // ─── Phase 32.B: SSH key offer + install ─────────────────────────────────
 
-/// Path of the winmux-managed private key for a workspace.
-fn winmux_key_path(workspace_id: &str) -> Result<PathBuf, String> {
+/// Path of the ymux-managed private key for a workspace.
+fn ymux_key_path(workspace_id: &str) -> Result<PathBuf, String> {
     let mut p = config_dir()?;
     p.push("keys");
     std::fs::create_dir_all(&p).map_err(|e| format!("create {:?}: {e}", p))?;
@@ -2237,10 +2248,10 @@ fn winmux_key_path(workspace_id: &str) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// True if the workspace already has a winmux-managed private key on
+/// True if the workspace already has a ymux-managed private key on
 /// disk — we don't re-offer in that case.
-fn winmux_managed_key_exists(workspace_id: &str) -> bool {
-    winmux_key_path(workspace_id)
+fn ymux_managed_key_exists(workspace_id: &str) -> bool {
+    ymux_key_path(workspace_id)
         .map(|p| p.exists())
         .unwrap_or(false)
 }
@@ -2307,7 +2318,7 @@ async fn ssh_key_generate_and_install(
     dont_show_again: bool,
 ) -> Result<String, String> {
     let _ = pane_id;
-    let priv_path = winmux_key_path(&workspace_id)?;
+    let priv_path = ymux_key_path(&workspace_id)?;
     let pub_path: PathBuf = {
         let mut p = priv_path.clone();
         let mut s = p.file_name().unwrap().to_os_string();
@@ -2333,7 +2344,7 @@ async fn ssh_key_generate_and_install(
             "-N",
             "",
             "-C",
-            &format!("winmux-{workspace_id}"),
+            &format!("ymux-{workspace_id}"),
             "-f",
             &priv_str,
         ])
@@ -2464,10 +2475,10 @@ async fn ssh_key_generate_and_install(
 /// Phase 56-B: "Connect to existing server" provisioning shortcut.
 ///
 /// The user already has an account on a remote server; they just want
-/// winmux to:
+/// ymux to:
 ///   1. Open a one-shot SSH session with their password,
 ///   2. Generate an ed25519 keypair (stored at
-///      `%APPDATA%\winmux\keys\<workspace_id>.key`),
+///      `%APPDATA%\ymux\keys\<workspace_id>.key`),
 ///   3. Append the pubkey to `~/.ssh/authorized_keys` on the remote,
 ///   4. Verify the key handshake works,
 ///   5. Persist a fresh workspace with the key path baked in.
@@ -2501,12 +2512,12 @@ async fn provision_existing_install_key(
 
     // Compute key paths up front + clear any stale leftovers from a
     // previous attempt with the same (yet-to-be-persisted) id.
-    let priv_path = winmux_key_path(&workspace_id)?;
+    let priv_path = ymux_key_path(&workspace_id)?;
     let pub_path: PathBuf = {
         let mut p = priv_path.clone();
         let mut s = p
             .file_name()
-            .ok_or_else(|| "winmux_key_path: no file name".to_string())?
+            .ok_or_else(|| "ymux_key_path: no file name".to_string())?
             .to_os_string();
         s.push(".pub");
         p.set_file_name(s);
@@ -2530,7 +2541,7 @@ async fn provision_existing_install_key(
             "-N",
             "",
             "-C",
-            &format!("winmux-{workspace_id}"),
+            &format!("ymux-{workspace_id}"),
             "-f",
             &priv_str,
         ])
@@ -2735,7 +2746,7 @@ async fn connect_and_authenticate(
         result: outcome_arc.clone(),
         tunnel_token: Some(token.clone()),
         // Phase 51.B2 option β: inject the tunnel::spawn_bridge fn so
-        // winmux-core's Handler impl can fire it on forwarded-tcpip
+        // ymux-core's Handler impl can fire it on forwarded-tcpip
         // without taking a static dep on the tunnel module.
         bridge_spawner: Some(std::sync::Arc::new(tunnel::spawn_bridge)),
     };
@@ -2827,7 +2838,7 @@ async fn spawn_ssh(
     // Phase 32.B: offer to convert a password-auth connection to key
     // auth. Skipped when the user previously ticked "don't show again",
     // when auth already uses a key/agent, or when the workspace
-    // already has a winmux-managed key on disk for this user@host.
+    // already has a ymux-managed key on disk for this user@host.
     if auth_method == AuthMethod::Password {
         let suppressed = state
             .settings
@@ -2835,7 +2846,7 @@ async fn spawn_ssh(
             .ok()
             .map(|s| s.ssh_key_offer_disabled)
             .unwrap_or(false);
-        if !suppressed && !winmux_managed_key_exists(&workspace_id) {
+        if !suppressed && !ymux_managed_key_exists(&workspace_id) {
             let _ = app.emit(
                 "ssh-key-offer",
                 serde_json::json!({
@@ -2849,10 +2860,10 @@ async fn spawn_ssh(
         }
     }
 
-    // Phase 6.2: best-effort bootstrap of the winmux Linux binary on the remote.
+    // Phase 6.2: best-effort bootstrap of the ymux Linux binary on the remote.
     // We never block the user's shell on this — failures are surfaced via pane:status.
     log_debug("SSH", "spawn_ssh: bootstrap starting");
-    emit_pane_status_event(app, &pane_id, "bootstrapping winmux…");
+    emit_pane_status_event(app, &pane_id, "bootstrapping ymux…");
     let hkey = bootstrap_guard::host_key(&user, &host, port);
     let wanted_sha = remote_bootstrap::embedded_manifest()
         .ok()
@@ -2890,7 +2901,7 @@ async fn spawn_ssh(
             emit_pane_status_event(
                 app,
                 &pane_id,
-                &format!("winmux installed ({} bytes)", bytes),
+                &format!("ymux installed ({} bytes)", bytes),
             );
             schedule_status_clear(app.clone(), pane_id.clone(), 3);
         }
@@ -2898,7 +2909,7 @@ async fn spawn_ssh(
             emit_pane_status_event(
                 app,
                 &pane_id,
-                &format!("remote arch '{}' not supported (no winmux binary)", arch),
+                &format!("remote arch '{}' not supported (no ymux binary)", arch),
             );
             schedule_status_clear(app.clone(), pane_id.clone(), 5);
         }
@@ -2932,7 +2943,7 @@ async fn spawn_ssh(
             emit_pane_status_event(
                 app,
                 &pane_id,
-                &format!("remote winmux CLI out of sync — {reason}"),
+                &format!("remote ymux CLI out of sync — {reason}"),
             );
         }
         Err(e) => {
@@ -2944,7 +2955,7 @@ async fn spawn_ssh(
     drop(_boot_guard);
 
     // Unified logging: converge this host on the desktop's log level
-    // (`~/.winmux/log-level`, read by the Go server watcher + CLI hooks).
+    // (`~/.ymux/log-level`, read by the Go server watcher + CLI hooks).
     // Best-effort — a failure never blocks the shell.
     {
         let level = state.settings.lock().unwrap().logs.level.clone();
@@ -2997,12 +3008,12 @@ async fn spawn_ssh(
     // the env-file fallback covers it.
     if remote_port != 0 {
         let socket_addr = format!("127.0.0.1:{}", remote_port);
-        let _ = channel.set_env(false, "WINMUX_SOCKET_ADDR", socket_addr).await;
+        let _ = channel.set_env(false, "YMUX_SOCKET_ADDR", socket_addr).await;
         let _ = channel
-            .set_env(false, "WINMUX_TUNNEL_TOKEN", token.as_str().to_string())
+            .set_env(false, "YMUX_TUNNEL_TOKEN", token.as_str().to_string())
             .await;
         let _ = channel
-            .set_env(false, "WINMUX_PANE_ID", pane_id.clone())
+            .set_env(false, "YMUX_PANE_ID", pane_id.clone())
             .await;
     }
 
@@ -3044,7 +3055,7 @@ async fn spawn_ssh(
     // Phase 18: hooks-outdated probe. Fire-and-forget — never blocks
     // the SSH bring-up. Compares the version stamped into the
     // remote's ~/.claude/settings.json (under
-    // `winmux_meta.hooks_version`) with the manifest's
+    // `ymux_meta.hooks_version`) with the manifest's
     // `hooks.claude-code.version`. When the remote is older AND the
     // user hasn't dismissed that version, emit `hooks:outdated` so
     // the frontend banner appears.
@@ -3302,7 +3313,7 @@ async fn spawn_ssh(
     //
     // We also push the env vars the SSH channel just acquired into tmux's
     // global environment so a re-attach to a long-lived session sees the
-    // *current* WINMUX_SOCKET_ADDR/TUNNEL_TOKEN/PANE_ID rather than the
+    // *current* YMUX_SOCKET_ADDR/TUNNEL_TOKEN/PANE_ID rather than the
     // stale ones from the original creation. The `2>/dev/null` swallows
     // the harmless "no server running" message when this is the first attach.
     if let Some(name) = &tmux_name {
@@ -3338,11 +3349,11 @@ async fn spawn_ssh(
         // safe to hold across await points). Default true so users
         // who never touched Settings → Terminal get the bundled
         // scrollback-friendly behaviour out of the box.
-        let use_winmux_tmux_conf = state
+        let use_ymux_tmux_conf = state
             .settings
             .lock()
             .ok()
-            .map(|s| s.terminal.use_winmux_tmux_config)
+            .map(|s| s.terminal.use_ymux_tmux_config)
             .unwrap_or(true);
         tokio::spawn(async move {
             // Wait a touch longer than schedule_setup_injection (which fires
@@ -3351,13 +3362,13 @@ async fn spawn_ssh(
             // Phase 65: log the exact session name + conf mode so tmux
             // persistence is debuggable. `new-session -A -s <name>`
             // attaches to <name> if it exists (reconnect resumes), else
-            // creates it. <name> is deterministic per winmux pane unless
+            // creates it. <name> is deterministic per ymux pane unless
             // the picker supplied an explicit one.
             crate::log_debug("SSH", &format!(
-                "tmux: new-session -A -s '{}' (pane {}, {} winmux conf)",
+                "tmux: new-session -A -s '{}' (pane {}, {} ymux conf)",
                 name_clone,
                 pane_for_exec,
-                if use_winmux_tmux_conf { "with" } else { "without" }
+                if use_ymux_tmux_conf { "with" } else { "without" }
             ));
             // Phase 80: script construction shared with WSL panes — see
             // build_tmux_attach_script for the env-injection + -f conf +
@@ -3367,8 +3378,8 @@ async fn spawn_ssh(
                 &socket_addr,
                 &token_clone,
                 &pane_for_exec,
-                use_winmux_tmux_conf,
-                "[winmux] tmux not installed on remote — falling back to plain shell",
+                use_ymux_tmux_conf,
+                "[ymux] tmux not installed on remote — falling back to plain shell",
             );
             {
                 let mut sessions = sessions_clone.lock().unwrap();
@@ -3384,7 +3395,7 @@ async fn spawn_ssh(
             // forget: an old/missing server CLI just errors quietly.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let origin_cmd = format!(
-                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --origin {} --origin-if-absent 2>/dev/null || true",
+                "\"$HOME/.ymux/bin/ymux-linux-x64\" session-meta set --session {} --origin {} --origin-if-absent 2>/dev/null || true",
                 shell_quote(&name_clone),
                 shell_quote(&machine_id()),
             );
@@ -3449,7 +3460,7 @@ pub(crate) fn kill_session_inner(s: &mut Session) {
 /// Does the workspace-level slice ONLY: `tcpip_forward` (kernel picks
 /// a free remote port), records the port + token in `AppState`, and
 /// fires `spawn_port_watcher` (deduped). Pane-specific bits — the
-/// env-file write that takes `&pane_id`, and the `WINMUX_PANE_ID`
+/// env-file write that takes `&pane_id`, and the `YMUX_PANE_ID`
 /// `set_env` on the shell channel — stay in `spawn_ssh`.
 ///
 /// Returns the assigned remote port, or 0 if `tcpip_forward` failed
@@ -3479,7 +3490,7 @@ async fn setup_workspace_reverse_tunnel(
     if remote_port == 0 {
         return 0;
     }
-    // Phase 39: record winmux's own reverse-tunnel remote port so the
+    // Phase 39: record ymux's own reverse-tunnel remote port so the
     // auto-port watcher skips it (it's an HMAC endpoint).
     state.core
         .internal_reverse_tunnel_remote_ports
@@ -3512,7 +3523,7 @@ fn is_safe_workspace_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Phase 47: spawn the remote `winmux port-watch` for a workspace.
+/// Phase 47: spawn the remote `ymux port-watch` for a workspace.
 /// Deduplicated via `state.core.port_watchers` — calling twice in a row is
 /// a no-op the second time. Stores the spawned task's JoinHandle in
 /// `state.core.port_watcher_tasks` so toggling detection off can `.abort()`
@@ -3526,16 +3537,16 @@ async fn spawn_port_watcher(
     remote_port: u16,
     token: &Arc<String>,
 ) -> Result<(), String> {
-    // The watcher IS the remote CLI (`winmux port-watch`), talking the RPC
+    // The watcher IS the remote CLI (`ymux port-watch`), talking the RPC
     // protocol this desktop compiled against. Launching a binary we know is
     // the wrong build produces failures far from their cause — the repeating
     // reverse-tunnel handshake rejections in Yossi's log are what that looks
     // like. Refuse clearly instead.
     if !state.bootstrap_guard.is_aligned(workspace_id) {
         log_warn("TUNNEL", &format!(
-            "port-watch[{workspace_id}]: skipped — remote winmux CLI is not the build this desktop embeds"
+            "port-watch[{workspace_id}]: skipped — remote ymux CLI is not the build this desktop embeds"
         ));
-        return Err("remote winmux CLI out of sync".into());
+        return Err("remote ymux CLI out of sync".into());
     }
     // Dedup, self-healing (Phase JJ). Skip ONLY if a LIVE watcher is
     // already running for this workspace. If the set still has the entry
@@ -3586,7 +3597,7 @@ async fn spawn_port_watcher(
             .insert(workspace_id.to_string());
     }
     // Phase JJ.2 (leak fix): the desktop-side dedup above only knows about
-    // watchers THIS app process launched. A remote `winmux port-watch` does
+    // watchers THIS app process launched. A remote `ymux port-watch` does
     // NOT die when its SSH channel closes, so every desktop restart / reconnect
     // orphaned another one — Yossi's server had 49 of them for one workspace,
     // pinning the CPU. Before launching a fresh watcher, reap any stale remote
@@ -3616,14 +3627,14 @@ async fn spawn_port_watcher(
         }
     };
     let socket_addr = format!("127.0.0.1:{}", remote_port);
-    let _ = wchan.set_env(false, "WINMUX_SOCKET_ADDR", socket_addr).await;
+    let _ = wchan.set_env(false, "YMUX_SOCKET_ADDR", socket_addr).await;
     let _ = wchan
-        .set_env(false, "WINMUX_TUNNEL_TOKEN", token.as_str().to_string())
+        .set_env(false, "YMUX_TUNNEL_TOKEN", token.as_str().to_string())
         .await;
-    // Exec channels don't source the rc files that add ~/.winmux/bin to PATH,
+    // Exec channels don't source the rc files that add ~/.ymux/bin to PATH,
     // so use the explicit path.
     let cmd = format!(
-        "\"$HOME/.winmux/bin/winmux\" port-watch --workspace {}",
+        "\"$HOME/.ymux/bin/ymux\" port-watch --workspace {}",
         shell_quote(workspace_id)
     );
     if let Err(e) = wchan.exec(true, cmd.as_str()).await {
@@ -4077,7 +4088,7 @@ fn workspace_reset_layout(
     Ok(state.workspaces.lock().unwrap().clone())
 }
 
-// Phase 51.B1: first_terminal_connection_pub moved to winmux-core.
+// Phase 51.B1: first_terminal_connection_pub moved to ymux-core.
 
 /// Phase 23.C: visible to other modules (rpc_server) for the same
 /// inheritance chain when splits come in via RPC.
@@ -4116,7 +4127,7 @@ fn live_ssh_connection_for_workspace(
 }
 
 // Phase 51.B1: first_terminal_connection + backfill_terminal_connections
-// moved to winmux-core.
+// moved to ymux-core.
 
 // ─── project-folder helpers ─────────────────────────────────────────
 //
@@ -5004,7 +5015,7 @@ fn swap_two_panes_in_layout(
     // (pane_ids are UUIDs). The marker never persists — it's replaced
     // in step 3 below, and if step 2 or 3 fails, the caller wraps the
     // Result and rejects the whole mutation (frontend won't see it).
-    let marker = format!("__winmux_swap_placeholder__{pane_a_id}");
+    let marker = format!("__ymux_swap_placeholder__{pane_a_id}");
     let placeholder = make_swap_placeholder_pane(marker.clone());
     // Step 1: take A out, leave placeholder in A's slot.
     let pane_a = take_pane_from_layout(layout, pane_a_id, placeholder)
@@ -5745,7 +5756,7 @@ fn workspace_split(
 // ─── Phase 8.A: browser-pane commands ───────────────────────────────────────
 
 /// Unified frontend log sink: writes a `[UI:TAG]` line to debug.log through
-/// the leveled logger AND pushes into the dev ring buffer so `winmux dev
+/// the leveled logger AND pushes into the dev ring buffer so `ymux dev
 /// console-tail` keeps working. The frontend logger filters client-side too,
 /// but this gate is authoritative (popouts that never load settings still
 /// behave). Replaces the old `diag_log` + `dev_console_log` pair.
@@ -5756,8 +5767,8 @@ fn ui_log(
     tag: String,
     message: String,
 ) -> Result<(), String> {
-    let lvl = winmux_core::LogLevel::from_str(&level);
-    winmux_core::log_at(lvl, &format!("UI:{tag}"), &message);
+    let lvl = ymux_core::LogLevel::from_str(&level);
+    ymux_core::log_at(lvl, &format!("UI:{tag}"), &message);
     dev::push_console(
         &state.console_buffer,
         dev::ConsoleEntry {
@@ -6009,12 +6020,12 @@ fn pane_set_title(
     if let Some((_sid, handle, tmux_name)) = tmux_target {
         let cmd = match normalized.as_deref() {
             Some(label) => format!(
-                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --label-hex {} 2>/dev/null || true",
+                "\"$HOME/.ymux/bin/ymux-linux-x64\" session-meta set --session {} --label-hex {} 2>/dev/null || true",
                 shell_quote(&tmux_name),
                 hex_utf8(label),
             ),
             None => format!(
-                "\"$HOME/.winmux/bin/winmux-linux-x64\" session-meta set --session {} --clear-label 2>/dev/null || true",
+                "\"$HOME/.ymux/bin/ymux-linux-x64\" session-meta set --session {} --clear-label 2>/dev/null || true",
                 shell_quote(&tmux_name),
             ),
         };
@@ -6339,7 +6350,7 @@ async fn pane_connect(
     //      Hebrew/Arabic/CJK titles supported)
     //   3. None — spawn_ssh's tmux_name derivation falls back to
     //      `sanitize_tmux_session_name(&pane_id)` (the legacy
-    //      "winmux-<paneid>" auto-name)
+    //      "ymux-<paneid>" auto-name)
     let effective_tmux_name: Option<String> = tmux_session_name
         .clone()
         .filter(|s| !s.is_empty())
@@ -6503,7 +6514,7 @@ pub(crate) struct TmuxSessionInfo {
     pub attached: bool,
     pub windows: u32,
     pub last_attached: i64,
-    /// Phase 81: joined from the server-side `~/.winmux/session-meta.json`.
+    /// Phase 81: joined from the server-side `~/.ymux/session-meta.json`.
     /// Picker display precedence: label > claude_title > name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -6573,7 +6584,7 @@ async fn pane_list_tmux_sessions(
     // authenticated — the whole point is to pick an orphan session before
     // connecting. Returning Ok([]) lets the picker render its "New session"
     // option + the "No existing sessions" empty-state line, which is
-    // accurate ("no sessions visible from winmux right now") and avoids
+    // accurate ("no sessions visible from ymux right now") and avoids
     // surfacing a red error for the most common access pattern. Once a
     // terminal pane authenticates, re-opening the picker will list the
     // real sessions over the now-live handle.
@@ -6650,7 +6661,7 @@ fn clipboard_read_text() -> Result<String, String> {
 /// carry its own copy WITHOUT the meta segment, so a WSL tmux picker showed
 /// bare session names while an SSH one showed Claude titles — a difference
 /// nobody chose. One const means the format string cannot drift again.
-const TMUX_LIST_SCRIPT: &str = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<WINMUX_META>>>\\n'; cat \"$HOME/.winmux/session-meta.json\" 2>/dev/null; true";
+const TMUX_LIST_SCRIPT: &str = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<YMUX_META>>>\\n'; cat \"$HOME/.ymux/session-meta.json\" 2>/dev/null; true";
 
 async fn list_tmux_sessions_via_handle(
     handle: &client::Handle<SshClient>,
@@ -6686,11 +6697,11 @@ async fn list_tmux_sessions_via_handle(
 /// Phase 80: parse `tmux list-sessions -F '<name>|<created>|<attached>|
 /// <windows>|<last_attached>'` output — shared by the SSH and WSL list
 /// paths. Phase 81: the SSH script appends the server-side session-meta
-/// JSON after a `<<<WINMUX_META>>>` marker; when present, label /
+/// JSON after a `<<<YMUX_META>>>` marker; when present, label /
 /// claude_title / origin are joined onto the sessions. Garbled or absent
 /// JSON degrades to no metadata, never to an error.
 fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
-    let (list_text, meta_text) = match text.split_once("<<<WINMUX_META>>>") {
+    let (list_text, meta_text) = match text.split_once("<<<YMUX_META>>>") {
         Some((a, b)) => (a, b),
         None => (text, ""),
     };
@@ -6834,7 +6845,7 @@ async fn pane_probe_tmux_sessions(
 // entirely: tmux session names stay ASCII / safe, but the picker UI
 // shows whatever the user typed in the pane title.
 //
-// File: %APPDATA%/winmux/tmux-labels.json
+// File: %APPDATA%/ymux/tmux-labels.json
 // Schema: { version: 1, labels: { workspace_id: { session_name: label } } }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
@@ -7342,7 +7353,7 @@ fn pane_persistence_list(
 /// Phase 11.A: hard-kill the tmux session bound to this pane. Opens a fresh
 /// exec channel on the existing SSH handle, runs `tmux kill-session -t NAME`,
 /// then closes the original shell channel. Falls through to a plain
-/// disconnect for non-tmux panes so `winmux pane-disconnect --kill` is
+/// disconnect for non-tmux panes so `ymux pane-disconnect --kill` is
 /// always meaningful regardless of which mode the pane was started in.
 #[tauri::command]
 async fn pane_kill_session(
@@ -7579,7 +7590,7 @@ fn feed_decide(
 // Phase 48-C: build the /doctor diagnostic snapshot. Process-cheap
 // signals only — no shell-outs, no FS scans beyond a small log tail.
 // Reused by the `doctor` tauri command, the `doctor` RPC method, and
-// the `winmux doctor` CLI subcommand.
+// the `ymux doctor` CLI subcommand.
 pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
     use std::sync::atomic::Ordering;
     let workspaces = state.workspaces.lock().unwrap().workspaces.clone();
@@ -7639,7 +7650,7 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
     .unwrap_or_default();
 
     serde_json::json!({
-        "winmux_version": env!("CARGO_PKG_VERSION"),
+        "ymux_version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "workspaces": {
             "total": workspace_count,
@@ -7873,14 +7884,14 @@ pub fn run() {
             log_debug("APP", "─── setup() starting ───");
             // Phase 8.E hotfix: log the exact config dir up front so we can
             // tell whether the binary is resolving the right path. Honors
-            // `WINMUX_CONFIG_DIR` env var override if set.
+            // `YMUX_CONFIG_DIR` env var override if set.
             let cfg_dir = config_dir().ok();
             log_info("APP", &format!(
-                "setup: config_dir = {:?} (override env WINMUX_CONFIG_DIR = {:?})",
+                "setup: config_dir = {:?} (override env YMUX_CONFIG_DIR = {:?})",
                 cfg_dir,
-                std::env::var("WINMUX_CONFIG_DIR").ok()
+                std::env::var("YMUX_CONFIG_DIR").ok()
             ));
-            tracing::info!("winmux config_dir: {:?}", cfg_dir);
+            tracing::info!("ymux config_dir: {:?}", cfg_dir);
 
             // Phase 53.G: was Phase 8.F.1 — the iframe-bridge
             // initialization script was the parent-side companion to
@@ -7895,7 +7906,7 @@ pub fn run() {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("winmux")
+            .title("YMUX")
             .inner_size(1100.0, 700.0)
             .build()
             .map_err(|e| Box::<dyn std::error::Error>::from(format!("main window: {e}")))?;
@@ -7959,14 +7970,14 @@ pub fn run() {
             // logs into the local debug.log every 60s).
             {
                 let logs = state.settings.lock().unwrap().logs.clone();
-                winmux_core::set_log_level(winmux_core::LogLevel::from_str(&logs.level));
+                ymux_core::set_log_level(ymux_core::LogLevel::from_str(&logs.level));
                 prune_logs(logs.retention_days);
             }
             log_sync::spawn_log_sync(app.handle().clone());
             // Phase 39.B: one-time migration. Workspaces created before
             // Phase 39 flipped the auto_port_forward default still have
             // `true` saved and keep auto-forwarding on every connect
-            // (the WINMUX-CHALLENGE / pipe-storm path). Flip them to
+            // (the YMUX-CHALLENGE / pipe-storm path). Flip them to
             // false once; users re-enable per workspace. The flag on
             // Settings keeps this from re-running and undoing a later
             // opt-in. Skipped if workspaces failed to load (load_state
@@ -8141,7 +8152,7 @@ pub fn run() {
             addons::insights_fetch,
             addons::insights_docker_action,
             addons::insights_hygiene_kill,
-            // winmux-tools skills registry: per-workspace skill installer.
+            // ymux-tools skills registry: per-workspace skill installer.
             skills::skills_list,
             skills::skill_install,
             skills::skill_uninstall,
@@ -8775,8 +8786,8 @@ mod claude_session_scope_tests {
         // Every non-alphanumeric becomes '-', per the Agent SDK docs.
         assert_eq!(claude_project_dir_prefix("/Users/me/proj"), "-Users-me-proj");
         assert_eq!(
-            claude_project_dir_prefix("/home/runner/src/winmux-feature.x"),
-            "-home-runner-src-winmux-feature-x"
+            claude_project_dir_prefix("/home/runner/src/ymux-feature.x"),
+            "-home-runner-src-ymux-feature-x"
         );
         // Windows paths encode too — that is what the local branch globs.
         assert_eq!(claude_project_dir_prefix(r"C:\Users\y\p"), "C--Users-y-p");
@@ -8823,10 +8834,10 @@ mod project_folder_migration_tests {
             { "id": "w_wt", "name": "feature/x",
               "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 },
               "project_folder_id": "pf_1",
-              "worktree_path": "/home/runner/src/winmux-feature-x" }
+              "worktree_path": "/home/runner/src/ymux-feature-x" }
           ],
           "project_folders": [
-            { "id": "pf_1", "name": "winmux", "path": "/home/runner/src/winmux",
+            { "id": "pf_1", "name": "ymux", "path": "/home/runner/src/ymux",
               "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 },
               "is_collapsed": true }
           ]
@@ -8850,8 +8861,8 @@ mod project_folder_migration_tests {
             .iter()
             .find(|w| w.is_project_root)
             .expect("folder workspace created");
-        assert_eq!(folder.name, "winmux");
-        assert_eq!(folder.cwd.as_deref(), Some("/home/runner/src/winmux"));
+        assert_eq!(folder.name, "ymux");
+        assert_eq!(folder.cwd.as_deref(), Some("/home/runner/src/ymux"));
         assert_eq!(folder.parent_id.as_deref(), Some("w_root"));
         assert!(folder.is_collapsed, "collapse state carries over");
         assert!(matches!(folder.connection, Some(Connection::Ssh { .. })));
@@ -8874,7 +8885,7 @@ mod project_folder_migration_tests {
         // worktree_path is gone from the struct; the cwd carries it now.
         assert_eq!(
             wt.cwd.as_deref(),
-            Some("/home/runner/src/winmux-feature-x"),
+            Some("/home/runner/src/ymux-feature-x"),
             "the worktree path must survive as the cwd"
         );
         assert!(!wt.is_project_root, "a worktree is not a repo to scan");

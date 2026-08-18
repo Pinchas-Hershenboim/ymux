@@ -1,6 +1,6 @@
 # Installing AI coding agents
 
-winmux integrates with three first-class AI coding agents. They're all
+ymux integrates with three first-class AI coding agents. They're all
 optional — pick whichever ones you want. The **Provisioning Wizard**
 (sidebar → ☁ Provision server) can install any subset of them on a
 fresh remote Linux box, but you can also install them manually anywhere
@@ -142,12 +142,12 @@ All three agents can coexist on the same machine without conflict —
 they each install into distinct locations (`~/.claude/`, `~/.codex/`,
 `~/.gemini/`), expose distinct CLI binaries (`claude`, `codex`,
 `gemini`), and have separate auth state. You can use one in one
-winmux pane and another in a sibling pane.
+ymux pane and another in a sibling pane.
 
 The **agent permission hook** integration (Settings → Hooks) currently
 only ships for Claude Code — Codex and Gemini don't yet have a public
 hook contract analogous to Claude's `~/.claude/settings.json` hooks
-array. As Codex / Gemini add hook APIs, winmux's `setup-hooks --agent
+array. As Codex / Gemini add hook APIs, ymux's `setup-hooks --agent
 <name>` will grow corresponding adapters.
 
 ## Updating

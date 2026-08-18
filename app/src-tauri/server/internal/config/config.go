@@ -1,4 +1,4 @@
-// Package config holds winmux-server's generic infrastructure shared by every
+// Package config holds ymux-server's generic infrastructure shared by every
 // subsystem: the API token, filesystem paths, and the log janitor (size-cap +
 // age-prune, ported from Phase 75/75.1). Leaf-ish — depends only on the stdlib.
 package config
@@ -86,13 +86,13 @@ func pruneIfOld(path string, maxAge time.Duration) {
 	}
 }
 
-// LogJanitor keeps every winmux server-side log bounded (size-cap via
+// LogJanitor keeps every ymux server-side log bounded (size-cap via
 // copy-truncate + age-prune). Runs at boot then every 30 min.
 func LogJanitor(insightsLog, home string, stop <-chan struct{}) {
 	const sizeCap = 1 << 20
 	const maxAge = 7 * 24 * time.Hour
-	hookLog := filepath.Join(home, ".winmux", "hook-debug.log")
-	installLog := filepath.Join(home, ".winmux", "logs", "mobile-install.log")
+	hookLog := filepath.Join(home, ".ymux", "hook-debug.log")
+	installLog := filepath.Join(home, ".ymux", "logs", "mobile-install.log")
 	sweep := func() {
 		rotateCopyTruncate(insightsLog, sizeCap)
 		rotateCopyTruncate(hookLog, sizeCap)

@@ -2585,3 +2585,142 @@ STILL OPEN — tmux vanishing server-side
       deliberately breaking it.
 
 =========================================================================
+
+
+=========================================================================
+2026-08-18 — winmux -> YMUX: full repo rename + compatibility layers
+Branch: claude/app-rename-ymux-f8404e (worktree app-rename-ymux-f8404e)
+
+TASK
+Yossi renamed the app to YMUX ("it isn't limited to Windows any more") and
+asked for the whole repo to follow. Two scope questions were put to him
+before any sed ran, because the answers change the work materially:
+  - depth   -> "full rename + compatibility layers" (over clean-cut / branding-only)
+  - history -> "leave history, update live docs"
+Both decisions and their reasoning are in docs/DECISIONS.md (Decided,
+2026-08-18). This entry is the mechanical record.
+
+BASELINE
+cargo check --workspace --all-targets was run BEFORE touching anything and
+exited 0, so every error after this point is attributable to the rename.
+
+WHAT MOVED
+  git mv: 8 crates (crates/winmux-* -> ymux-*), resources/winmux-{linux-x64,
+    server-linux-x64, server-linux-arm64, tmux.conf}, server/cmd/winmux-server,
+    docs/winmux-server/, winmux-tools/, sdk/kotlin .../dev/winmux/ (+ tests),
+    WinmuxClient.kt -> YmuxClient.kt, app/src/WinmuxToolsTab.tsx.
+  sed over 226 text files: WINMUX->YMUX, WinMux->YMUX, Winmux->Ymux,
+    winMux->yMux, winmux->ymux.
+  Excluded from sed, deliberately: PROGRESS.txt, docs/DECISIONS.md,
+    docs/COMPETITIVE-SCAN.md, .claude/worktree-audit-2026-08-03.txt,
+    manifest.json, Cargo.lock, package-lock.json, remote-manifest.json,
+    and the three binaries (renamed + rebaked instead).
+
+  GOTCHA, caught immediately: the sweep rewrote the worktree's own `.git`
+  FILE (it holds "gitdir: .../programing/winmux/.git/worktrees/..."), which
+  detached the worktree from the repo. Restored by hand in the next command.
+  Any future repo-wide sed must exclude `.git` explicitly -- the usual
+  -not -path './.git/*' does NOT match the file itself.
+
+CASING
+  ymux = machine-facing (paths, crate names, binaries, env-var stems,
+         productName, bundle identifier)
+  YMUX = human-facing (window title, tray menu + tooltip, index.html
+         <title>, i18n VALUES, README)
+  The i18n pass rewrites JSON values only, and skips any `ymux` glued to
+  [~/.`-] or followed by [/-] -- so `~/.ymux/tmux.conf`, `ymux-cli` and the
+  keys use_ymux_tmux_config / DeployYmuxCliToWsl / add_ymux_to_path all
+  stayed lowercase. 69 values brand-cased across en/he/ar/ru; all four
+  re-parsed as JSON afterwards.
+
+COMPAT LAYERS ADDED (each guards a specific upgrade path)
+  crates/ymux-core         config_dir(): renames %APPDATA%\winmux -> ymux
+                           once, behind a Once -- the log_* calls re-enter
+                           config_dir(), so without the latch a FAILING
+                           rename recurses forever. WINMUX_CONFIG_DIR still
+                           honoured. pipe_name_legacy() added.
+  crates/ymux-bootstrap    migrate_legacy_remote_dir(): merges ~/.winmux
+                           into ~/.ymux over SSH BEFORE the hash check, so
+                           an unchanged CLI isn't needlessly re-uploaded.
+                           cp -an, not mv -- both dirs can exist and
+                           `mv A B` would nest A inside B. Drops the stale
+                           winmux-* binaries the copy drags along.
+  cli/src/main.rs          adopt_legacy_env(): promotes every WINMUX_* var
+                           to YMUX_* once at startup, before any thread
+                           exists. One function instead of 13 per-call-site
+                           fallbacks -- and a pane outlives the app that
+                           opened it, so a long-lived tmux session still
+                           carries whatever set-environment -g put there.
+                           migrate_legacy_home_dir(): local twin of the
+                           bootstrap migration, for hosts it never touches.
+                           Handshake + pipe connect: read/mirror either
+                           dialect; legacy pipe tried as a fallback.
+  ymux-tunnel + hookrpc    Handshake: accept YMUX-* or WINMUX-*, answer in
+                           the dialect we were spoken to.
+  lib.rs, tunnel, spawnEnv Dual-WRITE of the env trio (pane id, socket
+                           addr, tunnel token) in all three injectors.
+  settings.rs              #[serde(alias = "use_winmux_tmux_config")] --
+                           without it a user who had turned the toggle OFF
+                           silently gets it back on after upgrading.
+  cli/src/hooks.rs         ${WINMUX_BIN} still expanded; stale winmux_meta
+                           dropped when the new stamp is written.
+  addons.rs                Insights detect / uninstall / install now also
+                           see winmux-server + winmux-insights (unit,
+                           binary, symlink, old home).
+  cmd/ymux-server/main.go  Data-dir migration chain extended with
+                           ~/.winmux/{server,insights} -- otherwise every
+                           paired phone would have been silently unpaired.
+  files/huma.go + client.ts  X-Winmux-Truncated sent + read.
+  rpc_server.rs            Second listener pool on the legacy pipe name
+                           (2 slots -- compat path, not the hot route).
+
+WHY THE WIRE TAG DID NOT FLIP
+A pre-rename winmux-linux-x64 does a literal strip_prefix("WINMUX-CHALLENGE ")
+and hangs up on anything else. Emitting YMUX-CHALLENGE would break exactly
+the already-provisioned remotes that the chosen option was picked to
+protect. So both ends learned to read AND mirror either dialect, and the tag
+we EMIT stays legacy for one release. The flip is one line per side and is
+tracked as FOLLOWUPS P1.
+
+TWO REAL BUGS THE RENAME SURFACED (neither is a compile error)
+  1. cli/src/hooks.rs is_ymux_entry() matched the substring "ymux" -- and
+     "winmux" DOES NOT CONTAIN "ymux". Left alone, setup-hooks would have
+     kept every pre-rename entry and pushed a second one beside it: two
+     permission cards per tool call, on every machine that ran the old build.
+  2. addons.rs hooks_uninstall_script's Python filter had the identical
+     flaw -- uninstall would have printed "removed" and removed nothing.
+  Both now match either spelling.
+
+VERSION BUMPS (lockstep, per the 2026-07-15 rebake precedent)
+  core.Version + INSIGHTS_VERSION     2.1.4 -> 2.2.0
+  ymux_hooks_version + BUNDLED_...    1.3.0 -> 1.4.0
+
+BINARIES REBAKED (not just renamed)
+  ymux-linux-x64            musl, via npm run build:linux-cli
+  ymux-server-linux-x64     go build GOOS=linux GOARCH=amd64
+  ymux-server-linux-arm64   go build GOOS=linux GOARCH=arm64
+  grep -a confirms the only winmux strings left are the deliberate compat
+  literals. remote-manifest.json regenerated with the new sha256.
+
+RESULT
+  cargo check --workspace --all-targets   PASS
+  cargo test --workspace                  PASS
+  go vet ./... + go test ./...            PASS (all packages)
+  tsc --noEmit                            PASS
+  vite build                              PASS
+  New tests: TestHookHandshakeAcceptsBothDialects,
+             TestHookHandshakeDeniesInClientDialect
+
+NOT VERIFIED LIVE -- Rule #14. The app was never launched. Every compat
+layer above only executes on an UPGRADE, which no test in this repo can
+reach. The ordered smoke list is FOLLOWUPS P1 (2026-08-18).
+
+STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
+  - Rename the GitHub repo to ymux. Every URL in the tree already says
+    yyhezkel/ymux and 404s until then; rename FIRST, the redirect covers
+    the rest.
+  - Cut as 0.5.0, not 0.4.6: com.winmux.app -> com.ymux.app is the MSI/NSIS
+    upgrade key, so the new package installs SIDE BY SIDE and the old one
+    stays in Programs and Features. No shim exists for this -- the
+    identifier IS the identity. Release notes need an uninstall step.
+=========================================================================

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"winmux-server/internal/files"
-	"winmux-server/internal/logs"
+	"ymux-server/internal/files"
+	"ymux-server/internal/logs"
 )
 
 // TestOpenAPISpecComplete is a unit-level drift guard: the generated spec must

@@ -12,14 +12,18 @@ export type TerminalSettings = {
 rtl_mode: string, 
 /**
  * Phase tmux-conf: when true (default), tmux is launched with
- * `-f ~/.winmux/tmux.conf` so the bundled scrollback-friendly
+ * `-f ~/.ymux/tmux.conf` so the bundled scrollback-friendly
  * config applies (wheel scrolls the scrollback ring instead of
  * shell history, 50k-line buffer, mouse on, sane truecolour).
  * Set false to fall back to the user's own `~/.tmux.conf`. The
  * conf file is uploaded by the bootstrap regardless, so the
  * toggle takes effect on the NEXT pane connect.
+ * `alias`: settings.json files written before the winmux → ymux
+ * rename carry the old key. Without it a user who had explicitly
+ * turned this OFF would silently get it back on after upgrading,
+ * because the unknown key falls through to `default_true`.
  */
-use_winmux_tmux_config: boolean, 
+use_ymux_tmux_config: boolean, 
 /**
  * Phase HH: mirror the physical Left/Right arrow keys when the
  * terminal line under the cursor is right-to-left (Hebrew/Arabic).

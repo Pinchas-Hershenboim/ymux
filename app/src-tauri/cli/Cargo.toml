@@ -1,10 +1,10 @@
 [package]
-name = "winmux"
+name = "ymux"
 version = "0.4.5"
 edition = "2021"
 
 [[bin]]
-name = "winmux"
+name = "ymux"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,4 +17,4 @@ hmac = "0.12"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Phase 66: shared 3-state policy engine for the remote static fallback.
-winmux-policy = { path = "../crates/winmux-policy" }
+ymux-policy = { path = "../crates/ymux-policy" }

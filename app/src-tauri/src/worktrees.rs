@@ -23,7 +23,7 @@
 //! Absolute Rule #3: the local path passes each argument separately. The
 //! WSL and SSH paths are shell scripts by construction (that is the only
 //! interface `wsl_exec` / `channel.exec` offer), so every interpolated
-//! value goes through `winmux_core::shell_quote` — never raw concatenation.
+//! value goes through `ymux_core::shell_quote` — never raw concatenation.
 
 use russh::client::Handle as SshHandle;
 use russh::ChannelMsg;
@@ -31,7 +31,7 @@ use serde::Serialize;
 
 use crate::local_setup;
 use crate::{AppState, Connection, SshClient};
-use winmux_core::{log_debug, shell_quote};
+use ymux_core::{log_debug, shell_quote};
 
 /// One entry from `git worktree list --porcelain`.
 ///
@@ -475,7 +475,7 @@ pub(crate) async fn workspace_create_project_worktree(
         &["worktree", "add", &target, "-b", &branch_name, &base_branch],
     )
     .await?;
-    winmux_core::log_info(
+    ymux_core::log_info(
         "WORKTREE",
         &format!("[worktree] created {target} for ws={workspace_id} branch={branch_name}"),
     );
@@ -491,17 +491,17 @@ mod tests {
     #[test]
     fn parses_main_and_linked() {
         let text = "\
-worktree /home/y/src/winmux
+worktree /home/y/src/ymux
 HEAD abc123def
 branch refs/heads/main
 
-worktree /home/y/src/winmux-feature-x
+worktree /home/y/src/ymux-feature-x
 HEAD 999888777
 branch refs/heads/feature/x
 ";
         let got = parse_worktree_porcelain(text);
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0].path, "/home/y/src/winmux");
+        assert_eq!(got[0].path, "/home/y/src/ymux");
         assert_eq!(got[0].branch.as_deref(), Some("main"));
         assert_eq!(got[0].head, "abc123def");
         assert!(got[0].is_main);
@@ -584,18 +584,18 @@ prunable gitdir file points to non-existent location
     #[test]
     fn default_target_is_a_sibling() {
         assert_eq!(
-            default_worktree_target("/home/y/src/winmux", "feature/x"),
-            "/home/y/src/winmux-feature-x"
+            default_worktree_target("/home/y/src/ymux", "feature/x"),
+            "/home/y/src/ymux-feature-x"
         );
         // Trailing slash must not produce an empty basename.
         assert_eq!(
-            default_worktree_target("/home/y/src/winmux/", "wip"),
-            "/home/y/src/winmux-wip"
+            default_worktree_target("/home/y/src/ymux/", "wip"),
+            "/home/y/src/ymux-wip"
         );
         assert_eq!(default_worktree_target("/repo", "wip"), "/repo-wip");
         assert_eq!(
-            default_worktree_target("C:\\src\\winmux", "wip"),
-            "C:/src/winmux-wip"
+            default_worktree_target("C:\\src\\ymux", "wip"),
+            "C:/src/ymux-wip"
         );
     }
 

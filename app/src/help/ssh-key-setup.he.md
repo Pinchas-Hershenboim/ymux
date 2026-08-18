@@ -6,12 +6,12 @@
 
 ב-Windows (PowerShell):
 ```powershell
-ssh-keygen -t ed25519 -f $HOME\.ssh\winmux_key -C "winmux-<server-name>"
+ssh-keygen -t ed25519 -f $HOME\.ssh\ymux_key -C "ymux-<server-name>"
 ```
 
 ב-macOS או Linux:
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/winmux_key -C "winmux-<server-name>"
+ssh-keygen -t ed25519 -f ~/.ssh/ymux_key -C "ymux-<server-name>"
 ```
 
 כשתתבקש לסיסמת מפתח (passphrase), לחץ Enter בלי להזין כלום אם אינך רוצה אחת, או הגדר אחת לאבטחה נוספת.
@@ -20,17 +20,17 @@ ssh-keygen -t ed25519 -f ~/.ssh/winmux_key -C "winmux-<server-name>"
 
 ב-Windows (PowerShell):
 ```powershell
-Get-Content $HOME\.ssh\winmux_key.pub | Set-Clipboard
+Get-Content $HOME\.ssh\ymux_key.pub | Set-Clipboard
 ```
 
 ב-macOS:
 ```bash
-pbcopy < ~/.ssh/winmux_key.pub
+pbcopy < ~/.ssh/ymux_key.pub
 ```
 
 ב-Linux:
 ```bash
-cat ~/.ssh/winmux_key.pub
+cat ~/.ssh/ymux_key.pub
 ```
 
 ## שלב 3 — התקן את המפתח על השרת
@@ -48,15 +48,15 @@ chmod 600 ~/.ssh/authorized_keys
 
 אם יש לך `ssh-copy-id`, אפשר לאחד את שלבים 2 ו-3:
 ```bash
-ssh-copy-id -i ~/.ssh/winmux_key.pub user@server.example.com
+ssh-copy-id -i ~/.ssh/ymux_key.pub user@server.example.com
 ```
 
-## שלב 4 — הגדר את winmux
+## שלב 4 — הגדר את ymux
 
-פתח את הגדרות סביבת העבודה והגדר את הנתיב למפתח SSH כ-`~/.ssh/winmux_key` (או היכן ששמרת את המפתח הפרטי).
+פתח את הגדרות סביבת העבודה והגדר את הנתיב למפתח SSH כ-`~/.ssh/ymux_key` (או היכן ששמרת את המפתח הפרטי).
 
 ## פתרון בעיות
 
 - **Permission denied (publickey)**: ודא הרשאות קבצים — `~/.ssh` צריך להיות 700, `authorized_keys` צריך להיות 600, המפתח הפרטי צריך להיות 600.
 - **משתמש שגוי בשרת**: ודא שהוספת את המפתח ל-`~/.ssh/authorized_keys` של המשתמש הנכון, לא ל-root כברירת מחדל.
-- **מספר מפתחות**: SSH מנסה מפתחות לפי הסדר; ציין מפתח ספציפי עם `ssh -i ~/.ssh/winmux_key user@host`.
+- **מספר מפתחות**: SSH מנסה מפתחות לפי הסדר; ציין מפתח ספציפי עם `ssh -i ~/.ssh/ymux_key user@host`.

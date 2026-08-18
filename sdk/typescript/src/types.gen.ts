@@ -21,6 +21,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/devices/{id}/scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a device's scope grants */
+        get: operations["device-get-scopes"];
+        /** Set a device's scope grants (owner only) */
+        put: operations["device-set-scopes"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/files/delete": {
         parameters: {
             query?: never;
@@ -79,7 +97,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read up to max_bytes of a file (raw bytes; X-Winmux-Truncated header) */
+        /** Read up to max_bytes of a file (raw bytes; X-Ymux-Truncated header) */
         get: operations["files-read"];
         put?: never;
         post?: never;
@@ -100,6 +118,40 @@ export interface paths {
         put?: never;
         /** Upload a file (multipart form; ?path= destination) */
         post: operations["files-upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/hooks/forward": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Forward a desktop-origin hook to paired devices */
+        post: operations["hooks-forward"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/hooks/{req_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Poll a forwarded hook's resolution */
+        get: operations["hooks-status"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -150,6 +202,23 @@ export interface paths {
         /** Server-Sent Events tail of a client's log (event: line) */
         get: operations["logs-stream"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/session/{sid}/hook/{req_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Approve or deny a pending hook request */
+        put: operations["session-resolve-hook"];
         post?: never;
         delete?: never;
         options?: never;
@@ -329,6 +398,31 @@ export interface components {
             uptime_seconds: number;
             version: string;
         };
+        HookDecisionRequest: {
+            decision: string;
+        };
+        HookForwardRequest: {
+            pane_id: string;
+            req_id: string;
+            /** Format: int64 */
+            timeout_at: number;
+            title: string;
+            tool_name: string;
+            workspace_id: string;
+        };
+        HookForwardResponse: {
+            ok: boolean;
+            session_id: string;
+        };
+        HookResolved: {
+            decision: string;
+            req_id: string;
+            won: boolean;
+        };
+        HookStatus: {
+            decision: string;
+            resolved: boolean;
+        };
         LineEvent: {
             line: string;
         };
@@ -357,6 +451,9 @@ export interface components {
         ReadBody: {
             lines: string[] | null;
             truncated: boolean;
+        };
+        ScopesBody: {
+            scopes: string[] | null;
         };
         Session: {
             /** Format: int64 */
@@ -424,6 +521,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PairingRedeemResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "device-get-scopes": {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopesBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "device-set-scopes": {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScopesBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopesBody"];
                 };
             };
             /** @description Error */
@@ -601,6 +768,72 @@ export interface operations {
             };
         };
     };
+    "hooks-forward": {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HookForwardRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HookForwardResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "hooks-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                req_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HookStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "logs-list": {
         parameters: {
             query?: never;
@@ -704,6 +937,44 @@ export interface operations {
                         /** @description The retry time in milliseconds. */
                         retry?: number;
                     })[];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "session-resolve-hook": {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string;
+            };
+            path: {
+                sid: string;
+                req_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HookDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HookResolved"];
                 };
             };
             /** @description Error */

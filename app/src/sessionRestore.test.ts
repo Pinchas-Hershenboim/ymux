@@ -27,7 +27,7 @@ const {
   prunePaneSessions,
 } = await import("./sessionRestore.ts");
 
-const KEY = "winmux.paneSessions.v1";
+const KEY = "ymux.paneSessions.v1";
 const DAY = 24 * 60 * 60 * 1000;
 
 beforeEach(() => {
@@ -38,8 +38,8 @@ beforeEach(() => {
 // --- round trip -----------------------------------------------------------
 
 test("remember then get returns the stored session name", () => {
-  rememberPaneSession("p1", "winmux-alpha");
-  assert.equal(getPaneSession("p1"), "winmux-alpha");
+  rememberPaneSession("p1", "ymux-alpha");
+  assert.equal(getPaneSession("p1"), "ymux-alpha");
 });
 
 test("get returns null for an unknown pane", () => {
@@ -53,7 +53,7 @@ test("remember overwrites the previous name for the same pane", () => {
 });
 
 test("remember ignores empty pane id or session name", () => {
-  rememberPaneSession("", "winmux-x");
+  rememberPaneSession("", "ymux-x");
   rememberPaneSession("p1", "");
   assert.equal(store[KEY], undefined);
 });

@@ -1,32 +1,32 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" width="120" alt="winmux logo">
+<img src="docs/assets/logo.svg" width="120" alt="YMUX logo">
 
-# winmux
+# YMUX
 
-**A Windows-native terminal for AI coding agents over SSH.**
+**A desktop terminal for AI coding agents over SSH.**
 
 Inspired by [cmux](https://github.com/manaflow-ai/cmux). Built with Tauri 2 + Rust + SolidJS.
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6.svg)](#install)
+[![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%2010%2B%20%7C%20macOS%2013%2B-0078D6.svg)](#install)
 [![Stack: Tauri 2](https://img.shields.io/badge/stack-Tauri%202%20%2B%20Rust%20%2B%20SolidJS-yellow.svg)](https://tauri.app)
-[![Release](https://img.shields.io/github/v/release/yyhezkel/winmux?color=success)](https://github.com/yyhezkel/winmux/releases/latest)
+[![Release](https://img.shields.io/github/v/release/yyhezkel/ymux?color=success)](https://github.com/yyhezkel/ymux/releases/latest)
 
-[**Download**](https://github.com/yyhezkel/winmux/releases/latest) ·
+[**Download**](https://github.com/yyhezkel/ymux/releases/latest) ·
 [Documentation](docs/) ·
 [Roadmap](#roadmap) ·
-[Report a bug](https://github.com/yyhezkel/winmux/issues/new)
+[Report a bug](https://github.com/yyhezkel/ymux/issues/new)
 
 </div>
 
 ---
 
-## What is winmux?
+## What is YMUX?
 
-winmux is a desktop terminal for developers who run AI coding agents
+YMUX is a desktop terminal for developers who run AI coding agents
 (Claude Code, Codex, Cursor) on remote Linux dev servers and want a
-polished, opinionated Windows-native UX around them. SSH workspaces
+polished, opinionated native UX around them. SSH workspaces
 with splits, real BiDi for Hebrew/Arabic, blocking permission cards
 when an agent wants to run a tool, a bundled MCP server, and one-click
 wizards for both first-time server setup and connecting to a host
@@ -34,7 +34,7 @@ you've already configured in `~/.ssh/config`.
 
 If you live in your terminal, work primarily with remote Linux servers,
 and want fine-grained control over what AI agents do on those servers —
-winmux is for you.
+ymux is for you.
 
 ## Features
 
@@ -65,13 +65,13 @@ One-click Claude Code launch with `--resume` / `--continue` /
 Browse and resume recent Claude sessions on the remote (reads
 `~/.claude/projects/`). Blocking permission hooks: the agent waits
 for your Allow/Deny in the UI. Hooks are env-gated by
-`WINMUX_PANE_ID`, so unrelated terminals on the same machine don't
+`YMUX_PANE_ID`, so unrelated terminals on the same machine don't
 fire them.
 
 ### 🛠️ MCP server bundled
 
-`winmux-mcp.exe` exposes a stdio JSON-RPC surface that lets an agent
-drive winmux itself: discover open workspaces and panes (`list_panes`,
+`ymux-mcp.exe` exposes a stdio JSON-RPC surface that lets an agent
+drive ymux itself: discover open workspaces and panes (`list_panes`,
 `tree`, `list_workspaces`), split panes, activate workspaces, send
 keystrokes, and ping the user. Browser automation moved to
 [lean-chronoscope-mcp](https://github.com/yyhezkel/lean-chronoscope-mcp)
@@ -122,24 +122,24 @@ Hebrew/Arabic layout too).
 Everything you'd expect: a settings panel with theme presets and a
 custom color picker, a notes panel for "I had an idea, capture it",
 localization for English, Hebrew, Arabic, Russian with live RTL/LTR
-switch, an update checker, and a CLI (`winmux settings show/set/
+switch, an update checker, and a CLI (`ymux settings show/set/
 preset/export/import`) for scripting it all.
 
 ## Install
 
-Download the latest [release](https://github.com/yyhezkel/winmux/releases/latest)
+Download the latest [release](https://github.com/yyhezkel/ymux/releases/latest)
 and run the MSI:
 
 ```pwsh
-winget download yyhezkel/winmux   # once we ship on winget
-# or grab the latest winmux_X.Y.Z_x64_en-US.msi from GitHub and double-click
+winget download yyhezkel/ymux   # once we ship on winget
+# or grab the latest ymux_X.Y.Z_x64_en-US.msi from GitHub and double-click
 ```
 
 Or build from source:
 
 ```pwsh
-git clone https://github.com/yyhezkel/winmux
-cd winmux/app
+git clone https://github.com/yyhezkel/ymux
+cd ymux/app
 npm install
 npm run tauri build              # release MSI + NSIS bundles
 npm run tauri build -- --debug   # standalone debug app.exe
@@ -155,13 +155,13 @@ WebView2 is already present on Windows 10 21H2+ / Windows 11.
 
 ## Quick start
 
-1. Launch winmux. The first run drops `%APPDATA%\winmux\settings.json`
+1. Launch ymux. The first run drops `%APPDATA%\ymux\settings.json`
    with sensible defaults; tweak from the gear icon (⚙) whenever.
 2. Click **+ New workspace** → pick **SSH** → either fill the fields
    or hit **Import from SSH config** to pull a host from `~/.ssh/config`.
    The wizard auto-detects keys under `~/.ssh/`, flags too-open
    permissions, and offers an in-place "Test connection".
-3. **Connect**. winmux SFTP-uploads its remote CLI on first connection
+3. **Connect**. ymux SFTP-uploads its remote CLI on first connection
    and exposes a reverse tunnel back to the desktop. From the Connect
    dropdown you can spawn `claude`, `claude --resume` from the session
    browser, a plain shell, or any custom command.
@@ -172,17 +172,17 @@ with Allow / Deny. The agent blocks until you decide.
 ## Compared to alternatives
 
 This is a small space; the choices here are real tradeoffs, not
-"winmux beats everything". Be honest with yourself about what you
+"ymux beats everything". Be honest with yourself about what you
 need.
 
-| | **winmux** | [cmux](https://github.com/manaflow-ai/cmux) | [Warp](https://www.warp.dev) | [Termius](https://termius.com) |
+| | **ymux** | [cmux](https://github.com/manaflow-ai/cmux) | [Warp](https://www.warp.dev) | [Termius](https://termius.com) |
 |---|---|---|---|---|
 | Primary platform        | Windows                | macOS                  | macOS / Linux / Windows | Windows / macOS / Linux / iOS / Android |
 | License                 | GPL-3.0-or-later       | AGPL-3.0               | AGPL-3.0 (app)         | Proprietary (free tier with limits)     |
 | SSH workspaces          | ✓                      | ✓                      | ✓                      | ✓                                       |
 | Splits / tabs           | ✓ (binary tree)        | ✓                      | ✓                      | ✓                                       |
 | Blocking agent hooks    | ✓                      | ✓                      | partial (built-in only)| ✗                                       |
-| Bundled MCP server      | ✓ winmux + agent tools | ✗                      | ✗                      | ✗                                       |
+| Bundled MCP server      | ✓ ymux + agent tools | ✗                      | ✗                      | ✗                                       |
 | Claude Code launcher    | ✓ with session browser | ✓                      | ✗                      | ✗                                       |
 | File manager (SFTP)     | ✓                      | ✗                      | ✗                      | ✓                                       |
 | Server provisioning     | ✓ wizard               | ✗                      | ✗                      | ✓ snippets                              |
@@ -190,11 +190,11 @@ need.
 | Free for personal use   | ✓                      | ✓                      | ✓                      | partial                                 |
 
 If you're on macOS, look at **cmux** first — it's the project that
-inspired winmux and is more mature there. If you want a polished
+inspired ymux and is more mature there. If you want a polished
 cross-platform terminal with built-in AI features and don't need
 remote-server provisioning, **Warp** is excellent. If you want a
 mature commercial SSH client across every device including mobile,
-**Termius** is the standard. winmux is the one to pick when you're on
+**Termius** is the standard. ymux is the one to pick when you're on
 Windows, work primarily with remote Linux dev servers, run AI agents
 on those servers, and want them gated behind a UI you control.
 
@@ -205,7 +205,7 @@ on those servers, and want them gated behind a UI you control.
 │  Windows desktop                 │         │  Remote Linux server         │
 │                                  │         │                              │
 │  ┌────────────┐  ┌────────────┐  │         │  ┌────────────────────────┐  │
-│  │  app.exe   │  │winmux.exe  │  │         │  │  winmux (CLI, musl)    │  │
+│  │  app.exe   │  │ymux.exe  │  │         │  │  ymux (CLI, musl)    │  │
 │  │  (Tauri)   │  │  (CLI)     │  │         │  │  bootstrapped via SFTP │  │
 │  └─────┬──────┘  └─────┬──────┘  │         │  └────────┬───────────────┘  │
 │        │ Named Pipe    │ Named Pipe         │           │                  │
@@ -215,8 +215,8 @@ on those servers, and want them gated behind a UI you control.
 │  │   in-process RPC server    │  reverse SSH│                              │
 │  └────────────────────────────┘             │  ┌────────────────────────┐  │
 │  ┌────────────┐                              │  │ Claude Code            │  │
-│  │winmux-mcp  │  ──── MCP (stdio) ───►       │  │ + ~/.claude/hooks      │  │
-│  │  .exe      │                              │  │   → winmux claude-hook │  │
+│  │ymux-mcp  │  ──── MCP (stdio) ───►       │  │ + ~/.claude/hooks      │  │
+│  │  .exe      │                              │  │   → ymux claude-hook │  │
 │  └────────────┘                              │  └────────────────────────┘  │
 └─────────────────────────────────┘            └──────────────────────────────┘
 ```
@@ -232,7 +232,7 @@ The foundation: local PTY · BiDi (UAX #9) · SSH via russh · multi-workspace
 persistence with splits · CLI + JSON-RPC over Named Pipe + reverse SSH
 tunnel · MSI + NSIS installers with PATH auto-registration · remote Linux
 CLI bootstrap · HMAC-SHA256 auth · agent feed + permission cards · notes ·
-winmux-mcp · settings panel with themes and live apply · tmux persistence ·
+ymux-mcp · settings panel with themes and live apply · tmux persistence ·
 localization (en / he / ar / ru).
 
 Connection + provisioning: smart-connect (Claude session browser,
@@ -258,14 +258,14 @@ quadrant split shortcuts · opt-in PTY-stream bidi filter for Claude
 Code TUI panes · push-to-talk speech-to-text with Web Speech API or
 local Whisper-compatible endpoint.
 
-Agent control surface: `winmux-mcp.exe` exposes `list_panes`,
+Agent control surface: `ymux-mcp.exe` exposes `list_panes`,
 `read_pane`, `take_screenshot`, `split_pane`, `connect_workspace`,
 `send_keys`, `notify`, `note_add`, `tree`, `list_workspaces` for
-agents that want to drive winmux from outside the pane they're
+agents that want to drive ymux from outside the pane they're
 running in.
 
-Internals: lib.rs split into 5 focused crates (winmux-types,
-winmux-core, winmux-tunnel, winmux-bootstrap, winmux-ssh) with
+Internals: lib.rs split into 5 focused crates (ymux-types,
+ymux-core, ymux-tunnel, ymux-bootstrap, ymux-ssh) with
 CoreState refactor · 100+ unit tests pinning the workspaces.json
 wire format and pure-walker invariants.
 
@@ -283,7 +283,7 @@ wire format and pure-walker invariants.
 - [Modules](docs/MODULES.md) — what each Rust module + frontend file owns
 - [Protocols](docs/PROTOCOLS.md) — JSON-RPC catalog, framing, HMAC handshake, agent-hook contract
 - [Config](docs/CONFIG.md) — `workspaces.json` / `settings.json` / `known_hosts.json` schemas; env vars
-- [CLI reference](docs/CLI.md) — every `winmux` subcommand with examples and exit codes
+- [CLI reference](docs/CLI.md) — every `ymux` subcommand with examples and exit codes
 - [Installing AI agents](docs/INSTALL_AGENTS.md) — Claude Code, Codex, Gemini install + auth flows on Linux / Windows / macOS
 - [Build](docs/BUILD.md) — prerequisites, dev / debug builds, Linux cross-compile, common gotchas
 - [Releasing](docs/RELEASING.md) — six-step runbook for cutting a tag + updating the manifest
@@ -292,7 +292,7 @@ wire format and pure-walker invariants.
 
 ## Acknowledgments
 
-winmux stands on the shoulders of giants:
+ymux stands on the shoulders of giants:
 
 - **[cmux](https://github.com/manaflow-ai/cmux)** — the macOS reference design that inspired the workspace + permission-card UX
 - **[Tauri](https://tauri.app)** — the framework that makes a 7 MB Rust + WebView desktop app possible

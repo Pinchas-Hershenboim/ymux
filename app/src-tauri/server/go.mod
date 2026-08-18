@@ -1,4 +1,4 @@
-module winmux-server
+module ymux-server
 
 go 1.26
 

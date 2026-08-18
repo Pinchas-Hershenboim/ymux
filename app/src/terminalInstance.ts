@@ -558,7 +558,7 @@ export class TerminalInstance {
           if (filePath !== null) {
             // Dispatch to App, which owns the toast + the download invoke.
             window.dispatchEvent(
-              new CustomEvent("winmux:osc-file-link", {
+              new CustomEvent("ymux:osc-file-link", {
                 detail: { workspaceId: this.workspaceId, path: filePath },
               }),
             );
@@ -603,7 +603,7 @@ export class TerminalInstance {
     // Phase 64 (J, Track B): make Claude's plain-text `[file] <path> (<size>)`
     // lines clickable. Absolute paths reuse the existing OSC 8 file-link
     // download path (Save-As dialog via App); relative paths can't be
-    // resolved — winmux has no per-pane remote cwd (OSC 7 tracking is the
+    // resolved — ymux has no per-pane remote cwd (OSC 7 tracking is the
     // future prerequisite) — so the click copies the path and a toast says
     // it's relative to the pane's directory.
     this.fileLinkProvider = this.term.registerLinkProvider({
@@ -632,13 +632,13 @@ export class TerminalInstance {
             activate: () => {
               if (path.startsWith("/")) {
                 window.dispatchEvent(
-                  new CustomEvent("winmux:osc-file-link", {
+                  new CustomEvent("ymux:osc-file-link", {
                     detail: { workspaceId: this.workspaceId, path },
                   }),
                 );
               } else {
                 window.dispatchEvent(
-                  new CustomEvent("winmux:file-link-relative", {
+                  new CustomEvent("ymux:file-link-relative", {
                     detail: { path },
                   }),
                 );
@@ -717,7 +717,7 @@ export class TerminalInstance {
     if (!g_loggedNoWheelProxy) {
       g_loggedNoWheelProxy = true;
       console.log(
-        "[winmux] terminal: native wheel scrollback enabled, no wheel proxy",
+        "[ymux] terminal: native wheel scrollback enabled, no wheel proxy",
       );
     }
 

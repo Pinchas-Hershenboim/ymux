@@ -56,7 +56,7 @@ jobs:
         working-directory: app
         run: npm ci
 
-      # Runs build:linux-cli (stages winmux-cli.exe, winmux-linux-x64,
+      # Runs build:linux-cli (stages ymux-cli.exe, ymux-linux-x64,
       # remote-manifest.json) then build:frontend, then the Tauri bundler.
       #
       # `shell: cmd` invoking Windows PowerShell, NOT `shell: pwsh`: pwsh
@@ -109,14 +109,14 @@ jobs:
       - name: Upload MSI
         uses: actions/upload-artifact@v4
         with:
-          name: winmux-windows-msi
+          name: ymux-windows-msi
           path: app/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
 
       - name: Upload NSIS setup
         uses: actions/upload-artifact@v4
         with:
-          name: winmux-windows-nsis
+          name: ymux-windows-nsis
           path: app/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
 
@@ -124,6 +124,6 @@ jobs:
       - name: Upload bare exe
         uses: actions/upload-artifact@v4
         with:
-          name: winmux-windows-exe
+          name: ymux-windows-exe
           path: app/src-tauri/target/release/app.exe
           if-no-files-found: error

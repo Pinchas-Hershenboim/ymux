@@ -6,9 +6,9 @@
  */
 
 /**
- * winmux-server WebSocket frame contract (PHASE-77-DESIGN §4.4, frame_version 2). Every frame is a flat JSON object discriminated by `type`. Envelope fields (seq, session_id, ts) sit alongside the type-specific fields. snake_case throughout, matching the REST surface. SDK generators turn this into a Kotlin sealed interface / TS tagged union.
+ * ymux-server WebSocket frame contract (PHASE-77-DESIGN §4.4, frame_version 2). Every frame is a flat JSON object discriminated by `type`. Envelope fields (seq, session_id, ts) sit alongside the type-specific fields. snake_case throughout, matching the REST surface. SDK generators turn this into a Kotlin sealed interface / TS tagged union.
  */
-export type WinmuxFrame =
+export type YmuxFrame =
   | HelloFrame
   | UserInputFrame
   | HookDecisionFrame

@@ -19,7 +19,7 @@ let failWrites = false;
 
 const { loadFmPaths, saveFmPaths, pruneFmPaths } = await import("./fmPaths.ts");
 
-const KEY = "winmux.fm.paths.v1";
+const KEY = "ymux.fm.paths.v1";
 
 beforeEach(() => {
   store = {};

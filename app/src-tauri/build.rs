@@ -10,7 +10,7 @@ fn main() {
     tauri_build::build()
 }
 
-// Phase 8.E: emit `WINMUX_GIT_HASH` and `WINMUX_BUILD_TIME` so the dev
+// Phase 8.E: emit `YMUX_GIT_HASH` and `YMUX_BUILD_TIME` so the dev
 // introspection RPC can show what's running. Falls back to "unknown" if git
 // isn't available (e.g. building from a tarball).
 fn emit_build_metadata() {
@@ -23,13 +23,13 @@ fn emit_build_metadata() {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=WINMUX_GIT_HASH={hash}");
+    println!("cargo:rustc-env=YMUX_GIT_HASH={hash}");
 
     let build_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    println!("cargo:rustc-env=WINMUX_BUILD_TIME={build_time}");
+    println!("cargo:rustc-env=YMUX_BUILD_TIME={build_time}");
 
     println!("cargo:rerun-if-changed=../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/HEAD");

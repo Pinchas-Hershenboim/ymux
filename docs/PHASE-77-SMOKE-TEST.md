@@ -1,36 +1,36 @@
-# Phase 77 smoke test — winmux-server 2.0.0 (app v0.4.3)
+# Phase 77 smoke test — ymux-server 2.0.0 (app v0.4.3)
 
-Manual checklist for validating the Phase 77 branch (`77-winmux-server`) before
-merge. Run with `winmux-DEBUG-test.exe` (embeds the 2.0.0 daemon + the new data
+Manual checklist for validating the Phase 77 branch (`77-ymux-server`) before
+merge. Run with `ymux-DEBUG-test.exe` (embeds the 2.0.0 daemon + the new data
 dir). Two remote hosts recommended: one **fresh**, one with an **existing 1.x
 install** to exercise the migration.
 
 Legend: ☐ = to verify.
 
-## 1. Fresh install (host with no prior winmux daemon)
+## 1. Fresh install (host with no prior ymux daemon)
 
 - ☐ Connect to the remote in a workspace; open **Monitor**.
 - ☐ Settings → Add-ons → **Insights → Install** succeeds.
-- ☐ On the remote: `~/.winmux/bin/winmux-server --version` prints
-  `winmux-server 2.0.0`; `~/.winmux/bin/winmux-insights` symlink resolves to it.
-- ☐ Data dir **`~/.winmux/server/`** exists (not `insights/`) and contains
+- ☐ On the remote: `~/.ymux/bin/ymux-server --version` prints
+  `ymux-server 2.0.0`; `~/.ymux/bin/ymux-insights` symlink resolves to it.
+- ☐ Data dir **`~/.ymux/server/`** exists (not `insights/`) and contains
   `token`, `metrics.db`, `workspace.db`, `insights.log`.
-- ☐ systemd: `systemctl --user status winmux-server` is **active**; no
-  `winmux-insights.service` present.
+- ☐ systemd: `systemctl --user status ymux-server` is **active**; no
+  `ymux-insights.service` present.
 - ☐ Monitor shows live metrics (CPU/mem/disk). `curl -s localhost:7879/healthz`
   (via the tunnel) returns `{"ok":true,"version":"2.0.0","uptime_seconds":…}`.
 - ☐ `GET /api/version` → `api_versions:[2]`, `frame_version:2`.
 
-## 2. Upgrade path (host with an existing `~/.winmux/insights/` from 1.x)
+## 2. Upgrade path (host with an existing `~/.ymux/insights/` from 1.x)
 
 > Precondition: a 1.x daemon previously installed, with a paired mobile device
 > (so `chat.db`/`paired_devices` + `token` exist under `insights/`).
 
-- ☐ Note the old token: `cat ~/.winmux/insights/token`.
+- ☐ Note the old token: `cat ~/.ymux/insights/token`.
 - ☐ Install Insights from the new desktop (Add-ons → Insights → Install).
-- ☐ After first boot: **`~/.winmux/server/` exists, `~/.winmux/insights/` is
+- ☐ After first boot: **`~/.ymux/server/` exists, `~/.ymux/insights/` is
   gone** (atomic move). Log shows `migrated data dir … → …/server`.
-- ☐ Token preserved: `cat ~/.winmux/server/token` **equals** the noted value.
+- ☐ Token preserved: `cat ~/.ymux/server/token` **equals** the noted value.
 - ☐ `chat.db` present under `server/`; **previously paired devices still work**
   (Mobile tab shows them; a paired phone can still reach the server).
 - ☐ Idempotent: restart the daemon → no second migration, no data loss.
@@ -54,17 +54,17 @@ Legend: ☐ = to verify.
 
 - ☐ `cd sdk-gen && npm ci && node ci-check.mjs` → "SDKs are in sync".
 - ☐ `cd sdk/typescript && node test/contract.mjs` → contract OK against a locally
-  built `winmux-server`.
+  built `ymux-server`.
 
 ---
 
-**Rollback rehearsal (optional):** on the upgraded host, `mv ~/.winmux/server
-~/.winmux/insights`, install an older winmux, confirm the 1.x daemon comes back
-with the same token/devices. (See `docs/winmux-server/UPGRADE.md`.)
+**Rollback rehearsal (optional):** on the upgraded host, `mv ~/.ymux/server
+~/.ymux/insights`, install an older ymux, confirm the 1.x daemon comes back
+with the same token/devices. (See `docs/ymux-server/UPGRADE.md`.)
 
 ---
 
-## v0.4.3 — native push + A/B hooks + scopes (winmux-server 2.1.2)
+## v0.4.3 — native push + A/B hooks + scopes (ymux-server 2.1.2)
 
 ✅ = E2E-verified on a Samsung SM-S938B, 2026-07-05. Un-E2E'd items note their
 coverage (unit test / manual) — nothing below is marked ✅ that wasn't seen work

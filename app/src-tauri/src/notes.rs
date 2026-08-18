@@ -1,6 +1,6 @@
 //! Phase 7.B: notes / ideas capture.
 //!
-//! Persisted in `%APPDATA%\winmux\notes.json` next to `workspaces.json`. Same
+//! Persisted in `%APPDATA%\ymux\notes.json` next to `workspaces.json`. Same
 //! atomic-write + load-poison-gate pattern as workspaces (so a corrupt or
 //! mid-write file never silently loses everything). Mutations emit `notes:changed`
 //! to the frontend and are exposed both as Tauri commands and over JSON-RPC so

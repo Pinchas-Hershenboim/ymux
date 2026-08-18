@@ -1,4 +1,4 @@
-# DESIGN-PASS-01 — winmux Visual & Interaction Design Brief
+# DESIGN-PASS-01 — ymux Visual & Interaction Design Brief
 
 > **Status:** proposal · design + spec only, **no code changed**
 > **Author:** design pass, 2026-07-02
@@ -44,7 +44,7 @@ the source of truth and was read directly.
 
 ## 1. Product identity (the anchor)
 
-winmux is a **Windows-native Tauri + SolidJS terminal multiplexer** whose one-line
+ymux is a **Windows-native Tauri + SolidJS terminal multiplexer** whose one-line
 identity is:
 
 > **The workspace where your SSH servers, your panes, and Claude Code live in one
@@ -376,14 +376,14 @@ All the above collapse to opacity-only / instant under `prefers-reduced-motion: 
    *extend*? Rename is cleaner long-term; aliases make it zero-risk. *Recommend: rename+alias.*
 2. **Light mode default** — follow `prefers-color-scheme`, or force dark until the user
    opts in? *Recommend: follow OS, remember the user's explicit choice.*
-3. **Rebrand** (COMPETITIVE-SCAN warns the `winmux` name is crowded) — out of scope here,
+3. **Rebrand** (COMPETITIVE-SCAN warns the `winmux` name is crowded) — DONE, 2026-08-18: the app is YMUX. Out of scope for this doc,
    but the welcome glyph/wordmark is where a rename would land first. Flagging, not deciding.
 
 ---
 
 ## 8. Summary
 
-winmux already has good bones — a live-token theming engine, a preset system, real RTL
+ymux already has good bones — a live-token theming engine, a preset system, real RTL
 plumbing. This pass **deepens** them: a full `--wmx-*` token layer (color with a Dark/Light
 mode axis, plus spacing/radius/elevation/motion/focus scales), and five redesigned
 surfaces led by the empty-state/welcome (the biggest onboarding gap today). The work

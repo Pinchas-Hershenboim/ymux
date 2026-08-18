@@ -4,7 +4,7 @@ import { t } from "./i18n";
 import { IconClose, IconWarning, IconCircle } from "./icons";
 
 // Phase 76 — Monitor "Cleanup" tab. Surfaces the two server-side leaks Yossi
-// hit (duplicate winmux port-watchers, orphaned claude sessions) from the
+// hit (duplicate ymux port-watchers, orphaned claude sessions) from the
 // daemon's /hygiene endpoint, and reaps the safe ones via /hygiene/kill.
 
 interface PortWatcher {

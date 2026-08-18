@@ -11,8 +11,8 @@ Include:
 
 - A description of the vulnerability and its impact
 - Steps to reproduce (proof-of-concept code if available)
-- The winmux version (`winmux --version` and the git SHA from
-  `winmux dev get-state`)
+- The ymux version (`ymux --version` and the git SHA from
+  `ymux dev get-state`)
 - Your preferred timeline / disclosure expectations
 
 You should receive an acknowledgement within **7 days**. A more detailed
@@ -30,9 +30,9 @@ accelerate disclosure with the reporter's cooperation.
 
 ## What's in scope
 
-- The desktop Tauri app (`winmux.exe`)
-- The `winmux` CLI binary (both Windows and the bundled Linux build)
-- The `winmux-mcp` MCP server binary
+- The desktop Tauri app (`ymux.exe`)
+- The `ymux` CLI binary (both Windows and the bundled Linux build)
+- The `ymux-mcp` MCP server binary
 - The JSON-RPC + named-pipe + reverse-SSH-tunnel transport
 - The agent-hook contract (Claude Code hook integration)
 - Any cryptographic primitive we ship (HMAC-SHA256 handshake, key load
@@ -53,16 +53,16 @@ accelerate disclosure with the reporter's cooperation.
 - Release binaries are built with `--remap-path-prefix` so that
   `$CARGO_HOME`, `$RUSTUP_HOME`, and `$HOME` are scrubbed from any
   panic-location strings the compiler embeds in `.rodata`.
-- Initial-credential storage in `%APPDATA%\winmux\provisioning-secrets.json`
+- Initial-credential storage in `%APPDATA%\ymux\provisioning-secrets.json`
   is wrapped via Windows DPAPI (`ProtectedData.Protect`, `CurrentUser`
   scope) — moving the file to another user account yields nothing.
-- The reverse-SSH RPC channel between the remote `winmux` CLI and the
+- The reverse-SSH RPC channel between the remote `ymux` CLI and the
   desktop app authenticates each connection via an HMAC-SHA256
   challenge-response. The shared token is never sent on the wire.
 - `known_hosts.json` enforces TOFU on first connect and refuses to
   proceed on host-key mismatch without explicit user override.
 - AI agent permission prompts are short-circuited when Claude Code is
-  invoked from outside a winmux pane (env-gated by `WINMUX_PANE_ID`),
+  invoked from outside a ymux pane (env-gated by `YMUX_PANE_ID`),
   so hooks installed in `~/.claude/settings.json` cannot be used to
   exfiltrate prompts from unrelated terminals.
 

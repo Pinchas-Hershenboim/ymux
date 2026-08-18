@@ -189,14 +189,14 @@ dependencies = [
  "ureq",
  "whoami",
  "windows-sys 0.61.2",
- "winmux-addons",
- "winmux-bootstrap",
- "winmux-core",
- "winmux-policy",
- "winmux-ssh",
- "winmux-tunnel",
- "winmux-types",
  "winreg 0.55.0",
+ "ymux-addons",
+ "ymux-bootstrap",
+ "ymux-core",
+ "ymux-policy",
+ "ymux-ssh",
+ "ymux-tunnel",
+ "ymux-types",
  "zeroize",
  "zip",
 ]
@@ -7329,119 +7329,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
-name = "winmux"
-version = "0.4.5"
-dependencies = [
- "chrono",
- "clap",
- "hmac",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "whoami",
- "winmux-policy",
-]
-
-[[package]]
-name = "winmux-addons"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "ts-rs",
-]
-
-[[package]]
-name = "winmux-bootstrap"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "russh",
- "russh-sftp",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "winmux-core",
-]
-
-[[package]]
-name = "winmux-core"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "chrono",
- "dirs 5.0.1",
- "portable-pty",
- "russh",
- "russh-keys",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "ureq",
- "whoami",
- "winmux-types",
-]
-
-[[package]]
-name = "winmux-mcp"
-version = "0.4.5"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
- "whoami",
-]
-
-[[package]]
-name = "winmux-policy"
-version = "0.0.0"
-
-[[package]]
-name = "winmux-protocol"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "ts-rs",
- "winmux-types",
-]
-
-[[package]]
-name = "winmux-ssh"
-version = "0.0.0"
-dependencies = [
- "russh",
- "russh-keys",
- "tokio",
- "winmux-core",
-]
-
-[[package]]
-name = "winmux-tunnel"
-version = "0.0.0"
-dependencies = [
- "hmac",
- "rand 0.8.6",
- "russh",
- "sha2",
- "tokio",
- "tracing",
- "winmux-core",
-]
-
-[[package]]
-name = "winmux-types"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "ts-rs",
-]
-
-[[package]]
 name = "winnow"
 version = "0.5.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7665,6 +7552,119 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "ymux"
+version = "0.4.5"
+dependencies = [
+ "chrono",
+ "clap",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "whoami",
+ "ymux-policy",
+]
+
+[[package]]
+name = "ymux-addons"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "ymux-bootstrap"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "ymux-core",
+]
+
+[[package]]
+name = "ymux-core"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dirs 5.0.1",
+ "portable-pty",
+ "russh",
+ "russh-keys",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "ureq",
+ "whoami",
+ "ymux-types",
+]
+
+[[package]]
+name = "ymux-mcp"
+version = "0.4.5"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "whoami",
+]
+
+[[package]]
+name = "ymux-policy"
+version = "0.0.0"
+
+[[package]]
+name = "ymux-protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "ymux-types",
+]
+
+[[package]]
+name = "ymux-ssh"
+version = "0.0.0"
+dependencies = [
+ "russh",
+ "russh-keys",
+ "tokio",
+ "ymux-core",
+]
+
+[[package]]
+name = "ymux-tunnel"
+version = "0.0.0"
+dependencies = [
+ "hmac",
+ "rand 0.8.6",
+ "russh",
+ "sha2",
+ "tokio",
+ "tracing",
+ "ymux-core",
+]
+
+[[package]]
+name = "ymux-types"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
 
 [[package]]
 name = "yoke"

@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"winmux-server/internal/config"
+	"ymux-server/internal/config"
 )
 
 // ErrBadID is returned for an invalid client id or file name.

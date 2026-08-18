@@ -16,7 +16,7 @@ import { PopoutTerminal } from "./components/PopoutTerminal";
 
 // Phase 8.E → unified logging: capture console.error / console.warn as a
 // safety net for un-swept or third-party output. Forwarded fire-and-forget
-// to `ui_log`, which writes debug.log AND the dev ring buffer (`winmux dev
+// to `ui_log`, which writes debug.log AND the dev ring buffer (`ymux dev
 // console-tail`). Swept code logs through createLogger() instead — it uses
 // the original console fns captured in logger.ts, so nothing loops through
 // here twice. Original console output is preserved.
