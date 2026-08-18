@@ -19,7 +19,14 @@ edition = "2021"
 
 [lib]
 name = "app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop-only: `main.rs` does `app_lib::run()`, so an rlib is all that is
+# linked. The Tauri template ships `["staticlib", "cdylib", "rlib"]` for
+# mobile (iOS wants the staticlib, Android the cdylib) — and there is no
+# gen/android or gen/apple here. Building all three cost a 215 MB
+# `app_lib.lib` archive plus a second full link of the whole object graph
+# (down to a 456 KB DLL nothing loads) on EVERY build, CI included.
+# If mobile lands, put the other two back — that is the whole change.
+crate-type = ["rlib"]
 
 [[bin]]
 name = "app"

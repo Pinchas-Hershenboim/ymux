@@ -5,9 +5,9 @@
 # `npm run tauri build` directly. That wrapper is not optional: it sets the
 # --remap-path-prefix RUSTFLAGS that scrub the build machine's $HOME out of
 # panic-location strings baked in by `file!()` macros, which `strip =
-# "symbols"` cannot remove. It also deletes the stale app.exe first, because
-# Cargo would otherwise reuse an incremental artifact compiled without the
-# remap. See docs/RELEASING.md.
+# "symbols"` cannot remove. RUSTFLAGS is part of Cargo's fingerprint, so a
+# compilation made without the remap cannot be reused -- and the "Assert the
+# developer path scrub" step below proves it landed. See docs/RELEASING.md.
 #
 # Publishing stays manual (RELEASING.md step 4) — this workflow builds and
 # uploads, it does not create a GitHub Release.
@@ -48,9 +48,27 @@ jobs:
           # itself, but doing it here keeps the cache key honest.
           targets: x86_64-unknown-linux-musl
 
+      # shared-key, not the default job-derived key: GitHub scopes cache reads
+      # to the current branch plus the default branch. This workflow only runs
+      # on workflow_dispatch and v* tags, i.e. never on main, so every new
+      # branch used to start stone cold -- measured 813s inside "Build release
+      # bundles" on a cold run (32187049792) vs 420s warm (32193464505).
+      # warm-rust-cache.yml populates this same key on main.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
+          shared-key: windows-release
+
+      # The WiX and NSIS toolchains are downloaded by the Tauri bundler into
+      # target/release/{wix,nsis} -- which is inside the directory rust-cache
+      # prunes before saving, so CI re-downloaded both on every single run.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            app/src-tauri/target/release/wix
+            app/src-tauri/target/release/nsis
+          key: tauri-bundler-toolchains-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: tauri-bundler-toolchains-${{ runner.os }}-
 
       - name: Install frontend deps
         working-directory: app
@@ -65,10 +83,17 @@ jobs:
       # beforeBuildCommand -> build:linux-cli) sits a Windows PowerShell
       # 5.1 that then cannot autoload Get-FileHash. Same failure as
       # ci-windows.yml documents.
+      #
+      # Bundle targets: a tag is a real release and must carry both installers
+      # (the published manifest.json advertises msi_url as well as nsis_url).
+      # A workflow_dispatch build is for testing, and WiX is the slower of the
+      # two bundlers, so those get NSIS only -- which is what updater.rs
+      # prefers anyway ("NSIS is preferred over MSI because it handles 'app is
+      # running'", updater.rs:53).
       - name: Build release bundles
         working-directory: app
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-release.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-release.ps1 -Bundles "${{ startsWith(github.ref, 'refs/tags/v') && 'msi,nsis' || 'nsis' }}"
 
       # The failure that shipped a broken exe by hand on 2026-08-09:
       # `cargo build --release` links fine but leaves the binary in dev
@@ -98,6 +123,24 @@ jobs:
             throw "DEV-MODE BINARY: '$asset' is not embedded. It would load devUrl at startup and show ERR_CONNECTION_REFUSED on any machine without a dev server."
           }
 
+      # docs/RELEASING.md documents this check by hand and CI never ran it.
+      # build-release.ps1 used to delete app.exe to "force" the remap; that was
+      # a no-op (bin artifacts in deps/ are unhashed, so its app-* glob matched
+      # nothing, and release/app.exe is a hardlink Cargo just re-creates). The
+      # actual guarantee is RUSTFLAGS being in Cargo's fingerprint -- so assert
+      # the result instead of deleting things and hoping.
+      - name: Assert the developer path scrub
+        working-directory: app
+        shell: pwsh
+        run: |
+          $exe   = Convert-Path "src-tauri/target/release/app.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $text  = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text.Contains($env:USERNAME)) {
+            throw "UNSCRUBBED BINARY: the build user '$env:USERNAME' appears in app.exe. --remap-path-prefix did not apply; was the build run through build-release.ps1?"
+          }
+          Write-Host "OK: '$env:USERNAME' does not appear in app.exe"
+
       - name: Checksums
         working-directory: app/src-tauri/target/release
         shell: pwsh
@@ -107,6 +150,7 @@ jobs:
           "{0}  app.exe" -f (Get-FileHash app.exe -Algorithm SHA256).Hash.ToLower()
 
       - name: Upload MSI
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: ymux-windows-msi
