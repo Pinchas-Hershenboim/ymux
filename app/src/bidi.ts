@@ -8,7 +8,28 @@ const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B
 
 function reorderLine(line: string): string {
   if (!RTL_RE.test(line)) return line;
-  const levels = bidi.getEmbeddingLevels(line, "ltr");
+  // 2026-08-19: the base direction used to be hard-coded "ltr", which put the
+  // NEUTRALS at the wrong end of a Hebrew line — a trailing "?" or "!!!"
+  // resolved against an LTR paragraph and rendered at the RIGHT edge, i.e. at
+  // the START of the Hebrew sentence. Yossi hit this as "characters show at
+  // the beginning of the line instead of the end".
+  //
+  // Hard-coding "rtl" instead is equally wrong, and worse: Claude's status
+  // line is mostly Latin with one Hebrew word, and an RTL paragraph mirrors
+  // the whole run sequence — the layout flip seen in auto_per_line mode.
+  //
+  // Let bidi-js apply UAX #9 P2/P3 instead (first strong character wins),
+  // which is right in all three shapes we care about:
+  //   "מה קורה אחי?"                    -> first strong is Hebrew -> rtl
+  //   "> מה קורה אחי?"                  -> ">" is neutral, so still rtl
+  //   "claude-fable-5 · ~ 🌵 צבר·full"  -> first strong is Latin  -> ltr
+  //
+  // KNOWN LIMIT: `line` is a run between ANSI escapes, not always a whole
+  // visual line, so a heavily-coloured line can be split into fragments that
+  // each resolve their own base. Strictly better than any fixed direction, but
+  // the real fix is reassembling full lines before reordering — see the caret /
+  // partial-repaint follow-up in docs/DECISIONS.md.
+  const levels = bidi.getEmbeddingLevels(line);
   const flips = bidi.getReorderSegments(line, levels);
   const mirrors = bidi.getMirroredCharactersMap(line, levels);
 

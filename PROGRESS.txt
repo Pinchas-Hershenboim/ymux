@@ -2756,3 +2756,51 @@ ZELLIJ (Part B) — no code written, spike gates everything.
 
   CHECKS  247 cargo tests pass. 47/47 textDirection tests. tsc --noEmit clean.
   NOT VERIFIED LIVE — needs a local pane with Hebrew in Claude on the new build.
+
+--------------------------------------------------------------------------------
+2026-08-19 — MEASURED what Claude emits, and fixed the neutrals bug in bidi.ts
+--------------------------------------------------------------------------------
+  THE MEASUREMENT that ended the guessing: Yossi set rtl_mode="off" (WebGL, no
+  browser bidi, no reorder — the screen shows the PTY stream verbatim) and
+  Hebrew came out REVERSED. So Claude Code emits Hebrew in LOGICAL order.
+  Two consequences, both certain:
+    - tui_owns_bidi=false (shipped in ac71bfb) is correct. Forcing LTR is wrong.
+    - The `unicode-bidi: bidi-override` idea I floated is DEAD. It would render
+      exactly what "off" rendered: reversed. Good thing it was never built.
+  Rule #1 forbids logging PTY content, so this could only ever be measured by a
+  human looking at the screen. Asking for it was worth more than any code I
+  wrote today.
+
+  WORKING CONFIG (Yossi's, after testing all three): rtl_mode=bidi_reorder
+  (Legacy) + auto_direction on + mirror_arrows_rtl on + tui_owns_bidi off.
+
+  BUG FIXED  app/src/bidi.ts:11 hard-coded the paragraph base direction:
+      bidi.getEmbeddingLevels(line, "ltr")
+  So neutrals (?, !!!, .) at the end of a Hebrew sentence resolved against an
+  LTR paragraph and rendered at the RIGHT edge — the START of the sentence.
+  Yossi: "characters show at the beginning of the line instead of the end".
+
+  FIRST ATTEMPT WAS WRONG and the tests caught it: hard-coding "rtl" fixes the
+  punctuation but mirrors Claude's status line, which is mostly Latin with one
+  Hebrew word — the same layout flip auto_per_line produces. Replaced with
+  bidi-js's own UAX #9 P2/P3 resolution (first strong character wins), correct
+  for all three shapes: pure-Hebrew sentence -> rtl; "> " + Hebrew (neutral
+  first) -> rtl; Latin-first status line -> ltr.
+
+  NEW  app/src/bidi.test.ts — 11 cases, the file had none. Includes a written
+  orientation note, because I got the first two assertions backwards: the
+  output is VISUAL order painted L-to-R, so index 0 is the LEFTMOST glyph,
+  which in an RTL sentence is its END. Sentence-final punctuation belongs at
+  index 0. One test specifically pins the status line against mirroring.
+
+  STILL OPEN, not fixed, genuinely hard: the caret pinned to the right and not
+  tracking the text, and partial-repaint glitches ("part rewritten correctly
+  and part in the middle rewritten again"). Both are inherent to transforming
+  the byte stream for a TUI that repaints regions and positions the cursor in
+  columns of the ORIGINAL text — two coordinate systems that diverge. This is
+  what terminal-wg calls "the cursed cursor"; no xterm.js-based terminal has
+  solved it. A real fix means reassembling whole visual lines before reordering
+  and tracking cursor position through the transform. Logged in DECISIONS.
+
+  CHECKS  11/11 bidi tests, 47/47 textDirection, tsc clean, vite clean.
+  NOT VERIFIED LIVE.
