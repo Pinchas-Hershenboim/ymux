@@ -362,50 +362,38 @@ pub struct Workspace {
     // user actually drags something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<i32>,
-    // Binds this workspace to one worktree row of a project folder. Set
-    // together by `project_folder_open_worktree` and only by it; the
-    // sidebar matches on `worktree_path` to decide whether a scanned
-    // worktree already has a workspace or still needs one.
+    // Sidebar nesting: the workspace this one hangs under. None = a root
+    // row, which is what participates in groups. Written only by the two
+    // create paths (pin a project folder, open a worktree); there is no
+    // re-parent gesture. `load_from_disk` repairs self-parents, dangling
+    // ids and cycles, so every consumer may assume a forest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_folder_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
+    pub parent_id: Option<String>,
+    // This workspace's `cwd` is a git repo whose worktrees the sidebar
+    // lists underneath it. One bit, written only by the pin command.
+    //
+    // Deliberately NOT derived. "Has a parent" is wrong — worktree
+    // children have parents too, and `git worktree list` run from a
+    // linked worktree returns the same list including main, so scanning
+    // one would duplicate the whole subtree under itself. "Has children"
+    // is wrong — a freshly pinned repo has none, which is exactly when
+    // the list must appear. "cwd is a repo" is a git round-trip over SSH
+    // per row, per render, against the rule that scans are lazy.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_project_root: bool,
+    // Persisted collapse state of this workspace's subtree.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_collapsed: bool,
 }
 
-// ─── ProjectFolder ──────────────────────────────────────────────────
-//
-// A git repo directory the user works on regularly, rendered in the
-// sidebar as a collapsible section whose children are workspaces — one
-// per git worktree. Modelled on cmux's "Project Worktrees" view, where
-// a worktree materializes as a workspace you switch into rather than a
-// path shown under something else.
-//
-// It carries its OWN connection rather than borrowing a workspace's.
-// That is what makes the section standalone: the scan and every
-// workspace it spawns inherit the connection from here, so pinning a
-// server repo does not depend on some other workspace happening to
-// exist or happening to point at the same host.
-
-#[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../../src/bindings/")]
-pub struct ProjectFolder {
-    pub id: String,
-    /// Display label. Defaults to the path's basename at creation time;
-    /// the user can rename it without moving anything.
-    pub name: String,
-    /// Absolute path to the repo root, on `connection`'s host.
-    pub path: String,
-    /// How to reach the host. `None` = this machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connection: Option<Connection>,
-    /// Persisted collapsed/open state of the section.
-    #[serde(default)]
-    pub is_collapsed: bool,
-    /// 0-based sort key across project-folder sections. Same convention
-    /// as `WorkspaceGroup::sort_order` — absent until something is
-    /// actually reordered, so the file round-trips byte-identical.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sort_order: Option<i32>,
+/// `skip_serializing_if` for bools. Plain `#[serde(default)]` still
+/// *writes* `false`, which is why `auto_port_forward` and
+/// `claude_separate_account` appear in every persisted file. Those are
+/// grandfathered; a new always-emitted key would add bytes to an
+/// untouched workspaces.json and break the byte-identical round-trip.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 // ─── cmux-A A2: WorkspaceGroup ──────────────────────────────────────
@@ -805,27 +793,36 @@ mod tests {
         assert!(!w.auto_port_forward);
         assert_eq!(w.last_active_at, 0);
         assert!(w.git_worktree.is_none());
-        assert!(w.project_folder_id.is_none());
-        assert!(w.worktree_path.is_none());
+        assert!(w.parent_id.is_none());
+        assert!(!w.is_project_root);
+        assert!(!w.is_collapsed);
     }
 
     #[test]
-    fn workspace_without_worktree_binding_round_trips_byte_identical() {
-        // A workspaces.json written before project folders existed must
-        // come back out unchanged, so merely opening the app never
-        // rewrites the user's file with a pile of null keys.
+    fn workspace_without_tree_fields_round_trips_byte_identical() {
+        // A workspaces.json written before the tree existed must come
+        // back out unchanged, so merely opening the app never rewrites
+        // the user's file with a pile of null/false keys. This is why
+        // the two new bools carry skip_serializing_if — #[serde(default)]
+        // alone would write `false` into every workspace on disk.
+        // Exactly what the serializer emits for an untouched workspace:
+        // `env` is skipped when empty, while `auto_port_forward`,
+        // `claude_separate_account` and `last_active_at` are always
+        // written — they predate the skip_serializing_if convention and
+        // are grandfathered. The three tree keys must NOT join them.
         let raw = json!({
             "id": "w1",
             "name": "legacy",
-            "env": [],
             "auto_port_forward": false,
             "last_active_at": 0,
+            "claude_separate_account": false,
         });
-        let w: Workspace = serde_json::from_value(raw).unwrap();
+        let w: Workspace = serde_json::from_value(raw.clone()).unwrap();
         let back = serde_json::to_value(&w).unwrap();
-        for key in ["project_folder_id", "worktree_path"] {
+        for key in ["parent_id", "is_project_root", "is_collapsed"] {
             assert!(back.get(key).is_none(), "{key} must be elided, got {back}");
         }
+        assert_eq!(raw, back, "an untouched workspace must round-trip byte-identical");
     }
 
     #[test]
@@ -841,69 +838,54 @@ mod tests {
             "project_folders": [
                 { "id": "pf_1", "name": "winmux", "path": "/home/y/src/winmux" },
             ],
-        });
-        let w: Workspace = serde_json::from_value(raw).unwrap();
-        assert_eq!(w.id, "w1");
-        assert!(w.project_folder_id.is_none());
-        let back = serde_json::to_value(&w).unwrap();
-        assert!(back.get("project_folders").is_none());
-    }
-
-    #[test]
-    fn workspace_worktree_binding_round_trips() {
-        let raw = json!({
-            "id": "w1",
-            "name": "feature/x",
             "project_folder_id": "pf_1",
             "worktree_path": "/home/y/src/winmux-feature-x",
         });
-        let w: Workspace = serde_json::from_value(raw.clone()).unwrap();
-        assert_eq!(w.project_folder_id.as_deref(), Some("pf_1"));
-        assert_eq!(w.worktree_path.as_deref(), Some("/home/y/src/winmux-feature-x"));
+        let w: Workspace = serde_json::from_value(raw).unwrap();
+        assert_eq!(w.id, "w1");
+        assert!(w.parent_id.is_none());
         let back = serde_json::to_value(&w).unwrap();
-        assert_eq!(back["project_folder_id"], "pf_1");
-        assert_eq!(back["worktree_path"], "/home/y/src/winmux-feature-x");
-    }
-
-    // ── ProjectFolder ───────────────────────────────────────────────
-
-    #[test]
-    fn project_folder_minimal_load_and_elision() {
-        let raw = json!({ "id": "pf_1", "name": "winmux", "path": "/srv/winmux" });
-        let f: ProjectFolder = serde_json::from_value(raw).unwrap();
-        assert!(f.connection.is_none());
-        assert!(!f.is_collapsed);
-        assert!(f.sort_order.is_none());
-        let back = serde_json::to_value(&f).unwrap();
-        // Only the always-present keys survive an untouched folder.
-        assert!(back.get("connection").is_none());
-        assert!(back.get("sort_order").is_none());
-        assert_eq!(back["is_collapsed"], false);
+        for key in ["project_folders", "project_folder_id", "worktree_path"] {
+            assert!(back.get(key).is_none(), "{key} must not be re-emitted");
+        }
     }
 
     #[test]
-    fn project_folder_carries_its_own_ssh_connection() {
-        // The whole point of the folder owning a connection: it resolves
-        // on its own host without borrowing some workspace's.
-        let f = ProjectFolder {
-            id: "pf_1".into(),
-            name: "winmux".into(),
-            path: "/home/runner/src/winmux".into(),
-            connection: Some(Connection::Ssh {
-                host: "203.0.113.5".into(),
-                user: "runner".into(),
-                port: 22,
-                key_path: None,
-            }),
-            is_collapsed: true,
-            sort_order: Some(0),
-        };
-        let v = serde_json::to_value(&f).unwrap();
-        assert_eq!(v["connection"]["type"], "ssh");
-        assert_eq!(v["connection"]["user"], "runner");
-        let back: ProjectFolder = serde_json::from_value(v).unwrap();
-        assert!(matches!(back.connection, Some(Connection::Ssh { .. })));
-        assert_eq!(back.sort_order, Some(0));
+    fn workspace_tree_binding_round_trips() {
+        // A worktree child: parented, and its cwd IS the worktree path —
+        // there is no second field to disagree with it.
+        let raw = json!({
+            "id": "w2",
+            "name": "feature/x",
+            "cwd": "/home/y/src/winmux-feature-x",
+            "parent_id": "w1",
+        });
+        let w: Workspace = serde_json::from_value(raw).unwrap();
+        assert_eq!(w.parent_id.as_deref(), Some("w1"));
+        assert_eq!(w.cwd.as_deref(), Some("/home/y/src/winmux-feature-x"));
+        let back = serde_json::to_value(&w).unwrap();
+        assert_eq!(back["parent_id"], "w1");
+        assert!(back.get("is_project_root").is_none());
+    }
+
+    #[test]
+    fn project_root_flags_round_trip() {
+        let raw = json!({
+            "id": "w1",
+            "name": "winmux",
+            "cwd": "/home/y/src/winmux",
+            "parent_id": "w0",
+            "is_project_root": true,
+            "is_collapsed": true,
+        });
+        let w: Workspace = serde_json::from_value(raw).unwrap();
+        assert!(w.is_project_root);
+        assert!(w.is_collapsed);
+        let back = serde_json::to_value(&w).unwrap();
+        assert_eq!(back["is_project_root"], true);
+        assert_eq!(back["is_collapsed"], true);
+        assert_eq!(back["parent_id"], "w0");
+        assert_eq!(back["cwd"], "/home/y/src/winmux");
     }
 
     #[test]

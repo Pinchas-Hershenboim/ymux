@@ -1,8 +1,8 @@
-//! Enumerate and create git worktrees for a project folder.
+//! Enumerate and create git worktrees for a project-folder workspace.
 //!
-//! A "project folder" is a pinned git repo that owns its own
-//! `Connection` (see `ProjectFolder`), usually a directory on a server.
-//! Every git call here dispatches on that connection:
+//! A "project folder" is a workspace flagged `is_project_root` whose
+//! `cwd` is a git repo — usually a directory on a server. Every git call
+//! here dispatches on that workspace's connection:
 //!
 //! | connection      | transport                                        |
 //! |-----------------|--------------------------------------------------|
@@ -10,9 +10,11 @@
 //! | `Wsl`           | `local_setup::wsl_exec` (a `sh -ls` script)      |
 //! | `Ssh`           | an exec channel on a LIVE handle to that host    |
 //!
-//! The SSH path reuses whatever session is already open to the folder's
-//! host — matched on user@host:port, not on a workspace id, because a
-//! folder belongs to a host rather than to any one workspace. It never
+//! The SSH path reuses whatever session is already open to that host —
+//! matched on user@host:port, not on a workspace id, because a repo
+//! belongs to a host rather than to any one workspace, and a child
+//! inherits a CLONE of its parent's connection, never a shared handle.
+//! It never
 //! dials a second connection just to list worktrees. No live handle
 //! means an explicit "connect first" error, not a silent empty list: an
 //! empty list would read as "this repo has no worktrees", which is a
@@ -302,32 +304,41 @@ fn git_error(stderr: &str) -> String {
     format!("git: {first}")
 }
 
-/// Run a git subcommand on a project folder's host, whichever host that is.
-pub(crate) async fn run_git_for_folder(
+/// Run a git subcommand on a workspace's host, whichever host that is.
+///
+/// Returns the resolved repo path alongside the output, so callers never
+/// take one as a parameter — the old shape accepted both a folder id and
+/// a path, which could disagree with each other.
+pub(crate) async fn run_git_for_workspace(
     state: &AppState,
-    folder_id: &str,
-    cwd: &str,
+    workspace_id: &str,
     args: &[&str],
-) -> Result<String, String> {
-    // Snapshot the connection under a short lock, then drop it — the git
-    // call below is I/O and must never hold the workspaces mutex.
-    let conn = {
+) -> Result<(String, String), String> {
+    // Snapshot connection + cwd under a short lock, then drop it — the
+    // git call below is I/O and must never hold the workspaces mutex.
+    let (conn, cwd) = {
         let file = state
             .workspaces
             .lock()
             .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        file.project_folders
+        let ws = file
+            .workspaces
             .iter()
-            .find(|f| f.id == folder_id)
-            .ok_or_else(|| "project folder not found".to_string())?
-            .connection
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        let cwd = ws
+            .cwd
             .clone()
+            .filter(|c| !c.trim().is_empty())
+            .ok_or_else(|| "this workspace has no project directory".to_string())?;
+        (ws.connection.clone(), cwd)
     };
-    run_git_over(state, &conn, cwd, args).await
+    let out = run_git_over(state, &conn, &cwd, args).await?;
+    Ok((out, cwd))
 }
 
-/// The transport dispatch itself, split out so the pin dialog can
-/// validate a path against a connection that has no folder yet.
+/// The transport dispatch itself, split out so the pin flow can validate
+/// a path against a connection before any workspace exists.
 pub(crate) async fn run_git_over(
     state: &AppState,
     conn: &Option<Connection>,
@@ -355,37 +366,28 @@ pub(crate) async fn run_git_over(
 
 // ─── commands ──────────────────────────────────────────────────────────
 
-/// List the worktrees of a project folder.
-///
-/// Doubles as the validation step when a folder is pinned: a path that
-/// isn't a repo comes back with git's own message rather than a
-/// hand-rolled guess.
+/// List the worktrees of a project-folder workspace.
 #[tauri::command]
-pub(crate) async fn project_folder_list_worktrees(
+pub(crate) async fn workspace_list_worktrees(
     state: tauri::State<'_, AppState>,
-    folder_id: String,
-    path: String,
+    workspace_id: String,
 ) -> Result<Vec<WorktreeEntry>, String> {
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Err("project path is required".to_string());
-    }
-    let text =
-        run_git_for_folder(&state, &folder_id, &path, &["worktree", "list", "--porcelain"]).await?;
+    let (text, _cwd) =
+        run_git_for_workspace(&state, &workspace_id, &["worktree", "list", "--porcelain"]).await?;
     let list = parse_worktree_porcelain(&text);
     log_debug(
         "WORKTREE",
-        &format!("listed {} worktree(s) for folder={folder_id}", list.len()),
+        &format!("listed {} worktree(s) for ws={workspace_id}", list.len()),
     );
     Ok(list)
 }
 
-/// Probe a path over a connection that has no folder yet — the pin
-/// dialog's validation step, so a path that isn't a repo (or a host
-/// nothing is connected to) fails with git's own message BEFORE a dead
-/// section lands in the sidebar.
+/// Probe a path over a connection before any workspace exists — the pin
+/// flow's validation step, so a path that isn't a repo (or a host nothing
+/// is connected to) fails with git's own message BEFORE a dead row lands
+/// in the sidebar.
 #[tauri::command]
-pub(crate) async fn project_folder_probe(
+pub(crate) async fn git_probe_worktrees(
     state: tauri::State<'_, AppState>,
     path: String,
     connection: Option<Connection>,
@@ -398,52 +400,48 @@ pub(crate) async fn project_folder_probe(
     Ok(parse_worktree_porcelain(&text))
 }
 
-/// Create a worktree for a project folder and return the refreshed list.
+/// Create a worktree for a project-folder workspace and return the
+/// refreshed list.
 ///
 /// Works on every transport, unlike `workspace_create_worktree`, which is
 /// local-only and additionally re-anchors the whole workspace's cwd. This
 /// one only touches the repo.
 #[tauri::command]
-pub(crate) async fn project_folder_create_worktree(
+pub(crate) async fn workspace_create_project_worktree(
     state: tauri::State<'_, AppState>,
-    folder_id: String,
-    project_path: String,
+    workspace_id: String,
     branch_name: String,
     base_branch: String,
     target_path: Option<String>,
 ) -> Result<Vec<WorktreeEntry>, String> {
-    let project_path = project_path.trim().to_string();
-    if project_path.is_empty() {
-        return Err("project path is required".to_string());
-    }
     let branch_name = branch_name.trim().to_string();
     let safe_branch = sanitize_branch_name(&branch_name)?;
     let base_branch = base_branch.trim().to_string();
     if base_branch.is_empty() {
         return Err("base branch is required".to_string());
     }
+    // Resolve the repo path from the workspace itself, so the default
+    // target is a sibling of the REAL repo rather than of whatever path
+    // a caller believed the repo to be.
+    let (_probe, project_path) =
+        run_git_for_workspace(&state, &workspace_id, &["rev-parse", "--is-inside-work-tree"])
+            .await?;
     let target = match target_path.map(|t| t.trim().to_string()) {
         Some(t) if !t.is_empty() => t,
         _ => default_worktree_target(&project_path, &safe_branch),
     };
-    run_git_for_folder(
+    run_git_for_workspace(
         &state,
-        &folder_id,
-        &project_path,
+        &workspace_id,
         &["worktree", "add", &target, "-b", &branch_name, &base_branch],
     )
     .await?;
     winmux_core::log_info(
         "WORKTREE",
-        &format!("[worktree] created {target} for folder={folder_id} branch={branch_name}"),
+        &format!("[worktree] created {target} for ws={workspace_id} branch={branch_name}"),
     );
-    let text = run_git_for_folder(
-        &state,
-        &folder_id,
-        &project_path,
-        &["worktree", "list", "--porcelain"],
-    )
-    .await?;
+    let (text, _) =
+        run_git_for_workspace(&state, &workspace_id, &["worktree", "list", "--porcelain"]).await?;
     Ok(parse_worktree_porcelain(&text))
 }
 

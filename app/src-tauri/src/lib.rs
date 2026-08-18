@@ -284,7 +284,7 @@ struct PtyExitEvent {
 // own derive — `cargo test` still regenerates `app/src/bindings/*.ts`
 // since the export_to path resolves to the same on-disk location.
 pub(crate) use winmux_types::{
-    BrowserState, Connection, DiffSource, EnvVar, LayoutNode, PaneKind, ProjectFolder,
+    BrowserState, Connection, DiffSource, EnvVar, LayoutNode, PaneKind,
     SplitDirection, Workspace, WorkspaceGroup,
 };
 
@@ -302,12 +302,6 @@ struct WorkspacesFile {
     // one, keeping the persisted file backwards-compatible.
     #[serde(default)]
     groups: Vec<WorkspaceGroup>,
-    // Project-folder sections: a pinned git repo (usually on a server)
-    // whose children are workspaces, one per worktree. Sibling to
-    // `groups` in every way, including the `#[serde(default)]` that
-    // keeps a file without the key loading and round-tripping clean.
-    #[serde(default)]
-    project_folders: Vec<ProjectFolder>,
 }
 
 fn default_version() -> u32 {
@@ -531,10 +525,7 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         log_info("WORKSPACE", "load_from_disk: file absent → fresh empty state (LoadState=Loaded)");
         return Ok(WorkspacesFile {
             version: 1,
-            active_workspace_id: None,
-            workspaces: Vec::new(),
-            groups: Vec::new(),
-            project_folders: Vec::new(),
+            ..Default::default()
         });
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {:?}: {e}", path))?;
@@ -549,6 +540,14 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
     ));
 
     let mut migrated = false;
+    // v2/v3 project folders become real workspaces before anything else
+    // touches the tree, so the repair pass below sees the final shape.
+    if migrate_legacy_project_folders(&mut file, &text) > 0 {
+        migrated = true;
+    }
+    if normalize_parents(&mut file) > 0 {
+        migrated = true;
+    }
     for ws in file.workspaces.iter_mut() {
         if ws.layout.is_none() {
             // Legacy: workspace existed without a layout. Build a
@@ -3968,23 +3967,13 @@ fn live_ssh_connection_for_workspace(
 // Phase 51.B1: first_terminal_connection + backfill_terminal_connections
 // moved to winmux-core.
 
-// ─── project folder commands ────────────────────────────────────────
+// ─── project-folder helpers ─────────────────────────────────────────
 //
-// A project folder is a pinned git repo rendered as a sidebar section
-// whose children are workspaces — one per worktree (cmux's "Project
-// Worktrees" model). It lives at the file root beside `groups` and owns
-// its own connection, so it does not depend on any workspace existing.
-//
-// These touch workspaces.json only; the git side lives in
-// `project_folder_list_worktrees` / `_create_worktree` in worktrees.rs.
-
-fn new_project_folder_id() -> String {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("pf_{:x}", t)
-}
+// A project folder used to be its own entity at the file root, owning a
+// `Connection` and rendered as a sidebar section. It is now simply a
+// workspace: `is_project_root` marks the one whose `cwd` gets scanned
+// for worktrees, and `parent_id` puts it under the workspace it was
+// pinned from. Only these two helpers survived the entity.
 
 /// Last path component, used as the default label. Handles both
 /// separators because a Local workspace path is Windows-shaped and an
@@ -3998,57 +3987,9 @@ fn path_basename(path: &str) -> String {
         .to_string()
 }
 
-#[tauri::command]
-fn project_folder_add(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    path: String,
-    name: Option<String>,
-    connection: Option<Connection>,
-) -> Result<WorkspacesFile, String> {
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Err("project path is required".to_string());
-    }
-    let label = name
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| {
-            let b = path_basename(&path);
-            if b.is_empty() { path.clone() } else { b }
-        });
-    {
-        let mut file = state
-            .workspaces
-            .lock()
-            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        // Same path on the same host twice would render two identical
-        // sections listing the same worktrees. Different hosts, same
-        // path is legitimate and allowed.
-        if file
-            .project_folders
-            .iter()
-            .any(|f| f.path == path && conn_same_host(&f.connection, &connection))
-        {
-            return Err("this folder is already pinned".to_string());
-        }
-        file.project_folders.push(ProjectFolder {
-            id: new_project_folder_id(),
-            name: label,
-            path,
-            connection,
-            is_collapsed: false,
-            sort_order: None,
-        });
-    }
-    persist(&state)?;
-    let _ = app.emit("workspaces:changed", ());
-    Ok(state.workspaces.lock().unwrap().clone())
-}
-
-/// Cheap host identity for the duplicate check. Two `None`s are the
-/// same host (this machine); SSH compares user@host:port, ignoring the
-/// key path since that is a credential, not an identity.
+/// Cheap host identity. Two `None`s are the same host (this machine);
+/// SSH compares user@host:port, ignoring the key path since that is a
+/// credential, not an identity.
 fn conn_same_host(a: &Option<Connection>, b: &Option<Connection>) -> bool {
     match (a, b) {
         (None, None) => true,
@@ -4063,162 +4004,231 @@ fn conn_same_host(a: &Option<Connection>, b: &Option<Connection>) -> bool {
     }
 }
 
-#[tauri::command]
-fn project_folder_update(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    folder_id: String,
-    name: Option<String>,
-    is_collapsed: Option<bool>,
-) -> Result<WorkspacesFile, String> {
-    {
-        let mut file = state
-            .workspaces
-            .lock()
-            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        let folder = file
-            .project_folders
-            .iter_mut()
-            .find(|f| f.id == folder_id)
-            .ok_or_else(|| "project folder not found".to_string())?;
-        if let Some(n) = name {
-            let trimmed = n.trim();
-            if trimmed.is_empty() {
-                return Err("folder name is required".to_string());
-            }
-            folder.name = trimmed.to_string();
-        }
-        if let Some(c) = is_collapsed {
-            folder.is_collapsed = c;
+
+// ─── tree repair + the v2/v3 project-folder migration ───────────────
+
+/// Repair `parent_id` so every consumer may assume a forest.
+///
+/// Nothing in the UI can produce a bad edge — the tree is written only
+/// by the two create commands, and there is no re-parent gesture. These
+/// guards exist because workspaces.json is hand-editable and the two
+/// consumers that walk parent edges both fail badly on a cycle: the
+/// sidebar renderer recurses (a hung UI with no error card and nothing
+/// in debug.log — strictly worse than a crash) and the cascade delete
+/// walks the same edges.
+fn normalize_parents(file: &mut WorkspacesFile) -> usize {
+    use std::collections::{HashMap, HashSet};
+
+    let ids: HashSet<String> = file.workspaces.iter().map(|w| w.id.clone()).collect();
+    let mut fixed = 0usize;
+    for ws in file.workspaces.iter_mut() {
+        let bad = match ws.parent_id.as_deref() {
+            Some(p) if p == ws.id => Some("parented to itself"),
+            Some(p) if !ids.contains(p) => Some("parent no longer exists"),
+            _ => None,
+        };
+        if let Some(why) = bad {
+            log_warn(
+                "WORKSPACE",
+                &format!("load: ws={} {why} → detached to the root list", ws.id),
+            );
+            ws.parent_id = None;
+            fixed += 1;
         }
     }
-    persist(&state)?;
-    let _ = app.emit("workspaces:changed", ());
-    Ok(state.workspaces.lock().unwrap().clone())
-}
 
-/// Unpin a project folder.
-///
-/// Deliberately touches NOTHING else: not the directory (winmux never
-/// created it) and not the workspaces that were opened from it. Those
-/// are real workspaces with real sessions; silently deleting them
-/// because a sidebar section went away would be destructive. They keep
-/// their `worktree_path` and simply return to the ungrouped list, so
-/// re-pinning the folder re-adopts them.
-#[tauri::command]
-fn project_folder_remove(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    folder_id: String,
-) -> Result<WorkspacesFile, String> {
-    {
-        let mut file = state
+    // Break cycles one link at a time: walk up from every node with a
+    // visited set, and detach the first node that revisits.
+    loop {
+        let parents: HashMap<String, String> = file
             .workspaces
-            .lock()
-            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        file.project_folders.retain(|f| f.id != folder_id);
-        for ws in file.workspaces.iter_mut() {
-            if ws.project_folder_id.as_deref() == Some(folder_id.as_str()) {
-                ws.project_folder_id = None;
+            .iter()
+            .filter_map(|w| w.parent_id.clone().map(|p| (w.id.clone(), p)))
+            .collect();
+        let mut culprit: Option<String> = None;
+        for start in parents.keys() {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut cur = start.clone();
+            loop {
+                if !seen.insert(cur.clone()) {
+                    culprit = Some(cur.clone());
+                    break;
+                }
+                match parents.get(&cur) {
+                    Some(p) => cur = p.clone(),
+                    None => break,
+                }
+            }
+            if culprit.is_some() {
+                break;
             }
         }
+        match culprit {
+            Some(id) => {
+                if let Some(w) = file.workspaces.iter_mut().find(|w| w.id == id) {
+                    log_warn(
+                        "WORKSPACE",
+                        &format!("load: ws={id} sits on a parent cycle → detached"),
+                    );
+                    w.parent_id = None;
+                    fixed += 1;
+                }
+            }
+            None => break,
+        }
     }
-    persist(&state)?;
-    let _ = app.emit("workspaces:changed", ());
-    Ok(state.workspaces.lock().unwrap().clone())
+    fixed
 }
 
-/// Open a worktree as its own workspace — the click target of a
-/// worktree row that has no workspace yet.
+/// One Terminal pane, the shape every workspace-create path uses.
+fn single_terminal_layout(conn: Connection) -> LayoutNode {
+    LayoutNode::Pane {
+        pane_id: new_pane_id(),
+        pane_kind: PaneKind::Terminal,
+        connection: Some(conn),
+        browser: None,
+        title: None,
+        auto_title: None,
+        annotation: None,
+        color: None,
+        emoji: None,
+        help_topic: None,
+        diff_source: None,
+        smart_bidi: None,
+    }
+}
+
+/// v2/v3 project folders → the workspace tree. One shot, at load.
 ///
-/// This is cmux's `new-workspace --cwd` shape, and it deliberately
-/// mirrors the fix in manaflow-ai/cmux#5032: the worktree must already
-/// exist on disk before we get here, and the workspace's first pane is
-/// a plain interactive shell. Handing the pane a one-shot setup command
-/// as its main process is what made their workspace tab flash and die
-/// when the command exited.
+/// The old shape kept a `project_folders` array at the file root, each
+/// entry owning its own `Connection`, and bound its worktree workspaces
+/// with a per-workspace `project_folder_id` + `worktree_path`. All three
+/// keys are gone from the structs, so serde drops them silently and the
+/// next `persist` would erase a pin the user actually made — `save_to_disk`
+/// rewrites the whole file from the in-memory struct rather than merging.
 ///
-/// `cwd` alone does not place an SSH pane — see `effectiveCwdOverride`
-/// in App.tsx, which turns the workspace cwd into a `cd` for remote
-/// connections.
-#[tauri::command]
-fn project_folder_open_worktree(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    folder_id: String,
-    worktree_path: String,
-    name: String,
-) -> Result<WorkspacesFile, String> {
-    let (conn, existing) = {
-        let file = state
+/// So read them off the raw JSON once and rebuild them as real
+/// workspaces. A folder whose host matches no existing workspace is kept
+/// as a root rather than discarded: a pin is data the user created.
+fn migrate_legacy_project_folders(file: &mut WorkspacesFile, text: &str) -> usize {
+    use std::collections::HashMap;
+
+    let root: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let folders = match root.get("project_folders").and_then(|v| v.as_array()) {
+        Some(a) if !a.is_empty() => a.clone(),
+        _ => return 0,
+    };
+
+    // ws id → (legacy project_folder_id, legacy worktree_path)
+    let mut legacy: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    if let Some(arr) = root.get("workspaces").and_then(|v| v.as_array()) {
+        for w in arr {
+            let id = match w.get("id").and_then(|v| v.as_str()) {
+                Some(i) => i.to_string(),
+                None => continue,
+            };
+            legacy.insert(
+                id,
+                (
+                    w.get("project_folder_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    w.get("worktree_path")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                ),
+            );
+        }
+    }
+
+    let mut created = 0usize;
+    for f in folders {
+        let path = match f.get("path").and_then(|v| v.as_str()) {
+            Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+            _ => continue,
+        };
+        let folder_id = f
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let name = match f.get("name").and_then(|v| v.as_str()) {
+            Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+            _ => path_basename(&path),
+        };
+        let conn: Option<Connection> = f
+            .get("connection")
+            .cloned()
+            .and_then(|c| serde_json::from_value(c).ok());
+        let is_collapsed = f
+            .get("is_collapsed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // The parent is the first ROOT workspace on the same host that
+        // is not itself one of this folder's worktree workspaces —
+        // without that second condition a worktree could end up as the
+        // parent of the folder it belongs to.
+        let parent_id = file
             .workspaces
-            .lock()
-            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        let folder = file
-            .project_folders
             .iter()
-            .find(|f| f.id == folder_id)
-            .ok_or_else(|| "project folder not found".to_string())?;
-        let existing = file
-            .workspaces
-            .iter()
-            .find(|w| w.worktree_path.as_deref() == Some(worktree_path.as_str()))
+            .find(|w| {
+                w.parent_id.is_none()
+                    && !legacy
+                        .get(&w.id)
+                        .map(|(pf, _)| pf.is_some())
+                        .unwrap_or(false)
+                    && conn_same_host(&w.connection, &conn)
+            })
             .map(|w| w.id.clone());
-        (
-            folder.connection.clone().unwrap_or(Connection::Local { shell: None }),
-            existing,
-        )
-    };
 
-    // Already open: activate it instead of making a second workspace on
-    // the same directory. The sidebar shouldn't offer this, but a double
-    // click and a stale scan both get here.
-    if let Some(id) = existing {
-        let mut file = state
-            .workspaces
-            .lock()
-            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        file.active_workspace_id = Some(id);
-        drop(file);
-        persist(&state)?;
-        let _ = app.emit("workspaces:changed", ());
-        return Ok(state.workspaces.lock().unwrap().clone());
-    }
+        let new_id = new_workspace_id();
+        let mut adopted = 0usize;
+        for ws in file.workspaces.iter_mut() {
+            let matches = legacy
+                .get(&ws.id)
+                .map(|(pf, _)| pf.as_deref() == Some(folder_id.as_str()))
+                .unwrap_or(false);
+            if !matches || folder_id.is_empty() {
+                continue;
+            }
+            ws.parent_id = Some(new_id.clone());
+            // Folder membership and group membership were already
+            // mutually exclusive in the old model; keep it that way.
+            ws.group_id = None;
+            ws.sort_order = None;
+            if ws.cwd.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                ws.cwd = legacy.get(&ws.id).and_then(|(_, wt)| wt.clone());
+            }
+            adopted += 1;
+        }
 
-    let ws = Workspace {
-        id: new_workspace_id(),
-        name,
-        cwd: Some(worktree_path.clone()),
-        connection: Some(conn.clone()),
-        layout: Some(LayoutNode::Pane {
-            pane_id: new_pane_id(),
-            pane_kind: PaneKind::Terminal,
-            connection: Some(conn),
-            browser: None,
-            title: None,
-            auto_title: None,
-            annotation: None,
-            color: None,
-            emoji: None,
-            help_topic: None,
-            diff_source: None,
-            smart_bidi: None,
-        }),
-        project_folder_id: Some(folder_id),
-        worktree_path: Some(worktree_path),
-        ..Default::default()
-    };
-    {
-        let mut file = state
-            .workspaces
-            .lock()
-            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
-        file.active_workspace_id = Some(ws.id.clone());
-        file.workspaces.push(ws);
+        let effective = conn.clone().unwrap_or(Connection::Local { shell: None });
+        file.workspaces.push(Workspace {
+            id: new_id,
+            name: name.clone(),
+            cwd: Some(path),
+            connection: Some(effective.clone()),
+            layout: Some(single_terminal_layout(effective)),
+            parent_id: parent_id.clone(),
+            is_project_root: true,
+            is_collapsed,
+            ..Default::default()
+        });
+        created += 1;
+        log_info(
+            "WORKSPACE",
+            &format!(
+                "migrate: project folder {name:?} → workspace (parented={}, {adopted} worktree \
+                 workspace(s) adopted)",
+                parent_id.is_some()
+            ),
+        );
     }
-    persist(&state)?;
-    let _ = app.emit("workspaces:changed", ());
-    Ok(state.workspaces.lock().unwrap().clone())
+    created
 }
 
 // ─── cmux-A A2: workspace group commands ────────────────────────────
@@ -7629,13 +7639,9 @@ pub fn run() {
             workspace_delete,
             workspace_set_active,
             workspace_create_worktree,
-            project_folder_add,
-            project_folder_update,
-            project_folder_remove,
-            project_folder_open_worktree,
-            worktrees::project_folder_probe,
-            worktrees::project_folder_list_worktrees,
-            worktrees::project_folder_create_worktree,
+            worktrees::git_probe_worktrees,
+            worktrees::workspace_list_worktrees,
+            worktrees::workspace_create_project_worktree,
             workspace_split,
             workspace_close_pane,
             workspace_set_split_ratio,
@@ -8180,6 +8186,198 @@ mod migration_tests {
             rewrite_browser_filemanager_panes_to_terminal(&mut file),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod project_folder_migration_tests {
+    use super::{
+        migrate_legacy_project_folders, normalize_parents, Connection, Workspace, WorkspacesFile,
+    };
+
+    /// A v2/v3 file: one SSH workspace, one pinned folder on that host,
+    /// and one worktree workspace bound to the folder.
+    fn v3_file() -> (WorkspacesFile, String) {
+        let text = r#"{
+          "version": 1,
+          "active_workspace_id": "w_root",
+          "workspaces": [
+            { "id": "w_root", "name": "runner",
+              "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 } },
+            { "id": "w_wt", "name": "feature/x",
+              "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 },
+              "project_folder_id": "pf_1",
+              "worktree_path": "/home/runner/src/winmux-feature-x" }
+          ],
+          "project_folders": [
+            { "id": "pf_1", "name": "winmux", "path": "/home/runner/src/winmux",
+              "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 },
+              "is_collapsed": true }
+          ]
+        }"#;
+        let file: WorkspacesFile = serde_json::from_str(text).unwrap();
+        (file, text.to_string())
+    }
+
+    #[test]
+    fn a_pinned_folder_becomes_a_child_workspace() {
+        let (mut file, text) = v3_file();
+        // serde already dropped the removed keys — that is exactly the
+        // data loss this migration exists to prevent.
+        assert_eq!(file.workspaces.len(), 2);
+
+        assert_eq!(migrate_legacy_project_folders(&mut file, &text), 1);
+        assert_eq!(file.workspaces.len(), 3);
+
+        let folder = file
+            .workspaces
+            .iter()
+            .find(|w| w.is_project_root)
+            .expect("folder workspace created");
+        assert_eq!(folder.name, "winmux");
+        assert_eq!(folder.cwd.as_deref(), Some("/home/runner/src/winmux"));
+        assert_eq!(folder.parent_id.as_deref(), Some("w_root"));
+        assert!(folder.is_collapsed, "collapse state carries over");
+        assert!(matches!(folder.connection, Some(Connection::Ssh { .. })));
+    }
+
+    #[test]
+    fn worktree_workspaces_are_re_parented_and_keep_their_directory() {
+        let (mut file, text) = v3_file();
+        migrate_legacy_project_folders(&mut file, &text);
+
+        let folder_id = file
+            .workspaces
+            .iter()
+            .find(|w| w.is_project_root)
+            .unwrap()
+            .id
+            .clone();
+        let wt = file.workspaces.iter().find(|w| w.id == "w_wt").unwrap();
+        assert_eq!(wt.parent_id.as_deref(), Some(folder_id.as_str()));
+        // worktree_path is gone from the struct; the cwd carries it now.
+        assert_eq!(
+            wt.cwd.as_deref(),
+            Some("/home/runner/src/winmux-feature-x"),
+            "the worktree path must survive as the cwd"
+        );
+        assert!(!wt.is_project_root, "a worktree is not a repo to scan");
+    }
+
+    #[test]
+    fn a_folder_with_no_matching_host_is_kept_as_a_root() {
+        // Discarding it would silently delete a pin the user made.
+        let text = r#"{
+          "version": 1,
+          "workspaces": [],
+          "project_folders": [
+            { "id": "pf_1", "name": "orphan", "path": "/srv/orphan",
+              "connection": { "type": "ssh", "host": "198.51.100.9", "user": "x", "port": 22 } }
+          ]
+        }"#;
+        let mut file: WorkspacesFile = serde_json::from_str(text).unwrap();
+        assert_eq!(migrate_legacy_project_folders(&mut file, text), 1);
+        let w = &file.workspaces[0];
+        assert!(w.parent_id.is_none());
+        assert!(w.is_project_root);
+        assert_eq!(w.cwd.as_deref(), Some("/srv/orphan"));
+    }
+
+    #[test]
+    fn a_worktree_workspace_is_never_chosen_as_the_folders_parent() {
+        // Both workspaces sit on the same host, but one of them belongs
+        // to the folder being migrated — picking it would parent the
+        // folder to its own child.
+        let text = r#"{
+          "version": 1,
+          "workspaces": [
+            { "id": "w_wt", "name": "feature/x",
+              "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 },
+              "project_folder_id": "pf_1", "worktree_path": "/srv/p-x" },
+            { "id": "w_root", "name": "runner",
+              "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 } }
+          ],
+          "project_folders": [
+            { "id": "pf_1", "name": "p", "path": "/srv/p",
+              "connection": { "type": "ssh", "host": "203.0.113.5", "user": "runner", "port": 22 } }
+          ]
+        }"#;
+        let mut file: WorkspacesFile = serde_json::from_str(text).unwrap();
+        migrate_legacy_project_folders(&mut file, text);
+        let folder = file.workspaces.iter().find(|w| w.is_project_root).unwrap();
+        assert_eq!(folder.parent_id.as_deref(), Some("w_root"));
+        assert_eq!(normalize_parents(&mut file), 0, "no repair needed");
+    }
+
+    #[test]
+    fn a_file_without_the_legacy_key_is_untouched() {
+        let text = r#"{ "version": 1, "workspaces": [{ "id": "w1", "name": "a" }] }"#;
+        let mut file: WorkspacesFile = serde_json::from_str(text).unwrap();
+        assert_eq!(migrate_legacy_project_folders(&mut file, text), 0);
+        assert_eq!(file.workspaces.len(), 1);
+    }
+
+    fn child(id: &str, parent: Option<&str>) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            name: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn normalize_detaches_self_parents_and_dangling_ids() {
+        let mut file = WorkspacesFile {
+            workspaces: vec![
+                child("a", Some("a")),
+                child("b", Some("ghost")),
+                child("c", None),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(normalize_parents(&mut file), 2);
+        assert!(file.workspaces.iter().all(|w| w.parent_id.is_none()));
+    }
+
+    #[test]
+    fn normalize_breaks_a_cycle_instead_of_hanging() {
+        // a → b → c → a. A recursive sidebar renderer on this spins
+        // forever with no error card and nothing in debug.log.
+        let mut file = WorkspacesFile {
+            workspaces: vec![
+                child("a", Some("b")),
+                child("b", Some("c")),
+                child("c", Some("a")),
+            ],
+            ..Default::default()
+        };
+        assert!(normalize_parents(&mut file) >= 1);
+        assert_eq!(normalize_parents(&mut file), 0, "must converge");
+
+        // Walking up from every node now terminates.
+        for start in ["a", "b", "c"] {
+            let mut cur = start.to_string();
+            for _ in 0..8 {
+                match file
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == cur)
+                    .and_then(|w| w.parent_id.clone())
+                {
+                    Some(p) => cur = p,
+                    None => break,
+                }
+            }
+            assert!(
+                file.workspaces
+                    .iter()
+                    .find(|w| w.id == cur)
+                    .map(|w| w.parent_id.is_none())
+                    .unwrap_or(true),
+                "walking up from {start} must reach a root"
+            );
+        }
     }
 }
 
