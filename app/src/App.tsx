@@ -1351,6 +1351,38 @@ function App() {
     }
   };
 
+  /**
+   * Ask git again whether this workspace's directory is a repo.
+   *
+   * Demotion is one-way and deliberate — a folder git rejected should
+   * not be re-probed on every expand and restart. But `git init` makes
+   * the old answer wrong, and there was otherwise no route back:
+   * `workspace_pin_project_folder` refuses a duplicate path under the
+   * same parent, so re-pinning could not undo it either.
+   */
+  const recheckGit = async (workspaceId: string) => {
+    const ws = file().workspaces.find((w) => w.id === workspaceId);
+    if (!ws?.cwd) return;
+    try {
+      await invoke<WorktreeEntry[]>("git_probe_worktrees", {
+        path: ws.cwd,
+        connection: ws.connection ?? null,
+      });
+      const f = await invoke<WorkspacesFile>("workspace_set_project_root", {
+        workspaceId,
+        isProjectRoot: true,
+      });
+      updateFile(f);
+      flashSummaryToast("ok", t("pf.checkGit.found", { name: ws.name }));
+    } catch (e) {
+      // git's own message: "not a git repository" and "no live SSH
+      // session" are different problems and the user has to tell them
+      // apart to know whether retrying is worth anything.
+      log.info(`recheck git ws=${workspaceId} — ${String(e)}`);
+      flashSummaryToast("err", String(e));
+    }
+  };
+
   const startPinProjectFolder = async (workspaceId: string) => {
     const ws = file().workspaces.find((w) => w.id === workspaceId);
     if (!ws) return;
@@ -3214,6 +3246,8 @@ function App() {
               setAddonsWin({ id, name: ws?.name ?? "" });
             } else if (action === "add_project_folder") {
               void startPinProjectFolder(id);
+            } else if (action === "check_git") {
+              void recheckGit(id);
             }
             // Phase 65.Q removed the "add_machine" action — joining an
             // existing server is handled by the main wizard (R).

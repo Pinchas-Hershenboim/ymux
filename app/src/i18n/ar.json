@@ -1059,5 +1059,7 @@
   "workspace.delete.liveWarning": "{count} منها لديها جلسات نشطة. سيتم إنهاؤها.",
   "workspace.delete.hostSafe": "لا يتم المساس بالمجلدات على المضيف — مساحات العمل فقط.",
   "workspace.delete.confirmButton": "حذف",
-  "pf.isRepo": "مستودع git — فروع العمل مدرجة أدناه"
+  "pf.isRepo": "مستودع git — فروع العمل مدرجة أدناه",
+  "pf.checkGit": "تحقق من وجود مستودع git",
+  "pf.checkGit.found": "“{name}” مستودع git — فروع العمل معروضة الآن"
 }

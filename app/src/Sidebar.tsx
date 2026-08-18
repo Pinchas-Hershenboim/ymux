@@ -86,7 +86,14 @@ interface Props {
   onOpenNotes: () => void;
   onAction: (
     id: string,
-    action: "rename" | "edit" | "delete" | "disconnect" | "addons" | "add_project_folder",
+    action:
+      | "rename"
+      | "edit"
+      | "delete"
+      | "disconnect"
+      | "addons"
+      | "add_project_folder"
+      | "check_git",
   ) => void;
   // Project folders are workspaces now (`is_project_root`), nested
   // under whatever workspace they were pinned from. The Sidebar owns
@@ -1065,6 +1072,18 @@ export function Sidebar(p: Props) {
             <button onClick={() => p.onAction(w.id, "add_project_folder")}>
               {t("pf.pinFolder")}…
             </button>
+            {/* The way back. A directory that git rejected is demoted
+                once and never re-asked — correct while the answer is
+                stable, wrong the moment someone runs `git init` there.
+                Re-pinning is not the escape hatch either: the duplicate
+                check refuses the same path under the same parent. So the
+                re-check is an explicit action, on demand, which also
+                keeps it inside the "scans are lazy, never polled" rule. */}
+            <Show when={w.cwd && !w.is_project_root}>
+              <button onClick={() => p.onAction(w.id, "check_git")}>
+                {t("pf.checkGit")}
+              </button>
+            </Show>
             <button
               onClick={() => {
                 setMoveMenuFor(moveMenuFor() === w.id ? null : w.id);
