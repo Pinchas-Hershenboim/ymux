@@ -2318,3 +2318,89 @@ STILL OPEN — tmux vanishing server-side
   auto-killed). No destroy-unattached / exit-empty in the shipped conf.
   Remaining candidates need server evidence, not more code reading — see
   FOLLOWUPS P0 and docs/DECISIONS.md.
+
+================================================================================
+2026-08-18 — RTL: tuiOwnsBidi restored after 18 days missing (lost in a merge)
+================================================================================
+
+TASK
+  Yossi asked to (a) replace WSL with Zellij as the Windows tmux, and (b) fix
+  RTL "by taking inspiration from RTLTERMINAL, or reordering the BiDi so it
+  prints reversed". Investigation changed both framings.
+
+FINDING 1 — RTL was not missing, it regressed.
+  Both proposed approaches already exist in the tree:
+    - "reorder the BiDi"   = rtl_mode "bidi_reorder"  (app/src/bidi.ts, bidi-js)
+    - RTLTERMINAL's trick  = rtl_mode "auto_per_line" (DOM renderer + per-row
+      dir), in a smarter block-aware form (textDirection.ts protects tables and
+      box-drawing; ar-terminal has a 30ms unshaped flash and mismatched
+      selection, we have neither).
+  The real cause of the reversed Hebrew: tuiOwnsBidi was silently dropped by
+  merge bcaa330 (2026-07-31). Verified three ways —
+    456f0ed ("round-10 diagnosis — TUI-owns-bidi restored, saga closed"): 9 hits
+    45b6592 (other parent):                                                0 hits
+    bcaa330 (merge result) and main ever since:                            0 hits
+  The merge also deleted nextTuiOwnsBidi from textDirection.ts (27 lines) AND
+  its 10 unit tests — which is why the suite stayed green through the loss.
+  docs/DECISIONS.md still claimed "State: Open — feature IN on
+  claude/integration". False since 2026-07-31.
+
+FINDING 2 — collateral from the SAME merge.
+  Phase 79's createLogger conversion in terminalInstance.ts was thrown away too.
+  Logger sites / console.* per ref: 456f0ed 24/0, 45b6592 0/17, bcaa330 0/17,
+  HEAD 2/19. FOLLOWUPS.md:19 (2026-08-11) had logged this as "untouched
+  pre-existing debt" — wrong diagnosis. Entry corrected and raised P3 -> P2.
+  NOT fixed here, to keep this diff reviewable.
+
+FILES
+  app/src/textDirection.ts        +27  (nextTuiOwnsBidi; now byte-identical to
+                                        456f0ed)
+  app/src/textDirection.test.ts   +53  (10 cases; 37 -> 47)
+  app/src/terminalInstance.ts     7 hunks, hand-applied
+  docs/DECISIONS.md               TUI-owns-bidi entry corrected; new Open entry
+                                  for Zellij
+  docs/RTL-TEST.md                "23 cases" -> 47; new TUI-owns-bidi smoke
+                                  section
+  FOLLOWUPS.md                    logging entry re-diagnosed as a regression
+
+HOW (deliberately not `git checkout 456f0ed -- terminalInstance.ts`)
+  That would have destroyed readClipboardText() and the WebView2 paste fix
+  (82b6c0c), which landed after. 7 hunks applied by hand, bottom-up. Only
+  substantive change vs the original: log.info -> termLog.info, because `log`
+  does not exist at HEAD (see FINDING 2) — copying verbatim is a compile error.
+  Fixed a latent bug while restoring the tests: the powershell-path case used a
+  plain "" literal, so \v was a vertical tab and \W \S \p were dropped; it
+  asserted against a mangled string. Now String.raw.
+
+NOT DONE, deliberately
+  No set-titles in the tmux conf. The conf has none (zero hits repo-wide) and
+  tmux defaults it off, so onTitleChange should never fire inside tmux — yet
+  DECISIONS records it engaging on a live SSH pane. Instrument before designing
+  around an unexplained observation: the restored termLog.info line now puts
+  the answer in debug.log. TRAP if someone adds it later: tmux's default
+  set-titles-string always contains the session name, so it is never empty,
+  nextTuiOwnsBidi falls through to `return prev`, and the feature latches ON
+  forever — strictly worse than the bug. Must be the pair `set -g set-titles on`
+  + `set -g set-titles-string "#T"`, in build_tmux_attach_script (lib.rs), not
+  the conf (the conf is skipped when use_winmux_tmux_config is off).
+
+RESULT
+  47/47 unit tests pass. tsc --noEmit clean. vite build clean (only the known
+  1.4MB chunk-size warning, DECISIONS.md:97).
+  COMPILES, UNTESTED LIVE — per CLAUDE.md that is not "verified". The smoke is
+  docs/RTL-TEST.md "TUI-owns-bidi smoke", 8 steps; step 5 (two full cycles in
+  one pane) and step 7 (inside tmux over SSH) are the ones that matter.
+
+ZELLIJ (Part B) — no code written, spike gates everything.
+  My first assumption was wrong: Zellij 0.44.0 (2026-03-23) DOES run natively
+  on Windows, no WSL. And Yossi's goal is better founded than it sounds —
+  LOCAL_CAPS.tmuxPersistence=false (types.ts:352) is the only gap; native Claude
+  Code (local_setup.rs:1220) and winmux-cli.exe already exist, so persistence is
+  the last thing WSL is needed for. Zellij also serialises sessions to disk,
+  which survives a reboot — tmux does not.
+  BUT the port is 5 months old and the open issues hit exactly what we'd buy:
+  #5365 keyboard input dies after detach/reattach (the one feature), #5348
+  "does not run properly on Windows shells", #5451 a pane renders never in a
+  multi-tab layout, #5360 Ctrl+Alt dead. Manual spike outside the repo first;
+  if detach/reattach or layout rendering fails, the idea is dead until upstream
+  moves. Logged as an Open decision.
