@@ -2585,9 +2585,225 @@ STILL OPEN — tmux vanishing server-side
       deliberately breaking it.
 
 =========================================================================
+2026-08-18 — RTL: tuiOwnsBidi restored after 18 days missing (lost in a merge)
+
+TASK
+  Yossi asked to (a) replace WSL with Zellij as the Windows tmux, and (b) fix
+  RTL "by taking inspiration from RTLTERMINAL, or reordering the BiDi so it
+  prints reversed". Investigation changed both framings.
+
+FINDING 1 — RTL was not missing, it regressed.
+  Both proposed approaches already exist in the tree:
+    - "reorder the BiDi"   = rtl_mode "bidi_reorder"  (app/src/bidi.ts, bidi-js)
+    - RTLTERMINAL's trick  = rtl_mode "auto_per_line" (DOM renderer + per-row
+      dir), in a smarter block-aware form (textDirection.ts protects tables and
+      box-drawing; ar-terminal has a 30ms unshaped flash and mismatched
+      selection, we have neither).
+  The real cause of the reversed Hebrew: tuiOwnsBidi was silently dropped by
+  merge bcaa330 (2026-07-31). Verified three ways —
+    456f0ed ("round-10 diagnosis — TUI-owns-bidi restored, saga closed"): 9 hits
+    45b6592 (other parent):                                                0 hits
+    bcaa330 (merge result) and main ever since:                            0 hits
+  The merge also deleted nextTuiOwnsBidi from textDirection.ts (27 lines) AND
+  its 10 unit tests — which is why the suite stayed green through the loss.
+  docs/DECISIONS.md still claimed "State: Open — feature IN on
+  claude/integration". False since 2026-07-31.
+
+FINDING 2 — collateral from the SAME merge.
+  Phase 79's createLogger conversion in terminalInstance.ts was thrown away too.
+  Logger sites / console.* per ref: 456f0ed 24/0, 45b6592 0/17, bcaa330 0/17,
+  HEAD 2/19. FOLLOWUPS.md:19 (2026-08-11) had logged this as "untouched
+  pre-existing debt" — wrong diagnosis. Entry corrected and raised P3 -> P2.
+  NOT fixed here, to keep this diff reviewable.
+
+FILES
+  app/src/textDirection.ts        +27  (nextTuiOwnsBidi; now byte-identical to
+                                        456f0ed)
+  app/src/textDirection.test.ts   +53  (10 cases; 37 -> 47)
+  app/src/terminalInstance.ts     7 hunks, hand-applied
+  docs/DECISIONS.md               TUI-owns-bidi entry corrected; new Open entry
+                                  for Zellij
+  docs/RTL-TEST.md                "23 cases" -> 47; new TUI-owns-bidi smoke
+                                  section
+  FOLLOWUPS.md                    logging entry re-diagnosed as a regression
+
+HOW (deliberately not `git checkout 456f0ed -- terminalInstance.ts`)
+  That would have destroyed readClipboardText() and the WebView2 paste fix
+  (82b6c0c), which landed after. 7 hunks applied by hand, bottom-up. Only
+  substantive change vs the original: log.info -> termLog.info, because `log`
+  does not exist at HEAD (see FINDING 2) — copying verbatim is a compile error.
+  Fixed a latent bug while restoring the tests: the powershell-path case used a
+  plain "" literal, so \v was a vertical tab and \W \S \p were dropped; it
+  asserted against a mangled string. Now String.raw.
+
+NOT DONE, deliberately
+  No set-titles in the tmux conf. The conf has none (zero hits repo-wide) and
+  tmux defaults it off, so onTitleChange should never fire inside tmux — yet
+  DECISIONS records it engaging on a live SSH pane. Instrument before designing
+  around an unexplained observation: the restored termLog.info line now puts
+  the answer in debug.log. TRAP if someone adds it later: tmux's default
+  set-titles-string always contains the session name, so it is never empty,
+  nextTuiOwnsBidi falls through to `return prev`, and the feature latches ON
+  forever — strictly worse than the bug. Must be the pair `set -g set-titles on`
+  + `set -g set-titles-string "#T"`, in build_tmux_attach_script (lib.rs), not
+  the conf (the conf is skipped when use_winmux_tmux_config is off).
+
+RESULT
+  47/47 unit tests pass. tsc --noEmit clean. vite build clean (only the known
+  1.4MB chunk-size warning, DECISIONS.md:97).
+  COMPILES, UNTESTED LIVE — per CLAUDE.md that is not "verified". The smoke is
+  docs/RTL-TEST.md "TUI-owns-bidi smoke", 8 steps; step 5 (two full cycles in
+  one pane) and step 7 (inside tmux over SSH) are the ones that matter.
+
+ZELLIJ (Part B) — no code written, spike gates everything.
+  My first assumption was wrong: Zellij 0.44.0 (2026-03-23) DOES run natively
+  on Windows, no WSL. And Yossi's goal is better founded than it sounds —
+  LOCAL_CAPS.tmuxPersistence=false (types.ts:352) is the only gap; native Claude
+  Code (local_setup.rs:1220) and winmux-cli.exe already exist, so persistence is
+  the last thing WSL is needed for. Zellij also serialises sessions to disk,
+  which survives a reboot — tmux does not.
+  BUT the port is 5 months old and the open issues hit exactly what we'd buy:
+  #5365 keyboard input dies after detach/reattach (the one feature), #5348
+  "does not run properly on Windows shells", #5451 a pane renders never in a
+  multi-tab layout, #5360 Ctrl+Alt dead. Manual spike outside the repo first;
+  if detach/reattach or layout rendering fails, the idea is dead until upstream
+  moves. Logged as an Open decision.
+
+--------------------------------------------------------------------------------
+2026-08-18 (same day, later) — CI build + boot verification for the RTL restore
+--------------------------------------------------------------------------------
+  Merged origin/main (27 commits) into claude/zellinj-tmux-windows-3a5afe first,
+  so the test build would not be stale. One conflict, PROGRESS.txt, both sides
+  kept. The three RTL code files were untouched upstream, so the restore applied
+  cleanly. tsc clean + 47/47 on the merged tree. Pushed the branch (no push to
+  main, no force-push).
+
+  build-windows.yml via workflow_dispatch: run 32181379397, SUCCESS in 16m39s.
+  v0.4.5. Rule #13's guard RAN and PASSED, it did not skip:
+    "OK: production build — 'index-CKmxjA94.js' is embedded"
+  SHA256 app.exe c106677557938f56de04aee25e03b36d16cd1f933f9596cb2d782454b4503cde
+         setup   79ca5d6e00e0cae004f7f84fe14fb4268a8debf7763534ea5adbcae71e2082e2
+         msi     5814f5718caa1c00909de09fa082ecfb4bcfb7899d0373e214f0be68b793abc7
+
+  Rule #14 (a build that compiles is not a build that runs): downloaded the bare
+  exe, SHA verified against CI, and LAUNCHED it. Decisive evidence it really
+  boots is the frontend-tagged line in debug.log —
+    [UI:APP] longtask self 304ms
+  [UI:*] only exists if the embedded JS bundle executed, i.e. boot got PAST
+  "rpc server spawned", which is exactly where a dev-mode binary dies silently.
+
+  Launched with WINMUX_CONFIG_DIR=%APPDATA%\winmux-rtl-smoke, NOT the real
+  config, because of the FOLLOWUPS P1: two winmux builds sharing %APPDATA%
+  means the older one strips parent_id / is_project_root on every save. This
+  build carries the project-folders v4 schema, so it is exactly the pairing
+  that entry warns about. Instance stopped and the smoke config dir removed
+  afterwards; the real %APPDATA%\winmux was never opened.
+
+  STATUS: boots. RTL itself is STILL NOT VERIFIED — that needs Hebrew in a live
+  Claude pane and a human looking at it. docs/RTL-TEST.md "TUI-owns-bidi smoke",
+  8 steps; steps 5 (two full cycles in one pane, catches a latched-ON state) and
+  7 (inside tmux over SSH, decides the set-titles question) are the ones that
+  cannot be inferred from anything already checked.
+
+--------------------------------------------------------------------------------
+2026-08-19 — TUI-owns-bidi turned OFF by default: the premise expired
+--------------------------------------------------------------------------------
+  Live test of v0.4.5 (the restore) produced the opposite of the expected result.
+  Yossi: local pane broken, SSH fine. debug.log had exactly ONE pane with
+  transitions:
+    23:44:16 [UI:TERM] tui-owns-bidi on  pane=p_18ab17f9e2257cd8_1
+    23:50:01 [UI:TERM] tui-owns-bidi off pane=p_18ab17f9e2257cd8_1
+  The feature engaged exactly where Hebrew broke, and never engaged where Hebrew
+  worked. SSH panes are spared only because tmux swallows the OSC title the
+  detector needs (no set-titles in the bundled conf).
+
+  Diagnosis: Claude changed. The feature was verified in 2026-07 against Claude
+  2.1.74-2.1.210, which printed Hebrew ALREADY reversed for BiDi-less terminals.
+  claude-fable-5 prints logical order like everything else, so the ordinary
+  per-line RTL pass is correct and forcing dir="ltr" is what scrambles it.
+  MY RESTORE MADE LOCAL PANES WORSE. Said plainly because the DECISIONS entry
+  it was based on is what made it look safe.
+
+  Fix: setting terminal.tui_owns_bidi, DEFAULT FALSE, Settings -> Terminal
+  toggle, en/he/ar/ru. Not deleted — deleting it silently is how this loop
+  started. Detection + the tui-owns-bidi log line still run unconditionally;
+  only the LTR forcing is gated, via `bidiOwnedByTui` in terminalInstance.ts.
+  That log line is the only reason this took minutes instead of days.
+
+  FILES  settings.rs (field + Default), terminalInstance.ts (g_tuiOwnsBidiEnabled,
+         setTuiOwnsBidiEnabled, bidiOwnedByTui getter, refreshRowDirections,
+         3 effect sites regated), App.tsx (2 wiring sites), SettingsModal.tsx,
+         settings.ts, bindings/TerminalSettings.ts (ts-rs confirmed my
+         hand-written binding byte-for-byte), i18n x4, DECISIONS, PROGRESS.
+
+  A SECOND BUG FOUND, NOT FIXED: dir="ltr" would not have worked even for the
+  old visual-order Claude. `dir` sets only the paragraph base direction; UAX #9
+  rule L2 still reverses Hebrew runs inside an LTR paragraph. Suppressing
+  reordering needs `unicode-bidi: bidi-override`, which appears nowhere near
+  .xterm-rows (checked: every unicode-bidi in App.css targets other surfaces).
+  So the legacy path is likely broken for the Claude it was written for too.
+  Left alone deliberately — it is behind a default-off flag now, and fixing an
+  unverifiable path against a Claude version nobody here runs is speculation.
+  Anyone enabling the flag should add bidi-override first.
+
+  PROCESS: I confirmed the original symptom with a multiple-choice question
+  whose first option was the answer I expected, and built a restore on it. The
+  discriminating question — what breaks WHERE — took one sentence from Yossi to
+  answer and would have redirected the whole session. Ask for the observation
+  that splits hypotheses, not the one that confirms yours.
+
+  CHECKS  247 cargo tests pass. 47/47 textDirection tests. tsc --noEmit clean.
+  NOT VERIFIED LIVE — needs a local pane with Hebrew in Claude on the new build.
+
+--------------------------------------------------------------------------------
+2026-08-19 — MEASURED what Claude emits, and fixed the neutrals bug in bidi.ts
+--------------------------------------------------------------------------------
+  THE MEASUREMENT that ended the guessing: Yossi set rtl_mode="off" (WebGL, no
+  browser bidi, no reorder — the screen shows the PTY stream verbatim) and
+  Hebrew came out REVERSED. So Claude Code emits Hebrew in LOGICAL order.
+  Two consequences, both certain:
+    - tui_owns_bidi=false (shipped in ac71bfb) is correct. Forcing LTR is wrong.
+    - The `unicode-bidi: bidi-override` idea I floated is DEAD. It would render
+      exactly what "off" rendered: reversed. Good thing it was never built.
+  Rule #1 forbids logging PTY content, so this could only ever be measured by a
+  human looking at the screen. Asking for it was worth more than any code I
+  wrote today.
+
+  WORKING CONFIG (Yossi's, after testing all three): rtl_mode=bidi_reorder
+  (Legacy) + auto_direction on + mirror_arrows_rtl on + tui_owns_bidi off.
+
+  BUG FIXED  app/src/bidi.ts:11 hard-coded the paragraph base direction:
+      bidi.getEmbeddingLevels(line, "ltr")
+  So neutrals (?, !!!, .) at the end of a Hebrew sentence resolved against an
+  LTR paragraph and rendered at the RIGHT edge — the START of the sentence.
+  Yossi: "characters show at the beginning of the line instead of the end".
+
+  FIRST ATTEMPT WAS WRONG and the tests caught it: hard-coding "rtl" fixes the
+  punctuation but mirrors Claude's status line, which is mostly Latin with one
+  Hebrew word — the same layout flip auto_per_line produces. Replaced with
+  bidi-js's own UAX #9 P2/P3 resolution (first strong character wins), correct
+  for all three shapes: pure-Hebrew sentence -> rtl; "> " + Hebrew (neutral
+  first) -> rtl; Latin-first status line -> ltr.
+
+  NEW  app/src/bidi.test.ts — 11 cases, the file had none. Includes a written
+  orientation note, because I got the first two assertions backwards: the
+  output is VISUAL order painted L-to-R, so index 0 is the LEFTMOST glyph,
+  which in an RTL sentence is its END. Sentence-final punctuation belongs at
+  index 0. One test specifically pins the status line against mirroring.
+
+  STILL OPEN, not fixed, genuinely hard: the caret pinned to the right and not
+  tracking the text, and partial-repaint glitches ("part rewritten correctly
+  and part in the middle rewritten again"). Both are inherent to transforming
+  the byte stream for a TUI that repaints regions and positions the cursor in
+  columns of the ORIGINAL text — two coordinate systems that diverge. This is
+  what terminal-wg calls "the cursed cursor"; no xterm.js-based terminal has
+  solved it. A real fix means reassembling whole visual lines before reordering
+  and tracking cursor position through the transform. Logged in DECISIONS.
+
+  CHECKS  11/11 bidi tests, 47/47 textDirection, tsc clean, vite clean.
+  NOT VERIFIED LIVE.
 
 
-=========================================================================
 2026-08-18 — winmux -> YMUX: full repo rename + compatibility layers
 Branch: claude/app-rename-ymux-f8404e (worktree app-rename-ymux-f8404e)
 
@@ -2723,4 +2939,3 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
     upgrade key, so the new package installs SIDE BY SIDE and the old one
     stays in Programs and Features. No shim exists for this -- the
     identifier IS the identity. Release notes need an uninstall step.
-=========================================================================

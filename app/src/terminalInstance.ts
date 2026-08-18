@@ -34,10 +34,16 @@ import { reorderRtlForDisplay } from "./bidi";
 import { createLogger } from "./logger";
 
 // Rule #9: user-visible logging. The rest of this file still uses raw
-// console.* (pre-existing — see FOLLOWUPS); the clipboard paths were
-// converted because an invisible failure there is what hid the paste bug.
+// console.* — NOT pre-existing debt as once assumed: Phase 79 converted this
+// file (24 logger sites, 0 console.*) and merge bcaa330 threw the conversion
+// away. See FOLLOWUPS. The clipboard paths were converted back because an
+// invisible failure there is what hid the paste bug.
 const termLog = createLogger("TERM");
-import { detectDirection, detectRowDirections } from "./textDirection";
+import {
+  detectDirection,
+  detectRowDirections,
+  nextTuiOwnsBidi,
+} from "./textDirection";
 import { transformMouseX, findRow } from "./mouseRtl";
 import { t } from "./i18n";
 
@@ -123,6 +129,9 @@ let g_ctrlCCopyOnSelect = true;
 /** Phase HH: mirror Left/Right arrows on RTL lines (default on; only
  *  active when the cursor's line is actually RTL). Settings → Terminal. */
 let g_mirrorArrowsRtl = true;
+// 2026-08-18: gates the TUI-owns-bidi LTR forcing. Default OFF — current
+// Claude emits Hebrew in logical order, so forcing LTR is what scrambles it.
+let g_tuiOwnsBidiEnabled = false;
 /** Phase 65.O (round 6): one-time guard so the "no wheel proxy" note is
  *  logged once, not once per pane. */
 let g_loggedNoWheelProxy = false;
@@ -286,6 +295,14 @@ export function setCtrlCCopyOnSelect(enabled: boolean): void {
 /** Phase HH: flip RTL arrow-key mirroring at runtime. */
 export function setMirrorArrowsRtl(enabled: boolean): void {
   g_mirrorArrowsRtl = enabled;
+}
+
+/** 2026-08-18: flip the TUI-owns-bidi LTR forcing at runtime. Default OFF —
+ *  see the setting's doc comment in settings.rs for why the premise it was
+ *  built on no longer holds for current Claude. */
+export function setTuiOwnsBidiEnabled(enabled: boolean): void {
+  g_tuiOwnsBidiEnabled = enabled;
+  for (const t of g_terminals) t.refreshRowDirections();
 }
 
 
@@ -517,6 +534,27 @@ export class TerminalInstance {
   // events over an RTL row, dispatches a synthetic MouseEvent with clientX
   // mirrored around the row midpoint. See mouseRtl.ts for the rationale.
   private rtlMouseTeardown: (() => void) | null = null;
+  // 2026-07-15 (Claude visual-order RTL): true while a TUI that does its
+  // own bidi reordering (Claude Code) holds this pane's foreground. While
+  // set, the per-row dir pass renders everything LTR and arrow-mirroring /
+  // the bidi_reorder write pipeline stand down — the TUI's output is
+  // already in visual order and any second bidi pass corrupts it. Driven
+  // by terminal-title changes; see nextTuiOwnsBidi in textDirection.ts.
+  private tuiOwnsBidi = false;
+
+  /** The EFFECT of tuiOwnsBidi, as opposed to the detected state. Detection
+   *  and its log line always run — they are what made the 2026-08-18
+   *  diagnosis possible in minutes — but the LTR forcing is gated, because
+   *  current Claude emits logical-order Hebrew and forcing LTR corrupts it.
+   *  See settings.rs `tui_owns_bidi`. */
+  private get bidiOwnedByTui(): boolean {
+    return this.tuiOwnsBidi && g_tuiOwnsBidiEnabled;
+  }
+
+  /** Re-run the direction pass after a live settings change. */
+  refreshRowDirections(): void {
+    this.applyRowDirections(true);
+  }
 
   constructor(paneId: string) {
     this.paneId = paneId;
@@ -786,6 +824,11 @@ export class TerminalInstance {
     this.ensureDirObserver();
     this.installRtlMouseCapture();
 
+    // Claude visual-order RTL: watch OSC 0/2 title reports to learn when a
+    // self-bidi TUI takes/releases the pane. Listener lifetime is tied to
+    // the Terminal — term.dispose() in dispose() drops it.
+    this.term.onTitleChange((title) => this.onTitleChanged(title));
+
     // Font-init fix: a fresh pane rendered "compressed" until the user
     // swapped the terminal font and back (notably with Courier). Root
     // cause: xterm caches the character-cell size from its FIRST
@@ -936,6 +979,21 @@ export class TerminalInstance {
     this.dirObserver = obs;
   }
 
+  /** Claude visual-order RTL: fold a title report into the per-pane
+   *  "TUI owns bidi" state. On a transition, force a full direction
+   *  re-pass so rows already on screen flip immediately (Claude's banner
+   *  prints before the title-driven state lands, and shell scrollback is
+   *  still visible when Claude exits). */
+  private onTitleChanged(title: string): void {
+    const next = nextTuiOwnsBidi(this.tuiOwnsBidi, title);
+    if (next === this.tuiOwnsBidi) return;
+    this.tuiOwnsBidi = next;
+    // Metadata only (Rule #1): titles can derive from conversation content
+    // (Claude's auto topic titles) — never log the title itself.
+    termLog.info(`tui-owns-bidi ${next ? "on" : "off"} pane=${this.paneId}`);
+    this.applyRowDirections(true);
+  }
+
   /** Coalesce a burst of row mutations into one direction pass per frame. */
   private scheduleRowDirections(): void {
     if (this.dirRafId != null) return;
@@ -979,7 +1037,9 @@ export class TerminalInstance {
       if (allSame) return;
     }
 
-    const dirs = auto
+    // tuiOwnsBidi: the foreground TUI (Claude) already emitted visual-order
+    // RTL — render rows plain LTR so we don't bidi it a second time.
+    const dirs = auto && !this.bidiOwnedByTui
       ? detectRowDirections(texts)
       : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
 
@@ -1053,6 +1113,9 @@ export class TerminalInstance {
    *  any xterm API hiccup falls back to "not RTL" (no mirroring). */
   private isCurrentLineRtl(): boolean {
     try {
+      // Claude visual-order RTL: the TUI does its own line editing over
+      // visual-order text — winmux must not second-guess its arrows.
+      if (this.bidiOwnedByTui) return false;
       const buf = this.term.buffer.active;
       const line = buf.getLine(buf.baseY + buf.cursorY);
       if (!line) return false;
@@ -1302,8 +1365,10 @@ export class TerminalInstance {
     }
     // The reorder pipeline keys off the LIVE rtl mode (g_rtlMode), so
     // a settings change takes effect on the very next flush - no
-    // need to wait for a new pane.
-    if (g_rtlMode === "bidi_reorder") {
+    // need to wait for a new pane. tuiOwnsBidi bypasses the reorder:
+    // Claude's output is ALREADY visual order; reordering it again
+    // scrambles it.
+    if (g_rtlMode === "bidi_reorder" && !this.bidiOwnedByTui) {
       this.term.write(reorderRtlForDisplay(merged));
     } else {
       this.term.write(merged);

@@ -62,6 +62,8 @@ export interface TerminalSettings {
    *  (mixed/pure-Hebrew → RTL, pure-Latin → LTR). Only affects the
    *  `auto_per_line` rtl_mode. Default true. */
   auto_direction?: boolean;
+  /** 2026-08-18: force LTR while a self-bidi TUI holds the pane. Default false. */
+  tui_owns_bidi?: boolean;
   /** v0.4.4-beta.2: clear stale mouse-tracking modes on connect (fixes the
    *  `\e[<..M` mouse-escape leak from an unclean vim/fzf/less exit).
    *  Default true. */
