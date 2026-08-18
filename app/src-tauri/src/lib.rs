@@ -1565,6 +1565,37 @@ fn pick_platform_default_shell() -> String {
     "/bin/sh".into()
 }
 
+/// The UTF-8 locale a Terminal.app window would get: the system locale
+/// (`defaults read -g AppleLocale`, e.g. `he_IL`) if the OS ships it under
+/// /usr/share/locale, else `en_US.UTF-8`. Probed once per process.
+#[cfg(not(windows))]
+fn default_utf8_locale() -> &'static str {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let apple = if cfg!(target_os = "macos") {
+            std::process::Command::new("/usr/bin/defaults")
+                .args(["read", "-g", "AppleLocale"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        } else {
+            None
+        };
+        apple
+            // `he_IL@currency=ILS` style suffixes are not locale dirs.
+            .map(|l| l.split('@').next().unwrap_or("").to_string())
+            .filter(|l| {
+                !l.is_empty()
+                    && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && Path::new("/usr/share/locale").join(format!("{l}.UTF-8")).is_dir()
+            })
+            .map(|l| format!("{l}.UTF-8"))
+            .unwrap_or_else(|| "en_US.UTF-8".to_string())
+    })
+    .as_str()
+}
+
 /// Split a user-typed local shell command into (program, args).
 ///
 /// Windows never needed this — ConPTY takes one command line and
@@ -1776,6 +1807,18 @@ fn spawn_local_pty(
     cmd.env("CLAUDE_CODE_FORCE_HYPERLINKS", "1");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM", "xterm-256color");
+    // macOS port: a Finder-launched app inherits NO locale (Terminal.app
+    // sets LANG itself from the system locale). Without a UTF-8 LC_CTYPE
+    // zsh's line editor and tmux treat every non-ASCII byte as
+    // unprintable — Hebrew keystrokes rendered as `_`. Only fill the gap;
+    // a user-set LANG/LC_ALL/LC_CTYPE (launched from a shell) wins.
+    #[cfg(not(windows))]
+    if ["LANG", "LC_ALL", "LC_CTYPE"]
+        .iter()
+        .all(|k| std::env::var_os(k).map(|v| v.is_empty()).unwrap_or(true))
+    {
+        cmd.env("LANG", default_utf8_locale());
+    }
     tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink env vars");
     let mut child = pair
         .slave

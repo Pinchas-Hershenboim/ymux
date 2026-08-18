@@ -1763,3 +1763,14 @@ FIX claude_usage.rs — run_usage_probe(): SSH handle → remote exec (as
   change so a failed fetch never shows another host's numbers.
   local_setup.rs: resolve_claude_binary() + unix_path_env pub(crate).
 RESULT: CI pending, untested live.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 5
+BUG (Yossi): Hebrew typing in a local mac pane shows `_`.
+ROOT CAUSE: Finder-launched app has no LANG/LC_* — zsh ZLE + tmux in a
+  non-UTF-8 locale render non-ASCII input as unprintable. Terminal.app
+  sets LANG itself; we didn't.
+FIX lib.rs spawn_local_pty (unix): if LANG/LC_ALL/LC_CTYPE are all unset,
+  inject LANG=<AppleLocale>.UTF-8 when /usr/share/locale has it, else
+  en_US.UTF-8 (default_utf8_locale(), probed once). Note: an already-
+  running tmux server keeps its old env — `tmux kill-server` once.
