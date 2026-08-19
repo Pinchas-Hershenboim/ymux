@@ -114,7 +114,16 @@ fn hook_log(level: HookLevel, msg: &str) {
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "[{ts}] [{}] [HOOK] {msg}", level.column());
+        // Phase 80: build the whole record, newline included, and issue ONE
+        // write_all. `writeln!` on an unbuffered File splits it into two
+        // syscalls, and hooks run as many concurrent short-lived processes,
+        // so records fused with each other. An in-process queue is impossible
+        // here — separate processes — but O_APPEND makes a single small write
+        // atomic, which is the whole fix. It matters beyond this file:
+        // log_sync copies these lines verbatim into the desktop's debug.log,
+        // so a tear here becomes a tear in the user-visible log too.
+        let line = format!("[{ts}] [{}] [HOOK] {msg}\n", level.column());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
@@ -1019,6 +1028,66 @@ fn default_pipe_name_legacy() -> String {
     format!(r"\\.\pipe\winmux-{}", user)
 }
 
+/// Parse `KEY=VALUE` lines. Blank lines and `#` comments are skipped; a
+/// repeated key takes its LAST value, matching how the file is appended to.
+fn parse_env_file(content: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            out.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    out
+}
+
+/// Read and parse `$HOME/.ymux/run/last.env`, or None if it isn't there.
+fn read_env_file() -> Option<std::collections::HashMap<String, String>> {
+    // Phase 80: USERPROFILE fallback for native-Windows runs.
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let path = std::path::Path::new(&home).join(".ymux/run/last.env");
+    let content = std::fs::read_to_string(&path).ok()?;
+    Some(parse_env_file(&content))
+}
+
+/// The endpoint the file names, but ONLY if it differs from `current`.
+///
+/// Phase 80. The env we inherited can be older than the process that set it:
+/// `claude` gets `YMUX_SOCKET_ADDR` at spawn and its hooks inherit it, but a
+/// reconnect can move the tunnel to a different port and nothing can rewrite
+/// the environment of a process that is already running. `load_fallback_env_file`
+/// cannot help — it returns early precisely because the variable IS set. So
+/// on a failed connect we come back here and read the file directly.
+///
+/// Returns None when the file agrees with what we already tried, so a genuine
+/// "the desktop is gone" stays one clean error rather than two.
+fn refreshed_endpoint(current: &str) -> Option<(String, String)> {
+    refreshed_endpoint_from(&read_env_file()?, current)
+}
+
+/// The decision half of `refreshed_endpoint`, split out so it is testable
+/// without a filesystem or an environment.
+fn refreshed_endpoint_from(
+    map: &std::collections::HashMap<String, String>,
+    current: &str,
+) -> Option<(String, String)> {
+    // Either spelling: an already-provisioned remote may still be writing
+    // the pre-rename names until its next bootstrap.
+    let addr = map
+        .get("YMUX_SOCKET_ADDR")
+        .or_else(|| map.get("WINMUX_SOCKET_ADDR"))?;
+    if addr == current {
+        return None;
+    }
+    let token = map
+        .get("YMUX_TUNNEL_TOKEN")
+        .or_else(|| map.get("WINMUX_TUNNEL_TOKEN"))?;
+    Some((addr.clone(), token.clone()))
+}
+
 /// Load env vars from `$HOME/.ymux/run/last.env` if the relevant ones aren't already set.
 /// Phase 6.3: written by the Windows app for each SSH workspace as a fallback for
 /// sshd configurations that strip per-channel env vars.
@@ -1026,27 +1095,13 @@ fn load_fallback_env_file() {
     if std::env::var("YMUX_SOCKET_ADDR").is_ok() {
         return;
     }
-    // Phase 80: USERPROFILE fallback for native-Windows runs.
-    let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        Some(h) => h,
+    let map = match read_env_file() {
+        Some(m) => m,
         None => return,
     };
-    let path = std::path::Path::new(&home).join(".ymux/run/last.env");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = line.split_once('=') {
-            let k = k.trim();
-            let v = v.trim();
-            if std::env::var_os(k).is_none() {
-                std::env::set_var(k, v);
-            }
+    for (k, v) in map {
+        if std::env::var_os(&k).is_none() {
+            std::env::set_var(&k, &v);
         }
     }
 }
@@ -1157,11 +1212,46 @@ async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
 
     // Prefer TCP if YMUX_SOCKET_ADDR is set (works on any OS, including remote tunnels).
     if let Ok(addr) = std::env::var("YMUX_SOCKET_ADDR") {
-        let stream = tokio::net::TcpStream::connect(&addr)
-            .await
-            .map_err(|e| format!("connect tcp {}: {}", addr, e))?;
-        let token = std::env::var("YMUX_TUNNEL_TOKEN").ok();
-        return rpc_via(stream, method, params, token.as_deref()).await;
+        match tokio::net::TcpStream::connect(&addr).await {
+            Ok(stream) => {
+                let token = std::env::var("YMUX_TUNNEL_TOKEN").ok();
+                return rpc_via(stream, method, params, token.as_deref()).await;
+            }
+            Err(e) => {
+                // Phase 80: the address we inherited may be stale. `claude`
+                // is long-lived and its hooks are its children, so both keep
+                // whatever port was current when claude started — a later
+                // reconnect cannot reach them. Re-read last.env (which the
+                // desktop rewrites on every allocation) and try once more.
+                //
+                // Deliberately no `set_var`: this is a multi-threaded tokio
+                // process, where setting environment variables is unsound.
+                // The refreshed pair is passed down as values instead.
+                //
+                // YMUX_PANE_ID is NOT refreshed — it was already consumed by
+                // the hook's "is ymux in this session" gate, and pane ids are
+                // stable across reconnects anyway.
+                match refreshed_endpoint(&addr) {
+                    Some((fresh_addr, fresh_token)) => {
+                        let stream = tokio::net::TcpStream::connect(&fresh_addr)
+                            .await
+                            .map_err(|e2| {
+                                format!(
+                                    "connect tcp {fresh_addr}: {e2}                                      (stale {addr} also failed: {e})"
+                                )
+                            })?;
+                        hook_log(
+                            HookLevel::Info,
+                            &format!(
+                                "rpc: {addr} was stale, reconnected on {fresh_addr} from last.env"
+                            ),
+                        );
+                        return rpc_via(stream, method, params, Some(&fresh_token)).await;
+                    }
+                    None => return Err(format!("connect tcp {addr}: {e}")),
+                }
+            }
+        }
     }
 
     // Otherwise on Windows, use a named pipe.
@@ -2750,5 +2840,84 @@ async fn real_main() -> ExitCode {
             eprintln!("error: {}", e);
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod env_file_tests {
+    use super::{parse_env_file, refreshed_endpoint_from};
+    use std::collections::HashMap;
+
+    fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_env_file_skips_comments_and_blank_lines() {
+        let m = parse_env_file("# a comment\n\nYMUX_SOCKET_ADDR=127.0.0.1:1\n   \nX=y\n");
+        assert_eq!(m.len(), 2, "got {m:?}");
+        assert_eq!(m.get("YMUX_SOCKET_ADDR").map(String::as_str), Some("127.0.0.1:1"));
+    }
+
+    #[test]
+    fn parse_env_file_keeps_a_value_containing_equals_signs() {
+        // Tokens are alphanumeric today, but splitting on the LAST `=` would
+        // silently corrupt any value that ever contains one.
+        let m = parse_env_file("K=a=b=c\n");
+        assert_eq!(m.get("K").map(String::as_str), Some("a=b=c"));
+    }
+
+    #[test]
+    fn parse_env_file_takes_the_last_value_for_a_repeated_key() {
+        // The remote file is written by append in one branch of the
+        // read-modify-write, so a duplicate key means "the newer one wins".
+        let m = parse_env_file("YMUX_PANE_ID=old\nYMUX_PANE_ID=new\n");
+        assert_eq!(m.get("YMUX_PANE_ID").map(String::as_str), Some("new"));
+    }
+
+    #[test]
+    fn refreshed_endpoint_is_none_when_the_file_matches_the_current_address() {
+        let m = map(&[
+            ("YMUX_SOCKET_ADDR", "127.0.0.1:34173"),
+            ("YMUX_TUNNEL_TOKEN", "t"),
+        ]);
+        // The desktop really is unreachable — report that once, cleanly,
+        // rather than dialing the same dead port twice.
+        assert!(refreshed_endpoint_from(&m, "127.0.0.1:34173").is_none());
+    }
+
+    #[test]
+    fn refreshed_endpoint_returns_the_file_pair_when_the_address_changed() {
+        let m = map(&[
+            ("YMUX_SOCKET_ADDR", "127.0.0.1:44495"),
+            ("YMUX_TUNNEL_TOKEN", "fresh"),
+        ]);
+        // The exact case from the log: a hook inherited 34173 from a claude
+        // started an hour earlier, while the tunnel had moved to 44495.
+        let (addr, token) =
+            refreshed_endpoint_from(&m, "127.0.0.1:34173").expect("a fresher endpoint");
+        assert_eq!(addr, "127.0.0.1:44495");
+        assert_eq!(token, "fresh", "the token must come from the same file");
+    }
+
+    #[test]
+    fn refreshed_endpoint_accepts_the_legacy_winmux_spelling() {
+        let m = map(&[
+            ("WINMUX_SOCKET_ADDR", "127.0.0.1:44495"),
+            ("WINMUX_TUNNEL_TOKEN", "fresh"),
+        ]);
+        let (addr, _) = refreshed_endpoint_from(&m, "127.0.0.1:1").expect("legacy names count");
+        assert_eq!(addr, "127.0.0.1:44495");
+    }
+
+    #[test]
+    fn refreshed_endpoint_is_none_without_a_token() {
+        // A half-written file is not a reason to attempt an unauthenticated
+        // handshake; the server would reject it anyway.
+        let m = map(&[("YMUX_SOCKET_ADDR", "127.0.0.1:44495")]);
+        assert!(refreshed_endpoint_from(&m, "127.0.0.1:1").is_none());
     }
 }

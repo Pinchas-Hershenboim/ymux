@@ -652,6 +652,9 @@ pub(crate) async fn download_and_install_update(
     let app_clone = app.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        // Phase 80: the installer path is where losing the log tail costs
+        // most — this is the last thing the old binary ever writes.
+        ymux_core::flush_log();
         app_clone.exit(0);
     });
     Ok(())
@@ -967,6 +970,9 @@ pub(crate) async fn updater_install_version(
     let app_clone = app.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        // Phase 80: the installer path is where losing the log tail costs
+        // most — this is the last thing the old binary ever writes.
+        ymux_core::flush_log();
         app_clone.exit(0);
     });
     Ok(())

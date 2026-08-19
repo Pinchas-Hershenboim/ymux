@@ -32,6 +32,7 @@ mod skills;
 mod stt;
 mod tickets;
 mod tray;
+mod tunnel_registry;
 mod updater;
 mod worktrees;
 mod workspaces_merge;
@@ -191,6 +192,12 @@ pub(crate) struct AppState {
     /// just-failed upload for a few minutes, and records whether the remote
     /// CLI actually matches the binary we embed. See `bootstrap_guard`.
     pub(crate) bootstrap_guard: bootstrap_guard::BootstrapGuard,
+    /// Per-workspace reverse-tunnel bookkeeping: the connect lock that stops
+    /// `workspace_ensure_connected` and `spawn_ssh` racing, the sticky port
+    /// that keeps an already-running `claude` reachable across a reconnect,
+    /// and the port/token/owning-session triple that replaced two maps read
+    /// independently. See `tunnel_registry`.
+    pub(crate) tunnel_registry: tunnel_registry::TunnelRegistry,
 }
 
 /// issue #4: per-pane agent turn timing for the ymux-tools chrome Ticker.
@@ -2854,6 +2861,19 @@ async fn spawn_ssh(
         "spawn_ssh: entry ws={} pane={} target={}@{}:{}",
         workspace_id, pane_id, user, host, port
     ));
+    // Phase 80: serialize connects per workspace. Held across the whole
+    // function, so this pane's tunnel setup cannot interleave with a
+    // headless `workspace_ensure_connected` for the same workspace — the
+    // interleaving that allocated two rival forwards 38ms apart and left one
+    // port-watcher orphaned on the server.
+    //
+    // LOCK ORDER: this one, then `bootstrap_guard::host_lock` further down.
+    // `workspace_ensure_connected` takes only this one, and nothing takes
+    // the host lock first, so the order is total and cycle-free. Two panes
+    // on different workspaces sharing a host both wait on the same host
+    // lock, which is a queue, not a cycle.
+    let connect_lock = state.tunnel_registry.connect_lock(&workspace_id);
+    let _connect_guard = connect_lock.lock().await;
     // Phase 41: connect + host-key + auth now live in the shared
     // `connect_and_authenticate` helper (includes the Phase 38 keepalive).
     log_debug("SSH", "spawn_ssh: connect_and_authenticate begin");
@@ -3002,40 +3022,30 @@ async fn spawn_ssh(
         }
     }
 
-    // Phase 6.3 → 47.A: ask server to forward a port back to us. With
-    // port=0 the server picks a free one and returns it. Forwarded
+    // Phase 6.3 → 47.A: ask server to forward a port back to us. Forwarded
     // channels arrive in our Handler's `server_channel_open_forwarded_tcpip`
     // and get bridged to the local pipe. Phase 47.A factored this into
     // `setup_workspace_reverse_tunnel` so the headless connect path can
-    // call the same setup — that helper also fires `spawn_port_watcher`.
-    let remote_port =
-        setup_workspace_reverse_tunnel(state, &mut handle, &workspace_id, &token).await;
-
-    if remote_port != 0 {
-        // Best-effort: write the env file so the CLI can dial back even if sshd
-        // refuses our `set_env` requests on the shell channel.
-        let (home_out, _) = match remote_get_home(&mut handle).await {
-            Ok(v) => v,
-            Err(e) => {
-                log_warn("TUNNEL", &format!("tunnel: skip env-file write — couldn't read $HOME: {e}"));
-                (String::new(), 1)
-            }
-        };
-        let home = home_out.trim();
-        if !home.is_empty() {
-            let socket_addr = format!("127.0.0.1:{}", remote_port);
-            if let Err(e) =
-                tunnel::write_remote_env_file(&mut handle, home, &socket_addr, &token, &pane_id)
-                    .await
-            {
-                log_warn("TUNNEL", &format!("tunnel: env-file write failed: {e}"));
-            }
-        }
-    }
-
-    // Phase 47.A: the watcher launch moved into
-    // `setup_workspace_reverse_tunnel` above so the headless connect
-    // path gets it too. Dedup via state.core.port_watchers still applies.
+    // call the same setup — that helper also fires `spawn_port_watcher` and,
+    // since Phase 80, writes `last.env` itself.
+    //
+    // The session id is minted HERE rather than just before the io-loop,
+    // because the tunnel registration is keyed by the session that owns the
+    // forward and has to be recorded before anything can fail.
+    let id = next_session_id();
+    let (remote_port, tunnel_lease) = match setup_workspace_reverse_tunnel(
+        state,
+        &mut handle,
+        &workspace_id,
+        &id,
+        &token,
+        Some(&pane_id),
+    )
+    .await
+    {
+        Some((p, lease)) => (p, Some(lease)),
+        None => (0u16, None),
+    };
 
     let mut channel = handle
         .channel_open_session()
@@ -3078,7 +3088,6 @@ async fn spawn_ssh(
         .await
         .map_err(|e| format!("request_shell: {e}"))?;
 
-    let id = next_session_id();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SshCmd>();
 
     // Phase 8.B: wrap the handle in an Arc before the I/O task takes ownership.
@@ -3122,10 +3131,12 @@ async fn spawn_ssh(
     let pane_sessions_for_task = state.core.pane_sessions.clone();
     let forwards_for_task = state.core.forwards.clone();
     let workspace_for_task = workspace_id.clone();
-    // Phase 39: clean up this session's reverse-tunnel remote port from
-    // the internal-ports set when the session ends.
-    let internal_ports_for_task = state.core.internal_reverse_tunnel_remote_ports.clone();
-    let reverse_port_for_task = remote_port as u16;
+    // Phase 39 → 80: clean up this session's reverse-tunnel registration
+    // when the session ends. The sticky port deliberately survives, so the
+    // reconnect can ask for it back and keep an already-running `claude`
+    // reachable.
+    let tunnel_registry_for_task = state.tunnel_registry.clone();
+    let reverse_port_for_task = remote_port;
     // Phase JJ (port-watcher leak): clone the watcher maps so the
     // session-end task can abort this workspace's remote port-watcher when
     // its last SSH session goes away — otherwise the watcher's tokio task
@@ -3272,17 +3283,11 @@ async fn spawn_ssh(
             &pane_for_task,
             &id_for_task,
         );
-        // Phase 39: drop this session's reverse-tunnel remote port from
-        // the internal-ports set.
+        // Phase 39 → 80: drop this session's reverse-tunnel registration.
+        // No `cancel_tcpip_forward` needed — the `disconnect` above tears the
+        // whole transport down, and the forward dies with it.
         if reverse_port_for_task != 0 {
-            if let Ok(mut m) = internal_ports_for_task.lock() {
-                if let Some(set) = m.get_mut(&workspace_for_task) {
-                    set.remove(&reverse_port_for_task);
-                    if set.is_empty() {
-                        m.remove(&workspace_for_task);
-                    }
-                }
-            }
+            tunnel_registry_for_task.unregister(&workspace_for_task, &id_for_task);
         }
         // Phase 8.B: if this was the last SSH session for the workspace, tear
         // down all of its port forwards.
@@ -3341,6 +3346,13 @@ async fn spawn_ssh(
             reconnecting: reconnecting_for_state,
         }),
     );
+    // The session owns its forward for real now — stop the lease from
+    // rolling the registration back. Every `?` between the tunnel setup and
+    // this line (channel_open_session, request_pty, request_shell) drops the
+    // lease instead, which is the leak this replaced.
+    if let Some(lease) = tunnel_lease {
+        lease.commit();
+    }
 
     // Phase 11.A: when the user picked persistent mode, wrap the freshly
     // started shell in `tmux new-session -A -s NAME`. The `-A` flag attaches
@@ -3489,67 +3501,279 @@ pub(crate) fn kill_session_inner(s: &mut Session) {
 // Find an SSH handle for the workspace by walking its connected terminal panes.
 // Returns the first one found, or None if no terminal pane in the workspace
 // currently has an active SSH session.
-/// Phase 47.A: workspace-level reverse-tunnel setup, factored out of
-/// `spawn_ssh` so the headless `workspace_ensure_connected` path can
-/// call it too. Without this, a workspace whose toggle is on but with
-/// no terminal pane open never got a tunnel — so the watcher couldn't
-/// dial back, and PortsWindow stayed "stuck searching."
+/// Rolls a tunnel registration back unless `commit()` is called.
 ///
-/// Does the workspace-level slice ONLY: `tcpip_forward` (kernel picks
-/// a free remote port), records the port + token in `AppState`, and
-/// fires `spawn_port_watcher` (deduped). Pane-specific bits — the
-/// env-file write that takes `&pane_id`, and the `YMUX_PANE_ID`
-/// `set_env` on the shell channel — stay in `spawn_ssh`.
+/// Manual rollback was not an option: between `tcpip_forward` and the
+/// `sessions.insert` that makes a registration legitimate there are three
+/// `?` exits in `spawn_ssh` (channel_open_session, request_pty,
+/// request_shell) plus the "a pane raced in" `return Ok(())` in
+/// `workspace_ensure_connected`. Every one of them leaked a port, a token
+/// and a watcher slot — which is how one workspace accumulated 20 dead
+/// ports in a single session.
 ///
-/// Returns the assigned remote port, or 0 if `tcpip_forward` failed
-/// (which still leaves the SSH handle usable for tmux-list / file
-/// manager — just no detection).
+/// `Drop` is deliberately sync-only: it touches maps and aborts a task,
+/// never the network. The forward itself dies with the russh handle, so
+/// there is nothing async to undo.
+struct TunnelLease {
+    registry: tunnel_registry::TunnelRegistry,
+    core: CoreState,
+    workspace_id: String,
+    session_id: String,
+    committed: bool,
+}
+
+impl TunnelLease {
+    /// The session is in `sessions` and really owns its forward. Keep it.
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TunnelLease {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.registry
+            .unregister(&self.workspace_id, &self.session_id);
+        // Only stop the watcher when no sibling session still holds a
+        // forward: a headless handle dropped because a pane won the race
+        // must not take the pane's watcher down with it.
+        if self.registry.current(&self.workspace_id).is_none() {
+            let aborted = {
+                let mut tasks = match self.core.port_watcher_tasks.lock() {
+                    Ok(t) => t,
+                    Err(e) => e.into_inner(),
+                };
+                tasks
+                    .remove(&self.workspace_id)
+                    .map(|h| h.abort())
+                    .is_some()
+            };
+            match self.core.port_watchers.lock() {
+                Ok(mut w) => {
+                    w.remove(&self.workspace_id);
+                }
+                Err(e) => {
+                    e.into_inner().remove(&self.workspace_id);
+                }
+            }
+            if aborted {
+                log_debug("TUNNEL", &format!(
+                    "tunnel-lease[{}]: rolled back, watcher stopped",
+                    self.workspace_id
+                ));
+                return;
+            }
+        }
+        log_debug("TUNNEL", &format!(
+            "tunnel-lease[{}]: rolled back (session {} never committed)",
+            self.workspace_id, self.session_id
+        ));
+    }
+}
+
+/// Ask sshd to forward `want` back to us; `want == 0` lets the kernel pick.
+/// Returns the port we actually hold.
+///
+/// THE TRAP: russh documents `tcpip_forward` as *"If port == 0 the server
+/// will choose a port that will be returned, returns 0 otherwise."* For a
+/// specific-port request the granted port is the one we asked for and the
+/// return value is 0 — reading it would hand us port 0 and a silently dead
+/// tunnel, with no error anywhere to explain it.
+async fn request_reverse_forward(
+    handle: &mut client::Handle<SshClient>,
+    want: u16,
+) -> Result<u16, russh::Error> {
+    let assigned = handle.tcpip_forward("127.0.0.1", want as u32).await?;
+    Ok(if want == 0 { assigned as u16 } else { want })
+}
+
+#[cfg(test)]
+mod tunnel_lease_tests {
+    use super::*;
+
+    /// Just the two pieces a lease actually touches.
+    ///
+    /// Deliberately NOT `AppState::default()`: AppState owns tauri's webview
+    /// and tray maps, and naming it from test code drags the whole tauri
+    /// runtime into the test binary — which then fails to load with
+    /// STATUS_ENTRYPOINT_NOT_FOUND before a single test runs. The lease only
+    /// needs the registry and CoreState, and CoreState is tauri-free.
+    fn fixture() -> (tunnel_registry::TunnelRegistry, CoreState) {
+        (tunnel_registry::TunnelRegistry::default(), CoreState::default())
+    }
+
+    fn lease(
+        registry: &tunnel_registry::TunnelRegistry,
+        core: &CoreState,
+        ws: &str,
+        session: &str,
+    ) -> TunnelLease {
+        TunnelLease {
+            registry: registry.clone(),
+            core: core.clone(),
+            workspace_id: ws.to_string(),
+            session_id: session.to_string(),
+            committed: false,
+        }
+    }
+
+    #[test]
+    fn dropping_an_uncommitted_lease_unregisters_the_port() {
+        let (registry, core) = fixture();
+        registry.register("w1", "s1", 44495, Arc::new("tok".to_string()));
+        drop(lease(&registry, &core, "w1", "s1"));
+        // This is the `return Ok(())` at the "a pane raced in" check, and the
+        // three `?` exits in spawn_ssh: each used to leave a dead port, a
+        // token and a watcher slot behind forever.
+        assert!(
+            registry.current("w1").is_none(),
+            "an uncommitted lease must roll its registration back"
+        );
+    }
+
+    #[test]
+    fn a_committed_lease_survives_drop() {
+        let (registry, core) = fixture();
+        registry.register("w1", "s1", 44495, Arc::new("tok".to_string()));
+        lease(&registry, &core, "w1", "s1").commit();
+        let cur = registry.current("w1").expect("still registered");
+        assert_eq!(cur.port, 44495);
+    }
+
+    #[test]
+    fn dropping_a_lease_leaves_a_sibling_sessions_registration_alone() {
+        let (registry, core) = fixture();
+        // The normal shape: a headless handle and a pane both hold a forward.
+        registry.register("w1", "__headless__w1", 1111, Arc::new("t_headless".into()));
+        registry.register("w1", "s_pane", 2222, Arc::new("t_pane".into()));
+        drop(lease(&registry, &core, "w1", "__headless__w1"));
+        let cur = registry
+            .current("w1")
+            .expect("the pane's registration must survive");
+        assert_eq!(cur.port, 2222);
+        assert_eq!(cur.session_id, "s_pane");
+    }
+
+    #[test]
+    fn a_rolled_back_lease_keeps_the_sticky_port_for_the_next_attempt() {
+        let (registry, core) = fixture();
+        registry.register("w1", "s1", 44495, Arc::new("tok".to_string()));
+        drop(lease(&registry, &core, "w1", "s1"));
+        // Rolling back the registration must NOT forget which port to ask
+        // for — that port is still baked into a running claude's environment.
+        assert_eq!(registry.sticky_port("w1"), Some(44495));
+    }
+}
+
+/// Phase 47.A / Phase 80: workspace-level reverse-tunnel setup, called by
+/// both `spawn_ssh` and the headless `workspace_ensure_connected`.
+///
+/// Phase 80 moved the env-file write in here. It used to live only in
+/// `spawn_ssh` because it needs a pane id, so 15 of the 20 port allocations
+/// in Yossi's 2026-08-18 log never updated the file the remote CLI reads.
+///
+/// That write is correctness, not the fix for the reported symptom: a hook
+/// inherits `YMUX_SOCKET_ADDR` from an already-running `claude`, and
+/// `load_fallback_env_file` skips the file entirely when that variable is
+/// already set. The fix is the STICKY PORT — re-request the port this
+/// workspace last held, so the address baked into that process stays valid.
+///
+/// Returns the port and a lease the caller MUST `commit()` once its session
+/// is in the sessions map, or `None` if `tcpip_forward` failed (which still
+/// leaves the SSH handle usable for tmux-list / file manager — just no
+/// detection and no hooks).
 async fn setup_workspace_reverse_tunnel(
     state: &AppState,
     handle: &mut client::Handle<SshClient>,
     workspace_id: &str,
+    session_id: &str,
     token: &Arc<String>,
-) -> u16 {
-    let remote_port = match handle.tcpip_forward("127.0.0.1", 0).await {
-        Ok(p) => {
-            log_info("TUNNEL", &format!(
-                "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward got remote port {p}"
-            ));
-            p as u16
+    pane_id: Option<&str>,
+) -> Option<(u16, TunnelLease)> {
+    // Sticky first. A denial is the NORMAL outcome when the remote has since
+    // handed that port to something else, or when an orphaned forward from a
+    // half-dead connection still holds it — hence debug, not warn, or it
+    // would read as a fault on every other reconnect.
+    let mut sticky_hit = None;
+    if let Some(sticky) = state.tunnel_registry.sticky_port(workspace_id) {
+        match request_reverse_forward(handle, sticky).await {
+            Ok(p) => {
+                log_info("TUNNEL", &format!(
+                    "setup_workspace_reverse_tunnel[{workspace_id}]: reused sticky remote port {p}"
+                ));
+                sticky_hit = Some(p);
+            }
+            Err(e) => {
+                log_debug("TUNNEL", &format!(
+                    "setup_workspace_reverse_tunnel[{workspace_id}]: sticky port {sticky} unavailable ({e}) - asking for a fresh one"
+                ));
+            }
+        }
+    }
+    let remote_port = match sticky_hit {
+        Some(p) => p,
+        None => match request_reverse_forward(handle, 0).await {
+            Ok(p) => {
+                log_info("TUNNEL", &format!(
+                    "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward got remote port {p}"
+                ));
+                p
+            }
+            Err(e) => {
+                log_warn("TUNNEL", &format!(
+                    "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward failed: {e}"
+                ));
+                tracing::warn!("tcpip_forward[{workspace_id}] failed: {e}");
+                return None;
+            }
+        },
+    };
+    if remote_port == 0 {
+        return None;
+    }
+    // Port, token and owning session recorded as ONE triple. Reading a port
+    // from one map and a token from another is what produced the
+    // `-DENIED bad-mac` handshake rejections.
+    state
+        .tunnel_registry
+        .register(workspace_id, session_id, remote_port, token.clone());
+    let lease = TunnelLease {
+        registry: state.tunnel_registry.clone(),
+        core: state.core.clone(),
+        workspace_id: workspace_id.to_string(),
+        session_id: session_id.to_string(),
+        committed: false,
+    };
+    // Best-effort env file so the CLI can dial back even when sshd's
+    // AcceptEnv drops our per-channel `set_env`. Every allocation writes it
+    // now, headless included — `pane_id: None` preserves whatever pane id
+    // the file already carries, because its ABSENCE makes the remote hook
+    // conclude ymux is not in this session and stop gating altogether.
+    let socket_addr = format!("127.0.0.1:{remote_port}");
+    match remote_get_home(handle).await {
+        Ok((home_out, _)) => {
+            let home = home_out.trim();
+            if home.is_empty() {
+                log_warn("TUNNEL", "tunnel: skip env-file write - $HOME came back empty");
+            } else if let Err(e) =
+                tunnel::write_remote_env_file(handle, home, &socket_addr, token, pane_id).await
+            {
+                log_warn("TUNNEL", &format!("tunnel: env-file write failed: {e}"));
+            }
         }
         Err(e) => {
             log_warn("TUNNEL", &format!(
-                "setup_workspace_reverse_tunnel[{workspace_id}]: tcpip_forward failed: {e}"
+                "tunnel: skip env-file write - couldn't read $HOME: {e}"
             ));
-            tracing::warn!("tcpip_forward[{workspace_id}] failed: {e}");
-            return 0;
         }
-    };
-    if remote_port == 0 {
-        return 0;
     }
-    // Phase 39: record ymux's own reverse-tunnel remote port so the
-    // auto-port watcher skips it (it's an HMAC endpoint).
-    state.core
-        .internal_reverse_tunnel_remote_ports
-        .lock()
-        .unwrap()
-        .entry(workspace_id.to_string())
-        .or_default()
-        .insert(remote_port);
-    // Phase 47: stash the tunnel token so a later
-    // workspace_ensure_port_watcher can spawn the watcher without
-    // having to rebuild the SSH session.
-    state.core
-        .workspace_tunnel_tokens
-        .lock()
-        .unwrap()
-        .insert(workspace_id.to_string(), token.clone());
     // Phase 47.A: best-effort watcher launch as part of tunnel setup.
     // spawn_port_watcher dedups via port_watchers so calling here AND
     // from try_ensure_port_watcher later is safe.
     let _ = spawn_port_watcher(state, handle, workspace_id, remote_port, token).await;
-    remote_port
+    Some((remote_port, lease))
 }
 
 /// Guard for interpolating a workspace id into a remote shell command
@@ -5250,33 +5474,46 @@ async fn workspace_set_claude_separate_account(
 /// terminal pane connects. Used by the activation effect, the toggle,
 /// and the explicit `workspace_ensure_port_watcher` command.
 async fn try_ensure_port_watcher(state: &AppState, workspace_id: &str) {
-    let handle = match find_ssh_handle_for_workspace(state, workspace_id) {
-        Some(h) => h,
+    // Phase 80: port, token and owning session come from ONE registration.
+    // This used to read the port out of a HashSet with `.iter().next()` (an
+    // arbitrary element, in practice often an hour-old one), the token out
+    // of a separate map that nothing ever cleared, and the handle out of
+    // "first session that matches the workspace" — three independently
+    // stale sources whose combination produced `-DENIED bad-mac`.
+    let reg = match state.tunnel_registry.current(workspace_id) {
+        Some(r) => r,
         None => {
             log_debug("TUNNEL", &format!(
-                "ensure_port_watcher[{workspace_id}]: no live SSH session — skip"
+                "ensure_port_watcher[{workspace_id}]: no live reverse tunnel — skip"
             ));
             return;
         }
     };
-    let remote_port = {
-        let m = state.core.internal_reverse_tunnel_remote_ports.lock().unwrap();
-        m.get(workspace_id).and_then(|s| s.iter().next().copied())
-    };
-    let token = {
-        let m = state.core.workspace_tunnel_tokens.lock().unwrap();
-        m.get(workspace_id).cloned()
-    };
-    match (remote_port, token) {
-        (Some(rp), Some(tok)) => {
-            let _ = spawn_port_watcher(state, &handle, workspace_id, rp, &tok).await;
+    let handle = {
+        let sessions = match state.core.sessions.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        match sessions.get(&reg.session_id) {
+            Some(Session::Ssh(ssh)) => Some(Arc::clone(&ssh.handle)),
+            _ => None,
         }
-        _ => {
+    };
+    let handle = match handle {
+        Some(h) => h,
+        None => {
+            // The session that owned this forward is gone; so is the forward.
+            state
+                .tunnel_registry
+                .unregister(workspace_id, &reg.session_id);
             log_debug("TUNNEL", &format!(
-                "ensure_port_watcher[{workspace_id}]: session has no reverse tunnel yet — open a terminal pane to bootstrap"
+                "ensure_port_watcher[{workspace_id}]: owning session {} is gone — registration dropped",
+                reg.session_id
             ));
+            return;
         }
-    }
+    };
+    let _ = spawn_port_watcher(state, &handle, workspace_id, reg.port, &reg.token).await;
 }
 
 /// Phase 47: explicit command — frontend calls this on workspace
@@ -5594,6 +5831,10 @@ fn teardown_workspace_runtime(
     // runs for every descendant rather than only the clicked row — which
     // is what it wanted in the first place.
     state.bootstrap_guard.forget(workspace_id);
+    // Phase 80: and its reverse-tunnel state, sticky port included. Only
+    // here, never on a mere disconnect — the whole value of the sticky port
+    // is that it outlives the connection that held it.
+    state.tunnel_registry.forget_workspace(workspace_id);
     for pane_id in panes_to_kill {
         if let Some(sid) = state.core.pane_sessions.lock().unwrap().remove(pane_id) {
             if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {
@@ -6200,6 +6441,25 @@ async fn workspace_ensure_connected(
         return Ok(());
     }
 
+    // Phase 80: claim the workspace, don't just peek at it. The check above
+    // is advisory — `PaneView.smartConnect` calls this and then
+    // `pane_connect`, so two tunnel setups for one workspace was the NORMAL
+    // path: two `tcpip_forward`s 38ms apart, one watcher slot, the loser
+    // orphaned on the server. Under the lock, the loser re-checks and returns
+    // before opening a socket at all.
+    //
+    // Lock order is connect_lock BEFORE bootstrap_guard::host_lock, which is
+    // the order `spawn_ssh` takes them in. This path never takes the host
+    // lock, so no cycle is possible.
+    let connect_lock = state.tunnel_registry.connect_lock(&workspace_id);
+    let _connect_guard = connect_lock.lock().await;
+    if live_ssh_connection_for_workspace_pub(&state, &workspace_id).is_some() {
+        log_debug("SSH", &format!(
+            "workspace_ensure_connected: {workspace_id} connected while we queued — nothing to do"
+        ));
+        return Ok(());
+    }
+
     // Resolve the workspace's canonical SSH target.
     let conn = {
         let file = state.workspaces.lock().unwrap();
@@ -6250,16 +6510,25 @@ async fn workspace_ensure_connected(
             // so port detection works without a terminal pane. Best-effort:
             // failure leaves the session usable for tmux-list / file
             // manager, just no detection (matches pre-47.A behavior).
-            let _ = setup_workspace_reverse_tunnel(
+            //
+            // `pane_id: None` — this path has no pane, so the env-file write
+            // carries over whatever pane id the remote file already holds
+            // rather than blanking it.
+            let session_id = format!("__headless__{workspace_id}");
+            let tunnel_lease = setup_workspace_reverse_tunnel(
                 &state,
                 &mut handle,
                 &workspace_id,
+                &session_id,
                 &tunnel_token,
+                None,
             )
-            .await;
+            .await
+            .map(|(_, lease)| lease);
             // Re-check + insert under the lock. If a pane raced in during
-            // tunnel setup, drop the spare (its handle Drop tears the
-            // tunnel down with it).
+            // tunnel setup, drop the spare (its handle Drop tears the tunnel
+            // down with it) — and let the lease roll the registration back,
+            // which is what nothing did before.
             let mut sessions = state.core.sessions.lock().unwrap();
             let already = sessions
                 .values()
@@ -6271,7 +6540,7 @@ async fn workspace_ensure_connected(
                 return Ok(());
             }
             sessions.insert(
-                format!("__headless__{workspace_id}"),
+                session_id.clone(),
                 Session::Ssh(SshSession {
                     tx: None,
                     handle: Arc::new(handle),
@@ -6287,6 +6556,9 @@ async fn workspace_ensure_connected(
                 }),
             );
             drop(sessions);
+            if let Some(lease) = tunnel_lease {
+                lease.commit();
+            }
             log_info("SSH", &format!(
                 "workspace_ensure_connected: headless session up for {workspace_id} (method={auth_method:?})"
             ));
@@ -7888,6 +8160,9 @@ pub fn run() {
         log_error("APP", &format!(
             "PANIC at {location}: {msg}\n  thread: {thread_name}\n  backtrace:\n{bt}"
         ));
+        // Phase 80: writes are queued, and a panic may be on its way to an
+        // abort — get the backtrace onto disk before anything else happens.
+        ymux_core::flush_log();
         // Re-emit to stderr so any wrapping process (cargo run, tauri
         // dev server, etc.) can also surface it inline.
         eprintln!("PANIC at {location}: {msg}");
@@ -8391,8 +8666,17 @@ pub fn run() {
         // normally (the minimize-to-tray surprise was confusing). The tray
         // icon + badge stay for quick access; quit is either the window close
         // or the tray menu.
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // Phase 80: `.build(...).run(|_, event|)` instead of `.run(ctx)`,
+        // purely so the queued log tail reaches disk on the way out. The run
+        // loop is otherwise unchanged, and the `.expect` is still the boot
+        // path Rule #4 exempts.
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                ymux_core::flush_log();
+            }
+        });
 }
 
 #[cfg(test)]

@@ -2072,10 +2072,11 @@ async fn dispatch(
                 .unwrap_or("v4")
                 .to_string();
             // Phase 39: never report ymux's own reverse-tunnel port.
-            let is_internal = {
-                let m = state.core.internal_reverse_tunnel_remote_ports.lock().unwrap();
-                m.get(&workspace_id).map(|s| s.contains(&port)).unwrap_or(false)
-            };
+            // Phase 80: every LIVE registration, headless and pane-backed —
+            // both are ours. The set this replaced only ever grew, so after a
+            // few reconnects it was suppressing ports the remote had since
+            // recycled to a real user server.
+            let is_internal = state.tunnel_registry.ports_for(&workspace_id).contains(&port);
             if is_internal {
                 return Ok(json!({ "ok": true, "skipped": "ymux internal port" }));
             }

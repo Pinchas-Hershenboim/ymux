@@ -16,6 +16,8 @@
 // beta.3 (netfree): shared HTTP retry helper for the updater path.
 // See http.rs — GET-only, jittered exponential backoff on transport errors.
 pub mod http;
+mod log_writer;
+pub use log_writer::flush_log;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -174,28 +176,31 @@ pub fn log_level() -> LogLevel {
     LogLevel::from_u8(GLOBAL_LOG_LEVEL.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Append one already-formatted line to `<config_dir>/debug.log`, rotating at
-/// the size cap. Errors are intentionally swallowed — logging must never
-/// crash the caller.
+/// Hand one already-formatted line to the log writer.
+///
+/// Phase 80: this used to `stat`, open, write, write and close on the
+/// caller's thread, with no lock. `writeln!` on an unbuffered `File` emits
+/// the payload and the newline as TWO syscalls, and `O_APPEND` makes each
+/// atomic but not the pair — so concurrent callers fused each other's
+/// records (~120 such lines in one day of Yossi's log), and the
+/// stat-then-rename rotation could lose a whole 5 MB generation.
+///
+/// Now the line is terminated here and enqueued; `log_writer` owns the file
+/// and issues exactly one `write_all` per batch. Errors are still swallowed
+/// — logging must never crash the caller.
 fn write_line(line: &str) {
-    if let Ok(dir) = config_dir() {
-        let p = dir.join("debug.log");
-        // Rotate once the active log passes the cap (cheap: one stat per line;
-        // we already do an open/write/close per call).
-        if let Ok(meta) = std::fs::metadata(&p) {
-            if meta.len() > DEBUG_LOG_MAX_BYTES {
-                let _ = std::fs::rename(&p, dir.join("debug.log.1"));
-            }
-        }
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&p)
-            .and_then(|mut f| {
-                use std::io::Write as _;
-                writeln!(f, "{line}")
-            });
-    }
+    let mut buf = String::with_capacity(line.len() + 1);
+    buf.push_str(line);
+    buf.push('\n');
+    log_writer::submit(log_writer::Msg::Block(buf));
+}
+
+/// The `[ts]` field, shared by `log_at` and the writer's dropped-lines
+/// marker so both read identically in the file.
+pub(crate) fn log_timestamp() -> String {
+    chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f %:z")
+        .to_string()
 }
 
 /// Append a line verbatim (no timestamp/level/tag prefix), still honoring
@@ -204,6 +209,28 @@ fn write_line(line: &str) {
 /// the remote side: pulled content must be log metadata, never PTY content.
 pub fn append_raw_line(line: &str) {
     write_line(line);
+}
+
+/// Append many already-formatted lines as ONE write.
+///
+/// Phase 80: the remote-log sync pulls up to 256 KiB × 3 files × N hosts per
+/// cycle, and submitting them one at a time is what turned a routine sync
+/// into thousands of open/stat/write/write/close sequences — the single
+/// biggest source of interleaving in the old logger, and of rotation races,
+/// since each one also re-ran the size check.
+pub fn append_raw_lines<I, S>(lines: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut buf = String::new();
+    for l in lines {
+        buf.push_str(l.as_ref());
+        buf.push('\n');
+    }
+    if !buf.is_empty() {
+        log_writer::submit(log_writer::Msg::Block(buf));
+    }
 }
 
 /// The unified user-visible log line: `[ts] [LEVEL] [TAG] msg` where ts is
@@ -216,7 +243,12 @@ pub fn log_at(level: LogLevel, tag: &str, msg: &str) {
     if level < log_level() {
         return;
     }
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
+    // Stamped at call time, not write time: the file must say when the
+    // event happened. Two threads can therefore stamp and then race into the
+    // queue, so file order and timestamp order can differ by microseconds —
+    // as they already could before, since formatting preceded `open()` and
+    // that latency dwarfs a channel send.
+    let ts = log_timestamp();
     write_line(&format!(
         "[{ts}] [{}] [{}] {msg}",
         level.column(),
@@ -256,45 +288,24 @@ pub fn dlog_tag(subsystem: &str, msg: &str) {
 /// `debug.log` itself hasn't been touched within the window (app unused for a
 /// while), clears it for a fresh start. `retention_days == 0` disables pruning
 /// (keep forever). Called once at startup. Best-effort — never fails the boot.
+///
+/// Phase 80: runs on the writer thread, so it can no longer truncate the file
+/// out from under an in-flight write.
 pub fn prune_logs(retention_days: u32) {
     if retention_days == 0 {
         return;
     }
-    let dir = match config_dir() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let cutoff = match std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(u64::from(retention_days) * 86_400))
-    {
-        Some(c) => c,
-        None => return,
-    };
-    let stale = |p: &std::path::Path| -> bool {
-        std::fs::metadata(p)
-            .and_then(|m| m.modified())
-            .map(|mt| mt < cutoff)
-            .unwrap_or(false)
-    };
-    // Rotated file older than the window → delete outright.
-    let rotated = dir.join("debug.log.1");
-    if rotated.exists() && stale(&rotated) {
-        let _ = std::fs::remove_file(&rotated);
-    }
-    // Primary log untouched for > retention (a stale session) → truncate fresh.
-    let primary = dir.join("debug.log");
-    if primary.exists() && stale(&primary) {
-        let _ = std::fs::write(&primary, b"");
-    }
+    log_writer::submit(log_writer::Msg::Prune(retention_days));
 }
 
 /// Phase 75: clear the debug log now (Settings → Logs "Clear" button).
 /// Truncates `debug.log` and removes the rotated `debug.log.1`.
+///
+/// Phase 80: ordered against queued lines. Previously an in-flight write from
+/// another thread could land AFTER the clear and resurrect content the user
+/// had just wiped.
 pub fn clear_debug_log() -> Result<(), String> {
-    let dir = config_dir()?;
-    std::fs::write(dir.join("debug.log"), b"").map_err(|e| format!("clear debug.log: {e}"))?;
-    let _ = std::fs::remove_file(dir.join("debug.log.1"));
-    Ok(())
+    log_writer::clear_now()
 }
 
 // ─── shell escape ────────────────────────────────────────────────────
@@ -816,12 +827,17 @@ pub struct CoreState {
     pub pane_sessions: PaneSessionMap,
     pub forwards: ForwardMap,
     pub port_watchers: Arc<Mutex<std::collections::HashSet<String>>>,
-    pub internal_reverse_tunnel_remote_ports:
-        Arc<Mutex<HashMap<String, std::collections::HashSet<u16>>>>,
+    // Phase 80: `internal_reverse_tunnel_remote_ports` and
+    // `workspace_tunnel_tokens` used to live here. They were read
+    // independently — the port set was sampled with `.iter().next()` and only
+    // ever grew, the token map was cleared nowhere at all — so a watcher
+    // could be handed one connection's port with another's token and get
+    // `-DENIED bad-mac`. Both are now one triple in
+    // `app::tunnel_registry::TunnelRegistry`, which lives on `AppState`
+    // because it also owns the per-workspace connect lock.
     pub detected_ports:
         Arc<Mutex<HashMap<String, HashMap<u16, (String, String)>>>>,
     pub port_watcher_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    pub workspace_tunnel_tokens: Arc<Mutex<HashMap<String, Arc<String>>>>,
     pub diff_pane_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
@@ -1253,6 +1269,9 @@ mod tests {
     // The fs-backed assertions share one test: YMUX_CONFIG_DIR and the
     // global level are process-wide, so splitting them would race under
     // the parallel test runner.
+    //
+    // Phase 80: writes are asynchronous now, so every read-back needs a
+    // `flush_log()` first. Without it this test is a coin flip.
     #[test]
     fn log_at_format_threshold_and_raw_append() {
         let dir = std::env::temp_dir().join(format!("ymux-core-logtest-{}", std::process::id()));
@@ -1265,6 +1284,7 @@ mod tests {
         log_error("Tunnel", "boom");
         append_raw_line("[2026-07-15 09:00:00.000 +00:00] [INFO ] [SRV:CHAT] remote line");
 
+        flush_log();
         let text = std::fs::read_to_string(dir.join("debug.log")).expect("debug.log written");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3, "debug line must be filtered out: {text}");
@@ -1292,10 +1312,55 @@ mod tests {
         log_debug("fm", "now visible");
         dlog("legacy untagged");
         dlog_tag("boot", "legacy tagged");
+        flush_log();
         let text = std::fs::read_to_string(dir.join("debug.log")).expect("debug.log written");
         assert!(text.contains("] [DEBUG] [FM] now visible"), "{text}");
         assert!(text.contains("] [INFO ] [APP] legacy untagged"), "{text}");
         assert!(text.contains("] [INFO ] [BOOT] legacy tagged"), "{text}");
+
+        // ── Phase 80: the regression test for the torn lines ──
+        //
+        // 16 threads x 500 lines. Before the write-queue this produced
+        // records fused with no newline between them, each followed by a
+        // stray blank line, because `writeln!` on an unbuffered File issues
+        // the payload and the "\n" as two separate syscalls.
+        let before = text.lines().count();
+        let mut hands = Vec::new();
+        for t in 0..16 {
+            hands.push(std::thread::spawn(move || {
+                for i in 0..500 {
+                    log_info("RACE", &format!("t{t:02}-i{i:03}"));
+                }
+            }));
+        }
+        for h in hands {
+            h.join().expect("writer threads must not panic");
+        }
+        flush_log();
+        let text = std::fs::read_to_string(dir.join("debug.log")).expect("debug.log written");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            before + 16 * 500,
+            "every line must be present exactly once"
+        );
+        assert!(
+            lines.iter().all(|l| l.starts_with('[')),
+            "a line starting mid-record means two writes interleaved"
+        );
+        assert!(
+            !text.contains("\n\n"),
+            "the stray blank line is the other half of a torn record"
+        );
+        for t in 0..16 {
+            for i in 0..500 {
+                let want = format!("t{t:02}-i{i:03}");
+                assert!(
+                    lines.iter().any(|l| l.ends_with(&want)),
+                    "lost line {want}"
+                );
+            }
+        }
 
         // Restore defaults for any test that runs after us.
         set_log_level(LogLevel::Info);
