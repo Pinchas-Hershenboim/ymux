@@ -323,11 +323,13 @@ export function setTerminalFontSize(sizePt: number): void {
 export function setRtlProfiles(next: Record<RtlProfileKind, RtlProfileSettings>): void {
   g_rtl.local = { ...next.local };
   g_rtl.remote = { ...next.remote };
-  // Panes already built for the matching renderer pick the change up; panes
-  // built under a different mode keep their renderer (xterm.js cannot swap
-  // DOM↔WebGL on a live Terminal) and only take the new strategy on the next
-  // construction. `staleRenderer` below is what tells the UI to say so.
+  // 2026-08-19: every open pane moves to the new mode NOW, renderer included.
+  // This used to only refresh the direction pass, on the belief that xterm.js
+  // could not swap DOM↔WebGL live — see `applyRenderer`, which is where that
+  // belief is disproved. Until then a mode change on an open pane produced a
+  // half-applied state that no setting screen described.
   for (const ti of g_terminals) {
+    ti.applyRenderer();
     ti.ensureDirObserver();
     ti.refreshRowDirections();
   }
@@ -543,7 +545,11 @@ export class TerminalInstance {
   /** The RTL mode active when this terminal was constructed. Changing
    * settings later only affects the data-write pipeline (and the
    * per-row dir attribute observer); the renderer choice is sticky. */
-  rtlModeAtConstruct: RtlMode;
+  /** The mode this pane is CURRENTLY rendering under — which renderer is
+   *  loaded and which write pipeline runs. Was `rtlModeAtConstruct` and frozen
+   *  for the pane's life until 2026-08-19; `applyRenderer` now keeps it equal
+   *  to the live setting. */
+  rtlModeRendered: RtlMode;
   private dataDisposable: IDisposable | null = null;
   // Phase 64 (J, Track B): the plain-text `[file]` link provider handle +
   // a one-shot "it matched" diagnostic flag (metadata only, Rule #1) so a
@@ -631,15 +637,18 @@ export class TerminalInstance {
    *  now asks for. The DOM↔WebGL choice is frozen at construction, so the
    *  only cure is re-opening the pane; the Settings UI says so. */
   get staleRenderer(): boolean {
+    // Kept as an assertion rather than deleted: `applyRenderer` runs on every
+    // settings change, so this must now always be false. If it is ever true,
+    // a pane slipped past that walk and the no-bidi hole is back.
     const wantsDom = this.rtl.rtlMode === "auto_per_line";
-    const builtDom = this.rtlModeAtConstruct === "auto_per_line";
+    const builtDom = this.rtlModeRendered === "auto_per_line";
     return wantsDom !== builtDom;
   }
 
   constructor(paneId: string, profile: RtlProfileKind = "local") {
     this.profile = profile;
     this.paneId = paneId;
-    this.rtlModeAtConstruct = g_rtl[profile].rtlMode;
+    this.rtlModeRendered = g_rtl[profile].rtlMode;
     this.container = document.createElement("div");
     this.container.className = "terminal-container";
 
@@ -844,7 +853,19 @@ export class TerminalInstance {
     // `auto_per_line` needs the DOM renderer so we can attach
     // dir="auto" per row. WebGL paints to a canvas and has no per-cell
     // DOM, so the browser BiDi engine has nothing to hook into.
-    if (this.rtlModeAtConstruct !== "auto_per_line") {
+    if (this.rtlModeRendered !== "auto_per_line") {
+      this.loadWebgl();
+    }
+    this.finishConstruction();
+  }
+
+  /**
+   * Load the WebGL addon. Extracted from the constructor on 2026-08-19 so a
+   * live mode change can call it too — see `applyRenderer`.
+   */
+  private loadWebgl(): void {
+    if (this.webglAddon) return;
+    {
       try {
         const addon = new WebglAddon();
         // Phase 25: WebGL contexts can be lost — GPU driver resets,
@@ -873,6 +894,57 @@ export class TerminalInstance {
         console.warn("WebGL addon unavailable", e);
       }
     }
+  }
+
+  /**
+   * Move this pane onto the renderer its current mode asks for, live.
+   *
+   * 2026-08-19. The comment this replaces said xterm.js "cannot swap DOM↔WebGL
+   * on a live Terminal", and the proof that it can was 200 lines below it: the
+   * WebGL context-loss handler has always disposed the addon and let xterm.js
+   * fall back to the DOM renderer. Disposing is the swap; `loadAddon` is the
+   * swap back. Nothing in either depends on being inside the constructor.
+   *
+   * That mistaken belief had a real cost. The renderer and the per-row `dir`
+   * pass keyed off the frozen construction mode while the write pipeline read
+   * the LIVE mode, so changing the setting on an open pane landed it in a
+   * combination that is none of the three modes — and one of those
+   * combinations does no bidi AT ALL (no reorder because the live mode is not
+   * bidi_reorder, no `dir` because the built mode is not auto_per_line). Yossi
+   * reported local Hebrew broken "in all 3 options"; two of those three were
+   * that state, so only one mode was ever really under test.
+   */
+  applyRenderer(): void {
+    const want = this.rtl.rtlMode;
+    if (want === this.rtlModeRendered) return;
+    const wantDom = want === "auto_per_line";
+    if (wantDom && this.webglAddon) {
+      try {
+        this.webglAddon.dispose();
+      } catch (e) {
+        termLog.warn(`applyRenderer: webgl dispose failed pane=${this.paneId}`, e);
+      }
+      this.webglAddon = null;
+    } else if (!wantDom && !this.webglAddon) {
+      this.loadWebgl();
+    }
+    this.rtlModeRendered = want;
+    // The dir observer and the row pass both gate on the rendered mode, so
+    // they have to be re-evaluated after it moves — attaching the observer
+    // when we have just arrived on the DOM renderer, dropping it otherwise.
+    this.ensureDirObserver();
+    this.applyRowDirections(true);
+    try {
+      this.term.refresh(0, this.term.rows - 1);
+    } catch {}
+    termLog.info(
+      `rtl-renderer pane=${this.paneId} profile=${this.profile} ` +
+        `now=${want} renderer=${this.webglAddon ? "webgl" : "dom"}`,
+    );
+  }
+
+  /** Constructor tail, split out when `loadWebgl` was extracted above. */
+  private finishConstruction(): void {
 
     // Phase 23.E + 25.B: resize handling has two layers.
     //  - rAF throttle: smooth live updates during the drag without
@@ -905,7 +977,7 @@ export class TerminalInstance {
     // 2026-08-19: the log line FOLLOWUPS.md P2 asked for and that two rounds
     // of screenshot-reading went without. Every RTL question so far has come
     // down to "which pipeline did THIS pane actually get", and the answer is
-    // knowable only here: the renderer and `rtlModeAtConstruct` are frozen at
+    // knowable only here: the renderer and `rtlModeRendered` are frozen at
     // construction while the mode and policy are read live, so a pane can be
     // running a combination no setting screen displays.
     //
@@ -913,7 +985,7 @@ export class TerminalInstance {
     // No byte of terminal content appears in it.
     termLog.info(
       `rtl-pane pane=${this.paneId} profile=${this.profile} ` +
-        `mode=${this.rtl.rtlMode} builtAs=${this.rtlModeAtConstruct} ` +
+        `mode=${this.rtl.rtlMode} builtAs=${this.rtlModeRendered} ` +
         `renderer=${this.webglAddon ? "webgl" : "dom"} ` +
         `policy=${this.rtl.directionPolicy} auto=${this.rtl.autoDirection ? 1 : 0} ` +
         `stale=${this.staleRenderer ? 1 : 0}`,
@@ -956,7 +1028,7 @@ export class TerminalInstance {
    * `event.isTrusted` to skip synthetic events we ourselves fired.
    */
   private installRtlMouseCapture(): void {
-    if (this.rtlModeAtConstruct !== "auto_per_line") return;
+    if (this.rtlModeRendered !== "auto_per_line") return;
     const el = this.container;
 
     const forward = (e: MouseEvent): void => {
@@ -1049,7 +1121,7 @@ export class TerminalInstance {
   ensureDirObserver(): void {
     // Only relevant in auto-per-line mode AND when we built with the
     // DOM renderer. In any other mode, drop any existing observer.
-    if (this.rtlModeAtConstruct !== "auto_per_line") {
+    if (this.rtlModeRendered !== "auto_per_line") {
       if (this.dirObserver) {
         this.dirObserver.disconnect();
         this.dirObserver = null;
@@ -1116,7 +1188,7 @@ export class TerminalInstance {
    * `auto_direction=false` (see below).
    */
   applyRowDirections(force: boolean): void {
-    if (this.rtlModeAtConstruct !== "auto_per_line") return;
+    if (this.rtlModeRendered !== "auto_per_line") return;
     const rowsHost = this.container.querySelector(".xterm-rows") as HTMLElement | null;
     if (!rowsHost) return;
     const auto = this.rtl.autoDirection;
@@ -1514,7 +1586,10 @@ export class TerminalInstance {
     // need to wait for a new pane. tuiOwnsBidi bypasses the reorder:
     // Claude's output is ALREADY visual order; reordering it again
     // scrambles it.
-    if (this.rtl.rtlMode === "bidi_reorder" && !this.bidiOwnedByTui) {
+    // Keyed on the RENDERED mode, not the raw setting. They are kept equal by
+    // `applyRenderer`; reading the setting directly here is what let the two
+    // halves of the pipeline disagree and produce a pane with no bidi at all.
+    if (this.rtlModeRendered === "bidi_reorder" && !this.bidiOwnedByTui) {
       this.term.write(reorderRtlForDisplay(merged));
     } else {
       this.term.write(merged);
