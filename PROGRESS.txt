@@ -3126,3 +3126,61 @@ STILL IN THE TREE, UNREACHABLE FROM THE UI  wsl_exec, the RPC bridge, the 8
 
 CHECKS  267 cargo tests (14 new), 58 JS tests, tsc + vite clean, i18n 1088 x4.
         Installer sha256 15fc1236954e4b1a98530d6a806e9e3add225dfb6efca6d57056febfd71ef306
+
+================================================================================
+2026-08-19 (cont.)  RTL round 2 — the status bar — + the zellij verb surface
+================================================================================
+
+WHAT YOSSI SAW  A screenshot of Claude Code inside a local zellij pane: right
+     aligned, and the Latin runs in the wrong order. "winget upgrade
+     Anthropic.ClaudeCode :Update available! Run" instead of "Update
+     available! Run winget upgrade Anthropic.ClaudeCode". The Hebrew itself
+     was perfect. "צעד בכיוון הנכון - עכשיו בא נוודא שהכל מגיע כמו שצריך."
+
+WHAT THE SCREENSHOT PROVED, FOR FREE  `צבר` rendered as ר-ב-צ left-to-right
+     under dir=rtl. dir=rtl means the browser ALREADY reversed that run, so
+     the bytes arriving must be LOGICAL order. That settles a question the
+     morning's measurement had left inverted, without running anything.
+
+DIAGNOSIS  Not a bidi bug — a scope bug. Claude's footer is ONE terminal row
+     carrying ~64 Latin characters of layout plus the cwd. The rule was "any
+     Hebrew char anywhere -> the row is RTL", so three letters flipped the
+     row's paragraph direction and UAX #9 L2 mirrored every Latin run in it.
+     The bordered box above it went the same way via the block rule. Such a
+     row is POSITIONAL: the TUI already chose the column of every glyph, and
+     bidi cannot reconstruct a layout it has just mirrored.
+
+FIX  detectDirection is now a vote between STRONG characters: Hebrew wins
+     unless Latin outnumbers it by more than RTL_DOMINANCE (4). Neutrals —
+     digits, punctuation, box-drawing, whitespace — count for neither side, so
+     a progress bar cannot outvote a Hebrew word. The block vote runs over the
+     block's joined text instead of "does any row contain Hebrew".
+
+     Paragraph direction ONLY. An LTR row still gets its RTL runs reversed by
+     the browser, so `צבר` reads right either way; alignment and the neutral
+     ends are what move.
+
+     4 is calibrated, not derived — it has to keep `2. /opt/wa/.shared.env -
+     הערה` (4 vs 14) RTL and let the status bar (3 vs 64) go LTR. Anything
+     from ~3.6 to ~20 separates them. Written down at the constant so the next
+     person tuning it knows what it is holding apart. All 47 existing
+     direction tests pass unchanged; 7 new ones, incl. the real status row.
+
+ZELLIJ VERBS  "צריך להגדיר את כל הפקודות שישלחו לZELLIJ" — they are one
+     documented block now, each checked against `zellij 0.44.3 --help` on this
+     machine, not from memory: attach -c, list-sessions -n, kill-session,
+     delete-session. What is NOT sent is recorded with the reason at the same
+     place: `attach -b` returns 0 and creates nothing without a tty (verified
+     — twice); `action rename-session` would break the pane-id-derived lookup
+     a cold start needs; kill-all/delete-all have no UI that means them.
+
+REAL BUG FOUND WHILE DOING IT  parse_zellij_sessions threw away the
+     "(EXITED - attach to resurrect)" marker, so a dead session looked exactly
+     like a live one in the picker — and kill-session FAILS on a dead session,
+     so the entry could never be cleared. Yossi's machine has one sitting in
+     the list right now (ymux-p_18cd0fd918b299e0_1). `exited` is carried to
+     the picker as its own badge, and a failed kill now falls through to
+     delete-session. A live session still needs two kills to be purged.
+
+CHECKS  270 cargo tests pass (3 new), 65 JS tests (7 new), tsc + vite clean,
+        i18n 1089 keys x 4 locales.
