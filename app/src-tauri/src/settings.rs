@@ -476,9 +476,25 @@ pub(crate) struct RtlProfiles {
 ///   auto_per_line   the browser reverses the run -> reversed
 ///   bidi_reorder    our logical->visual pass reverses it again -> reversed
 ///
-/// `tui_owns_bidi` is the switch built for exactly this, and it was default-off
-/// because an earlier round concluded Claude had started emitting logical order.
-/// The dump above contradicts that conclusion, so local turns it back on.
+/// `tui_owns_bidi` is the switch built for exactly this -- render the pane with
+/// no bidi while a self-reordering TUI holds it -- but THE DIAGNOSTIC LOG SHOWS
+/// IT NEVER FIRES. Every `rtl-dirs` line in Yossi's debug.log reports `tui=0`,
+/// on every pane and both profiles, and the file holds not one
+/// `tui-owns-bidi` transition. The detector reads the terminal TITLE, and
+/// inside zellij the title we receive is zellij's own, never Claude's. So the
+/// dynamic switch is inert in practice, and the checkbox promised something
+/// that could not happen.
+///
+/// Which leaves the static answer: local runs "off". No reorder, no `dir`, no
+/// browser bidi -- the terminal Claude already assumes it is talking to.
+/// Confirmed by Yossi on the build that added the diagnostic.
+///
+/// THE COST, said plainly: shell output is LOGICAL order, so Hebrew at a plain
+/// PowerShell prompt renders reversed under "off". One static mode cannot serve
+/// both a logical shell and a pre-reordered TUI; only the dynamic switch can,
+/// and it needs a signal that survives zellij. The ymux Claude hooks already
+/// run per pane with YMUX_PANE_ID set and would be exactly that -- logged as a
+/// follow-up rather than guessed at here.
 ///
 /// KNOWN TRADE-OFF, not a bug to chase: with a pre-reordered stream you cannot
 /// have correct letters AND right alignment. Right alignment needs dir="rtl",
@@ -491,8 +507,16 @@ pub(crate) struct RtlProfiles {
 /// instruction was to work on local without touching it.
 fn default_local_rtl() -> RtlProfile {
     RtlProfile {
+        // "off" is the WebGL renderer with no reorder and no per-row `dir` —
+        // the only mode that applies NO bidi at all, which is exactly what a
+        // pre-reordered stream needs. Confirmed by Yossi on the build that
+        // added the diagnostic: "עכשיו דווקא ב-OFF זה עובד כמו שצריך".
+        rtl_mode: "off".to_string(),
+        // Kept true even though the detector is currently blind (see above):
+        // when the pane learns that Claude is in front by some means other
+        // than the title, local is already opted in.
         tui_owns_bidi: true,
-        ..RtlProfile::default() // auto_per_line renderer, as remote
+        ..RtlProfile::default()
     }
 }
 
@@ -2510,8 +2534,13 @@ mod tests {
         // two classes, so the migration does NOT carry it over — each profile
         // takes its own measured default. The other three knobs are
         // orthogonal to the split and ARE preserved.
+        //
+        // The fixture uses `bidi_reorder` deliberately: it is now neither
+        // profile's default, so "did not inherit the flat field" and "took its
+        // own default" cannot be confused. It used to be "off", which stopped
+        // distinguishing them the moment local's default BECAME "off".
         let mut t = TerminalSettings {
-            rtl_mode: "off".into(),
+            rtl_mode: "bidi_reorder".into(),
             auto_direction: false,
             mirror_arrows_rtl: false,
             tui_owns_bidi: true,
@@ -2520,8 +2549,11 @@ mod tests {
         };
         assert!(migrate_rtl_profiles(&mut t), "absent rtl must migrate");
         let r = t.rtl.expect("seeded");
-        assert_eq!(r.local.rtl_mode, "auto_per_line", "local must not inherit 'off'");
-        assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote must not inherit 'off'");
+        assert_eq!(r.local.rtl_mode, "off", "local takes its own default");
+        assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote takes its own");
+        for p in [&r.local, &r.remote] {
+            assert_ne!(p.rtl_mode, "bidi_reorder", "the flat mode is not carried");
+        }
         for p in [&r.local, &r.remote] {
             assert!(!p.auto_direction, "auto_direction must carry over");
             assert!(!p.mirror_arrows_rtl, "mirror_arrows_rtl must carry over");
@@ -2577,13 +2609,20 @@ mod tests {
         // pass double-reorders it. That is why all three rtl_modes read as
         // broken on local while remote was fine.
         //
-        // Remote stays OFF: it renders correctly as it is, and the standing
-        // instruction is not to touch it while working on local.
+        // Remote's knob stays OFF: it renders correctly as it is, and the
+        // standing instruction is not to touch it while working on local.
+        //
+        // NOTE the detector behind this knob is currently blind inside zellij
+        // (see `default_local_rtl`), so local does not lean on it — it runs
+        // rtl_mode="off", which needs no detection. The opt-in is kept so the
+        // day the detection works, local is already on the right side of it.
         let d = RtlProfiles::default();
         assert!(d.local.tui_owns_bidi, "local must not bidi Claude's output twice");
         assert!(!d.remote.tui_owns_bidi, "remote is deliberately unchanged");
-        // The renderer is the same on both sides; only this knob differs.
-        assert_eq!(d.local.rtl_mode, d.remote.rtl_mode);
+        assert_ne!(
+            d.local.rtl_mode, d.remote.rtl_mode,
+            "the two classes need different modes: local visual, remote logical"
+        );
     }
 
     #[test]
@@ -2614,13 +2653,19 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_defaults_are_auto_per_line_on_both_sides() {
-        // These differed until zellij went in front of local panes and
-        // normalised their byte order to logical, the same as a Linux pty.
-        // Re-measured live inside a zellij pane before this was changed.
+    fn fresh_install_defaults_split_local_off_from_remote_auto() {
+        // They converged on auto_per_line when zellij went in front of local
+        // panes, on the belief that zellij normalised the byte order. It does
+        // not: `zellij action dump-screen` returned the cwd as
+        // U+05E8 U+05D1 U+05E6, i.e. VISUAL order, because Claude Code on
+        // Windows writes it pre-reordered. "off" is the only mode that applies
+        // no bidi, so it is the only one that leaves such a stream alone.
+        //
+        // Remote is NOT touched: it delivers logical order and renders
+        // correctly on auto_per_line.
         let r = RtlProfiles::default();
-        assert_eq!(r.local.rtl_mode, "auto_per_line");
-        assert_eq!(r.remote.rtl_mode, "auto_per_line");
+        assert_eq!(r.local.rtl_mode, "off", "local must not bidi a visual stream");
+        assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote is unchanged");
     }
 
     #[test]

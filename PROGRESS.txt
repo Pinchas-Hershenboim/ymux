@@ -3274,3 +3274,52 @@ FOUND, NOT LANDED  flushPending reads the LIVE rtl mode while the renderer
 
 CHECKS  272 cargo tests (2 new), 71 JS tests (3 new), tsc + vite clean,
         i18n 1091 keys x 4 locales.
+
+================================================================================
+2026-08-19 (cont.)  RTL round 4 — the log answered it, and it was not the answer
+================================================================================
+
+THE MEASUREMENT THAT SHOULD HAVE COME FIRST  `zellij action dump-screen` on the
+     live local pane returned the cwd as U+05E8 U+05D1 U+05E6 — צבר in VISUAL
+     order. Claude Code on Windows writes RTL pre-reordered, exactly as the
+     header of textDirection.ts has said since July. Every mode that reorders
+     is therefore a SECOND pass, which is why all three read as broken:
+       off            painted verbatim              -> CORRECT, left aligned
+       auto_per_line  browser reverses the run      -> reversed, right
+       bidi_reorder   our pass reverses again       -> reversed, left
+     Yossi's own description sealed it: switch modes and the letters are right
+     for one frame (old buffer, new direction) then flip (new bytes).
+
+TWO OF MY OWN DEFECTS, BOTH FROM THE SAME HOUR  (1) `dir` sets a PARAGRAPH's
+     base direction; UAX #9 L2 still reverses RTL runs inside it. So
+     `tui_owns_bidi` forcing dir="ltr" never suppressed anything — only
+     `unicode-bidi: bidi-override` does. (2) The migration copied the flat
+     `tui_owns_bidi` into both profiles, and that field's serde default is
+     false, so an ABSENT key was written as a decision and silently overrode
+     the local default I had added minutes earlier. Both fixed.
+
+AND THEN THE LOG SAID THE WHOLE MECHANISM IS DEAD  Every `rtl-dirs` line in
+     Yossi's debug.log reads `tui=0`, on every pane and both profiles, and the
+     file holds not one `tui-owns-bidi` transition. The detector reads the
+     terminal title; inside zellij the title reaching ymux is zellij's own.
+     `tui_owns_bidi` has never fired — the checkbox promised something that
+     could not happen. FOLLOWUPS P1, with the fix sketched: the ymux Claude
+     hooks already run per pane with YMUX_PANE_ID and are a signal that
+     survives a multiplexer.
+
+WHAT SHIPPED  local defaults to rtl_mode="off" — the only mode that applies no
+     bidi at all, which is what a pre-reordered stream needs, and the mode
+     Yossi confirmed works. REMOTE UNTOUCHED: it delivers logical order and is
+     correct on auto_per_line. The two profiles now genuinely differ, and a
+     test asserts they must.
+
+THE COST, STATED NOT HIDDEN  Shell output is logical, so Hebrew at a plain
+     PowerShell prompt renders reversed under "off". One static mode cannot
+     serve both a logical shell and a pre-reordered TUI. Only the dynamic
+     switch can, and that is the P1 above.
+
+ALSO CONFIRMED FROM THE LOG  stripPaneFrame works (local rows=31 rtl=1, not
+     rtl=all), and the live renderer swap works cleanly
+     (`rtl-renderer ... now=off renderer=webgl`).
+
+CHECKS  275 cargo tests, 76 JS tests, tsc + vite clean.

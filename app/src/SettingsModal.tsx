@@ -217,7 +217,7 @@ type HooksNotifSubTab = "hooks" | "sound";
  *  `direction_policy` is `any_rtl` on BOTH: it is the pre-2026-08-19 rule, and
  *  remote panes are known to render Hebrew correctly on it. */
 const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
-  local: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: true, direction_policy: "any_rtl" },
+  local: { rtl_mode: "off", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: true, direction_policy: "any_rtl" },
   remote: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false, direction_policy: "any_rtl" },
 };
 

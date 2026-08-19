@@ -180,10 +180,12 @@ export type DirectionPolicy = "any_rtl" | "tui_dominance";
  */
 const g_rtl: Record<RtlProfileKind, RtlProfileSettings> = {
   local: {
-    rtlMode: "auto_per_line",
+    // "off" — the one mode that applies no bidi at all. Claude Code on Windows
+    // writes RTL pre-reordered, so anything else is a second pass. See
+    // `default_local_rtl` in settings.rs for the measurement and the cost.
+    rtlMode: "off",
     autoDirection: true,
     mirrorArrowsRtl: true,
-    // See `default_local_rtl` in settings.rs for the measurement behind this.
     tuiOwnsBidi: true,
     directionPolicy: "any_rtl",
   },
