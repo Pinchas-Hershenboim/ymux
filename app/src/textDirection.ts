@@ -124,6 +124,60 @@ const FENCE_START = /^\s*```/;
 const HAS_TABLE_BAR = /[│|]/;
 
 /**
+ * A pane frame is not a table. Strip it before anything classifies rows.
+ *
+ * 2026-08-19, reproduced offline before this was written: zellij draws a frame
+ * around every pane, so EVERY row carries a vertical bar at both edges —
+ * including Claude Code's status line, the row that holds the cwd. classifyRow
+ * then calls every row a border, detectRowDirections merges the whole pane
+ * into ONE block, and three Hebrew letters in the cwd paint the entire screen
+ * RTL. 13 of 15 rows flipped in the repro, which is exactly what Yossi's
+ * screenshot showed: English banner text mirrored run by run, the frame bars
+ * landing on the wrong side.
+ *
+ * It is NOT a local-vs-remote problem and it is not new. An SSH pane under
+ * tmux has no per-pane frame, which is why remote never showed it, and the
+ * behaviour is the same on main — zellij going in front of local panes is only
+ * what made it visible.
+ *
+ * The block rule exists so a Hebrew TABLE keeps its columns. A frame wraps the
+ * whole viewport, which is how the two are told apart here: when most rows are
+ * bar-delimited at BOTH edges, those outer bars are a frame. Removing just
+ * them leaves any real table inside the frame still grouped by its inner bars.
+ *
+ * Returns the rows unchanged when no frame is detected, so the common case
+ * costs one scan and nothing else.
+ */
+const FRAME_BAR = /[\u2502|]/;
+export function stripPaneFrame(rows: string[]): string[] {
+  const n = rows.length;
+  // Below this a "frame" cannot be told from a short table with an outer
+  // border, and getting it wrong there costs more than the frame does.
+  if (n < 6) return rows;
+  const framed: boolean[] = rows.map((r) => {
+    const t = r.trim();
+    return t.length >= 2 && FRAME_BAR.test(t[0]) && FRAME_BAR.test(t[t.length - 1]);
+  });
+  let count = 0;
+  for (const f of framed) if (f) count++;
+  // A frame surrounds the pane, so the only rows outside it are chrome the
+  // terminal draws around the pane (zellij's tab bar and status bar).
+  if (count < Math.max(5, Math.ceil(n * 0.7))) return rows;
+  return rows.map((r, i) => {
+    if (!framed[i]) return r;
+    const lead = r.length - r.trimStart().length;
+    const trail = r.length - r.trimEnd().length;
+    const body = r.slice(lead, r.length - trail);
+    // Keep the original padding: column positions still matter to classifyRow
+    // (a border row is recognised by how many box glyphs it holds) and to
+    // anything downstream that indexes by column.
+    return (
+      r.slice(0, lead) + " " + body.slice(1, -1) + " " + r.slice(r.length - trail)
+    );
+  });
+}
+
+/**
  * Classify a single row by shape (not by direction). See detectRowDirections
  * for how these roles are grouped into blocks.
  */
@@ -171,6 +225,11 @@ export function detectRowDirections(
   const n = rows.length;
   if (n === 0) return [];
   const result: (("ltr" | "rtl") | null)[] = new Array(n).fill(null);
+
+  // A pane frame would otherwise make every row a "border" and merge the whole
+  // screen into one block — see stripPaneFrame. Everything below reads `rows`,
+  // which from here on is the framed content without its outer bars.
+  rows = stripPaneFrame(rows);
 
   const roles: BlockRole[] = rows.map(classifyRow);
   const hasRtl: boolean[] = rows.map((t) => HEBREW.test(t) || ARABIC.test(t));

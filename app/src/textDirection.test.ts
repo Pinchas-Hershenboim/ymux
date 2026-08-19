@@ -11,6 +11,7 @@ import {
   nextTuiOwnsBidi,
   strongCounts,
   RTL_DOMINANCE,
+  stripPaneFrame,
 } from "./textDirection.ts";
 
 const LTR = "ltr";
@@ -94,6 +95,96 @@ test("dominance: exactly at the threshold, Hebrew wins", () => {
   // One more Latin char and it tips.
   assert.equal(detectDirection("abcdefghi של", true), LTR);
 });
+
+// -- A PANE FRAME IS NOT A TABLE ---------------------------------------------
+//
+// Reproduced offline from Yossi's screenshot before the fix was written:
+// zellij frames every pane, so every row carries a bar at both edges, the
+// block rule merged the whole screen into one block, and three Hebrew letters
+// in Claude's status line painted 13 of 15 rows RTL. The English banner came
+// out mirrored run by run with the frame bars on the wrong side.
+const BAR = "\u2502";
+const framedRow = (inner: string) => BAR + " " + inner.padEnd(75) + BAR;
+const ZELLIJ_SCREEN = [
+  "Zellij (ymux-p_18cd12af41ae2570_0)  Tab #1",
+  framedRow("Claude Code v2.1.121"),
+  framedRow("Welcome back Yossi!"),
+  framedRow("Tips for getting started"),
+  framedRow("Run /init to create a CLAUDE.md file with instructions for Claude"),
+  framedRow("What's new"),
+  framedRow("Claude in Chrome is now generally available"),
+  framedRow("/release-notes for more"),
+  framedRow("C:\\Users\\mlastudent371"),
+  framedRow(""),
+  framedRow("Using claude-fable-5[1m] (from .claude/settings.json)"),
+  framedRow("Update available! Run: winget upgrade Anthropic.ClaudeCode  ~ \u05e6\u05d1\u05e8\u00b7full"),
+  framedRow(""),
+  "Ctrl + <g> LOCK  <p> PANE  <t> TAB",
+];
+
+test("frame: one Hebrew word must not flip a whole framed pane", () => {
+  const dirs = detectRowDirections(ZELLIJ_SCREEN);
+  const rtlRows = dirs.filter((d) => d === RTL).length;
+  // Exactly one: the status row, which really does hold Hebrew. Everything
+  // else is English and stays put. Before the fix this was 13.
+  assert.equal(rtlRows, 1, `expected 1 rtl row, got ${rtlRows}: ${dirs.join(",")}`);
+  assert.equal(dirs[2], LTR, '"Welcome back Yossi!" is English');
+  assert.equal(dirs[11], RTL, "the row holding \u05e6\u05d1\u05e8 is the one that flips");
+});
+
+test("frame: stripping removes only the outer bars, keeping columns", () => {
+  const out = stripPaneFrame(ZELLIJ_SCREEN);
+  assert.equal(out.length, ZELLIJ_SCREEN.length);
+  // Same width, so anything indexing by column still lines up.
+  for (let i = 0; i < out.length; i++) {
+    assert.equal(out[i].length, ZELLIJ_SCREEN[i].length, `row ${i} width`);
+  }
+  assert.ok(!out[2].includes(BAR), "the frame bars are gone from a content row");
+  assert.ok(out[2].includes("Welcome back Yossi!"), "the content survives");
+  assert.equal(out[0], ZELLIJ_SCREEN[0], "rows outside the frame are untouched");
+});
+
+test("frame: a real table inside a frame still groups as a table", () => {
+  // The block rule exists for this. Stripping the OUTER bars must not cost it:
+  // the table's own inner bars are what group it, and a Hebrew cell still
+  // drags the whole table RTL so its columns stay coherent.
+  const screen = [
+    "Zellij  Tab #1",
+    framedRow("| Name | \u05e2\u05e8\u05da |"),
+    framedRow("|------|-----|"),
+    framedRow("| a    | 1   |"),
+    framedRow("plain english line"),
+    framedRow("another english line"),
+    framedRow("a third english line"),
+    "Ctrl + <g> LOCK",
+  ];
+  const dirs = detectRowDirections(screen);
+  assert.deepEqual(dirs.slice(1, 4), [RTL, RTL, RTL], "the table flips entire");
+  assert.deepEqual(dirs.slice(4, 7), [LTR, LTR, LTR], "the prose below does not");
+});
+
+test("frame: a short screen is left alone", () => {
+  // Under the row floor a "frame" cannot be told from a small bordered table,
+  // and mistaking one for the other costs more than the frame does.
+  const rows = ["| a |", "| b |", "| c |"];
+  assert.deepEqual(stripPaneFrame(rows), rows);
+});
+
+test("frame: an unframed screen is returned untouched", () => {
+  // The common case — an SSH pane under tmux has no per-pane frame. One scan,
+  // same array back.
+  const rows = [
+    "$ ls -la",
+    "total 48",
+    "drwxr-xr-x  1 user user  4096 Aug 19 06:00 .",
+    "-rw-r--r--  1 user user   220 Aug 19 06:00 .bashrc",
+    "$ echo \u05e9\u05dc\u05d5\u05dd",
+    "\u05e9\u05dc\u05d5\u05dd",
+    "$ ",
+  ];
+  assert.deepEqual(stripPaneFrame(rows), rows);
+});
+
 
 // -- REMOTE PARITY WITH main -------------------------------------------------
 //
