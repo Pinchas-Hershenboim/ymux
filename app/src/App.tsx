@@ -108,6 +108,7 @@ import {
 import { createLogger, setLoggerLevel } from "./logger";
 import "@xterm/xterm/css/xterm.css";
 import "./App.css";
+import "./sidebar.css"; // the left rail, split out of App.css (must load after it, before tokens.css)
 import "./tokens.css"; // Design Pass 01 (#2): --wmx-* tokens + dark/light mode (must load after App.css)
 import "./themes-redesign.css"; // Claude Design handoff: 4 direction themes (must load after tokens.css)
 

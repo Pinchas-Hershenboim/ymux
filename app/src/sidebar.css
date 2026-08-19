@@ -1,0 +1,762 @@
+/* ─────────────────────────────────────────────────────────────────────
+   ymux — sidebar
+
+   Everything that paints the left rail: the frame, the workspace rows,
+   group headers, project-folder/worktree rows, the ICONS-mode strip and
+   the drag-reorder indicators. Split out of App.css, where it was spread
+   across six non-contiguous regions of a 7000-line file.
+
+   LOAD ORDER MATTERS. App.tsx imports this immediately after App.css and
+   before tokens.css / themes-redesign.css, so the token alias layer and
+   the four design directions still override everything here.
+   ───────────────────────────────────────────────────────────────────── */
+
+/* ─── Shell: resizer, collapse button, ICONS mode ─── */
+
+/* Phase 62.B (item I): sidebar/main drag handle. Straddles the boundary
+   (inset-inline-start set inline to the live sidebar width). Works in
+   LTR + RTL via logical inset; the drag math is direction-aware. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  margin-inline-start: -3px;
+  z-index: 50;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 80ms ease;
+}
+.sidebar-resizer:hover { background: rgba(122, 162, 247, 0.5); }
+
+/* Phase 62.B (item I): collapse / expand toggle in the sidebar header. */
+.sidebar-collapse-btn {
+  align-self: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--w-border);
+  border-radius: 4px;
+  color: var(--w-text-dim, #7d8590);
+  cursor: pointer;
+  font-size: 13px;
+}
+.sidebar-collapse-btn:hover {
+  color: var(--w-text);
+  background: var(--w-surface-hi);
+}
+
+/* Phase 62.B (item I): action-button emoji + label. Full mode shows
+   both inline; icons mode (below) hides the label. */
+.ws-action-emoji { margin-inline-end: 6px; }
+
+/* Phase 62.B (item I): ICONS mode — narrow strip; workspace dots only
+   (full name on hover via the row title); action buttons become a
+   vertical stack of centered emoji icons. No nested pane lists. */
+.sidebar.icons .sidebar-brand,
+.sidebar.icons .ws-name,
+.sidebar.icons .ws-badge,
+.sidebar.icons .ws-port-badge,
+.sidebar.icons .ws-worktree-chip,
+.sidebar.icons .ws-live,
+.sidebar.icons .ws-action-label { display: none; }
+.sidebar.icons .ws-action-emoji { margin-inline-end: 0; font-size: 16px; }
+.sidebar.icons .sidebar-header { padding: 12px 0; align-items: center; }
+.sidebar.icons .sidebar-brand-row { justify-content: center; }
+.sidebar.icons .sidebar-list { padding: 6px 0; }
+.sidebar.icons .ws-item {
+  justify-content: center;
+  gap: 0;
+  padding: 7px 0;
+}
+/* Bigger centered colored circle = the workspace's icon. */
+.sidebar.icons .ws-dot { width: 18px; height: 18px; }
+/* Active workspace = glow ring around its dot (the inset bar + tint
+   from full mode are suppressed in the strip). */
+.sidebar.icons .ws-item.active {
+  background: transparent;
+  box-shadow: none;
+}
+.sidebar.icons .ws-item.active .ws-dot {
+  box-shadow: 0 0 0 2px var(--w-surface), 0 0 0 4px var(--w-accent),
+    0 0 8px 1px rgba(122, 162, 247, 0.6);
+}
+/* Phase 62.C: action buttons → a UNIFORM vertical stack of 32×32
+   icon squares (48×48 footprint incl. the 8px gap), all identical
+   regardless of their full-mode styling (Notes/Settings/Ports are
+   transparent halves; New/Provision are accent/bordered blocks — all
+   normalized here). Consistent transparent rest + highlighted hover. */
+.sidebar.icons .sidebar-actions-row {
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  border-top: none;
+}
+.sidebar.icons .ws-action-half,
+.sidebar.icons .ws-add {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin: 8px auto;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--w-text-dim, #7d8590);
+  box-shadow: none;
+}
+.sidebar.icons .ws-action-half:hover,
+.sidebar.icons .ws-add:hover {
+  background: var(--w-surface-hi);
+  color: var(--w-text);
+  border-color: var(--w-border);
+}
+
+/* Phase 65.P removed the "hidden" sidebar mode and its reopen tab
+   (.sidebar.hidden / .sidebar-reopen). Only full / icons remain. */
+
+/* ─── Frame, list, rows, project folders + worktrees ─── */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--w-surface);
+  border-inline-end: 1px solid var(--w-border);
+  font-size: var(--w-fs-lg);
+  overflow: hidden;
+}
+
+.sidebar-header {
+  /* Phase 62.C: vertical stack — brand row on top, collapse arrow below
+     on its own line. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--w-border);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--w-text);
+  font-family: var(--w-font-mono);
+  font-size: var(--w-fs-lg);
+}
+.sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sidebar-header .sidebar-logo {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.sidebar-header .sidebar-brand {
+  background: linear-gradient(90deg, var(--w-accent), var(--w-success));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ws-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--w-r-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background 80ms ease, color 80ms ease;
+  color: var(--w-text);
+}
+
+.ws-item:hover { background: var(--w-surface-hi); }
+.ws-item.active {
+  background: rgba(122, 162, 247, 0.12);
+  box-shadow: inset 2px 0 0 var(--w-accent);
+}
+.ws-item.active .ws-name { color: var(--w-text); }
+
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* -- project folders + worktrees ------------------------------------
+   A pinned repo renders as a sidebar SECTION (sibling to a workspace
+   group) whose children are workspaces, one per git worktree. Rows for
+   worktrees that already have a workspace are ordinary .ws-item rows;
+   the dim .pf-unopened rows are the ones you click to create one. */
+.pf-header { cursor: pointer; }
+.pf-chevron,
+.pf-icon,
+.wt-icon { display: flex; flex-shrink: 0; opacity: 0.75; }
+
+/* Header buttons stay out of the way until hover — the tree is scanned
+   far more often than it is edited. */
+.pf-btn {
+  background: transparent;
+  border: none;
+  color: var(--w-text-faint);
+  padding: 0 3px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  font-size: var(--w-fs-xs);
+  transition: opacity 80ms ease, color 80ms ease, background 80ms ease;
+}
+.pf-header:hover .pf-btn,
+.ws-item:hover .pf-btn { opacity: 1; }
+.pf-btn:hover { color: var(--w-text); background: var(--w-surface); }
+.pf-btn:focus-visible { opacity: 1; }
+
+/* Tree depth. Scoped to .full on purpose: `.sidebar.icons .ws-item`
+   centers its content, and an inline-start pad would shove every nested
+   row off-center. `padding-inline-start` rather than margin so the row's
+   hover/active background still spans the full width, and so RTL mirrors
+   for free. */
+.sidebar.full .ws-item,
+.sidebar.full .pf-hint {
+  padding-inline-start: calc(10px + var(--ws-depth, 0) * 14px);
+}
+
+/* Collapse toggle on any row that has a subtree. A <button> so the
+   drag-start handler's interactive-child exclusion already skips it. */
+.ws-chevron {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0;
+  margin-inline-start: -4px;
+  border: none;
+  background: none;
+  color: var(--w-text-dim);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.ws-chevron:hover { opacity: 1; color: var(--w-text); }
+.sidebar.icons .ws-chevron { display: none; }
+
+/* A worktree with no workspace yet. Indented one level past its repo;
+   margin-inline-start so it reads correctly in RTL. */
+.pf-unopened {
+  margin-inline-start: 10px;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: var(--w-fs-sm);
+  color: var(--w-text-dim);
+  opacity: 0.75;
+}
+.pf-unopened:hover { opacity: 1; }
+.wt-branch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+.wt-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: end;
+  color: var(--w-text-faint);
+  font-size: var(--w-fs-xs);
+}
+.wt-flag { flex-shrink: 0; font-size: var(--w-fs-xs); }
+.pf-unopened.prunable .wt-branch { text-decoration: line-through; opacity: 0.7; }
+
+.pf-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 16px;
+  font-size: var(--w-fs-xs);
+  color: var(--w-text-faint);
+  /* A git error can be long; wrap instead of clipping it to nothing. */
+  overflow-wrap: anywhere;
+}
+.pf-hint.pf-error { color: var(--w-error); }
+/* Keep a hint on ONE line. git's messages are long enough to wrap into a
+   three-line red slab that reads as a crash rather than a status; the
+   full text stays available as the title. */
+.pf-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pf-hint > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Path field + optional native browse button, on one line. Paths are
+   logically LTR even in an RTL UI (same rule as .ticket-modal-code). */
+/* A pinned repo: folder glyph with a small git mark riding on it, so a
+   project folder is distinguishable from any other workspace at a
+   glance. The badge is decorative — the row's title carries the words. */
+.pf-icon-repo { position: relative; }
+.pf-git-badge {
+  position: absolute;
+  inset-inline-end: -4px;
+  bottom: -3px;
+  display: flex;
+  color: var(--w-accent);
+  background: var(--w-bg);
+  border-radius: 50%;
+  padding: 1px;
+}
+
+/* ─── Row contents: name, badge, live dot, menu, add ─── */
+
+.ws-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--w-text);
+}
+
+.ws-badge {
+  font-size: var(--w-fs-xs);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--w-border);
+  color: var(--w-text-dim);
+  font-family: var(--w-font-mono);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.ws-badge.local { background: #1f2530; color: var(--w-text-dim); }
+.ws-badge.ssh { background: rgba(122, 162, 247, 0.15); color: var(--w-accent); }
+/* Phase 80: WSL-tmux workspaces. */
+.ws-badge.wsl { background: rgba(158, 206, 106, 0.15); color: var(--w-success); }
+.ws-badge.browser { background: rgba(187, 154, 247, 0.15); color: var(--w-purple); }
+.ws-badge.split { background: rgba(78, 201, 176, 0.15); color: var(--w-success); }
+
+.ws-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--w-success);
+  box-shadow: 0 0 6px rgba(78, 201, 176, 0.7);
+  flex-shrink: 0;
+  animation: pulse-live 2.4s ease-in-out infinite;
+}
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.ws-menu {
+  position: absolute;
+  top: 100%;
+  inset-inline-start: 12px;
+  z-index: 10;
+  background: var(--w-surface-hi);
+  border: 1px solid var(--w-border-hi);
+  border-radius: var(--w-r-md);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 130px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  animation: pop-in 90ms ease-out;
+}
+@keyframes pop-in {
+  from { transform: translateY(-2px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.ws-menu button {
+  background: transparent;
+  border: none;
+  color: var(--w-text);
+  text-align: start;
+  padding: 6px 9px;
+  font-size: var(--w-fs-md);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.ws-menu button:hover { background: rgba(122, 162, 247, 0.14); }
+.ws-menu button.danger { color: var(--w-error); }
+.ws-menu button.danger:hover { background: rgba(247, 118, 142, 0.14); }
+
+.ws-add {
+  margin: 8px;
+  background: transparent;
+  color: var(--w-text-dim);
+  border: 1px dashed var(--w-border-hi);
+  border-radius: var(--w-r-sm);
+  padding: 7px;
+  font-size: var(--w-fs-md);
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+.ws-add:hover {
+  background: rgba(122, 162, 247, 0.08);
+  color: var(--w-accent);
+  border-color: var(--w-accent);
+  border-style: solid;
+}
+
+/* ─── Empty state card ─── */
+
+/* Sidebar CTA card — shown in .sidebar-list when there are no workspaces. */
+.sidebar-empty-card {
+  margin: 8px 6px;
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  border-radius: 10px;
+  background: var(--w-surface-hi);
+  border: 1px solid var(--w-border-hi);
+  animation: welcome-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.sidebar-empty-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  border-radius: 12px;
+  background: var(--w-bg);
+  border: 1px solid var(--w-border-hi);
+  color: var(--w-accent);
+  margin-bottom: 2px;
+}
+.sidebar-empty-title { font-size: 13px; font-weight: 600; color: var(--w-text); }
+.sidebar-empty-desc { font-size: 11px; color: var(--w-text-dim); line-height: 1.4; }
+.sidebar-empty-card .primary { width: 100%; margin-top: 8px; }
+
+/* ─── RTL: active-row inset bar ─── */
+
+[dir="rtl"] .ws-item.active {
+  box-shadow: inset -2px 0 0 var(--w-accent);
+}
+
+/* ─── Attention: waiting dot ─── */
+
+.ws-item.has-waiting {
+  position: relative;
+}
+.ws-item.has-waiting::after {
+  content: "";
+  position: absolute;
+  inset-inline-end: 10px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--w-warning);
+  box-shadow: 0 0 6px 1px rgba(224, 175, 104, 0.7);
+  animation: ymux-attn-dot 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ─── Attention: hook pulse ─── */
+
+.ws-item.hook-pulse {
+  animation: ymux-attn-pulse 2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-item.hook-pulse {
+    animation: none;
+    box-shadow: inset 0 0 0 2px rgba(224, 175, 104, 0.55);
+  }
+}
+
+/* ─── Per-workspace identity colour ─── */
+
+.ws-item[data-has-color="true"] {
+  border-inline-start: 3px solid var(--ws-color);
+  background: color-mix(in srgb, var(--ws-color) 12%, transparent);
+}
+.ws-item[data-has-color="true"].active {
+  background: color-mix(in srgb, var(--ws-color) 22%, transparent);
+}
+
+/* ─── Port-forward badge ─── */
+
+/* Phase 36.A: inline per-workspace port-forward badge on the tab. */
+.ws-port-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--w-accent, #3b82f6) 22%, transparent);
+  color: var(--w-text, #e6edf3);
+  cursor: pointer;
+  margin-inline-start: 4px;
+  white-space: nowrap;
+}
+.ws-port-badge:hover {
+  background: var(--w-accent, #3b82f6);
+  color: #fff;
+}
+
+/* ─── Bottom action row ─── */
+
+/* Phase 39: sidebar paired action row (Notes + Settings). */
+.sidebar-actions-row { display: flex; gap: 1px; border-top: 1px solid var(--w-border, #21262d); }
+.ws-action-half {
+  flex: 1;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--w-text-dim, #7d8590);
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: center;
+}
+.ws-action-half:hover { color: var(--w-text, #e6edf3); background: var(--w-surface-hi, #1f2630); }
+
+/* ─── Notification badge, groups, drag & drop ─── */
+
+/* Sidebar aggregate badge — count of panes with pending activity
+   notifications across the whole workspaces list. Rendered in the
+   sidebar header brand row. Hidden when the count is 0. Logical
+   inset used elsewhere in the header carries through, so no
+   [dir="rtl"] override needed here. */
+.sidebar-notif-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-inline-start: 6px;
+  border-radius: 9px;
+  background: var(--w-warning, #e0af68);
+  color: #0b0d16;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 0 6px 1px rgba(224, 175, 104, 0.45);
+}
+
+/* ─── cmux-A A2: workspace groups ──────────────────────────────────
+   Collapsible sidebar sections. Header carries color swatch + name +
+   count + chevron. When collapsed, the group's workspace rows are
+   simply not rendered (Solid conditional). Uses logical padding so
+   RTL flips automatically. */
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  padding-inline-start: 10px;
+  margin-top: 4px;
+  border-radius: var(--w-r-sm, 4px);
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--w-text-dim, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.group-header:hover {
+  background: color-mix(in srgb, var(--w-text, #e6edf3) 6%, transparent);
+}
+.group-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--group-color, #6b7682);
+  flex-shrink: 0;
+}
+.group-header-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--w-text, #e6edf3);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-header-count {
+  font-size: 11px;
+  color: var(--w-text-dim, #999);
+  flex-shrink: 0;
+}
+.group-header-chevron {
+  font-size: 10px;
+  color: var(--w-text-dim, #999);
+  transition: transform 120ms ease;
+  flex-shrink: 0;
+}
+.group-header.group-collapsed .group-header-chevron {
+  transform: rotate(-90deg);
+}
+[dir="rtl"] .group-header.group-collapsed .group-header-chevron {
+  transform: rotate(90deg);
+}
+.group-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--w-surface, #161b22);
+  border: 1px solid var(--w-border, #21262d);
+  border-radius: var(--w-r-sm, 4px);
+  min-width: 160px;
+  padding: 4px 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.group-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: 0;
+  color: var(--w-text, #e6edf3);
+  text-align: start;
+  cursor: pointer;
+  font-size: 13px;
+}
+.group-menu button:hover {
+  background: color-mix(in srgb, var(--w-text, #e6edf3) 8%, transparent);
+}
+.group-menu button.danger { color: var(--w-error, #f7768e); }
+.group-swatch-picker {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+  flex-wrap: wrap;
+}
+.group-swatch-picker button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+.group-swatch-picker button.selected {
+  border-color: var(--w-text, #e6edf3);
+}
+.group-inline-input {
+  width: 100%;
+  padding: 4px 6px;
+  background: var(--w-bg, #0e1116);
+  border: 1px solid var(--w-border-hi, #21262d);
+  border-radius: var(--w-r-sm, 4px);
+  color: var(--w-text, #e6edf3);
+  font-size: 13px;
+  box-sizing: border-box;
+  margin-top: 4px;
+}
+/* Icons-mode sidebar hides labels; groups become just a compact
+   chevron+swatch row so the sidebar stays scannable at 48px wide. */
+.sidebar.icons .group-header-name,
+.sidebar.icons .group-header-count {
+  display: none;
+}
+
+/* ─── beta.3 (ws-dragdrop): drag-and-drop reordering ─────────────────
+   Drop indicators use ::before / ::after 2px bars that render at the
+   top or bottom of the target. Because they're horizontal, they render
+   identically in LTR and RTL — the vertical layout of the sidebar is
+   the reorder axis regardless of writing direction.
+   The dragging element gets reduced opacity so the user can see what they
+   picked up; a `.ws-ghost` clone follows the cursor (pointer-based drag has no
+   native drag-image). */
+.ws-item,
+.group-header {
+  cursor: grab;
+}
+.ws-item.dragging,
+.group-header.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+/* While a pointer drag is active the body suppresses text selection and forces
+   the grabbing cursor everywhere (the pointer often leaves the source item). */
+body.ymux-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+/* Floating clone that follows the cursor during a pointer drag. */
+.ws-ghost {
+  position: fixed;
+  z-index: 2000;
+  pointer-events: none;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: var(--w-surface-hi, #2a2f3a);
+  color: var(--w-text, #e6e6e6);
+  border: 1px solid var(--w-accent, #7aa2f7);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+/* Horizontal 2px bar above/below the target, absolutely positioned so
+   it never re-flows the list (a reflow-during-drag would repeatedly
+   swap the item under the cursor and set off oscillation). */
+.ws-item.drop-above::before,
+.ws-item.drop-below::after,
+.group-header.drop-above::before,
+.group-header.drop-below::after {
+  content: "";
+  position: absolute;
+  inset-inline: 4px;
+  height: 2px;
+  background: var(--w-accent, #7aa2f7);
+  border-radius: 1px;
+  pointer-events: none;
+  box-shadow: 0 0 6px rgba(122, 162, 247, 0.6);
+}
+.ws-item.drop-above::before,
+.group-header.drop-above::before { top: -1px; }
+.ws-item.drop-below::after,
+.group-header.drop-below::after { bottom: -1px; }
+/* group headers are position-static by default; anchor for the pseudos. */
+.group-header { position: relative; }
+/* Whole-group highlight when a workspace hovers a group header. The
+   background tint reads as "release here to add to this group". */
+.group-header.drop-into {
+  background: color-mix(in srgb, var(--w-accent, #7aa2f7) 15%, transparent);
+  outline: 1px dashed var(--w-accent, #7aa2f7);
+  outline-offset: -1px;
+}
+/* Small transition on background/transform so post-drop reordering
+   settles smoothly instead of snapping. Kept short — long animations
+   fight the pointer during rapid consecutive drags. */
+.ws-item, .group-header {
+  transition: background 80ms ease, color 80ms ease, transform 120ms ease,
+    opacity 120ms ease;
+}
+
