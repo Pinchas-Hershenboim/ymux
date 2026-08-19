@@ -3202,3 +3202,75 @@ REGRESSION, CAUGHT IN ONE BUILD  "עכשיו זה מיושר לשמאל - וגם
      legacy force-everything-LTR effect stays gated behind its setting and
      default-off. 3 new tests pin the ungated path, including one that asserts
      all 24 table cases are identical with the gate off.
+
+================================================================================
+2026-08-19 (cont.)  RTL round 3 — separating remote from local for real
+================================================================================
+
+THE INSTRUCTION  "הרי מקודם הכל במרוחק עבד כמו שצריך ... אתה יכול להשוות מול
+     MAIN ... אתה רק צריך לוודא שיש הפרדה מוחלטת בין המרוחק למקומי - ואז
+     השינויים שתרצה לעשות על המקומי לא יפגעו במרוחק." Right on both counts.
+
+MEASURED INSTEAD OF GUESSED  `git diff origin/main...HEAD` over the four
+     RTL-relevant frontend files: the entire delta in the shared direction
+     module is ONE flag (`dominance`) on detectDirection, and bidi.ts is
+     byte-identical to main. Remote's other profile defaults already match
+     main's globals. So the regression was one line — applyRowDirections passed
+     `this.tuiOwnsBidi` as that flag, and the OSC title propagates over SSH
+     (that is HOW Claude Code is detected), so the vote fired on remote panes.
+
+     Two rounds of reading screenshots; one `git diff` settled it.
+
+ALSO ASKED, AND THE ANSWER WAS NO  "בקוד לפני כן התייחסו אליה בנפרד?" — did the
+     code ever treat Claude's status bar as its own case? It did not. main has
+     exactly one mechanism, `tuiOwnsBidi`, and it is per-PANE and default-off.
+     The per-row separation was my invention, not a restoration. Dropped.
+
+     Also asked whether the remote pane had had its settings changed while
+     open — that would have made it the staleRenderer hole below. Answer:
+     clean start, untouched. Ruled it out before writing any code.
+
+FIX  `directionPolicy` is a per-profile field: "any_rtl" (the pre-2026-08-19
+     rule, the default on BOTH) or "tui_dominance" (opt-in per profile, in
+     Settings so it is reachable rather than dead code). Keyed on which pane
+     CLASS this is, never on what runs inside it. Absent in an existing
+     settings.json it reads as any_rtl — an upgrade cannot move a pane onto the
+     newer rule silently.
+
+     Local's right alignment comes back as a consequence, keeping its current
+     letter ordering: it stays on auto_per_line, so DOM renderer + per-row dir
+     are untouched.
+
+GUARDS, BECAUSE A COMMENT IS WHAT FAILED  textDirection.test.ts now carries
+     main's detectDirection VERBATIM as a reference implementation and asserts
+     the default path equals it — all 24 table cases, the rows the vote was
+     written for, and a whole screen with a table and a fence so the block
+     rules are covered too. settings.rs asserts remote's default is any_rtl and
+     that an absent field deserializes to it.
+
+THE LOG LINE, FINALLY  FOLLOWUPS P2 said in the morning: "NOT diagnosed, and
+     deliberately not guessed at: the next step is a log line stating, per pane,
+     which renderer was chosen and what rtlModeAtConstruct was." It was never
+     added and two rounds were spent guessing instead. Added now: per pane the
+     profile, live mode, frozen rtlModeAtConstruct, the renderer ACTUALLY
+     loaded, policy and staleRenderer — knowable nowhere else, since half are
+     frozen at construction and half are read live. Plus a per-pass summary of
+     strong-character counts and resolved directions, emitted only when the
+     direction vector changes.
+
+     Metadata only (Rule #1): a count cannot reconstruct the characters it
+     counted. And it has to be a number in debug.log, because visual order
+     cannot be written down in a chat message — the message is itself reordered
+     by whatever renders it. That is why the screenshots kept being ambiguous.
+
+FOUND, NOT LANDED  flushPending reads the LIVE rtl mode while the renderer
+     choice and applyRowDirections read the FROZEN rtlModeAtConstruct. A pane
+     built as bidi_reorder/off (WebGL) whose profile later becomes
+     auto_per_line gets NEITHER — no reorder and no dir, i.e. zero bidi
+     handling, silently. `staleRenderer` computes that state and only a
+     Settings note mentions it. Yossi's clean start rules it out as today's
+     cause, so it waits for the regression to be confirmed fixed before it
+     lands as its own commit.
+
+CHECKS  272 cargo tests (2 new), 71 JS tests (3 new), tsc + vite clean,
+        i18n 1091 keys x 4 locales.
