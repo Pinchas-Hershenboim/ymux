@@ -50,7 +50,7 @@ export interface CreateWorkspaceInput {
 // the Connect (tmux) picker.
 // Phase 81: optional fields joined from the server-side
 // ~/.ymux/session-meta.json (absent on old-CLI servers). Display
-// precedence: label > claude_title > name.
+// precedence: label > auto_name > claude_title > name.
 export interface TmuxSessionInfo {
   name: string;
   created: number;
@@ -59,8 +59,12 @@ export interface TmuxSessionInfo {
   last_attached: number;
   /** Manual label the user gave the pane (shared across machines). */
   label?: string;
-  /** Claude session title extracted from the transcript. */
+  /** Claude session title extracted from the transcript — rewritten as
+   *  the conversation drifts, so it is NOT the session's identity. */
   claude_title?: string;
+  /** Stable "<two words> · <date time>" derived once from the session's
+   *  first prompt. This is the identity shown in the picker. */
+  auto_name?: string;
   /** Claude session UUID running inside this tmux session. */
   claude_session_id?: string;
   /** machine-id of the ymux install that created the session. */

@@ -1297,6 +1297,18 @@ async fn dispatch(
                             (e.started_at_ms(), e.avg_ms())
                         };
                         crate::emit_agent_run_event(app, pane, started, avg);
+                        // Session auto-name: the CLI derives it from the
+                        // first prompt and sends it under the existing
+                        // `claude_title` param, so the header carries it
+                        // from turn 1 instead of after the first `stop`.
+                        // Must happen BEFORE the early return below (this
+                        // hook never reaches the shared title handling).
+                        if let Some(new_t) = params.get("claude_title").and_then(|v| v.as_str()) {
+                            let new_t = new_t.trim();
+                            if !new_t.is_empty() {
+                                crate::update_pane_auto_title(state, app, pane, new_t);
+                            }
+                        }
                         return Ok(json!({ "request_id": req_id, "decision": "passive" }));
                     }
                     "stop" => {
