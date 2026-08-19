@@ -365,8 +365,15 @@
      instead of its tail. TechText's <bdi> runs are inner isolates and
      don't interfere. */
   unicode-bidi: plaintext;
+  /* …but NOT the alignment. Under `plaintext`, `text-align: start` resolves
+     per STRING, so in a Hebrew rail every latin name jumped to the far side
+     and the list grew a ragged 110-150px gutter while Hebrew names stayed
+     flush. Every name starts at the RAIL's start edge; only the direction
+     the glyphs run in — and therefore which end ellipsizes — is per-string. */
   text-align: start;
 }
+[dir="rtl"] .ws-name { text-align: right; }
+[dir="ltr"] .ws-name { text-align: left; }
 
 /* ─── The trailing status cluster ────────────────────────────────────
    Kind badge → ports → waiting → live, always in that order and always
