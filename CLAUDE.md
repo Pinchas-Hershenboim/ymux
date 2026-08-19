@@ -73,10 +73,12 @@ such. Do not "finish the rename" by deleting them; the removal is scheduled
 ## CI (GitHub Actions)
 
 - `ci-windows.yml` — cargo test + tsc + vite + go test on every push/PR to `main` (~5 min warm).
-- `build-windows.yml` — MSI/NSIS/exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded. Publishing stays manual (`docs/RELEASING.md`).
+- `build-windows.yml` — installers + exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded, and Rule #2's spirit by asserting the `$USERNAME` scrub landed. A tag gets MSI **and** NSIS (the published `manifest.json` advertises both); a `workflow_dispatch` gets NSIS only. Publishing stays manual (`docs/RELEASING.md`).
+- `warm-rust-cache.yml` — **the reason release builds are ~7 min and not ~15.** GitHub scopes cache *reads* to the current branch plus the default branch, and `build-windows.yml` never runs on `main`, so a build dispatched from a fresh branch used to compile all ~740 lockfile packages from scratch (measured: 813s cold vs 420s warm, same workflow, same week). This job keeps that release-profile cache alive on `main` under `shared-key: windows-release`, on Cargo.lock changes and twice weekly. If release builds suddenly go slow again, check this workflow first.
 - `build-macos-intel.yml` — the collaborator's macOS build, on `workflow_dispatch` or push to `macos-build`.
 - Steps that shell out to Windows PowerShell need `shell: cmd`. The default `run:` shell is pwsh, which rewrites `PSModulePath` for its children, so the 5.1 instance `build:linux-cli` spawns loses `Get-FileHash`.
-- `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `ymux-cli.exe` the Tauri build script requires.
+- `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `ymux-cli.exe` the Tauri build script requires. It stages by **sha256, not mtime**: everything in `resources/` is pulled into the app crate with `include_bytes!`/`include_str!`, and Cargo's staleness check is mtime-based, so re-copying a byte-identical file used to force a full rebuild of the 9.4k-line lib.
+- **A `.ps1` in this repo must keep non-ASCII out of code lines.** Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI, so an em-dash inside a string literal decodes to a smart quote that the tokenizer accepts as a string delimiter — the file then fails to parse with a cascade of errors pointing at innocent lines. Em-dashes in `#` comments are fine (already all over `build-linux-cli.ps1`); inside `"..."` they are a build-breaker.
 
 ## Communication
 

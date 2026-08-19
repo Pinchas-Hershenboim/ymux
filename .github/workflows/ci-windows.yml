@@ -33,8 +33,38 @@ jobs:
       # The actual fix for the Get-FileHash failure is `shell: cmd` on the
       # steps that shell out to it — see the Stage CLI resources step.
       PSModulePath: C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules
+      # `cargo test` runs the dev profile, where incremental is on by default.
+      # rust-cache deletes target/debug/incremental before saving, so CI was
+      # paying to write incremental state that is thrown away every run.
+      CARGO_INCREMENTAL: "0"
+      # PDB generation is disproportionately slow on Windows and nothing here
+      # reads them. Backtraces keep symbol names, they just lose line numbers.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+
+      # Fails in seconds on a syntax error that would otherwise surface
+      # fifteen minutes into a release build. `shell: powershell` is Windows
+      # PowerShell 5.1 on purpose: it is what actually runs these scripts, and
+      # it reads BOM-less UTF-8 as ANSI -- so a non-ASCII character inside a
+      # string literal (an em-dash decodes to a smart quote, which the
+      # tokenizer treats as a string delimiter) breaks parsing here and
+      # nowhere else.
+      - name: Parse-check the build scripts
+        shell: powershell
+        run: |
+          $bad = 0
+          Get-ChildItem app/scripts/*.ps1 | ForEach-Object {
+            $e = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$e)
+            if ($e.Count) {
+              $bad++
+              Write-Host ("FAIL {0}: line {1}: {2}" -f $_.Name, $e[0].Extent.StartLineNumber, $e[0].Message)
+            } else {
+              Write-Host ("ok   {0}" -f $_.Name)
+            }
+          }
+          exit $bad
 
       - uses: actions/setup-node@v4
         with:
@@ -45,10 +75,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       # Keyed on the lockfile: dependency builds dominate the runtime and
-      # only change when Cargo.lock does.
+      # only change when Cargo.lock does. Explicit shared-key so this job's
+      # dev-profile cache stays separate from the release-profile one that
+      # warm-rust-cache.yml maintains for build-windows.yml.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
+          shared-key: windows-dev
 
       - uses: actions/setup-go@v5
         with:
@@ -87,14 +120,13 @@ jobs:
         working-directory: app/src-tauri
         run: cargo test --workspace
 
-      # typescript is not currently a project dependency (BACKLOG P2), so
-      # install it here rather than silently skipping the type check.
-      # Delete this step once app/package.json carries it.
+      # `npm ci` installs the pinned typescript from app/package.json
+      # devDependencies. There used to be an `npm i --no-save typescript@5`
+      # here from when it wasn't a project dependency -- that also meant the
+      # type-check ran against a different minor than developers use locally.
       - name: Type-check
         working-directory: app
-        run: |
-          npm i --no-save typescript@5
-          npx tsc --noEmit -p tsconfig.json
+        run: npx tsc --noEmit -p tsconfig.json
 
       # esbuild strips types without checking them, so this is a bundling
       # check, not a type check — it catches bad imports and dead assets.

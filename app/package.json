@@ -9,6 +9,7 @@
     "build:linux-cli": "powershell -ExecutionPolicy Bypass -File ./scripts/build-linux-cli.ps1",
     "build": "npm run build:linux-cli && npm run build:frontend",
     "build:frontend": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "serve": "vite preview",
     "tauri": "tauri"
   },
