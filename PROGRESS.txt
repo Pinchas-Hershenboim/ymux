@@ -3184,3 +3184,21 @@ REAL BUG FOUND WHILE DOING IT  parse_zellij_sessions threw away the
 
 CHECKS  270 cargo tests pass (3 new), 65 JS tests (7 new), tsc + vite clean,
         i18n 1089 keys x 4 locales.
+
+REGRESSION, CAUGHT IN ONE BUILD  "עכשיו זה מיושר לשמאל - וגם במרוחקים זה מיושר
+     לשמאל". The dominance vote shipped UNGATED, so it applied to every row in
+     every pane: a Hebrew note on a long path, `ls` with one Hebrew filename,
+     and the SSH side that had been working fine went left-aligned too. My
+     regression, not a calibration miss.
+
+     The discriminator was never the ratio. It is whether something PLACED the
+     glyphs. `tuiOwnsBidi` — the title-based detection that already tells us
+     Claude Code holds the pane — is exactly that signal, and it was sitting
+     in the file the whole time; I reached for a global rule instead.
+
+     So the vote is now gated on it: positional rows (TUI in front) get the
+     dominance vote, text rows keep the pre-2026-08-19 "any Hebrew takes the
+     row". Note this uses the DETECTED state, not `bidiOwnedByTui` — the
+     legacy force-everything-LTR effect stays gated behind its setting and
+     default-off. 3 new tests pin the ungated path, including one that asserts
+     all 24 table cases are identical with the gate off.

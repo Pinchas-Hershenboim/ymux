@@ -1089,8 +1089,15 @@ export class TerminalInstance {
 
     // tuiOwnsBidi: the foreground TUI (Claude) already emitted visual-order
     // RTL — render rows plain LTR so we don't bidi it a second time.
+    //
+    // 2026-08-19: `tuiOwnsBidi` (the DETECTED state, not the gated legacy
+    // effect) also switches on the RTL_DOMINANCE vote. While a full-screen
+    // TUI owns the pane its rows are POSITIONAL — it chose the column of
+    // every glyph — so a status bar carrying three Hebrew letters in ~60
+    // Latin must not flip and mirror the layout. A plain shell line is text,
+    // not a layout, and keeps the older "any Hebrew takes the row" rule.
     const dirs = auto && !this.bidiOwnedByTui
-      ? detectRowDirections(texts)
+      ? detectRowDirections(texts, this.tuiOwnsBidi)
       : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
 
     for (let i = 0; i < children.length; i++) {

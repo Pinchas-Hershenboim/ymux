@@ -65,17 +65,18 @@ test("dominance: Claude's status row stays LTR (layout is positional)", () => {
   const { rtl, ltr } = strongCounts(CLAUDE_STATUS_ROW);
   assert.equal(rtl, 3); // צבר
   assert.ok(ltr > rtl * RTL_DOMINANCE, `expected ${ltr} > ${rtl * RTL_DOMINANCE}`);
-  assert.equal(detectDirection(CLAUDE_STATUS_ROW), LTR);
+  assert.equal(detectDirection(CLAUDE_STATUS_ROW, true), LTR);
 });
 
 test("dominance: the same row's Hebrew alone is still RTL", () => {
   // Proof the rule is about the ROW, not about צבר losing its direction.
-  assert.equal(detectDirection("צבר"), RTL);
+  assert.equal(detectDirection("צבר", true), RTL);
+  assert.equal(detectDirection("צבר", false), RTL);
 });
 
 test("dominance: a Hebrew note on a long path still wins", () => {
   // 4 Hebrew vs 14 Latin -- the near miss the factor is calibrated against.
-  assert.equal(detectDirection("2. /opt/wa/.shared.env - הערה"), RTL);
+  assert.equal(detectDirection("2. /opt/wa/.shared.env - הערה", true), RTL);
 });
 
 test("dominance: neutrals count for neither side", () => {
@@ -84,14 +85,38 @@ test("dominance: neutrals count for neither side", () => {
   const { rtl, ltr } = strongCounts("│ שלום │ [███░░] 12345 │");
   assert.equal(ltr, 0);
   assert.equal(rtl, 4);
-  assert.equal(detectDirection("│ שלום │ [███░░] 12345 │"), RTL);
+  assert.equal(detectDirection("│ שלום │ [███░░] 12345 │", true), RTL);
 });
 
 test("dominance: exactly at the threshold, Hebrew wins", () => {
   // 2 Hebrew, 8 Latin -> 2*4 >= 8. The tie goes to RTL on purpose.
-  assert.equal(detectDirection("abcdefgh של"), RTL);
+  assert.equal(detectDirection("abcdefgh של", true), RTL);
   // One more Latin char and it tips.
-  assert.equal(detectDirection("abcdefghi של"), LTR);
+  assert.equal(detectDirection("abcdefghi של", true), LTR);
+});
+
+test("gate: off a TUI screen the status row keeps the old rule", () => {
+  // The regression Yossi caught within one build: shipped ungated, the vote
+  // reached ordinary shell output too, and SSH panes that had been fine went
+  // left-aligned. A shell line is text, not a layout.
+  assert.equal(detectDirection(CLAUDE_STATUS_ROW), RTL);
+  assert.equal(detectDirection(CLAUDE_STATUS_ROW, false), RTL);
+});
+
+test("gate: a Hebrew note on a long shell path stays RTL, both ways", () => {
+  // Ratio 4:14 -- close enough to the threshold that the gate is what keeps
+  // it safe rather than the constant.
+  const line = "2. /opt/wa/.shared.env - הערה";
+  assert.equal(detectDirection(line, false), RTL);
+  assert.equal(detectDirection(line, true), RTL);
+});
+
+test("gate: default argument matches the pre-2026-08-19 behaviour", () => {
+  // Every case in the table above runs through the 1-arg form, so this is
+  // really a statement about all 24 of them: the gate defaults to off.
+  for (const [input, , label] of cases) {
+    assert.equal(detectDirection(input), detectDirection(input, false), label);
+  }
 });
 
 test("dominance: block vote uses the whole block, not one row", () => {
@@ -103,7 +128,7 @@ test("dominance: block vote uses the whole block, not one row", () => {
     "│ של                                                                 │",
     "└" + "─".repeat(60) + "┘",
   ];
-  assert.deepEqual(detectRowDirections(rows), [LTR, LTR, LTR, LTR]);
+  assert.deepEqual(detectRowDirections(rows, true), [LTR, LTR, LTR, LTR]);
 });
 
 test("dominance: a Hebrew box still flips entire", () => {
@@ -112,7 +137,7 @@ test("dominance: a Hebrew box still flips entire", () => {
     "│ שלום │",
     "└──────┘",
   ];
-  assert.deepEqual(detectRowDirections(rows), [RTL, RTL, RTL]);
+  assert.deepEqual(detectRowDirections(rows, true), [RTL, RTL, RTL]);
 });
 
 

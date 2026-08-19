@@ -59,6 +59,19 @@ const LATIN_G = /[A-Za-z]/g;
  * So Hebrew still wins by default, and loses only when the row is
  * overwhelmingly Latin -- the signature of TUI chrome, not of a sentence.
  *
+ * SCOPE, and this part was learned the hard way. Shipped unconditionally, the
+ * rule reached ordinary shell output too: `ls` with one Hebrew filename, a
+ * long path with a short Hebrew note. Yossi's report was immediate and
+ * covered both panes -- "עכשוו זה מיושר לשמאל - וגם במרוחקים זה מיושר לשמאל" --
+ * and the SSH side had been working. So the vote is gated: it applies only
+ * while a full-screen TUI owns the pane (`nextTuiOwnsBidi` below, which is
+ * how we already know Claude Code is in front). A shell line is text, and
+ * text keeps the pre-2026-08-19 rule: any Hebrew takes the row.
+ *
+ * The discriminator was never the ratio -- it is whether something PLACED the
+ * glyphs. The ratio is just how a placed row is recognised once we know we
+ * are looking at one.
+ *
  * This moves the PARAGRAPH direction only. An LTR row still has its RTL runs
  * reversed by the browser, so `צבר` reads correctly either way; what changes
  * is the alignment and which end the neutrals land on.
@@ -81,9 +94,12 @@ export function strongCounts(text: string): { rtl: number; ltr: number } {
   return { rtl: heb + ara, ltr: text.match(LATIN_G)?.length ?? 0 };
 }
 
-export function detectDirection(text: string): "ltr" | "rtl" {
+export function detectDirection(text: string, dominance = false): "ltr" | "rtl" {
   const { rtl, ltr } = strongCounts(text);
   if (rtl === 0) return "ltr"; // pure Latin / digits / symbols / empty
+  // Off a TUI-painted screen, ANY Hebrew still takes the row -- see the
+  // `dominance` note on detectRowDirections for why the two differ.
+  if (!dominance) return "rtl";
   return rtl * RTL_DOMINANCE >= ltr ? "rtl" : "ltr";
 }
 
@@ -132,6 +148,10 @@ export function classifyRow(text: string): BlockRole {
  *     include adjacent "content" rows that carry a column separator.
  *   - Standalone rows: everything else, resolved per-row via detectDirection.
  *
+ * `dominance` is passed straight through to detectDirection: true only while
+ * a full-screen TUI owns the pane, where rows are positional. See
+ * RTL_DOMINANCE.
+ *
  * Direction for a block:
  *   - Block holds Hebrew/Arabic  -> detectDirection over the block's joined
  *     text, so the RTL_DOMINANCE rule sees the whole block at once
@@ -144,7 +164,10 @@ export function classifyRow(text: string): BlockRole {
  * pure-ASCII code fence stays LTR even if it happens to sit between Hebrew
  * paragraphs; a pure-ASCII BOX between Hebrew paragraphs flips RTL to match.
  */
-export function detectRowDirections(rows: string[]): ("ltr" | "rtl")[] {
+export function detectRowDirections(
+  rows: string[],
+  dominance = false,
+): ("ltr" | "rtl")[] {
   const n = rows.length;
   if (n === 0) return [];
   const result: (("ltr" | "rtl") | null)[] = new Array(n).fill(null);
@@ -215,14 +238,14 @@ export function detectRowDirections(rows: string[]): ("ltr" | "rtl")[] {
     // block AS A WHOLE, not per row -- so one Hebrew word inside a wall of
     // Latin (Claude's bordered input box under its status bar) no longer
     // mirrors the box's columns, while a Hebrew table still flips entire.
-    const dir = detectDirection(rows.slice(b.start, b.end + 1).join(" "));
+    const dir = detectDirection(rows.slice(b.start, b.end + 1).join(" "), dominance);
     for (let k = b.start; k <= b.end; k++) result[k] = dir;
   }
 
   // 3. Standalone (non-block) rows: classic per-row detection.
   for (let k = 0; k < n; k++) {
     if (!inBlock[k] && result[k] === null) {
-      result[k] = detectDirection(rows[k]);
+      result[k] = detectDirection(rows[k], dominance);
     }
   }
 
