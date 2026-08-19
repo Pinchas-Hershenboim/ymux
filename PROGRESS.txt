@@ -3047,3 +3047,82 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
   Narrow gap accepted: anyone who ran the ONE intermediate build already has
   `rtl` written (both = their old value) and will not be re-migrated. That is
   a single build and a single session; not worth a second migration pass.
+
+================================================================================
+2026-08-19 — Zellij replaces WSL: persistence for native Windows panes
+================================================================================
+
+GATE FIRST. Yossi ran the manual spike: detach -> reattach -> TYPING WORKS.
+That was the one thing that could have killed the idea (#5365 reports it
+broken on Windows); it does not reproduce on 0.44.3. Tooling had already
+confirmed the rest: `winget install Zellij.Zellij` -> official 0.44.3 at
+%LOCALAPPDATA%\Zellij\zellij.exe, and every verb needed exists. The
+third-party arndawg fork is NOT needed — upstream really ships windows-msvc.
+
+CORRECTION to the 2026-08-18 note: the heise "0.44.0, native Windows, March
+2026" story does not survive contact. The binary is dated 13 May and 0.44.3's
+notes are ordinary patch notes. Windows support is real; that date/version
+claim is not. I had planned around it; don't.
+
+VERIFIED LIVE, END TO END — `zellij list-sessions` on Yossi's machine:
+    ymux-p_18cd0fd918b299e0_1 [Created 3m 52s ago]
+That prefix + pane id is ours. spawn -> 900ms -> `zellij attach -c` works.
+
+COMMITS  a2d296d persistence for local panes
+         12c6706 InstallZellij in the wizard
+         e4f54dc wsl -> local workspace migration
+         137c789 WSL out of the UI; wizard creates a local workspace
+         ffce444 local RTL default corrected (below)
+
+HOW  Types `zellij attach -c <name>` into the shell 900ms after spawn — same
+     shape and timing spawn_wsl_pty already used. Deliberately NOT spawning
+     zellij as the pane process: pick_default_shell + utf8_shell_args set up
+     chcp 65001 for PowerShell, and losing that undoes the day's Hebrew work.
+     Separate function from build_tmux_attach_script, which is pure POSIX and
+     load-bearing for SSH and WSL both (Phase 65 records the cost of editing
+     it carelessly).
+
+BUG FIXED BEFORE IT COULD FIRE  pane_kill_session branches on the Session
+     variant, so a Session::Local carrying a name mapped to KillTarget::Wsl
+     and would have run `wsl.exe -- tmux kill-session` against the DEFAULT
+     distro. Unreachable only because native-local sessions never had a name —
+     populating tmux_session is exactly what would have made it live. Now
+     split on the distro, which is what actually tells the two apart.
+
+DATA SAFETY  Connection is #[serde(tag="type")] and lives in workspaces.json.
+     Deleting the Wsl variant would make serde reject the WHOLE file, and
+     load_from_disk then refuses every later save — the `load FAILED …
+     persists will refuse` failure already in Yossi's log on 2026-08-18. So
+     the variant stays as a deserialization shim and migrate_wsl_workspaces
+     rewrites it to Local on load, walking PANE connections too (a pane can
+     carry its own). 5 tests, incl. that a file containing "type":"wsl" still
+     parses. Checked against the real file: 5 workspaces, no wsl, nothing to do.
+
+A DECISION THAT LASTED HOURS, AND WHY  This morning a native Windows pane
+     needed rtl_mode=bidi_reorder, because raw ConPTY hands over Hebrew
+     already in VISUAL order. Zellij now sits in front of every local pane and
+     NORMALISES the stream to logical order, like a Linux pty. Re-measured
+     inside a live zellij pane: `off` reversed, `auto_per_line` correct. So
+     the local default went back to auto_per_line, and both RTL profiles have
+     converged. Said plainly: the per-connection split no longer needs
+     different defaults, because zellij removed the difference it was built
+     for. It still lets the two be tuned apart; it just isn't load-bearing
+     any more. Comments updated rather than left claiming otherwise.
+
+NOT A CODE BUG, MY HANDOFF ERROR  Yossi's InstallLocalHooks failure was the
+     BARE app.exe: resolve_ymux_cli looks for resources/ymux-cli.exe beside
+     the binary and the bare artifact ships without them. The error string
+     already predicts it ("dev build without staged resources?"). The setup
+     wizard needs the NSIS/MSI installer. Fixed the handoff, not the code.
+
+STALE STRINGS FOUND BY THAT RUN  "No WSL workspace was created" survived the
+     removal, and was gated on wsl_chain_ok instead of on whether a workspace
+     actually came back. Both fixed, four locales.
+
+STILL IN THE TREE, UNREACHABLE FROM THE UI  wsl_exec, the RPC bridge, the 8
+     step arms, and the wsl branches in tickets/worktrees/addons. Deliberately
+     a separate commit — they touch three modules unrelated to WSL and would
+     have made this diff unreviewable.
+
+CHECKS  267 cargo tests (14 new), 58 JS tests, tsc + vite clean, i18n 1088 x4.
+        Installer sha256 15fc1236954e4b1a98530d6a806e9e3add225dfb6efca6d57056febfd71ef306
