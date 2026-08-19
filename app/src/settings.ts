@@ -3,6 +3,10 @@
 // this file is the typed mirror used by the frontend.
 
 import { invoke } from "@tauri-apps/api/core";
+import { createLogger } from "./logger";
+
+/** Rule #9: the unified logger, not console.*. */
+const rtlLog = createLogger("SETTINGS");
 import {
   setTerminalFont,
   setTerminalTheme,
@@ -514,10 +518,23 @@ export function resolveRtlProfiles(
     // value must mean the older rule rather than the newer one.
     directionPolicy: p?.direction_policy ?? "any_rtl",
   });
-  return {
+  const out = {
     local: pick(t.rtl?.local, "auto_per_line", true),
     remote: pick(t.rtl?.remote, "auto_per_line", false),
   };
+  // 2026-08-19: state what was actually resolved, and whether the stored block
+  // existed at all. Two separate bugs hid behind this — a partial profile write
+  // collapsing unspecified fields to the wrong defaults, and a stale client
+  // save dropping `terminal.rtl` entirely — and neither was visible from the
+  // per-pane logs, which report the RESULT without saying where it came from.
+  rtlLog.info(
+    `rtl-profiles block=${t.rtl ? 1 : 0} ` +
+      `local(mode=${out.local.rtlMode},tui=${out.local.tuiOwnsBidi ? 1 : 0},` +
+      `policy=${out.local.directionPolicy}) ` +
+      `remote(mode=${out.remote.rtlMode},tui=${out.remote.tuiOwnsBidi ? 1 : 0},` +
+      `policy=${out.remote.directionPolicy})`,
+  );
+  return out;
 }
 
 export function applyTheme(s: Settings): void {

@@ -362,14 +362,39 @@ export function SettingsModal(p: Props) {
     return (prof?.[k] ?? flat ?? fallback) as RtlProfileFields[K];
   };
 
-  /** Write one RTL field into the profile being edited, leaving the other
-   *  profile untouched — that separation is the whole point. */
+  /**
+   * Write one RTL field into the profile being edited, leaving the other
+   * profile untouched — that separation is the whole point.
+   *
+   * 2026-08-19: writes the COMPLETE profile, not just the changed key.
+   *
+   * A partial object round-trips through Rust's `RtlProfile`, where every
+   * field carries `#[serde(default)]` — so an absent key comes back as the
+   * TYPE's default, not the PROFILE's. `tui_owns_bidi` defaults to false on
+   * the type and true for local, so the first time Yossi touched any RTL
+   * control the local switch silently turned itself off and stayed off. His
+   * log: `setting=0`, with `explicit=1` right above it — the signal was
+   * winning and this gate was quietly refusing.
+   *
+   * `rtlField` already resolves profile -> deprecated flat field ->
+   * per-profile default, so seeding from it writes exactly what the UI is
+   * currently showing. Nothing can be lost by omission any more.
+   */
   const setRtlField = <K extends keyof RtlProfileFields>(k: K, v: RtlProfileFields[K]) => {
     const cur = p.settings.terminal.rtl ?? {};
     const kind = rtlProfile();
+    const complete: Required<RtlProfileFields> = {
+      rtl_mode: rtlField("rtl_mode") as Required<RtlProfileFields>["rtl_mode"],
+      auto_direction: rtlField("auto_direction") as boolean,
+      mirror_arrows_rtl: rtlField("mirror_arrows_rtl") as boolean,
+      tui_owns_bidi: rtlField("tui_owns_bidi") as boolean,
+      direction_policy: rtlField(
+        "direction_policy",
+      ) as Required<RtlProfileFields>["direction_policy"],
+    };
     update("terminal", {
       ...p.settings.terminal,
-      rtl: { ...cur, [kind]: { ...(cur[kind] ?? {}), [k]: v } },
+      rtl: { ...cur, [kind]: { ...complete, [k]: v } },
     });
   };
 
