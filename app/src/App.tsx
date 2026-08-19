@@ -3358,6 +3358,7 @@ function App() {
           onOpenPortsGlobal={() => void armWorkspaceConnection().then(() => setShowPortsWindow(true))}
           mode={sidebarMode()}
           onSetMode={setSidebarMode}
+          widthPx={sidebarPx()}
         />
       </ErrorBoundary>
       {/* Phase 62.B (item I): drag handle on the sidebar/main boundary —

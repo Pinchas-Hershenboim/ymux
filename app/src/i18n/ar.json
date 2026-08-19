@@ -907,6 +907,7 @@
   "error.sidebarRender": "فشل في عرض الشريط الجانبي.",
   "error.layoutRender": "فشل في عرض هذا التخطيط.",
   "sidebar.workspaceConnectedTitle": "متصل",
+  "sidebar.workspaceWaitingTitle": "في انتظارك",
   "ports.window.toggle.hint.on": "الاكتشاف مفعّل — انقر منفذًا لإعادة توجيهه إلى localhost.",
   "ports.window.toggle.hint.off": "الاكتشاف متوقف — فعّله لرؤية منافذ الاستماع البعيدة.",
   "ports.window.row.forwardAction": "إعادة توجيه",

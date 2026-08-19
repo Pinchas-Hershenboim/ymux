@@ -91,6 +91,39 @@ correctness wins): the caret sits one cell forward when typing Hebrew to
 Claude, and mouse selection on mixed Hebrew/English lines starts a few cells
 off.
 
+## Sidebar (chrome, not terminal — same principle)
+
+The rail applies the same per-string rule the terminal applies per line:
+`.ws-name` and the group name carry `unicode-bidi: plaintext`, so each name
+resolves its OWN base direction instead of inheriting the document's. Without
+it, every latin workspace name inside an RTL rail is a lone LTR run in an RTL
+paragraph — it gets pushed to the inline end and, once the rail is narrowed,
+ellipsizes at its **head** (`…rver-7`) instead of its tail.
+
+1. Language **Hebrew**, at least one latin-named workspace (`server-7`) and one
+   Hebrew-named one (`שרת 9`) in the list.
+2. Drag `.sidebar-resizer` down to ~165px so both names clip.
+   - Latin name → text starts at the **left** edge, `…` at the **right**.
+   - Hebrew name → text starts at the **right** edge, `…` at the **left**.
+   - Hovering either row shows the full name (`title` is set unconditionally,
+     not only in icons mode).
+3. Switch to **English** and repeat: the two clip in the same relative
+   directions, mirrored.
+4. The trailing status cluster (`.ws-meta`) sits flush to the inline end in
+   both languages, and the kind/pane badge forms a straight column down the
+   list — it is last in the cluster and has a fixed-width slot precisely so
+   that column does not go ragged when a row also has a ports or live marker.
+5. Group chevron points **into** the group when collapsed in both directions
+   (`[dir="rtl"] .group-header.group-collapsed .group-header-chevron`).
+6. `«` on the collapse button is `Bidi_Mirrored`, so it renders as `»` under
+   `dir="rtl"`. That is correct, not a bug: the rail is on the right in RTL and
+   the arrow should point at the edge it collapses toward.
+
+`app/dev/sidebar-fixture.html` (vite dev → `/dev/sidebar-fixture.html`) renders
+the rail's real DOM against the real stylesheets in six configurations at once
+— RTL/LTR, light/dark, 224px/165px/48px, and a redesign preset — which is the
+only way to check the matrix without live workspaces.
+
 ## Performance
 
 - Only **visible** rows carry DOM nodes, so scrollback size (up to millions of

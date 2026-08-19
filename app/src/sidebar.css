@@ -40,10 +40,10 @@
   justify-content: center;
   background: transparent;
   border: 1px solid var(--w-border);
-  border-radius: 4px;
+  border-radius: var(--w-r-sm);
   color: var(--w-text-dim, #7d8590);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--w-fs-sm);
 }
 .sidebar-collapse-btn:hover {
   color: var(--w-text);
@@ -64,6 +64,18 @@
 .sidebar.icons .ws-worktree-chip,
 .sidebar.icons .ws-live,
 .sidebar.icons .ws-action-label { display: none; }
+/* The cluster empties out here (badge/ports/live are all hidden above) but
+   its `margin-inline-start: auto` would still eat the free space and shove
+   the centred dot off-axis. Float it instead so the one marker that DOES
+   survive the strip — the waiting dot — keeps overlaying the row, which is
+   what the .has-waiting::after it replaced used to do. */
+.sidebar.icons .ws-meta {
+  position: absolute;
+  inset-inline-end: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-inline-start: 0;
+}
 .sidebar.icons .ws-action-emoji { margin-inline-end: 0; font-size: 16px; }
 .sidebar.icons .sidebar-header { padding: 12px 0; align-items: center; }
 .sidebar.icons .sidebar-brand-row { justify-content: center; }
@@ -172,20 +184,26 @@
   padding: 6px 6px;
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
 .ws-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  padding: 3px 8px;
+  /* Without this the row is 29px on a `normal` line-height (~1.33 for the
+     Segoe stack). Tight + 3px padding puts it at ~26. */
+  line-height: var(--wmx-lh-tight);
   border-radius: var(--w-r-sm);
   cursor: pointer;
   user-select: none;
   transition: background 80ms ease, color 80ms ease;
   color: var(--w-text);
+  /* One step down from the .sidebar frame's --w-fs-lg. The rail is a
+     list you scan, not prose — and it leaves the group headers above it
+     room to read as labels rather than as peers. */
+  font-size: var(--w-fs-md);
 }
 
 .ws-item:hover { background: var(--w-surface-hi); }
@@ -240,7 +258,7 @@
    for free. */
 .sidebar.full .ws-item,
 .sidebar.full .pf-hint {
-  padding-inline-start: calc(10px + var(--ws-depth, 0) * 14px);
+  padding-inline-start: calc(8px + var(--ws-depth, 0) * 14px);
 }
 
 /* Collapse toggle on any row that has a subtree. A <button> so the
@@ -335,24 +353,54 @@
 /* ─── Row contents: name, badge, live dot, menu, add ─── */
 
 .ws-name {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--w-text);
+  /* Resolve the base direction PER NAME, the same rule bidi.ts applies
+     per terminal line. Without it every name inherits the document's RTL
+     and a latin name like `server-7` ellipsizes at its head (`...rver-7`)
+     instead of its tail. TechText's <bdi> runs are inner isolates and
+     don't interfere. */
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+/* ─── The trailing status cluster ────────────────────────────────────
+   Kind badge → ports → waiting → live, always in that order and always
+   flush to the inline end, so the markers form a column down the list.
+   Before this they were loose flex children and landed at a different
+   offset on every row depending on which ones happened to exist. */
+.ws-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+  flex-shrink: 0;
 }
 
 .ws-badge {
   font-size: var(--w-fs-xs);
   padding: 1px 6px;
-  border-radius: 3px;
+  /* A fixed slot so S / L / 2 / 12 all occupy the same width — the badge
+     is the widest thing in the cluster, so it is what the eye tracks down
+     the list, and a ragged one defeats the point of the cluster. */
+  min-width: 1.7em;
+  text-align: center;
+  flex-shrink: 0;
+  border-radius: var(--w-r-sm);
   background: var(--w-border);
   color: var(--w-text-dim);
   font-family: var(--w-font-mono);
   font-weight: 600;
   letter-spacing: 0.5px;
 }
-.ws-badge.local { background: #1f2530; color: var(--w-text-dim); }
+/* "Local" is the unremarkable case — most rows carry it, so a filled
+   chip spends attention on the absence of news. Quiet text instead.
+   (Was a hardcoded #1f2530, which only ever read on a dark ground.) */
+.ws-badge.local { background: transparent; color: var(--w-text-faint); }
 .ws-badge.ssh { background: rgba(122, 162, 247, 0.15); color: var(--w-accent); }
 /* Phase 80: WSL-tmux workspaces. */
 .ws-badge.wsl { background: rgba(158, 206, 106, 0.15); color: var(--w-success); }
@@ -452,8 +500,8 @@
   color: var(--w-accent);
   margin-bottom: 2px;
 }
-.sidebar-empty-title { font-size: 13px; font-weight: 600; color: var(--w-text); }
-.sidebar-empty-desc { font-size: 11px; color: var(--w-text-dim); line-height: 1.4; }
+.sidebar-empty-title { font-size: var(--w-fs-md); font-weight: 600; color: var(--w-text); }
+.sidebar-empty-desc { font-size: var(--w-fs-xs); color: var(--w-text-dim); line-height: 1.4; }
 .sidebar-empty-card .primary { width: 100%; margin-top: 8px; }
 
 /* ─── RTL: active-row inset bar ─── */
@@ -464,19 +512,17 @@
 
 /* ─── Attention: waiting dot ─── */
 
-.ws-item.has-waiting {
-  position: relative;
-}
-.ws-item.has-waiting::after {
-  content: "";
-  position: absolute;
-  inset-inline-end: 10px;
-  top: 50%;
+/* Rendered by Sidebar.tsx inside .ws-meta. It used to be a
+   `.has-waiting::after` pinned at `inset-inline-end: 10px`, which painted
+   over whatever badge sat under it. The class stays on the row — the
+   redesign themes and the pulse both key off it. */
+.ws-waiting-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
   background: var(--w-warning);
-  box-shadow: 0 0 6px 1px rgba(224, 175, 104, 0.7);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--w-warning) 70%, transparent);
   animation: ymux-attn-dot 1.4s ease-in-out infinite;
   pointer-events: none;
 }
@@ -493,34 +539,38 @@
   }
 }
 
-/* ─── Per-workspace identity colour ─── */
-
-.ws-item[data-has-color="true"] {
-  border-inline-start: 3px solid var(--ws-color);
-  background: color-mix(in srgb, var(--ws-color) 12%, transparent);
-}
-.ws-item[data-has-color="true"].active {
-  background: color-mix(in srgb, var(--ws-color) 22%, transparent);
-}
+/* ─── Per-workspace identity colour ─────────────────────────────────
+   The workspace's colour is carried by .ws-dot alone. It used to be
+   painted three times over — the dot, a 3px inline-start rule, AND a 12%
+   row tint. At 12% over a dark ground that reads as a hint; over light
+   mode's #ffffff surface it turns every row into a different pastel bar
+   and the list stops being a list. Design Pass 01 P3: colour is meaning,
+   not decoration. `--ws-color` is still set on the row — .ws-accent-strip
+   outside the sidebar reads it. */
 
 /* ─── Port-forward badge ─── */
 
 /* Phase 36.A: inline per-workspace port-forward badge on the tab. */
 .ws-port-badge {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--w-fs-xs);
   padding: 0 5px;
-  border-radius: 8px;
+  border-radius: var(--w-r-md);
   background: color-mix(in srgb, var(--w-accent, #3b82f6) 22%, transparent);
   color: var(--w-text, #e6edf3);
   cursor: pointer;
-  margin-inline-start: 4px;
   white-space: nowrap;
 }
 .ws-port-badge:hover {
   background: var(--w-accent, #3b82f6);
-  color: #fff;
+  color: var(--w-bg);
 }
+
+/* ─── Narrow `full` mode ─────────────────────────────────────────────
+   The rail resizes down to 160px. Rather than let the cluster squeeze the
+   name to nothing, drop the least urgent marker; the row's `title` (set
+   unconditionally in Sidebar.tsx) still carries the full name. */
+.sidebar[data-narrow] .ws-port-badge { display: none; }
 
 /* ─── Bottom action row ─── */
 
@@ -533,7 +583,7 @@
   color: var(--w-text-dim, #7d8590);
   border: none;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--w-fs-md);
   text-align: center;
 }
 .ws-action-half:hover { color: var(--w-text, #e6edf3); background: var(--w-surface-hi, #1f2630); }
@@ -556,10 +606,10 @@
   border-radius: 9px;
   background: var(--w-warning, #e0af68);
   color: #0b0d16;
-  font-size: 11px;
+  font-size: var(--w-fs-xs);
   font-weight: 600;
   line-height: 1;
-  box-shadow: 0 0 6px 1px rgba(224, 175, 104, 0.45);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--w-warning) 45%, transparent);
 }
 
 /* ─── cmux-A A2: workspace groups ──────────────────────────────────
@@ -571,16 +621,22 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
-  padding-inline-start: 10px;
-  margin-top: 4px;
+  padding: 4px 8px;
+  padding-inline-start: 8px;
+  line-height: var(--wmx-lh-tight);
+  /* Air between groups is what makes them read as sections. 4px was
+     indistinguishable from the gap between two sibling rows. */
+  margin-top: var(--wmx-space-3);
   border-radius: var(--w-r-sm, 4px);
   cursor: pointer;
   user-select: none;
-  font-size: 12px;
+  font-size: var(--w-fs-sm);
   color: var(--w-text-dim, #999);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  /* NO text-transform. Hebrew and Arabic have no case, so `uppercase`
+     only ever fires on latin group names — the hierarchy would read
+     differently depending on which language the name happens to be in.
+     Weight, size and colour carry it in every script instead. */
+  letter-spacing: 0.02em;
 }
 .group-header:hover {
   background: color-mix(in srgb, var(--w-text, #e6edf3) 6%, transparent);
@@ -596,17 +652,19 @@
 .group-header-name {
   flex: 1 1 auto;
   min-width: 0;
-  color: var(--w-text, #e6edf3);
-  text-transform: none;
+  /* Dimmer and a step smaller than .ws-item: a group is a label for the
+     rows beneath it, and it used to render LARGER than its own children
+     (hardcoded 13px vs the rows' inherited 1em of a 13pt root). */
+  color: var(--w-text-dim, #999);
   letter-spacing: 0;
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--w-fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .group-header-count {
-  font-size: 11px;
+  font-size: var(--w-fs-xs);
   color: var(--w-text-dim, #999);
   flex-shrink: 0;
 }
@@ -641,7 +699,7 @@
   color: var(--w-text, #e6edf3);
   text-align: start;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--w-fs-md);
 }
 .group-menu button:hover {
   background: color-mix(in srgb, var(--w-text, #e6edf3) 8%, transparent);
@@ -671,7 +729,7 @@
   border: 1px solid var(--w-border-hi, #21262d);
   border-radius: var(--w-r-sm, 4px);
   color: var(--w-text, #e6edf3);
-  font-size: 13px;
+  font-size: var(--w-fs-md);
   box-sizing: border-box;
   margin-top: 4px;
 }

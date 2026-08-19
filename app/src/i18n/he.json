@@ -907,6 +907,7 @@
   "error.sidebarRender": "כשל בטעינת הסיידבר.",
   "error.layoutRender": "כשל בטעינת תצוגה זו.",
   "sidebar.workspaceConnectedTitle": "מחובר",
+  "sidebar.workspaceWaitingTitle": "ממתין לך",
   "ports.window.toggle.hint.on": "זיהוי פעיל — לחץ על פורט כדי לפתוח אותו ב-localhost.",
   "ports.window.toggle.hint.off": "זיהוי כבוי — הפעל לזיהוי פורטים מרוחקים.",
   "ports.window.row.forwardAction": "פתח",
