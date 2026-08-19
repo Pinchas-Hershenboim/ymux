@@ -29,6 +29,7 @@
   "connect.newConn.typeRegular.hint": "SSH → bare shell (no tmux).",
   "connect.newConn.typeTmux.hint": "SSH → tmux new-session (reconnect-resumable, wheel scrollback).",
   "connect.newConn.tmuxAttached": "attached",
+  "connect.newConn.sessionExited": "resurrect",
   "connect.probing": "Finding sessions…",
   "connect.tmuxPick.title": "Live TMUX sessions",
   "connect.tmuxPick.hint": "Open sessions found on the server — reconnect to one, or open a regular terminal.",

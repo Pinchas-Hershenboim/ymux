@@ -57,6 +57,10 @@ export interface TmuxSessionInfo {
   attached: boolean;
   windows: number;
   last_attached: number;
+  /** zellij only: the session's shell has exited but zellij still holds a
+   *  serialized copy, so attaching RESURRECTS it — across a reboot too.
+   *  Always false on tmux, which does not keep dead sessions. */
+  exited: boolean;
   /** Manual label the user gave the pane (shared across machines). */
   label?: string;
   /** Claude session title extracted from the transcript. */

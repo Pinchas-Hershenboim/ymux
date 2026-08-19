@@ -2088,6 +2088,76 @@ fn zellij_exe() -> String {
     "zellij".to_string()
 }
 
+/// Every zellij verb ymux sends, in one block.
+///
+/// Two kinds of caller, and the difference matters:
+///   - `build_zellij_attach_command` is TYPED INTO THE USER'S SHELL, so it is
+///     a string and has to be valid in both cmd.exe and PowerShell.
+///   - everything else runs as a child process through `zellij_run`, argv
+///     array only, never a shell (Rule #3).
+///
+/// The verbs, and why each one is here (checked against `zellij 0.44.3
+/// --help` on 2026-08-19 rather than from memory):
+///   - `attach -c <name>`      attach-or-create; also resurrects an EXITED
+///                             session, which is the reattach path after a
+///                             reboot.
+///   - `list-sessions -n`      `--no-formatting`, which upstream documents as
+///                             the parsing form. `-s` (bare names) drops the
+///                             age and the EXITED marker, so it is not used.
+///   - `kill-session <name>`   stop a RUNNING session. The serialized copy
+///                             survives, so it reappears in the list marked
+///                             EXITED and stays resurrectable.
+///   - `delete-session <name>` discard that serialized copy. Only reachable
+///                             for an already-exited session — see
+///                             `pane_kill_session`.
+///
+/// Deliberately NOT sent:
+///   - `attach -b` (create detached). It returns 0 and creates nothing when
+///     invoked without a tty, so ymux would have no way to tell success from
+///     silence. Panes create their session by attaching instead.
+///   - `action rename-session`. ymux derives the session name from the pane
+///     id so a cold start can find it again; renaming would break exactly
+///     that lookup. Pane labels are stored app-side and never sent to zellij.
+///   - `kill-all-sessions` / `delete-all-sessions`. Nothing in the UI means
+///     "every session on this machine", including ones ymux did not create.
+fn zellij_args_list() -> Vec<String> {
+    vec!["list-sessions".into(), "-n".into()]
+}
+
+fn zellij_args_kill(name: &str) -> Vec<String> {
+    vec!["kill-session".into(), name.to_string()]
+}
+
+fn zellij_args_delete(name: &str) -> Vec<String> {
+    vec!["delete-session".into(), name.to_string()]
+}
+
+/// Run one zellij verb to completion. Returns whether it exited 0.
+///
+/// `hidden_cmd` gives CREATE_NO_WINDOW + piped stdio so a GUI parent never
+/// flashes a console (local_setup.rs). A missing binary is a `false`, not an
+/// error: zellij being absent is a supported state everywhere it is called.
+async fn zellij_run(args: &[String], what: &str) -> bool {
+    let mut c = local_setup::hidden_cmd(&zellij_exe());
+    for a in args {
+        c.arg(a);
+    }
+    match c.output().await {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            log_debug(
+                "PTY",
+                &format!("zellij {what}: exited {:?}", out.status.code()),
+            );
+            false
+        }
+        Err(e) => {
+            log_warn("PTY", &format!("zellij {what}: spawn failed: {e}"));
+            false
+        }
+    }
+}
+
 fn build_zellij_attach_command(name: &str) -> String {
     // Session names come from `sanitize_session_name`, which emits only
     // `[A-Za-z0-9_-]`, so there is nothing here to quote or escape. Asserted
@@ -2146,6 +2216,10 @@ fn parse_zellij_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             // picker renders it as a hint, not a fact it acts on.
             windows: 1,
             last_attached: 0,
+            // Zellij keeps a serialized copy of a session after its shell
+            // exits and will rebuild it on the next attach. tmux has no such
+            // state, so this is false on every tmux path.
+            exited: line.contains("(EXITED"),
             label: None,
             claude_title: None,
             claude_session_id: None,
@@ -6763,6 +6837,10 @@ pub(crate) struct TmuxSessionInfo {
     pub attached: bool,
     pub windows: u32,
     pub last_attached: i64,
+    /// 2026-08-19: zellij only. The session's shell has exited but zellij
+    /// still holds a serialized copy, so attaching RESURRECTS it — including
+    /// across a reboot, which tmux cannot do. Always false for tmux.
+    pub exited: bool,
     /// Phase 81: joined from the server-side `~/.ymux/session-meta.json`.
     /// Picker display precedence: label > claude_title > name.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6811,7 +6889,9 @@ struct SessionMetaEntryMirror {
 /// simply has no sessions, and the picker renders its "new session" row.
 async fn list_zellij_sessions() -> Vec<TmuxSessionInfo> {
     let mut c = local_setup::hidden_cmd(&zellij_exe());
-    c.arg("list-sessions").arg("-n");
+    for a in zellij_args_list() {
+        c.arg(a);
+    }
     match tokio::time::timeout(std::time::Duration::from_secs(6), c.output()).await {
         Ok(Ok(out)) => {
             let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -7010,6 +7090,7 @@ fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             attached: parts[2] == "1",
             windows: parts[3].parse().unwrap_or(0),
             last_attached: parts[4].parse().unwrap_or(0),
+            exited: false, // tmux does not keep dead sessions around
             label: m.and_then(|m| m.label.clone()),
             claude_title: m.and_then(|m| m.claude_title.clone()),
             claude_session_id: m.and_then(|m| m.claude_session_id.clone()),
@@ -7743,29 +7824,29 @@ async fn pane_kill_session(
             }
         }
         KillTarget::Zellij(name) => {
-            // Pure argv, no shell in between (Rule #3). `kill-session` ends
-            // the running session; the serialized copy zellij keeps for
-            // resurrection is dropped by `delete-session`, which is a
-            // separate, more destructive verb we deliberately do not call
-            // here — "kill" should not also discard the scrollback the user
-            // could still resurrect.
-            // hidden_cmd: CREATE_NO_WINDOW + piped stdio, so a GUI parent
-            // does not flash a console (local_setup.rs:383).
-            let mut c = local_setup::hidden_cmd(&zellij_exe());
-            c.arg("kill-session").arg(&name);
-            match c.output().await {
-                Ok(out) if !out.status.success() => log_warn(
+            // Two verbs, in order, and the order is the whole point.
+            //
+            // `kill-session` stops a RUNNING session; zellij keeps the
+            // serialized copy, so the session comes back in the list marked
+            // EXITED and `attach` still resurrects it. That is the behaviour
+            // we want from "kill" — it must not silently discard scrollback
+            // the user could still get back.
+            //
+            // But it fails on a session that has ALREADY exited: there is
+            // nothing running to kill, and before 2026-08-19 that left a dead
+            // entry the picker showed forever with no way to clear it.
+            // `delete-session` is what removes the corpse. Reaching it needs
+            // a first kill to have failed, so a live session is never deleted
+            // by one click — killing it twice is the deliberate two-step.
+            if !zellij_run(&zellij_args_kill(&name), "kill-session").await {
+                let purged = zellij_run(&zellij_args_delete(&name), "delete-session").await;
+                log_debug(
                     "PTY",
                     &format!(
-                        "pane_kill_session(zellij): kill-session exited {:?}",
-                        out.status.code()
+                        "pane_kill_session(zellij): session was not running; delete-session {}",
+                        if purged { "purged it" } else { "found nothing" }
                     ),
-                ),
-                Ok(_) => {}
-                Err(e) => log_warn(
-                    "PTY",
-                    &format!("pane_kill_session(zellij): spawn failed: {e}"),
-                ),
+                );
             }
         }
         KillTarget::None => {}
@@ -9690,7 +9771,10 @@ mod zellij_tests {
     // Parser tests written against output CAPTURED from zellij 0.44.3 on
     // Windows on 2026-08-19, not from the docs — the spike session Yossi left
     // running produced `spike [Created 12m 30s ago]` verbatim.
-    use super::{build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions};
+    use super::{
+        build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions,
+        zellij_args_delete, zellij_args_kill, zellij_args_list,
+    };
 
     #[test]
     fn parses_the_real_captured_line() {
@@ -9768,6 +9852,47 @@ mod zellij_tests {
         // 500ms into 500 minutes and date every session eight hours old.
         assert_eq!(parse_zellij_duration("500ms"), 0);
         assert_eq!(parse_zellij_duration("5m"), 300);
+    }
+
+    #[test]
+    fn zellij_verbs_are_the_ones_0_44_3_documents() {
+        // Captured from `zellij 0.44.3 --help` on Windows, 2026-08-19. If a
+        // future zellij renames one of these, this test is where it shows up
+        // rather than in a silent no-op at runtime.
+        assert_eq!(zellij_args_list(), vec!["list-sessions", "-n"]);
+        assert_eq!(zellij_args_kill("ymux-p_1a2b_0"), vec!["kill-session", "ymux-p_1a2b_0"]);
+        assert_eq!(
+            zellij_args_delete("ymux-p_1a2b_0"),
+            vec!["delete-session", "ymux-p_1a2b_0"]
+        );
+    }
+
+    #[test]
+    fn zellij_verbs_pass_the_name_as_one_argv_slot() {
+        // Rule #3: no shell in between, so a name is never re-parsed. Names
+        // come from `sanitize_session_name` and cannot contain spaces today —
+        // this pins the argv shape so that stays true if it ever changes.
+        let args = zellij_args_kill("weird name; rm -rf");
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[1], "weird name; rm -rf");
+    }
+
+    #[test]
+    fn zellij_sessions_flag_exited_ones() {
+        // The EXITED marker is what tells the picker "attaching resurrects
+        // this" instead of "this is live". Dropping it is how a dead session
+        // became indistinguishable from a running one.
+        let out = parse_zellij_sessions(
+            "live-one [Created 5s ago] 
+dead-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
+",
+        );
+        assert_eq!(out.len(), 2);
+        let dead = out.iter().find(|s| s.name == "dead-one").expect("dead-one parsed");
+        let live = out.iter().find(|s| s.name == "live-one").expect("live-one parsed");
+        assert!(dead.exited, "EXITED row must be flagged");
+        assert!(!live.exited, "a live row must not be");
+        assert!(!dead.attached, "an exited session has nobody attached");
     }
 
     #[test]

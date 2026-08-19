@@ -1609,6 +1609,13 @@ export function PaneView(p: Props) {
                             <Show when={s.attached}>
                               <span class="nc-resume-badge">{t("connect.newConn.tmuxAttached")}</span>
                             </Show>
+                            {/* 2026-08-19: zellij lists sessions whose shell
+                                has exited — attaching rebuilds them, which is
+                                the one thing tmux cannot do. Unlabelled, they
+                                looked identical to live ones. */}
+                            <Show when={s.exited}>
+                              <span class="nc-resume-badge">{t("connect.newConn.sessionExited")}</span>
+                            </Show>
                             <span class="nc-resume-age">{fmtSessionAge(s.last_attached || s.created)}</span>
                           </div>
                           <Show when={friendly}>

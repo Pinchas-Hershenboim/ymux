@@ -29,6 +29,7 @@
   "connect.newConn.typeRegular.hint": "SSH ← صدفة مباشرة (بدون tmux).",
   "connect.newConn.typeTmux.hint": "SSH ← tmux new-session (قابل للاستئناف عند إعادة الاتصال، تمرير بالعجلة).",
   "connect.newConn.tmuxAttached": "متصل",
+  "connect.newConn.sessionExited": "استعادة",
   "connect.probing": "البحث عن الجلسات…",
   "connect.tmuxPick.title": "جلسات TMUX النشطة",
   "connect.tmuxPick.hint": "تم العثور على جلسات مفتوحة على الخادم — أعد الاتصال بإحداها، أو افتح طرفية عادية.",
