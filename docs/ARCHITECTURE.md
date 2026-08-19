@@ -94,6 +94,12 @@ workspaces and their layouts are persisted.
 
 | File | Path | Written by |
 |---|---|---|
+| `workspaces.json` | `%APPDATA%\winmux\` | `lib.rs` on every mutation; loaded once at `setup()`. |
+| `known_hosts.json` | `%APPDATA%\winmux\` | `lib.rs::SshClient::check_server_key` on first/match/replace. |
+| `debug.log` | `%APPDATA%\winmux\` | `dlog()` everywhere. Append-only. |
+| `last.env` | `~/.winmux/run/` (remote) | Written by tunnel bootstrap before the shell starts; CLI on Linux loads it as a fallback when sshd strips per-channel env vars. |
+| `session-meta.json` | `~/.winmux/` (remote) | Phase 81 multi-machine sync: tmux session → `{claude_session_id, claude_title, auto_name, label, origin, updated_at}`. Written by the Linux CLI (`session-meta` subcommand + the Claude `stop`/`session-end`/`user-prompt-submit` hooks); read by the desktop in the same SSH roundtrip as `tmux list-sessions`. Atomic tmp+rename, last-writer-wins, lazy-pruned against `tmux ls` on every write. **`claude_title` vs `auto_name`:** the title churns (Claude rewrites its own summary, re-read every turn); `auto_name` is the stable identity — `"<two words> · <YYYY-MM-DD HH:MM>"` derived once from the session's first real prompt by the `user-prompt-submit` hook, re-derived only when a NEW Claude session takes over the same tmux key. Display precedence: `label > auto_name > claude_title > raw name`. |
+| `machine-id` | `%APPDATA%\winmux\` | Phase 81: stable per-install id (`<COMPUTERNAME>-<4hex>`), the `origin` value for sessions this machine creates. Deliberately outside settings.json so "Reset settings" keeps identity. |
 | `workspaces.json` | `%APPDATA%\ymux\` | `lib.rs` on every mutation; loaded once at `setup()`. |
 | `known_hosts.json` | `%APPDATA%\ymux\` | `lib.rs::SshClient::check_server_key` on first/match/replace. |
 | `debug.log` | `%APPDATA%\ymux\` | `dlog()` everywhere. Append-only. |

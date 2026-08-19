@@ -12,7 +12,16 @@
 // Schema:
 //   { "version": 1, "sessions": { "<tmux_session_name>": {
 //       "claude_session_id": "...", "claude_title": "...",
-//       "label": "...", "origin": "...", "updated_at": "..." } } }
+//       "auto_name": "...", "label": "...", "origin": "...",
+//       "updated_at": "..." } } }
+//
+// `claude_title` vs `auto_name`: the title CHURNS (Claude rewrites its own
+// summary as the conversation drifts, and the stop hook re-reads it every
+// turn), which makes it a poor identity for a session you opened hours
+// ago. `auto_name` is the stable one — derived ONCE, from the session's
+// first real prompt, as "<two words> · <YYYY-MM-DD HH:MM>" — and is what
+// the picker and the pane header show. Both are kept: the title still
+// carries Claude's current read of the conversation.
 //
 // Concurrency: last-writer-wins over an atomic tmp+rename. Each key has a
 // single effective writer (its own pane's hooks; origin/label writes are
@@ -25,9 +34,10 @@
 // no longer exist in `tmux ls`, and the desktop-side join ignores keys
 // it can't match, so stale entries are invisible even before pruning.
 //
-// Rule #1: claude_title / label contain user content. They live in the
-// meta FILE by design (that's the feature) but must never be written to
-// hook-debug.log — callers log error kinds and session names only.
+// Rule #1: claude_title / auto_name / label contain user content. They
+// live in the meta FILE by design (that's the feature) but must never be
+// written to hook-debug.log — callers log error kinds and session names
+// only.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -40,6 +50,10 @@ pub struct SessionMetaEntry {
     pub claude_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_title: Option<String>,
+    /// Stable session identity: "<two words> · <YYYY-MM-DD HH:MM>",
+    /// derived once from the first real prompt (see `derive_session_name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -162,6 +176,10 @@ pub fn resolve_session_name() -> Option<String> {
     Some(sanitize_tmux_session_name(&pane_id))
 }
 
+/// Cap for anything that lands in a display field — shared by the
+/// transcript title and the derived session name.
+const MAX_TITLE_CHARS: usize = 80;
+
 /// Best title for a Claude session, from its transcript JSONL: the LAST
 /// `{"type":"summary","summary":...}` line wins (Claude Code's own session
 /// title, updated over time); fallback is the first real user message,
@@ -169,7 +187,6 @@ pub fn resolve_session_name() -> Option<String> {
 /// top, and a bounded read keeps the per-turn hook cheap on huge logs.
 pub fn extract_transcript_title(path: &str) -> Option<String> {
     const MAX_LINES: usize = 250;
-    const MAX_TITLE_CHARS: usize = 80;
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let mut summary: Option<String> = None;
@@ -221,6 +238,138 @@ fn extract_user_text(v: &serde_json::Value) -> Option<String> {
     Some(text.replace(['\n', '\r'], " "))
 }
 
+/// Filler words that carry no topic. Deliberately small — the goal is to
+/// skip "בא נעבור על..." / "can you please fix..." openers, NOT to build a
+/// linguistics-grade stoplist. Verbs stay in: "fix", "add", "תעדכן" ARE
+/// what the session is about.
+const STOPWORDS: &[&str] = &[
+    // English
+    "the", "a", "an", "to", "for", "of", "in", "on", "at", "and", "or", "is", "are", "it",
+    "this", "that", "my", "me", "i", "we", "us", "you", "your", "please", "can", "could",
+    "would", "should", "let", "lets", "so", "just", "with", "from", "be", "do", "does",
+    "did", "have", "has", "had", "will", "want", "need", "there", "here", "what", "hey",
+    "ok", "okay", "now", "then",
+    // Hebrew
+    "את", "של", "אני", "לי", "לנו", "לך", "זה", "זאת", "הזה", "הזאת", "הוא", "היא", "הם",
+    "יש", "עם", "על", "אל", "כי", "גם", "אבל", "או", "אם", "בבקשה", "תודה", "בא", "נו",
+    "אז", "רק", "כל", "כמו", "מה", "וגם", "אחר", "כדי", "לא", "כן", "היי",
+];
+
+/// Longest token we keep. Long enough for `authentication`, short enough
+/// that one runaway word can't eat the whole name.
+const MAX_WORD_CHARS: usize = 20;
+
+/// Is this token a filler? Compares case-folded and stripped of a leading
+/// Hebrew conjunction/definite prefix (ו/ה/ב/ל/ש + כש), so "והתהליך" and
+/// "בבקשה" are judged on their stem.
+fn is_stopword(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    if STOPWORDS.contains(&lower.as_str()) {
+        return true;
+    }
+    let mut chars = lower.chars();
+    match chars.next() {
+        Some('ו') | Some('ה') | Some('ב') | Some('ל') | Some('ש') | Some('כ') | Some('מ') => {
+            let stem: String = chars.collect();
+            !stem.is_empty() && STOPWORDS.contains(&stem.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// The two most topical-looking words of a prompt, joined by a space.
+///
+/// Strips markdown/punctuation, drops fillers, pure numbers, and 1-char
+/// tokens, then takes the first two survivors. `None` when the prompt has
+/// nothing usable (empty, punctuation only, all fillers) — the caller then
+/// falls back to a timestamp-only name.
+///
+/// Deliberately heuristic and offline: this runs inside the
+/// UserPromptSubmit hook, which gates the START of a turn. An LLM call
+/// here would put seconds of latency in front of every first prompt.
+fn two_words(prompt: &str) -> Option<String> {
+    let picked: Vec<String> = prompt
+        .split(|c: char| c.is_whitespace())
+        .map(|tok| {
+            tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                .to_string()
+        })
+        .filter(|w| {
+            let n = w.chars().count();
+            n >= 2 && !w.chars().all(|c| c.is_ascii_digit()) && !is_stopword(w)
+        })
+        .take(2)
+        .map(|w| truncate_chars(&w, MAX_WORD_CHARS))
+        .collect();
+
+    if picked.is_empty() {
+        None
+    } else {
+        Some(picked.join(" "))
+    }
+}
+
+/// A session's stable display name: `"<two words> · <YYYY-MM-DD HH:MM>"`,
+/// degrading to the timestamp alone when the prompt yields no usable
+/// words. Local server time — the hook runs on the machine hosting tmux,
+/// so this reads as "when I started this" to whoever is sitting there.
+///
+/// Rule #1: the result embeds user content. It belongs in the meta file,
+/// never in a log line.
+pub fn derive_session_name(prompt: &str) -> String {
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    match two_words(prompt) {
+        Some(words) => truncate_chars(&format!("{words} · {stamp}"), MAX_TITLE_CHARS),
+        None => stamp,
+    }
+}
+
+/// Prompts that shouldn't name a session: empty ones, and slash commands
+/// (`/rename`, `/clear`) — the command is chrome, not the session's
+/// subject. The next real prompt names it instead.
+fn prompt_can_name(prompt: &str) -> bool {
+    let t = prompt.trim();
+    !t.is_empty() && !t.starts_with('/')
+}
+
+/// Should this prompt (re)name the session? Tri-state, same convention as
+/// the desktop's `update_pane_in`: `None` = leave `auto_name` alone,
+/// `Some(None)` = clear it, `Some(Some(n))` = set it to `n`.
+///
+/// The rule is "once per CLAUDE session", not "once per tmux session" —
+/// a pane outlives `claude`, so its meta key gets reused and a second
+/// `claude` run in the same pane must earn its own name. That's why the
+/// recorded session id is compared rather than just testing for absence.
+///
+/// Pure so the state machine is testable without HOME, tmux, or a clock.
+fn decide_auto_name(
+    existing: Option<&str>,
+    recorded_sid: Option<&str>,
+    current_sid: Option<&str>,
+    prompt: &str,
+) -> Option<Option<String>> {
+    let is_new_session = match (recorded_sid, current_sid) {
+        (Some(recorded), Some(current)) => recorded != current,
+        // No id on either side: can't tell sessions apart, so fall back
+        // to "name it if it has no name".
+        _ => false,
+    };
+    if !(existing.is_none() || is_new_session) {
+        return None;
+    }
+    if prompt_can_name(prompt) {
+        return Some(Some(derive_session_name(prompt)));
+    }
+    // A new Claude session opening with a slash command: drop the
+    // previous conversation's name rather than let it mislabel this one.
+    // The next real prompt claims it.
+    if is_new_session {
+        Some(None)
+    } else {
+        None
+    }
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -255,13 +404,45 @@ pub fn decode_hex_utf8(hex: &str) -> Result<String, String> {
 /// the caller can enrich its feed.push params; `Err` carries an error
 /// KIND string safe for hook-debug.log (no user content).
 ///
-/// Returns `(claude_title, tmux_session_name)`.
+/// Returns `(display_title, tmux_session_name)`. The display title is
+/// `auto_name` when the session has one (stable, set at the first prompt)
+/// and the churning transcript title otherwise — so a session named on
+/// turn 1 keeps that name on the pane header for its whole life.
 pub fn handle_hook(
     subcommand: &str,
     payload: &serde_json::Value,
 ) -> Result<(Option<String>, Option<String>), String> {
     let name = resolve_session_name();
     match subcommand {
+        // Fires at the start of EVERY turn, in every permission mode. We
+        // only act on the first one of each Claude session: that prompt
+        // is what the session is about, and the name must not move
+        // afterwards.
+        "user-prompt-submit" => {
+            let Some(name) = name else { return Err("no-session-name".into()) };
+            let session_id = payload.get("session_id").and_then(|v| v.as_str());
+            let prompt = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+
+            let mut meta = load_meta();
+            let entry = meta.sessions.entry(name.clone()).or_default();
+
+            if let Some(next) = decide_auto_name(
+                entry.auto_name.as_deref(),
+                entry.claude_session_id.as_deref(),
+                session_id,
+                prompt,
+            ) {
+                entry.auto_name = next;
+            }
+            if let Some(sid) = session_id {
+                entry.claude_session_id = Some(sid.to_string());
+            }
+            entry.updated_at = Some(now_rfc3339());
+            let display = entry.auto_name.clone();
+            prune(&mut meta);
+            save_meta_atomic(&meta).map_err(|_| "save-failed".to_string())?;
+            Ok((display, Some(name)))
+        }
         "stop" => {
             let Some(name) = name else { return Err("no-session-name".into()) };
             let session_id = payload.get("session_id").and_then(|v| v.as_str());
@@ -278,9 +459,12 @@ pub fn handle_hook(
                 entry.claude_title = title.clone();
             }
             entry.updated_at = Some(now_rfc3339());
+            // The stable name wins over the freshly-extracted title —
+            // see this function's doc comment.
+            let display = entry.auto_name.clone().or(title);
             prune(&mut meta);
             save_meta_atomic(&meta).map_err(|_| "save-failed".to_string())?;
-            Ok((title, Some(name)))
+            Ok((display, Some(name)))
         }
         "session-end" => {
             let mut meta = load_meta();
@@ -335,6 +519,130 @@ mod tests {
         let title = extract_transcript_title(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
         assert_eq!(title.as_deref(), Some("Fix auth bug"));
+    }
+
+    /// The `<two words> · ` prefix, or None when the name is
+    /// timestamp-only. Keeps the assertions off the wall clock.
+    fn words_of(name: &str) -> Option<&str> {
+        name.split_once(" · ").map(|(w, _)| w)
+    }
+
+    fn stamp_of(name: &str) -> &str {
+        name.split_once(" · ").map(|(_, s)| s).unwrap_or(name)
+    }
+
+    #[test]
+    fn session_name_picks_two_topical_hebrew_words() {
+        let name = derive_session_name("בא נעבור על התהליך שקובע את השם של ה-PANE");
+        // "בא" is a filler; "נעבור" + "התהליך" carry the topic.
+        assert_eq!(words_of(&name), Some("נעבור התהליך"));
+    }
+
+    #[test]
+    fn session_name_skips_english_filler_openers() {
+        assert_eq!(
+            words_of(&derive_session_name("can you please fix the auth bug in login flow")),
+            Some("fix auth")
+        );
+        // Verbs are topical and must survive.
+        assert_eq!(
+            words_of(&derive_session_name("add rename support")),
+            Some("add rename")
+        );
+    }
+
+    #[test]
+    fn session_name_is_timestamp_only_when_nothing_survives() {
+        for prompt in ["", "   ", "???  !!!", "please can you", "5 42"] {
+            let name = derive_session_name(prompt);
+            assert_eq!(words_of(&name), None, "prompt {prompt:?} should yield no words");
+            assert_eq!(stamp_of(&name).len(), "2026-08-18 20:15".len());
+        }
+    }
+
+    #[test]
+    fn session_name_stamp_shape_and_cap() {
+        let name = derive_session_name("refactor pipeline");
+        let stamp = stamp_of(&name);
+        assert_eq!(stamp.len(), 16, "expected YYYY-MM-DD HH:MM, got {stamp:?}");
+        assert_eq!(stamp.chars().nth(4), Some('-'));
+        assert_eq!(stamp.chars().nth(13), Some(':'));
+        // One runaway token can't eat the name.
+        let long = derive_session_name(&format!("{} tail", "x".repeat(60)));
+        assert!(words_of(&long).unwrap().chars().count() <= MAX_WORD_CHARS * 2 + 1);
+        assert!(long.chars().count() <= MAX_TITLE_CHARS);
+    }
+
+    #[test]
+    fn slash_commands_do_not_name_a_session() {
+        assert!(!prompt_can_name("/rename add_rename"));
+        assert!(!prompt_can_name("   "));
+        assert!(prompt_can_name("fix the bug"));
+    }
+
+    #[test]
+    fn one_char_and_numeric_tokens_are_skipped() {
+        assert_eq!(words_of(&derive_session_name("a 42 deploy script")), Some("deploy script"));
+    }
+
+    #[test]
+    fn hebrew_prefixed_fillers_are_stripped() {
+        // "וגם"/"שזה" are fillers under a conjunction prefix; "לתקן" is not.
+        assert_eq!(words_of(&derive_session_name("וגם שזה לתקן באג")), Some("לתקן באג"));
+    }
+
+    #[test]
+    fn first_prompt_names_an_unnamed_session() {
+        let d = decide_auto_name(None, None, Some("sid-1"), "fix auth bug");
+        assert_eq!(words_of(d.unwrap().unwrap().as_str()), Some("fix auth"));
+    }
+
+    #[test]
+    fn later_prompts_never_rename_the_same_session() {
+        // Same Claude session id → the name set on turn 1 stands, no
+        // matter how the conversation drifts.
+        assert!(decide_auto_name(
+            Some("fix auth · 2026-08-18 20:15"),
+            Some("sid-1"),
+            Some("sid-1"),
+            "actually now refactor the parser"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_new_claude_session_in_the_same_pane_earns_a_new_name() {
+        let d = decide_auto_name(
+            Some("fix auth · 2026-08-18 20:15"),
+            Some("sid-1"),
+            Some("sid-2"),
+            "deploy the staging box",
+        );
+        assert_eq!(words_of(d.unwrap().unwrap().as_str()), Some("deploy staging"));
+    }
+
+    #[test]
+    fn slash_command_defers_naming_instead_of_burning_the_slot() {
+        // Unnamed session, slash command → leave it unnamed…
+        assert!(decide_auto_name(None, None, Some("sid-1"), "/rename foo").is_none());
+        // …and the next real prompt gets to name it.
+        let d = decide_auto_name(None, Some("sid-1"), Some("sid-1"), "rename support");
+        assert_eq!(words_of(d.unwrap().unwrap().as_str()), Some("rename support"));
+    }
+
+    #[test]
+    fn a_new_session_opening_with_a_slash_command_clears_the_stale_name() {
+        assert_eq!(
+            decide_auto_name(Some("old name · 2026-08-18 20:15"), Some("sid-1"), Some("sid-2"), "/clear"),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn missing_session_ids_degrade_to_name_if_absent() {
+        // No id anywhere: name it once, then leave it alone.
+        assert!(decide_auto_name(None, None, None, "fix the thing").is_some());
+        assert!(decide_auto_name(Some("x · y"), None, None, "fix the thing").is_none());
     }
 
     #[test]
