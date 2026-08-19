@@ -49,7 +49,6 @@ const GROUP_PICKER_COLORS = [
 function workspaceBadge(w: Workspace): { label: string; cls: string; title: string } {
   if (!w.layout) {
     if (isRemoteConn(w.connection)) return { label: "S", cls: "ssh", title: "SSH" };
-    if (w.connection?.type === "wsl") return { label: "W", cls: "wsl", title: "WSL" };
     return { label: "L", cls: "local", title: "Local" };
   }
   const panes = collectPanes(w.layout);
@@ -58,7 +57,6 @@ function workspaceBadge(w: Workspace): { label: string; cls: string; title: stri
   if (first?.pane_kind === "browser") return { label: "B", cls: "browser", title: "Browser" };
   if (first?.pane_kind === "filemanager") return { label: "F", cls: "filemanager", title: "File manager" };
   if (isRemoteConn(first?.connection)) return { label: "S", cls: "ssh", title: "SSH" };
-  if (first?.connection?.type === "wsl") return { label: "W", cls: "wsl", title: "WSL" };
   return { label: "L", cls: "local", title: "Local" };
 }
 

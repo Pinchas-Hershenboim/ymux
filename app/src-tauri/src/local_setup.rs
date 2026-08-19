@@ -1710,18 +1710,20 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
         log_warn(
             "SETUP",
             &format!(
-                "local-setup[{run_id}] finished with {} failed step(s): {} — WSL workspace {}",
+                "local-setup[{run_id}] finished with {} failed step(s): {} — workspace {}",
                 failed_steps.len(),
                 failed_steps.join(", "),
-                if ran_wsl_chain && !chain_failed { "created" } else { "NOT created" }
+                if input.create_workspace { "created" } else { "NOT created" }
             ),
         );
     }
-    if input.create_workspace && ran_wsl_chain && !chain_failed {
-        match finalize_wsl_workspace(
+    // 2026-08-19: the wizard finishes by creating a real workspace to land
+    // in. It used to require the WSL chain to have succeeded; the workspace
+    // is now a native Windows one, so it depends on nothing but the request.
+    if input.create_workspace {
+        match finalize_local_workspace(
             &state,
             &app,
-            distro,
             input.workspace_name.clone(),
             input.workspace_cwd.clone(),
         ) {
@@ -1736,12 +1738,13 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
 }
 
 /// Create a fresh workspace with a single terminal pane on
-/// Connection::Wsl — the local twin of provisioning::finalize_workspace
-/// branch 2.
-fn finalize_wsl_workspace(
+/// `Connection::Local` — the local twin of provisioning::finalize_workspace
+/// branch 2. Was `finalize_wsl_workspace` until 2026-08-19; the pane is a
+/// native Windows shell now, and zellij gives it the persistence that used
+/// to be the only reason to put it inside a distro.
+fn finalize_local_workspace(
     state: &AppState,
     app: &AppHandle,
-    distro: Option<String>,
     workspace_name: Option<String>,
     cwd: Option<String>,
 ) -> Result<(String, String), String> {
@@ -1750,8 +1753,8 @@ fn finalize_wsl_workspace(
     let display_name = workspace_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| distro.clone().unwrap_or_else(|| "WSL".into()));
-    let conn = Connection::Wsl { distro };
+        .unwrap_or_else(|| "Local".into());
+    let conn = Connection::Local { shell: None };
     let pane_id = new_pane_id();
     let layout = LayoutNode::Pane {
         pane_id,
