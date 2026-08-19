@@ -3034,3 +3034,16 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
   log line next rather than inferring from screenshots. Also still open, and
   not from this change: caret pinned right and partial-repaint glitches under
   bidi_reorder (terminal-wg's "cursed cursor").
+
+  FOLLOW-UP (same day, after Yossi verified the split live): the migration no
+  longer carries the old flat `rtl_mode` across. Yossi: "זה צריך להיות מוגדר
+  בDEFAULT שמקומי הוא על BIDI ומרוחק הוא על אוטומטי". Correct, and the earlier
+  caution no longer applies — a single pre-split value was NECESSARILY wrong
+  for at least one of the two classes, since they need opposite modes, so
+  there was nothing worth preserving. Each profile now takes its own measured
+  default (local=bidi_reorder, remote=auto_per_line); auto_direction,
+  mirror_arrows_rtl and tui_owns_bidi still carry over, being orthogonal to
+  the split. Test rewritten to assert exactly that. 253 cargo tests pass.
+  Narrow gap accepted: anyone who ran the ONE intermediate build already has
+  `rtl` written (both = their old value) and will not be re-migrated. That is
+  a single build and a single session; not worth a second migration pass.

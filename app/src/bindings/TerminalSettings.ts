@@ -74,15 +74,17 @@ auto_reset_on_connect: boolean,
  * The four flat fields (`rtl_mode`, `auto_direction`,
  * `mirror_arrows_rtl`, `tui_owns_bidi`) are DEPRECATED and kept only so
  * an existing settings.json still loads and can be migrated from. On
- * load, when `rtl` is absent, `migrate_rtl_profiles` seeds BOTH profiles
- * from them, so nobody's behaviour changes on upgrade. Delete the flat
- * fields a release later, not here.
+ * load, when `rtl` is absent, `migrate_rtl_profiles` seeds the profiles:
+ * each takes its own measured `rtl_mode` (a single pre-split value was
+ * necessarily wrong for one of the two classes), while the other three
+ * knobs carry over from the flat fields. Delete the flat fields a
+ * release later, not here.
  *
  * `Option` on purpose: **absent is the migration signal.** A fresh
  * install gets `Some(RtlProfiles::default())` — the measured per-class
  * defaults — while an existing settings.json has no `rtl` key at all,
- * deserialises to `None`, and gets seeded from that user's own flat
- * values instead. The two cases want different answers and a plain
- * `#[serde(default)]` could not tell them apart.
+ * deserialises to `None`, and goes through the migration instead. The
+ * two cases want different answers and a plain `#[serde(default)]`
+ * could not tell them apart.
  */
 rtl: RtlProfiles | null, };

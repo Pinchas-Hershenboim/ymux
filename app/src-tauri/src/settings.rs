@@ -520,16 +520,18 @@ pub(crate) struct TerminalSettings {
     /// The four flat fields (`rtl_mode`, `auto_direction`,
     /// `mirror_arrows_rtl`, `tui_owns_bidi`) are DEPRECATED and kept only so
     /// an existing settings.json still loads and can be migrated from. On
-    /// load, when `rtl` is absent, `migrate_rtl_profiles` seeds BOTH profiles
-    /// from them, so nobody's behaviour changes on upgrade. Delete the flat
-    /// fields a release later, not here.
+    /// load, when `rtl` is absent, `migrate_rtl_profiles` seeds the profiles:
+    /// each takes its own measured `rtl_mode` (a single pre-split value was
+    /// necessarily wrong for one of the two classes), while the other three
+    /// knobs carry over from the flat fields. Delete the flat fields a
+    /// release later, not here.
     ///
     /// `Option` on purpose: **absent is the migration signal.** A fresh
     /// install gets `Some(RtlProfiles::default())` — the measured per-class
     /// defaults — while an existing settings.json has no `rtl` key at all,
-    /// deserialises to `None`, and gets seeded from that user's own flat
-    /// values instead. The two cases want different answers and a plain
-    /// `#[serde(default)]` could not tell them apart.
+    /// deserialises to `None`, and goes through the migration instead. The
+    /// two cases want different answers and a plain `#[serde(default)]`
+    /// could not tell them apart.
     #[serde(default)]
     pub rtl: Option<RtlProfiles>,
 }
@@ -543,15 +545,24 @@ pub(crate) fn migrate_rtl_profiles(t: &mut TerminalSettings) -> bool {
     if t.rtl.is_some() {
         return false;
     }
-    let seeded = RtlProfile {
-        rtl_mode: t.rtl_mode.clone(),
+    // `rtl_mode` is deliberately NOT carried over: a single pre-split value
+    // was necessarily wrong for at least one of the two classes, because they
+    // need opposite modes. There is nothing worth preserving there, so each
+    // profile takes its own measured default instead. Verified live on
+    // 2026-08-19 before this was made the migration's behaviour.
+    //
+    // The other three ARE carried over — they are orthogonal to the
+    // local/remote split and the user may have tuned them deliberately.
+    let defaults = RtlProfiles::default();
+    let carry = |mode: String| RtlProfile {
+        rtl_mode: mode,
         auto_direction: t.auto_direction,
         mirror_arrows_rtl: t.mirror_arrows_rtl,
         tui_owns_bidi: t.tui_owns_bidi,
     };
     t.rtl = Some(RtlProfiles {
-        local: seeded.clone(),
-        remote: seeded,
+        local: carry(defaults.local.rtl_mode),
+        remote: carry(defaults.remote.rtl_mode),
     });
     true
 }
@@ -2431,12 +2442,13 @@ mod tests {
     // ---- 2026-08-19: RTL profile split (local vs remote) ----------------
 
     #[test]
-    fn rtl_migration_seeds_both_profiles_from_the_old_flat_fields() {
-        // An upgrading user must see NO behaviour change: whatever single
-        // value they had becomes both profiles, and they diverge only when
-        // they actually change one.
+    fn rtl_migration_gives_each_profile_its_own_measured_mode() {
+        // A single pre-split rtl_mode was necessarily wrong for one of the
+        // two classes, so the migration does NOT carry it over — each profile
+        // takes its own measured default. The other three knobs are
+        // orthogonal to the split and ARE preserved.
         let mut t = TerminalSettings {
-            rtl_mode: "bidi_reorder".into(),
+            rtl_mode: "off".into(),
             auto_direction: false,
             mirror_arrows_rtl: false,
             tui_owns_bidi: true,
@@ -2445,11 +2457,12 @@ mod tests {
         };
         assert!(migrate_rtl_profiles(&mut t), "absent rtl must migrate");
         let r = t.rtl.expect("seeded");
+        assert_eq!(r.local.rtl_mode, "bidi_reorder", "local must not inherit 'off'");
+        assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote must not inherit 'off'");
         for p in [&r.local, &r.remote] {
-            assert_eq!(p.rtl_mode, "bidi_reorder");
-            assert!(!p.auto_direction);
-            assert!(!p.mirror_arrows_rtl);
-            assert!(p.tui_owns_bidi);
+            assert!(!p.auto_direction, "auto_direction must carry over");
+            assert!(!p.mirror_arrows_rtl, "mirror_arrows_rtl must carry over");
+            assert!(p.tui_owns_bidi, "tui_owns_bidi must carry over");
         }
     }
 
