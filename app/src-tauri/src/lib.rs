@@ -32,6 +32,7 @@ mod skills;
 mod stt;
 mod tickets;
 mod tray;
+mod tunnel_registry;
 mod updater;
 mod worktrees;
 mod workspaces_merge;
@@ -191,6 +192,12 @@ pub(crate) struct AppState {
     /// just-failed upload for a few minutes, and records whether the remote
     /// CLI actually matches the binary we embed. See `bootstrap_guard`.
     pub(crate) bootstrap_guard: bootstrap_guard::BootstrapGuard,
+    /// Per-workspace reverse-tunnel bookkeeping: the connect lock that stops
+    /// `workspace_ensure_connected` and `spawn_ssh` racing, the sticky port
+    /// that keeps an already-running `claude` reachable across a reconnect,
+    /// and the port/token/owning-session triple that replaced two maps read
+    /// independently. See `tunnel_registry`.
+    pub(crate) tunnel_registry: tunnel_registry::TunnelRegistry,
 }
 
 /// issue #4: per-pane agent turn timing for the ymux-tools chrome Ticker.

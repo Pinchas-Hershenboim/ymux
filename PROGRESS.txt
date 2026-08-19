@@ -2939,3 +2939,23 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
     upgrade key, so the new package installs SIDE BY SIDE and the old one
     stays in Programs and Features. No shim exists for this -- the
     identifier IS the identity. Release notes need an uninstall step.
+
+[2026-08-19] Diagnosis: "strange sudden disconnects" (log forensics only, no code changed)
+  Source read: %APPDATA%\ymux\debug.log (10,093 lines), debug.flooded-2026-08-18.log, log-sync.json
+  Files implicated: app/src-tauri/src/lib.rs:6253 + :3028 + :3544,
+                    app/src-tauri/crates/ymux-tunnel/src/lib.rs:279 (write_remote_env_file),
+                    app/src-tauri/cli/src/main.rs:1223,
+                    app/src-tauri/src/claude_usage.rs:262
+  Result: ROOT CAUSE IDENTIFIED, not fixed, not verified live.
+    SSH itself never fails (20/20 connects ok=true). The reverse tunnel re-allocates a
+    remote port 20 times but rewrites the remote ~/.winmux/run/last.env only 5 times, so
+    the remote CLI hook dials dead ports -> 23 x "Connection refused (os error 111)" ->
+    BRANCH=rpc-error-fallback -> Claude Code's own UI replaces ymux's permission card.
+    That is what the user perceives as a disconnect. The headless workspace_ensure_connected
+    path allocates port+token+watcher, then drops its handle without rolling any of them
+    back; the clobbered token explains the 2 x "server closed before challenge".
+    Race confirmed by two forwards 38ms apart + "stale slot" + 4 server-side
+    "hygiene auto-reaped duplicate port-watchers".
+  Also found (unrelated, filed P2): non-atomic log writes tearing ~120 lines;
+    claude_usage backoff logging 15,477 identical lines.
+  Filed: FOLLOWUPS.md — 1 x P0, 2 x P2. No fix applied — fix shape needs Yossi's decision.
