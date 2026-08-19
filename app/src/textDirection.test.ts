@@ -95,6 +95,73 @@ test("dominance: exactly at the threshold, Hebrew wins", () => {
   assert.equal(detectDirection("abcdefghi של", true), LTR);
 });
 
+// -- REMOTE PARITY WITH main -------------------------------------------------
+//
+// Remote panes render Hebrew correctly on origin/main and must keep doing so.
+// `git diff origin/main...HEAD -- src/textDirection.ts` says the entire delta
+// in this module is the `dominance` flag, so "remote behaves like main" is
+// exactly "the default path is main's rule". These tests are the guard.
+//
+// The rule below is main's detectDirection, copied verbatim from
+// origin/main:app/src/textDirection.ts. It is a REFERENCE IMPLEMENTATION --
+// do not "fix" it to match a change made to the real one; if the two disagree,
+// the real one moved and remote panes moved with it.
+const MAIN_HEBREW = /[\u0590-\u05ff]/;
+const MAIN_ARABIC = /[\u0600-\u06ff\u0750-\u077f]/;
+const MAIN_LATIN = /[A-Za-z]/;
+function mainRule(text: string): "ltr" | "rtl" {
+  if (MAIN_HEBREW.test(text) || MAIN_ARABIC.test(text)) return RTL;
+  if (MAIN_LATIN.test(text)) return LTR;
+  return LTR;
+}
+
+test("remote parity: the default path IS main's rule, for every table case", () => {
+  for (const [input, , label] of cases) {
+    assert.equal(detectDirection(input), mainRule(input), label);
+  }
+});
+
+test("remote parity: main's rule also holds for the rows that started this", () => {
+  // The two lines the dominance vote was written for. On the remote profile
+  // both must resolve the way main resolves them -- RTL -- regardless of how
+  // badly the status bar reads that way. Remote correctness outranks it.
+  for (const line of [
+    CLAUDE_STATUS_ROW,
+    "2. /opt/wa/.shared.env - \u05d4\u05e2\u05e8\u05d4",
+    "git commit -m '\u05ea\u05d9\u05e7\u05d5\u05df'",
+  ]) {
+    assert.equal(detectDirection(line), mainRule(line));
+  }
+});
+
+test("remote parity: whole-screen row pass matches main's, block rules included", () => {
+  // detectRowDirections has block grouping on top of detectDirection, so the
+  // per-row check above is not enough on its own. A table, a fence and a box.
+  const screen = [
+    "$ ls -la /home",
+    "| Name | \u05e2\u05e8\u05da |",
+    "|------|-----|",
+    "| a    | 1   |",
+    "",
+    "```",
+    "const x = 5;   // \u05d4\u05e2\u05e8\u05d4",
+    "```",
+    "\u05e9\u05e8\u05ea \u05e8\u05e5 \u05e2\u05dc port 4200",
+    CLAUDE_STATUS_ROW,
+  ];
+  const mine = detectRowDirections(screen);
+  // main had no per-row block override beyond "any RTL in the block", which
+  // for these rows collapses to the per-row answer everywhere except the
+  // pure-ASCII rows inside an RTL block -- covered by the block tests above.
+  assert.equal(mine.length, screen.length);
+  assert.equal(mine[0], LTR, "pure-Latin shell line");
+  assert.deepEqual(mine.slice(1, 4), [RTL, RTL, RTL], "Hebrew table flips entire");
+  assert.deepEqual(mine.slice(5, 8), [RTL, RTL, RTL], "fence with a Hebrew comment");
+  assert.equal(mine[8], RTL, "Hebrew prose with a port number");
+  assert.equal(mine[9], RTL, "status row: main's answer, and remote gets main's");
+});
+
+
 test("gate: off a TUI screen the status row keeps the old rule", () => {
   // The regression Yossi caught within one build: shipped ungated, the vote
   // reached ordinary shell output too, and SSH panes that had been fine went

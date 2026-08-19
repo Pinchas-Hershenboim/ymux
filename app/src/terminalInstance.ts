@@ -42,6 +42,7 @@ const termLog = createLogger("TERM");
 import {
   detectDirection,
   detectRowDirections,
+  strongCounts,
   nextTuiOwnsBidi,
 } from "./textDirection";
 import { transformMouseX, findRow } from "./mouseRtl";
@@ -137,7 +138,30 @@ export interface RtlProfileSettings {
   mirrorArrowsRtl: boolean;
   /** Legacy: force LTR while a self-bidi TUI holds the pane. Default off. */
   tuiOwnsBidi: boolean;
+  /**
+   * Which rule decides a row's paragraph direction.
+   *
+   *  - "any_rtl"        any Hebrew/Arabic on the row takes it RTL. What every
+   *                     shipped version before 2026-08-19 did, and what remote
+   *                     panes are known to render correctly.
+   *  - "tui_dominance"  the RTL_DOMINANCE vote (see textDirection.ts): Hebrew
+   *                     wins unless massively outnumbered by Latin, which
+   *                     stops a TUI status bar from mirroring its own layout.
+   *
+   * 2026-08-19: this is deliberately keyed on the PANE CLASS and never on what
+   * is running inside the pane. The vote first shipped gated on `tuiOwnsBidi`,
+   * and since the OSC title propagates over SSH — that is how Claude Code is
+   * detected at all — it fired on remote panes too and broke them. Yossi's
+   * instruction after that: "תוודא שיש הפרדה מוחלטת בין המרוחק למקומי - ואז
+   * השינויים שתרצה לעשות על המקומי לא יפגעו במרוחק". A per-profile field is that
+   * separation; `remote_direction_policy_is_the_pre_2026_08_19_rule` in
+   * settings.rs and the parity tests in textDirection.test.ts enforce it.
+   */
+  directionPolicy: DirectionPolicy;
 }
+
+/** See `RtlProfileSettings.directionPolicy`. */
+export type DirectionPolicy = "any_rtl" | "tui_dominance";
 
 /**
  * 2026-08-19: these used to be four scalar globals, which made every pane in
@@ -160,12 +184,16 @@ const g_rtl: Record<RtlProfileKind, RtlProfileSettings> = {
     autoDirection: true,
     mirrorArrowsRtl: true,
     tuiOwnsBidi: false,
+    directionPolicy: "any_rtl",
   },
   remote: {
     rtlMode: "auto_per_line",
     autoDirection: true,
     mirrorArrowsRtl: true,
     tuiOwnsBidi: false,
+    // Do not change this without reading the note on `directionPolicy`. Remote
+    // panes render Hebrew correctly on this rule and the parity tests pin it.
+    directionPolicy: "any_rtl",
   },
 };
 /** Phase 65.O (round 6): one-time guard so the "no wheel proxy" note is
@@ -570,6 +598,9 @@ export class TerminalInstance {
   // already in visual order and any second bidi pass corrupts it. Driven
   // by terminal-title changes; see nextTuiOwnsBidi in textDirection.ts.
   private tuiOwnsBidi = false;
+  /** Last direction vector reported by `logDirections`, so the per-frame pass
+   *  only speaks when its answer actually changed. */
+  private lastDirSignature: string | null = null;
 
   /** The EFFECT of tuiOwnsBidi, as opposed to the detected state. Detection
    *  and its log line always run — they are what made the 2026-08-18
@@ -871,6 +902,23 @@ export class TerminalInstance {
     this.ro.observe(this.container);
     g_terminals.add(this);
 
+    // 2026-08-19: the log line FOLLOWUPS.md P2 asked for and that two rounds
+    // of screenshot-reading went without. Every RTL question so far has come
+    // down to "which pipeline did THIS pane actually get", and the answer is
+    // knowable only here: the renderer and `rtlModeAtConstruct` are frozen at
+    // construction while the mode and policy are read live, so a pane can be
+    // running a combination no setting screen displays.
+    //
+    // Metadata only (Rule #1): a mode name, a profile name, three booleans.
+    // No byte of terminal content appears in it.
+    termLog.info(
+      `rtl-pane pane=${this.paneId} profile=${this.profile} ` +
+        `mode=${this.rtl.rtlMode} builtAs=${this.rtlModeAtConstruct} ` +
+        `renderer=${this.webglAddon ? "webgl" : "dom"} ` +
+        `policy=${this.rtl.directionPolicy} auto=${this.rtl.autoDirection ? 1 : 0} ` +
+        `stale=${this.staleRenderer ? 1 : 0}`,
+    );
+
     this.ensureDirObserver();
     this.installRtlMouseCapture();
 
@@ -1090,14 +1138,13 @@ export class TerminalInstance {
     // tuiOwnsBidi: the foreground TUI (Claude) already emitted visual-order
     // RTL — render rows plain LTR so we don't bidi it a second time.
     //
-    // 2026-08-19: `tuiOwnsBidi` (the DETECTED state, not the gated legacy
-    // effect) also switches on the RTL_DOMINANCE vote. While a full-screen
-    // TUI owns the pane its rows are POSITIONAL — it chose the column of
-    // every glyph — so a status bar carrying three Hebrew letters in ~60
-    // Latin must not flip and mirror the layout. A plain shell line is text,
-    // not a layout, and keeps the older "any Hebrew takes the row" rule.
+    // 2026-08-19: which direction rule applies comes from the PANE'S PROFILE,
+    // never from what is running inside the pane. This briefly read
+    // `this.tuiOwnsBidi` instead — and because the OSC title propagates over
+    // SSH, that fired on remote panes and broke a path that was working. See
+    // the note on `directionPolicy` above.
     const dirs = auto && !this.bidiOwnedByTui
-      ? detectRowDirections(texts, this.tuiOwnsBidi)
+      ? detectRowDirections(texts, this.rtl.directionPolicy === "tui_dominance")
       : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
 
     for (let i = 0; i < children.length; i++) {
@@ -1106,6 +1153,48 @@ export class TerminalInstance {
       const dir = dirs[i];
       if (el.getAttribute("dir") !== dir) el.setAttribute("dir", dir);
     }
+    this.logDirections(dirs, texts);
+  }
+
+  /**
+   * 2026-08-19: report what the direction pass decided, so "the letters are
+   * reversed" stops being a judgement call about a screenshot.
+   *
+   * Screenshots cannot settle this on their own: visual order cannot be
+   * written down in a chat message, because the message is itself reordered by
+   * whatever renders it. Counts and a direction can.
+   *
+   * Rule #1 — METADATA ONLY. What goes out is how many strong characters of
+   * each script a row held and which way it resolved. The characters
+   * themselves never appear, and a count cannot reconstruct them.
+   *
+   * Quiet by construction: this pass runs once per animation frame during
+   * output, so it logs only when the resolved direction VECTOR changes, which
+   * is the only time it says anything new.
+   */
+  private logDirections(dirs: ("ltr" | "rtl")[], texts: string[]): void {
+    const sig = dirs.join("");
+    if (sig === this.lastDirSignature) return;
+    this.lastDirSignature = sig;
+    let rtlRows = 0;
+    for (const d of dirs) if (d === "rtl") rtlRows++;
+    // One worked example per direction makes the counts actionable: it shows
+    // WHICH ratio produced the answer, not just the tally.
+    const sample = (want: "ltr" | "rtl"): string => {
+      for (let i = 0; i < dirs.length; i++) {
+        if (dirs[i] !== want) continue;
+        const { rtl, ltr } = strongCounts(texts[i]);
+        if (rtl === 0 && ltr === 0) continue; // blank row, tells us nothing
+        return `#${i}(r${rtl}/l${ltr})`;
+      }
+      return "-";
+    };
+    termLog.info(
+      `rtl-dirs pane=${this.paneId} profile=${this.profile} ` +
+        `policy=${this.rtl.directionPolicy} tui=${this.tuiOwnsBidi ? 1 : 0} ` +
+        `rows=${dirs.length} rtl=${rtlRows} ltr=${dirs.length - rtlRows} ` +
+        `firstRtl=${sample("rtl")} firstLtr=${sample("ltr")}`,
+    );
   }
 
   attach(sessionId: string) {

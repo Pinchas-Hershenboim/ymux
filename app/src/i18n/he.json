@@ -549,6 +549,8 @@
   "settings.terminal.mirror_arrows_rtl.hint": "בשורה בעברית/ערבית החיצים ימינה/שמאלה הפיזיים זזים בכיוון הלוגי ההפוך; זה הופך אותם כך שיתאימו למה שאתה רואה. פעיל רק בשורות RTL — שורות אנגלית לא מושפעות.",
   "settings.terminal.tui_owns_bidi.label": "כפה LTR כש-Claude Code מחזיק פאנל (מדור קודם)",
   "settings.terminal.tui_owns_bidi.hint": "גרסאות ישנות של Claude Code (2.1.x) הדפיסו עברית כשהיא כבר הפוכה, עבור טרמינלים בלי תמיכת BiDi, ולכן winmux היה חייב להפסיק לסדר אותה מחדש. Claude הנוכחי מדפיס עברית רגילה, וכפיית LTR היא מה שמשבש אותה — השאר כבוי אלא אם כן אתה מריץ Claude ישן ובאמת רואה עברית הפוכה.",
+  "settings.terminal.direction_policy.label": "לשקול עברית מול לטינית בכל שורה (ניסיוני)",
+  "settings.terminal.direction_policy.hint": "בשורת סטטוס של TUI, מילה אחת בעברית בתוך שורה לטינית לא אמורה להפוך את כל השורה — ה-TUI כבר בחר את העמודה של כל תו. כשדלוק, עברית לוקחת שורה אלא אם הלטינית עולה עליה ביותר מפי 4. כבוי הוא הכלל הוותיק: כל עברית לוקחת את השורה.",
   "settings.autoConnect.label": "התחברות אוטומטית בבחירת workspace",
   "settings.autoConnect.hint": "כשמופעל, מעבר ל-workspace מסוג SSH יוצר חיבור ברקע כך שסשני tmux והקבצים שלך מוצגים מיד. כבה כדי לדחות את החיבור עד שייפתח pane של טרמינל.",
   "settings.restoreSessions.label": "שחזור סשני SSH בפתיחת האפליקציה",

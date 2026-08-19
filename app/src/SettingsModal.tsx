@@ -207,11 +207,18 @@ type Tab = "general" | "textLocale" | "appearance" | "shortcuts" | "agentNotif" 
 type HooksNotifSubTab = "hooks" | "sound";
 
 /** Per-profile fallbacks, matching RtlProfiles::default() in settings.rs.
- *  They differ on purpose: measured 2026-08-19, a native Windows pane needs
- *  bidi_reorder and an SSH pane needs auto_per_line. */
+ *
+ *  They are identical today. The two profiles were measured on 2026-08-19 to
+ *  need OPPOSITE modes -- raw ConPTY hands over visual-order Hebrew -- and then
+ *  zellij went in front of local panes and normalised the stream to logical
+ *  order, which converged them. The split still lets a user tune them apart;
+ *  the two lines stay separate so that remains a one-word change.
+ *
+ *  `direction_policy` is `any_rtl` on BOTH: it is the pre-2026-08-19 rule, and
+ *  remote panes are known to render Hebrew correctly on it. */
 const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
-  local: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
-  remote: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
+  local: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false, direction_policy: "any_rtl" },
+  remote: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false, direction_policy: "any_rtl" },
 };
 
 export function SettingsModal(p: Props) {
@@ -855,6 +862,25 @@ export function SettingsModal(p: Props) {
                     <span>{t("settings.terminal.tui_owns_bidi.label")}</span>
                   </label>
                   <p class="settings-hint">{t("settings.terminal.tui_owns_bidi.hint")}</p>
+                  {/* 2026-08-19: the RTL_DOMINANCE vote, per profile and
+                      opt-in. It exists because a TUI status bar is positional
+                      and flipping its row mirrors a layout the TUI already
+                      placed; it is OFF by default because, shipped globally,
+                      it broke remote panes that read fine on the older rule. */}
+                  <label class="settings-checkbox" style="margin-top:8px">
+                    <input
+                      type="checkbox"
+                      checked={rtlField("direction_policy") === "tui_dominance"}
+                      onChange={(e) =>
+                        setRtlField(
+                          "direction_policy",
+                          e.currentTarget.checked ? "tui_dominance" : "any_rtl",
+                        )
+                      }
+                    />
+                    <span>{t("settings.terminal.direction_policy.label")}</span>
+                  </label>
+                  <p class="settings-hint">{t("settings.terminal.direction_policy.hint")}</p>
                 </section>
               </Show>
 

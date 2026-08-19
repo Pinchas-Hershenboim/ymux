@@ -389,6 +389,25 @@ pub(crate) struct RtlProfile {
     pub mirror_arrows_rtl: bool,
     #[serde(default)]
     pub tui_owns_bidi: bool,
+    /// Which rule decides a row's paragraph direction: `"any_rtl"` (any Hebrew
+    /// on the row takes it RTL — what every version before 2026-08-19 did, and
+    /// what remote panes are known to render correctly) or `"tui_dominance"`
+    /// (the RTL_DOMINANCE vote in `app/src/textDirection.ts`, which stops a TUI
+    /// status bar from mirroring its own layout).
+    ///
+    /// Keyed on the PANE CLASS on purpose. The vote first shipped keyed on
+    /// whether Claude Code held the pane, and since the OSC title propagates
+    /// over SSH it fired on remote panes and broke a working path. Absent from
+    /// an existing settings.json this reads as `"any_rtl"`, so an upgrade
+    /// cannot silently move a pane onto the newer rule.
+    #[serde(default = "default_direction_policy")]
+    pub direction_policy: String,
+}
+
+/// See `RtlProfile::direction_policy`. The pre-2026-08-19 rule is the default
+/// for BOTH profiles; `tui_dominance` is opt-in, per profile.
+fn default_direction_policy() -> String {
+    "any_rtl".to_string()
 }
 
 impl Default for RtlProfile {
@@ -398,6 +417,7 @@ impl Default for RtlProfile {
             auto_direction: true,
             mirror_arrows_rtl: true,
             tui_owns_bidi: false,
+            direction_policy: default_direction_policy(),
         }
     }
 }
@@ -562,6 +582,11 @@ pub(crate) fn migrate_rtl_profiles(t: &mut TerminalSettings) -> bool {
         auto_direction: t.auto_direction,
         mirror_arrows_rtl: t.mirror_arrows_rtl,
         tui_owns_bidi: t.tui_owns_bidi,
+        // Not carried from anything: `direction_policy` postdates the split,
+        // so there is no deprecated flat field to inherit. A migrating install
+        // lands on the pre-2026-08-19 rule, which is what it was already
+        // running.
+        direction_policy: default_direction_policy(),
     };
     t.rtl = Some(RtlProfiles {
         local: carry(defaults.local.rtl_mode),
@@ -2467,6 +2492,28 @@ mod tests {
             assert!(!p.mirror_arrows_rtl, "mirror_arrows_rtl must carry over");
             assert!(p.tui_owns_bidi, "tui_owns_bidi must carry over");
         }
+    }
+
+    #[test]
+    fn remote_direction_policy_is_the_pre_2026_08_19_rule() {
+        // THE REGRESSION GUARD. On 2026-08-19 the RTL_DOMINANCE vote shipped
+        // keyed on "is Claude Code in front", which is detected from the OSC
+        // title -- and that title propagates over SSH, so the vote fired on
+        // remote panes and broke a path that had been working since main.
+        // Remote's rule is `any_rtl` and it does not drift silently.
+        assert_eq!(RtlProfile::default().direction_policy, "any_rtl");
+        let d = RtlProfiles::default();
+        assert_eq!(d.remote.direction_policy, "any_rtl", "remote must stay on any_rtl");
+        assert_eq!(d.local.direction_policy, "any_rtl", "tui_dominance is opt-in");
+    }
+
+    #[test]
+    fn absent_direction_policy_reads_as_any_rtl() {
+        // An existing settings.json has no `direction_policy`. An upgrade must
+        // not move a pane onto the newer rule behind the user's back.
+        let p: RtlProfile = serde_json::from_str(r#"{"rtl_mode":"auto_per_line"}"#)
+            .expect("partial RtlProfile deserializes");
+        assert_eq!(p.direction_policy, "any_rtl");
     }
 
     #[test]

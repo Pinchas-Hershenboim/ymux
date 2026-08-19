@@ -10,6 +10,7 @@ import {
   setAutoResetOnConnect,
   type RtlMode,
   type RtlProfileSettings,
+  type DirectionPolicy,
 } from "./terminalInstance";
 import type { RtlProfileKind } from "./types";
 import type { ITheme } from "@xterm/xterm";
@@ -89,6 +90,10 @@ export interface RtlProfileFields {
   auto_direction?: boolean;
   mirror_arrows_rtl?: boolean;
   tui_owns_bidi?: boolean;
+  /** 2026-08-19: which rule sets a row's paragraph direction. Absent reads as
+   *  "any_rtl", the pre-2026-08-19 rule — see `directionPolicy` in
+   *  terminalInstance.ts for why this is per pane class and not per TUI. */
+  direction_policy?: DirectionPolicy;
 }
 
 /** `local` = native Windows ConPTY panes; `remote` = anything with a POSIX
@@ -500,6 +505,10 @@ export function resolveRtlProfiles(
     autoDirection: p?.auto_direction ?? t.auto_direction ?? true,
     mirrorArrowsRtl: p?.mirror_arrows_rtl ?? t.mirror_arrows_rtl ?? true,
     tuiOwnsBidi: p?.tui_owns_bidi ?? t.tui_owns_bidi ?? false,
+    // No flat-field fallback on purpose: `direction_policy` postdates the
+    // split, so there is no deprecated global to inherit from, and an absent
+    // value must mean the older rule rather than the newer one.
+    directionPolicy: p?.direction_policy ?? "any_rtl",
   });
   return {
     local: pick(t.rtl?.local, "auto_per_line"),
