@@ -71,12 +71,12 @@ const group = (name, color, rows, extra = "") => `
 const sidebar = (mode, narrow) => `
 <div class="sidebar ${mode}" ${narrow ? 'data-narrow="true"' : ""}>
   <div class="sidebar-header">
+    <button class="sidebar-collapse-btn">&#171;</button>
     <div class="sidebar-brand-row">
       <svg class="sidebar-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
       <span class="sidebar-brand">YMUX</span>
-      <span class="sidebar-notif-badge">7</span>
     </div>
-    <button class="sidebar-collapse-btn">&#171;</button>
+    <span class="sidebar-notif-badge">7</span>
   </div>
   <div class="sidebar-list">
     <div class="group-header" style="cursor: default">
@@ -113,6 +113,7 @@ const VIEWS = [
   { cap: "he/RTL · modernist (light, radius 0)", dir: "rtl", mode: "light", w: 224,
     preset: "modernist", family: "redesign" },
   { cap: "he/RTL · icons (48px)", dir: "rtl", mode: "dark", w: 48, icons: 1 },
+  { cap: "he/RTL · light · 420px (wide)", dir: "rtl", mode: "light", w: 420 },
 ];
 
 document.getElementById("stage").innerHTML = VIEWS.map((v, i) => `
@@ -120,7 +121,7 @@ document.getElementById("stage").innerHTML = VIEWS.map((v, i) => `
     <div class="cap">${v.cap}</div>
     <div class="app" id="app${i}" dir="${v.dir}" data-theme-mode="${v.mode}"
          ${v.preset ? `data-theme-preset="${v.preset}" data-theme-family="${v.family}"` : ""}
-         style="grid-template-columns:${v.w}px">${sidebar(v.icons ? "icons" : "full", v.narrow)}</div>
+         style="grid-template-columns:${v.w}px; --sidebar-w:${v.w}px">${sidebar(v.icons ? "icons" : "full", v.narrow)}</div>
   </div>`).join("");
 
 // tokens.css keys light mode off the ROOT element, so each column has to

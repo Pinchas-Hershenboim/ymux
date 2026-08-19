@@ -3112,3 +3112,52 @@ it measured the FIRST GLYPH, which for a right-aligned latin string sits at the
 string's left end, so the "gap" it reported was just the name's width. Measuring
 the whole run's near edge is the correct probe. Noted because the same mistake
 is easy to repeat on any RTL alignment check.
+
+--------------------------------------------------------------------------------
+2026-08-19 (later still) -- Sidebar masthead + collapse control
+--------------------------------------------------------------------------------
+Yossi confirmed the alignment fix live, then asked for two things: centre the
+logo and let it fill / scale with the row, and sort out the navbar's
+open/close button.
+
+WHAT WAS THERE: .sidebar-header stacked two rows -- the brand row, then the
+collapse arrow on a line of its own inside a 1px bordered box. That spent ~19px
+of permanent vertical space on a control used about once a day, and the border
+made a rare toggle read as a primary action. The brand was also pinned at 22px
+logo + --w-fs-lg regardless of how wide the rail was dragged.
+
+WHAT IT IS NOW: one row, a three-column grid -- [collapse] [brand] [badge].
+Both side slots are the SAME fixed 26px, which is what keeps the brand
+optically centred whether or not the badge is rendering; a flex row with
+`margin: auto` drifts the moment one side appears. Grid tracks follow the
+writing direction, so the arrow lands on the rail's OUTER edge in LTR and RTL
+alike, pointing the way it collapses.
+
+The masthead scales off --sidebar-w, the live width Sidebar.tsx now publishes
+inline (the same widthPx already threaded for [data-narrow]). Everything in the
+lockup is em-based off one clamped root, so the mark tracks the wordmark
+instead of staying pinned:
+  --sb-brand: clamp(15px, calc(var(--sidebar-w) * 0.115), 32px)
+
+The collapse button lost its border. Quiet --w-text-faint at rest, surfaces on
+hover; the global :focus-visible ring keeps it reachable.
+
+MEASURED in the fixture (now 7 views, added a 420px wide rail to see the top of
+the clamp):
+  brand      19px @165  ->  26px @224  ->  32px @420 (clamp ceiling)
+  logo       em-locked at 1.15em, so 21.8 -> 29.6 -> 36.8
+  centring   centreOffset {0} in ALL seven views, badge present
+  header     ~74px -> 49-63px in full; ~19px handed back to the list
+  overflow   0 -- nothing spills the rail at 165px
+
+REGRESSION CAUGHT BY THE MEASUREMENT, fixed before commit: moving the notif
+badge out of .sidebar-brand-row gave it a row of its own in the 48px ICONS
+strip, pushing that header from 74px to 99px. It rides the logo's corner as an
+absolutely-positioned count bubble there instead -- which is what a narrow rail
+wants anyway. Back to 75px.
+
+Deliberately NOT changed: the wordmark's blue->teal gradient. It is existing
+brand identity, not a call to make while fixing layout -- and themes-redesign
+already neutralises it for the four design directions.
+
+NOT VERIFIED LIVE (Rule #14) -- fixture + tsc + vite build only.

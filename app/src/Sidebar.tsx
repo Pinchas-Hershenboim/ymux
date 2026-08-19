@@ -603,8 +603,28 @@ export function Sidebar(p: Props) {
   });
 
   return (
-    <div class={`sidebar ${p.mode}`} data-narrow={p.widthPx < 190 ? "true" : undefined}>
+    <div
+      class={`sidebar ${p.mode}`}
+      data-narrow={p.widthPx < 190 ? "true" : undefined}
+      // The masthead scales with the rail, so CSS needs the live width as a
+      // length it can do arithmetic on.
+      style={{ "--sidebar-w": `${p.widthPx}px` }}
+    >
+      {/* One row, three columns: [collapse] [brand] [badge]. The two side
+          slots are the same fixed width, which is what keeps the brand
+          optically centred whether or not the badge is rendering. */}
       <div class="sidebar-header">
+        <button
+          class="sidebar-collapse-btn"
+          onClick={() => p.onSetMode(p.mode === "full" ? "icons" : "full")}
+          title={p.mode === "full" ? t("sidebar.collapse.tooltip") : t("sidebar.expand.tooltip")}
+          aria-label={p.mode === "full" ? t("sidebar.collapse.tooltip") : t("sidebar.expand.tooltip")}
+        >
+          {/* U+00AB is Bidi_Mirrored, so this renders as » under dir="rtl" —
+              which is correct: the rail sits on the right there and the arrow
+              should point at the edge it collapses toward. */}
+          {p.mode === "full" ? "«" : "»"}
+        </button>
         <div class="sidebar-brand-row">
         <svg
           class="sidebar-logo"
@@ -645,6 +665,7 @@ export function Sidebar(p: Props) {
           <circle cx="848" cy="176" r="20" fill="#5cd87f" />
         </svg>
         <span class="sidebar-brand">{t("sidebar.title")}</span>
+        </div>
         <Show when={p.pendingNotifCount > 0}>
           <span
             class="sidebar-notif-badge"
@@ -653,15 +674,6 @@ export function Sidebar(p: Props) {
             {p.pendingNotifCount > 99 ? "99+" : p.pendingNotifCount}
           </span>
         </Show>
-        </div>
-        <button
-          class="sidebar-collapse-btn"
-          onClick={() => p.onSetMode(p.mode === "full" ? "icons" : "full")}
-          title={p.mode === "full" ? t("sidebar.collapse.tooltip") : t("sidebar.expand.tooltip")}
-          aria-label={p.mode === "full" ? t("sidebar.collapse.tooltip") : t("sidebar.expand.tooltip")}
-        >
-          {p.mode === "full" ? "«" : "»"}
-        </button>
       </div>
       <div class="sidebar-list">
         {/* Design Pass 01 (#1): friendly CTA card while the list is empty,
