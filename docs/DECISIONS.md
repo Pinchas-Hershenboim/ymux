@@ -123,6 +123,23 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 - **Still open:** whether `dir="ltr"` would even have been sufficient for genuinely visual-order output. It would NOT — `dir` sets only the paragraph base direction, and UAX #9 rule L2 still reverses Hebrew runs inside an LTR paragraph; suppressing reordering needs `unicode-bidi: bidi-override`, which appears nowhere near `.xterm-rows`. So the legacy path is probably ALSO broken for the old Claude it was written for. Not fixed, not verified, and no longer urgent now that the default is off — but anyone turning the flag on should expect it not to work and should add `bidi-override` first.
 - **State:** Decided and implemented; live smoke of the OFF default pending on Yossi's local pane.
 
+### 2026-08-19 — Zellij spike, automatable half: PASSES. The decisive half needs a real terminal.
+- **Yossi: "בא נעבור ונוסיף את זה במקום TMUX".** Scope question (local panes only vs replacing tmux on the Linux servers too) was asked and not answered, so this proceeded with B0 — the spike — which is step one either way and forecloses neither.
+- **The Windows binary is real and official.** `winget install Zellij.Zellij` → 0.44.3, installs to `%LOCALAPPDATA%\Zellij\zellij.exe` (48 MB) and adds itself to the user PATH; `zellij --version` answers. The upstream v0.44.3 release genuinely ships `zellij-x86_64-pc-windows-msvc-installer.msi` and `…-msvc.zip`. **The third-party `arndawg.zellij-windows` fork (0.43.1-win32.5) in winget is NOT needed** — no supply-chain dependency on a fork.
+- **Correction to the 2026-08-18 entry below:** the heise report of "0.44.0, native Windows, 2026-03-23" does not survive contact. The installed 0.44.3 binary is dated 13 May and upstream's release notes for it are ordinary patch notes. The Windows support is real; the date and version story in that article is not. Do not plan around it.
+- **The CLI surface winmux needs exists, and one piece beats tmux:**
+  | need | tmux | zellij |
+  |---|---|---|
+  | attach-or-create | `new-session -A -s` | `attach -c NAME` |
+  | create DETACHED, no client | — | `attach -b NAME` |
+  | list | `ls` | `list-sessions` |
+  | kill | `kill-session` | `kill-session` |
+  | drop serialized state | — | `delete-session` |
+  `attach -b` has no tmux equivalent and is exactly what `pane_probe_tmux_sessions` wants.
+- **What could NOT be tested from a tool session, and why it matters.** `zellij attach -c` / `-s` start, emit the alt-screen sequences and immediately print `Bye from Zellij!` because there is no interactive TTY; `attach -b` left no session behind for the same reason (the shell inside it exits at once). So **detach → reattach → type**, which is the whole feature and the exact thing issue #5365 reports broken on Windows, cannot be exercised here. It is ~2 minutes at a real terminal.
+- **Nothing was left behind:** no sessions, no `zellij.exe` processes. It did create `%APPDATA%\zellij` and `%LOCALAPPDATA%\zellij`.
+- **State:** Open — blocked on the manual detach/reattach test and on the scope answer. Still zero winmux code.
+
 ### 2026-08-18 — Zellij as the Windows multiplexer: drop WSL for local panes? SPIKE GATE FIRST
 - **Context:** Yossi: "להוריד את ה-WSL ולהשתמש ב-Zellij". My first assumption — that Zellij is Linux-only and this just adds a layer — was **wrong**: Zellij 0.44.0 (2026-03-23) added native Windows support via a community contribution, no WSL involved.
 - **The goal is narrower and better-founded than it first sounds.** winmux is already tmux-native everywhere it matters, and `LOCAL_CAPS.tmuxPersistence = false` (`app/src/types.ts:352`) is the ONE gap — local Windows panes are the only place with no persistence, which is precisely why WSL workspaces were built (Phase 80). Everything else WSL provides already exists natively: `local_setup.rs:1220` installs Claude Code for Windows (`claude.ai/install.ps1`), and `winmux-cli.exe` is already built and staged. **Persistence is the only thing left.** If Zellij supplies it, the 8-step WSL ladder (`InstallWsl`, `CreateWslUser`, `EnableLinuxEnv`, `InstallTmuxInWsl`, `DeployWinmuxCliToWsl`, `DeployTmuxConfToWsl`, `InstallClaudeCodeInWsl`, `InstallHooksInWsl`) becomes optional rather than required.
