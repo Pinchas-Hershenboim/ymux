@@ -907,6 +907,7 @@
   "error.sidebarRender": "Не удалось отобразить боковую панель.",
   "error.layoutRender": "Не удалось отобразить этот макет.",
   "sidebar.workspaceConnectedTitle": "Подключено",
+  "sidebar.workspaceWaitingTitle": "Ждёт вас",
   "ports.window.toggle.hint.on": "Обнаружение включено — нажмите порт, чтобы открыть его в localhost.",
   "ports.window.toggle.hint.off": "Обнаружение выключено — включите, чтобы видеть удалённые LISTEN-порты.",
   "ports.window.row.forwardAction": "Открыть",

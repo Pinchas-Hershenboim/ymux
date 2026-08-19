@@ -907,6 +907,7 @@
   "error.sidebarRender": "Sidebar failed to render.",
   "error.layoutRender": "Failed to render this layout.",
   "sidebar.workspaceConnectedTitle": "connected",
+  "sidebar.workspaceWaitingTitle": "waiting for you",
   "ports.window.toggle.hint.on": "Detection on — click a port to forward it to localhost.",
   "ports.window.toggle.hint.off": "Detection off — enable to see remote LISTEN ports.",
   "ports.window.row.forwardAction": "Forward",

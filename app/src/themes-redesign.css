@@ -344,7 +344,7 @@
   background-clip: initial;
   color: var(--w-text);
 }
-[data-theme-family="redesign"] .ws-item.has-waiting::after {
+[data-theme-family="redesign"] .ws-waiting-dot {
   background: var(--wmx-wait-ring);
   box-shadow: 0 0 6px 1px var(--wmx-wait-glow-hi);
 }
@@ -360,8 +360,12 @@
 }
 /* Sidebar badges: App.css hardcodes Tokyo-blue tints and a dark "local"
    chip — both wrong on the redesign grounds. Re-derive from the live vars;
-   the mock renders "מקומי" as quiet text, not a chip. */
-[data-theme-family="redesign"] .ws-badge {
+   the mock renders "מקומי" as quiet text, not a chip. (.ws-badge.local
+   used to be re-declared here too; sidebar.css now ships quiet text as
+   the base, so this rule has to step around it — same specificity as
+   .ws-badge.local, and it loads later, so without :not() it would win
+   and put the chip back.) */
+[data-theme-family="redesign"] .ws-badge:not(.local) {
   background: var(--w-surface-hi);
   color: var(--w-text-dim);
 }
@@ -372,10 +376,6 @@
 [data-theme-family="redesign"] .ws-badge.split {
   background: color-mix(in srgb, var(--w-success) 14%, transparent);
   color: var(--w-success);
-}
-[data-theme-family="redesign"] .ws-badge.local {
-  background: transparent;
-  color: var(--w-text-faint);
 }
 /* The waiting pane's FRAME follows the signature waiting colour, not the
    interaction accent (Broadsheet: magenta frame, cyan links — per mock). */
@@ -407,12 +407,14 @@
 [data-theme-preset^="industry"] :is(button, input, select, textarea,
   .modal, .command-palette, .fm-window, .browser-window, .addons-window,
   .ports-window, .insights-window, .md-window, .feed-card, .notif-center,
-  .panel-float, .ws-menu, .pane, .ws-badge, .note-card, .settings-preset-card,
+  .panel-float, .ws-menu, .group-menu, .pane, .ws-badge, .ws-port-badge,
+  .note-card, .settings-preset-card,
   .welcome-card, .sidebar-empty-card, .feed-allow, .feed-deny),
 [data-theme-preset^="modernist"] :is(button, input, select, textarea,
   .modal, .command-palette, .fm-window, .browser-window, .addons-window,
   .ports-window, .insights-window, .md-window, .feed-card, .notif-center,
-  .panel-float, .ws-menu, .pane, .ws-badge, .note-card, .settings-preset-card,
+  .panel-float, .ws-menu, .group-menu, .pane, .ws-badge, .ws-port-badge,
+  .note-card, .settings-preset-card,
   .welcome-card, .sidebar-empty-card, .feed-allow, .feed-deny) {
   border-radius: 0;
 }

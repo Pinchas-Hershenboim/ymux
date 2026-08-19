@@ -2999,3 +2999,80 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
   STILL UNVERIFIED (Rule #14): no live SSH run. Sticky-port grant/denial against
   a real sshd is the behaviour no test here covers. Repro C in FOLLOWUPS is the
   smoke test that settles it.
+
+================================================================================
+2026-08-19 -- Sidebar design pass (branch claude/sidebar-design-1985e3)
+================================================================================
+Yossi pointed at two screenshots of the rail in Hebrew/RTL light mode: it read
+as confetti, not as a list. Root causes found, in order of blame:
+
+  1. .ws-item[data-has-color] painted the workspace colour THREE times -- the
+     dot, a 3px inline-start rule, and a 12% row tint. At 12% over dark that
+     is a hint; over light mode's #ffffff surface every row became a different
+     pastel bar. Deleted the strip and the tint; the dot alone carries colour
+     now (Design Pass 01 P3 -- colour is meaning, not decoration).
+  2. No meta column. .ws-name{flex:1} pushed each marker to wherever flex left
+     room, so the pane-count badge landed at a different offset on every row.
+     Added .ws-meta, flush to the inline end, fixed order
+     ports -> waiting -> live -> badge. Badge LAST (the only always-present
+     one) + min-width:1.7em, which is what actually makes it a column.
+  3. .has-waiting::after was position:absolute at inset-inline-end:10px and
+     painted OVER the badges. Now a real .ws-waiting-dot element in the
+     cluster. Class stays on the row -- themes-redesign.css and the pulse
+     key off it.
+  4. Narrow-drag `full` mode was undesigned: names ellipsized at the wrong
+     side and there was no tooltip at all (title was set only in icons mode).
+
+FILES
+  app/src/sidebar.css        NEW -- the rail's CSS, lifted out of App.css
+  app/src/App.css            -707 lines, breadcrumbs left at each site
+  app/src/App.tsx            import + widthPx={sidebarPx()}
+  app/src/Sidebar.tsx        .ws-meta, .ws-waiting-dot, unconditional title
+  app/src/themes-redesign.css  .ws-waiting-dot rename; .ws-badge:not(.local);
+                               .group-menu/.ws-port-badge added to the
+                               radius-flattening list
+  app/src/i18n/{en,he,ar,ru}.json  sidebar.workspaceWaitingTitle
+  app/dev/sidebar-fixture.html     NEW -- dev harness, 6 configurations
+  docs/RTL-TEST.md           new "Sidebar" section (it had ZERO sidebar cases)
+
+The CSS split was committed separately (b16537d) and proved content-identical
+by normalising both trees and diffing against HEAD, so this commit's diff is
+only the design change.
+
+MEASURED, not eyeballed (fixture in the browser, computed layout read back):
+  row height          29px -> 26px, uniform across all rows
+  row backgrounds     only transparent + the active accent tint (no per-ws)
+  border-inline-start 0 everywhere
+  badge column        RTL offset {8}, LTR offset {8} -- single value = aligned
+                      (was {8,20,22,46})
+  waiting dot         no longer intersects the badge; ::after content = none
+  bidi                latin name in an RTL rail: first glyph at fromLeft:0
+                      with plaintext, fromLeft:-25 (head clipped off-box)
+                      without. Hebrew still fromRight:0. This IS the ...rver-7
+                      bug, reproduced and fixed.
+  narrow (<190px)     port badge drops, name keeps the room
+  modernist preset    .ws-badge and .ws-port-badge both flatten to 0px
+
+TWO REGRESSIONS CAUGHT DURING THE PASS, both fixed before commit:
+  - Deleting the redesign .ws-badge.local override let the generic
+    [data-theme-family] .ws-badge win (equal specificity, loads later) and put
+    the chip back in all four directions. Fixed with :not(.local) on the
+    generic instead.
+  - .ws-meta's margin-inline-start:auto still consumed free space in icons
+    mode even with every child hidden, knocking the 18px dot 10px off centre.
+    Fixed by floating the cluster (position:absolute) in icons mode, which
+    also preserves the waiting dot's old overlay behaviour there. Verified
+    back to offCentre 0.
+
+NOT VERIFIED LIVE -- Rule #14. The Tauri app was never launched; everything
+above was measured in the vite dev server against the real stylesheets with a
+DOM fixture, plus tsc + vite build clean. The fixture cannot exercise: real
+workspace data, drag-reorder, context menus, inline group rename, the colour
+picker, the settings font-size slider, or 11 of the 13 presets. Logged as
+FOLLOWUPS P1.
+
+Correction to my own diagnosis: I had claimed the group header rendered LARGER
+than its children. It did not -- 13px hardcoded vs the rows' 17.3px. The group
+layer's real defect was the hardcoded px (the Settings font slider moved only
+half the rail) and 4px of margin, which is why groups did not read as sections.
+Both fixed; the size relationship was already correct and is preserved.

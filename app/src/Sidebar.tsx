@@ -121,6 +121,12 @@ interface Props {
   // Phase 62.B (item I) / 65.P: two-mode sidebar — full / icons.
   mode: SidebarMode;
   onSetMode: (mode: SidebarMode) => void;
+  // Live pixel width of the rail. `full` mode is resizable down to 160px,
+  // where there is no room for the whole status cluster; the CSS drops the
+  // least urgent markers off `[data-narrow]` rather than letting them
+  // squeeze the name. Container queries would do this without the prop, but
+  // WebView2's floor on older Win10 installs isn't guaranteed to have them.
+  widthPx: number;
   // cmux-A A1: aggregate count of panes with pending OSC 9/99/777
   // activity notifications. Rendered as a small amber badge in the
   // sidebar header (both full + icons mode). Hidden when 0.
@@ -597,7 +603,7 @@ export function Sidebar(p: Props) {
   });
 
   return (
-    <div class={`sidebar ${p.mode}`}>
+    <div class={`sidebar ${p.mode}`} data-narrow={p.widthPx < 190 ? "true" : undefined}>
       <div class="sidebar-header">
         <div class="sidebar-brand-row">
         <svg
@@ -973,7 +979,10 @@ export function Sidebar(p: Props) {
         // One style STRING, not an object: mixing the two forms on the
         // same attribute silently drops one of them.
         style={`--ws-depth: ${depth}${w.color ? `; --ws-color: ${w.color}` : ""}`}
-        title={p.mode === "icons" ? w.name : undefined}
+        // Always, not just in icons mode: `full` mode can be dragged down to
+        // 160px, where .ws-name ellipsizes and the tooltip is the only way
+        // left to read the name.
+        title={w.name}
         // beta.3 (ws-dragdrop): pointer-drag reorder. A press that never crosses
         // the move threshold is a click → switch; a completed drag sets
         // `didDrag`, which swallows the trailing click here.
@@ -1049,32 +1058,47 @@ export function Sidebar(p: Props) {
             <IconRefresh size={12} />
           </button>
         </Show>
-        <WorkspaceBadge w={w} />
-        {(() => {
-          const fwds = p.allForwards.filter((f) => f.workspace_id === w.id);
-          return (
-            <Show when={fwds.length > 0}>
-              <span
-                class="ws-port-badge"
-                title={t(
-                  fwds.length === 1
-                    ? "ports.workspaceBadge.tooltipOne"
-                    : "ports.workspaceBadge.tooltipMany",
-                  { count: fwds.length },
-                )}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  p.onOpenPorts(w.id);
-                }}
-              >
-                <IconGlobe size={12} /> {fwds.length}
-              </span>
-            </Show>
-          );
-        })()}
-        <Show when={p.connectedIds.has(w.id)}>
-          <span class="ws-live" title={t("sidebar.workspaceConnectedTitle")} />
-        </Show>
+        {/* Every status marker lives in ONE trailing cluster, in a fixed
+            order, so they line up in a column down the list instead of
+            landing wherever flex leaves room on each row. The kind/pane
+            badge goes LAST — it is the only one always present, so putting
+            it flush against the inline end is what makes it a column; the
+            optional markers vary in count and stack inboard of it. */}
+        <span class="ws-meta">
+          {(() => {
+            const fwds = p.allForwards.filter((f) => f.workspace_id === w.id);
+            return (
+              <Show when={fwds.length > 0}>
+                <span
+                  class="ws-port-badge"
+                  title={t(
+                    fwds.length === 1
+                      ? "ports.workspaceBadge.tooltipOne"
+                      : "ports.workspaceBadge.tooltipMany",
+                    { count: fwds.length },
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    p.onOpenPorts(w.id);
+                  }}
+                >
+                  <IconGlobe size={12} /> {fwds.length}
+                </span>
+              </Show>
+            );
+          })()}
+          {/* A real element, not the `.has-waiting::after` it replaces: the
+              pseudo-element was absolutely positioned at inset-inline-end
+              and painted ON TOP of the badges. The class stays on the row —
+              themes-redesign.css and the pulse both key off it. */}
+          <Show when={p.waitingWorkspaceIds.has(w.id)}>
+            <span class="ws-waiting-dot" title={t("sidebar.workspaceWaitingTitle")} />
+          </Show>
+          <Show when={p.connectedIds.has(w.id)}>
+            <span class="ws-live" title={t("sidebar.workspaceConnectedTitle")} />
+          </Show>
+          <WorkspaceBadge w={w} />
+        </span>
         <Show when={menuFor() === w.id}>
           <div
             class="ws-menu ws-menu-fixed"
