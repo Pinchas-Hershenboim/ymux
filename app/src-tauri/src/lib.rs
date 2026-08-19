@@ -533,6 +533,55 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     Ok(())
 }
 
+/// 2026-08-19: rewrite every `Connection::Wsl` to `Connection::Local`.
+///
+/// WSL existed here only to give local panes tmux persistence; zellij gives
+/// native Windows panes the same thing, so the distro is dead weight. The
+/// workspace keeps its name, cwd, layout, panes and everything else — only
+/// the transport changes, and the panes come back as native Windows shells.
+///
+/// Walks pane connections too, not just the workspace's: a pane can carry
+/// its own `Connection` that overrides the workspace's (see `paneCaps` and
+/// `find_pane_connection`), so migrating only the workspace would leave a
+/// `wsl` pane inside a `local` workspace with nothing able to spawn it.
+///
+/// Returns how many connections were rewritten, so the caller persists.
+fn migrate_wsl_workspaces(file: &mut WorkspacesFile) -> usize {
+    fn migrate_layout(node: &mut LayoutNode) -> usize {
+        match node {
+            LayoutNode::Pane { connection, .. } => {
+                if matches!(connection, Some(Connection::Wsl { .. })) {
+                    *connection = Some(Connection::Local { shell: None });
+                    1
+                } else {
+                    0
+                }
+            }
+            LayoutNode::Split { first, second, .. } => {
+                migrate_layout(first) + migrate_layout(second)
+            }
+        }
+    }
+
+    let mut n = 0;
+    for ws in file.workspaces.iter_mut() {
+        if matches!(ws.connection, Some(Connection::Wsl { .. })) {
+            ws.connection = Some(Connection::Local { shell: None });
+            n += 1;
+        }
+        if let Some(layout) = ws.layout.as_mut() {
+            n += migrate_layout(layout);
+        }
+    }
+    if n > 0 {
+        log_info(
+            "WORKSPACE",
+            &format!("migrated {n} WSL connection(s) to local — WSL support was removed"),
+        );
+    }
+    n
+}
+
 fn load_from_disk() -> Result<WorkspacesFile, String> {
     let path = config_path()?;
     log_debug("WORKSPACE", &format!("load_from_disk: path={:?} exists={}", path, path.exists()));
@@ -566,6 +615,12 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
     ));
 
     let mut migrated = false;
+    // 2026-08-19: WSL workspaces become plain local ones. Runs FIRST so no
+    // later pass has to know about a connection kind that no longer has a
+    // spawn path behind it.
+    if migrate_wsl_workspaces(&mut file) > 0 {
+        migrated = true;
+    }
     // v2/v3 project folders become real workspaces before anything else
     // touches the tree, so the repair pass below sees the final shape.
     if migrate_legacy_project_folders(&mut file, &text) > 0 {
@@ -9723,5 +9778,135 @@ mod zellij_tests {
         // followed it as a second command.
         assert_eq!(cmd.matches('\n').count(), 1);
         assert!(cmd.ends_with("\r\n"));
+    }
+}
+
+#[cfg(test)]
+mod wsl_migration_tests {
+    // The WSL removal is the part of this change that can cost a user every
+    // workspace they have, so it gets covered before it ships. The failure
+    // being guarded against is concrete: `Connection` is serde-tagged and
+    // lives in workspaces.json, so an unparseable variant fails the WHOLE
+    // file and load_from_disk then refuses all later saves.
+    use super::{migrate_wsl_workspaces, Connection, LayoutNode, PaneKind, WorkspacesFile};
+    use ymux_types::Workspace;
+
+    fn pane(conn: Option<Connection>) -> LayoutNode {
+        LayoutNode::Pane {
+            pane_id: "p_test".into(),
+            pane_kind: PaneKind::Terminal,
+            connection: conn,
+            browser: None,
+            title: None,
+            auto_title: None,
+            annotation: None,
+            color: None,
+            emoji: None,
+            help_topic: None,
+            diff_source: None,
+            smart_bidi: None,
+        }
+    }
+
+    fn ws(conn: Option<Connection>, layout: Option<LayoutNode>) -> Workspace {
+        Workspace {
+            id: "w_test".into(),
+            name: "test".into(),
+            connection: conn,
+            layout,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_wsl_workspace_becomes_local_and_keeps_everything_else() {
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![ws(
+                Some(Connection::Wsl { distro: Some("Ubuntu".into()) }),
+                Some(pane(None)),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1);
+        assert!(matches!(
+            f.workspaces[0].connection,
+            Some(Connection::Local { .. })
+        ));
+        assert_eq!(f.workspaces[0].name, "test", "the workspace itself survives");
+        assert!(f.workspaces[0].layout.is_some(), "the layout survives");
+    }
+
+    #[test]
+    fn a_wsl_connection_on_a_PANE_is_migrated_too() {
+        // A pane can carry its own connection that overrides the workspace's.
+        // Migrating only the workspace would leave a wsl pane inside a local
+        // workspace, with no spawn path left behind it.
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![ws(
+                Some(Connection::Local { shell: None }),
+                Some(LayoutNode::Split {
+                    split_id: "sp_1".into(),
+                    direction: ymux_types::SplitDirection::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(pane(Some(Connection::Wsl { distro: None }))),
+                    second: Box::new(pane(Some(Connection::Local { shell: None }))),
+                }),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1, "the nested pane counts");
+    }
+
+    #[test]
+    fn ssh_and_local_workspaces_are_left_completely_alone() {
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![
+                ws(
+                    Some(Connection::Ssh {
+                        host: "h".into(),
+                        user: "u".into(),
+                        port: 22,
+                        key_path: None,
+                    }),
+                    Some(pane(None)),
+                ),
+                ws(Some(Connection::Local { shell: Some("pwsh.exe".into()) }), None),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 0, "nothing to do → no persist");
+        assert!(matches!(f.workspaces[0].connection, Some(Connection::Ssh { .. })));
+        // The chosen shell must not be flattened away by a careless rewrite.
+        match &f.workspaces[1].connection {
+            Some(Connection::Local { shell }) => assert_eq!(shell.as_deref(), Some("pwsh.exe")),
+            _ => panic!("the local workspace's connection was altered"),
+        }
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![ws(Some(Connection::Wsl { distro: None }), None)],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1);
+        assert_eq!(migrate_wsl_workspaces(&mut f), 0, "second pass must be a no-op");
+    }
+
+    #[test]
+    fn a_workspaces_json_containing_wsl_still_DESERIALISES() {
+        // The whole reason the enum variant is kept. If this ever fails, every
+        // user with a wsl workspace loses their entire file on upgrade.
+        let json = r#"{"version":1,"active_workspace_id":null,"workspaces":[
+            {"id":"w1","name":"WSL","connection":{"type":"wsl","distro":"Ubuntu"}}
+        ]}"#;
+        let mut f: WorkspacesFile =
+            serde_json::from_str(json).expect("a wsl connection must still parse");
+        assert_eq!(f.workspaces.len(), 1);
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1);
     }
 }
