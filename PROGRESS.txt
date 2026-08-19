@@ -3076,3 +3076,39 @@ than its children. It did not -- 13px hardcoded vs the rows' 17.3px. The group
 layer's real defect was the hardcoded px (the Settings font slider moved only
 half the rail) and 4px of margin, which is why groups did not read as sections.
 Both fixed; the size relationship was already correct and is preserved.
+
+--------------------------------------------------------------------------------
+2026-08-19 (later) -- Sidebar follow-up: name alignment regression
+--------------------------------------------------------------------------------
+Yossi ran the merged build and sent a screenshot. The confetti was gone and the
+badge column was straight, but every LATIN name had drifted off the start edge:
+`Local`, `WSL`, `boost`, `server1` hung in the middle of the row with a gap
+between the dot and the name, while `שרת 9` stayed flush right.
+
+CAUSE, mine: `unicode-bidi: plaintext` + `text-align: start` on .ws-name. Under
+plaintext, `start` is resolved against the PARAGRAPH's per-string base
+direction, not the container's -- so in a Hebrew rail a latin name resolves LTR
+and `start` flips to the left. Fixing the ellipsis side had silently taken the
+alignment with it.
+
+FIX: keep plaintext (it is what puts the ellipsis on the right end), pin the
+alignment explicitly to the rail:
+  [dir="rtl"] .ws-name { text-align: right; }
+  [dir="ltr"] .ws-name { text-align: left; }
+
+MEASURED, A/B in the fixture (distance from the box's start edge to the whole
+text run, 0 = flush):
+  before   13 distinct gaps, 0-123px   <- the ragged gutter in the screenshot
+  after    {0} in BOTH the RTL and the LTR rail
+  ellipsis still per-string: clipped latin names keep firstGlyphFromLeft:0,
+           i.e. the tail is cut, not the head
+  row height {26} and badge column {8} unchanged
+
+Also caught while re-reading the screenshot: `2- SERVER` renders as `2- SERVER`,
+not mangled. The leading-digit names were fine; alignment was the only defect.
+
+My first measurement of this was WRONG and said the fix had only half worked --
+it measured the FIRST GLYPH, which for a right-aligned latin string sits at the
+string's left end, so the "gap" it reported was just the name's width. Measuring
+the whole run's near edge is the correct probe. Noted because the same mistake
+is easy to repeat on any RTL alignment check.

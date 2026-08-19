@@ -102,20 +102,27 @@ ellipsizes at its **head** (`…rver-7`) instead of its tail.
 
 1. Language **Hebrew**, at least one latin-named workspace (`server-7`) and one
    Hebrew-named one (`שרת 9`) in the list.
-2. Drag `.sidebar-resizer` down to ~165px so both names clip.
+2. **Every name starts at the rail's start edge** — right in Hebrew, left in
+   English — regardless of the name's own script. `plaintext` governs which
+   direction the glyphs run and therefore which end ellipsizes; it must NOT be
+   allowed to govern alignment too, or `text-align: start` resolves per string
+   and latin names in a Hebrew rail jump the width of themselves away from the
+   dot, leaving a ragged 0-123px gutter. Hence the explicit
+   `[dir="rtl"] .ws-name { text-align: right }` / `[dir="ltr"] … { left }`.
+3. Drag `.sidebar-resizer` down to ~165px so both names clip.
    - Latin name → text starts at the **left** edge, `…` at the **right**.
    - Hebrew name → text starts at the **right** edge, `…` at the **left**.
    - Hovering either row shows the full name (`title` is set unconditionally,
      not only in icons mode).
-3. Switch to **English** and repeat: the two clip in the same relative
+4. Switch to **English** and repeat: the two clip in the same relative
    directions, mirrored.
-4. The trailing status cluster (`.ws-meta`) sits flush to the inline end in
+5. The trailing status cluster (`.ws-meta`) sits flush to the inline end in
    both languages, and the kind/pane badge forms a straight column down the
    list — it is last in the cluster and has a fixed-width slot precisely so
    that column does not go ragged when a row also has a ports or live marker.
-5. Group chevron points **into** the group when collapsed in both directions
+6. Group chevron points **into** the group when collapsed in both directions
    (`[dir="rtl"] .group-header.group-collapsed .group-header-chevron`).
-6. `«` on the collapse button is `Bidi_Mirrored`, so it renders as `»` under
+7. `«` on the collapse button is `Bidi_Mirrored`, so it renders as `»` under
    `dir="rtl"`. That is correct, not a bug: the rail is on the right in RTL and
    the arrow should point at the edge it collapses toward.
 
