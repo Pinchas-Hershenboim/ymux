@@ -1904,13 +1904,28 @@ fn cleanup_session_maps(
 /// uses its own defaults and the pane still works, only with the frame back.
 fn resolve_zellij_config(app: &AppHandle) -> Option<std::path::PathBuf> {
     use tauri::Manager;
-    let root = app.path().resource_dir().ok()?;
-    for c in [
-        root.join("resources").join("ymux-zellij.kdl"),
-        root.join("ymux-zellij.kdl"),
-    ] {
-        if c.is_file() {
-            return Some(c);
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(r) = app.path().resource_dir() {
+        roots.push(r);
+    }
+    // 2026-08-19: also look beside the RUNNING BINARY. `resource_dir()` answers
+    // for an installed layout; a portable exe handed over for testing has its
+    // `resources\` folder next to itself, and silently missing the config there
+    // is indistinguishable from the frame setting not working — which is
+    // exactly the loop this cost a round of.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    for root in roots {
+        for c in [
+            root.join("resources").join("ymux-zellij.kdl"),
+            root.join("ymux-zellij.kdl"),
+        ] {
+            if c.is_file() {
+                return Some(c);
+            }
         }
     }
     None
@@ -1980,8 +1995,18 @@ fn spawn_local_pty(
     //
     // Skipped silently when the resource is missing — zellij falls back to its
     // own config and the pane works, just with the frame.
-    if let Some(kdl) = resolve_zellij_config(app) {
-        cmd.env("ZELLIJ_CONFIG_FILE", &kdl);
+    match resolve_zellij_config(app) {
+        Some(kdl) => {
+            cmd.env("ZELLIJ_CONFIG_FILE", &kdl);
+            // A program path, not user content — safe under Rule #1, and the
+            // only way to tell "the frame setting does not work" apart from
+            // "the config was never found".
+            log_info("PTY", &format!("zellij config: {}", kdl.display()));
+        }
+        None => log_warn(
+            "PTY",
+            "zellij config: ymux-zellij.kdl NOT FOUND — pane frames stay on",
+        ),
     }
     tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + YMUX_PANE_ID env vars");
     let mut child = pair
