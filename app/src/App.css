@@ -117,7 +117,7 @@ body {
   position: relative;
 }
 
-/* ─── Sidebar → sidebar.css (.sidebar-resizer, .sidebar-collapse-btn, .sidebar.icons) ─── */
+/* ─── Sidebar → sidebar.css (.sidebar-resizer, .sidebar.icons) ─── */
 
 /* ─── Splash overlay (fades out shortly after first paint) ─── */
 
@@ -5991,7 +5991,7 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   }
 }
 
-/* ─── Sidebar → sidebar.css (.sidebar-notif-badge, .group-*, drop indicators) ─── */
+/* ─── Sidebar → sidebar.css (.group-*, drop indicators) ─── */
 
 /* ─── beta.3 (pane-dragdrop): drag-and-drop reordering panes ─────────
    Grab the pane by its title (.pane-conn), drag onto another pane's

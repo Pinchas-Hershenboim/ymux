@@ -971,6 +971,22 @@ function App() {
     return live;
   };
 
+  // workspace_ids holding at least one pane with a pending OSC 9/99/777
+  // activity notification. Same shape as liveWorkspaceIds above. This used to
+  // surface ONLY as an aggregate count in the sidebar masthead — a number with
+  // no way to act on it, in a <span> styled like a button that did nothing on
+  // click. The rail is a list of workspaces, so the workspace says it itself.
+  const notifiedWorkspaceIds = (): Set<string> => {
+    const notified = paneNotified();
+    const s = new Set<string>();
+    if (notified.size === 0) return s;
+    for (const w of file().workspaces) {
+      if (!w.layout) continue;
+      if (collectPanes(w.layout).some((id) => notified.has(id))) s.add(w.id);
+    }
+    return s;
+  };
+
   // Phase 26: pane_ids with a pending blocking feed item — these get
   // the notification ring. Recomputed reactively as feedItems changes.
   const waitingPaneIds = (): Set<string> => {
@@ -3207,7 +3223,7 @@ function App() {
           connectedIds={liveWorkspaceIds()}
           waitingWorkspaceIds={waitingWorkspaceIds()}
           hookPulseWorkspaceIds={activeHookWorkspaceIdsReactive()}
-          pendingNotifCount={paneNotified().size}
+          notifiedWorkspaceIds={notifiedWorkspaceIds()}
           groups={file().groups ?? []}
           onGroupCreate={async (name, color) => {
             try {

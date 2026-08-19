@@ -29,26 +29,6 @@
 }
 .sidebar-resizer:hover { background: rgba(122, 162, 247, 0.5); }
 
-/* Phase 62.B (item I): collapse / expand toggle in the sidebar header. */
-.sidebar-collapse-btn {
-  align-self: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px solid var(--w-border);
-  border-radius: var(--w-r-sm);
-  color: var(--w-text-dim, #7d8590);
-  cursor: pointer;
-  font-size: var(--w-fs-sm);
-}
-.sidebar-collapse-btn:hover {
-  color: var(--w-text);
-  background: var(--w-surface-hi);
-}
 
 /* Phase 62.B (item I): action-button emoji + label. Full mode shows
    both inline; icons mode (below) hides the label. */
@@ -77,8 +57,9 @@
   margin-inline-start: 0;
 }
 .sidebar.icons .ws-action-emoji { margin-inline-end: 0; font-size: 16px; }
-.sidebar.icons .sidebar-header { padding: 12px 0; align-items: center; }
-.sidebar.icons .sidebar-brand-row { justify-content: center; }
+.sidebar.icons .sidebar-header { padding: 12px 0; }
+.sidebar.icons .sidebar-brand-row { font-size: var(--w-fs-lg); }
+.sidebar.icons .sidebar-header { position: relative; }
 .sidebar.icons .sidebar-list { padding: 6px 0; }
 .sidebar.icons .ws-item {
   justify-content: center;
@@ -146,30 +127,70 @@
 }
 
 .sidebar-header {
-  /* Phase 62.C: vertical stack — brand row on top, collapse arrow below
-     on its own line. */
+  /* Base = the ICONS strip's stack (logo, then the arrow under it); .full
+     overrides it to a single row below. Phase 62.C used to stack in BOTH
+     modes, which spent ~34px of permanent vertical space on a control you
+     touch about once a day, and boxed it in a border that made a rare
+     toggle look like a primary action. */
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   gap: 6px;
-  padding: 12px 14px;
+  padding: 12px 8px;
   border-bottom: 1px solid var(--w-border);
   font-weight: 600;
-  letter-spacing: 0.4px;
   color: var(--w-text);
   font-family: var(--w-font-mono);
-  font-size: var(--w-fs-lg);
+}
+
+/* ONE column. There is no collapse button and no count chip flanking the
+   wordmark — the masthead itself is the control (double-click), so the brand
+   gets the entire row instead of the leftovers between two side slots.
+
+   The masthead breathes with the rail. --sidebar-w is the live width, set
+   inline by Sidebar.tsx; clamp keeps it sane at both ends of the 160-480px
+   resize range (≈19px at 160, ≈26px at the 224 default, capped at 32 so a
+   wide rail does not turn into a billboard). */
+.sidebar.full .sidebar-header {
+  --sb-brand: clamp(15px, calc(var(--sidebar-w, 224px) * 0.115), 32px);
 }
 .sidebar-brand-row {
   display: flex;
+  width: 100%;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  gap: 0.34em;
   min-width: 0;
+  font-size: var(--sb-brand, var(--w-fs-lg));
+
+  /* It is a <button>, so it inherits the app's bare-element button styling
+     (surface fill, border, 6px 12px padding). Strip all of it: this reads as
+     a wordmark, not a control, right up until you hover it. */
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  border-radius: var(--w-r-sm);
+  transition: background var(--wmx-dur-instant) var(--wmx-ease-standard);
 }
+.sidebar-brand-row:hover { background: var(--w-surface-hi); }
 .sidebar-header .sidebar-logo {
-  width: 22px;
-  height: 22px;
+  /* em, so the mark tracks the wordmark instead of being pinned at 22px
+     while the type around it grows. */
+  width: 1.15em;
+  height: 1.15em;
   flex-shrink: 0;
+}
+.sidebar-header .sidebar-brand {
+  font-size: 1em;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sidebar-header .sidebar-brand {
   background: linear-gradient(90deg, var(--w-accent), var(--w-success));
@@ -519,7 +540,13 @@
 
 /* ─── Attention: waiting dot ─── */
 
-/* Rendered by Sidebar.tsx inside .ws-meta. It used to be a
+/* ONE attention dot per row, two intensities — not two dots. Filled and
+   pulsing = a blocking permission request, the thing that stops work.
+   Hollow and still = a pane rang its bell (OSC 9/99/777) while you were
+   elsewhere. Blocking outranks activity, so a row that is both shows the
+   loud state. Design Pass 01 P3: attention is spent, not sprayed.
+
+   Rendered by Sidebar.tsx inside .ws-meta. It used to be a
    `.has-waiting::after` pinned at `inset-inline-end: 10px`, which painted
    over whatever badge sat under it. The class stays on the row — the
    redesign themes and the pulse both key off it. */
@@ -532,6 +559,11 @@
   box-shadow: 0 0 6px 1px color-mix(in srgb, var(--w-warning) 70%, transparent);
   animation: ymux-attn-dot 1.4s ease-in-out infinite;
   pointer-events: none;
+}
+.ws-waiting-dot.activity {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--w-warning);
+  animation: none;
 }
 
 /* ─── Attention: hook pulse ─── */
@@ -597,27 +629,6 @@
 
 /* ─── Notification badge, groups, drag & drop ─── */
 
-/* Sidebar aggregate badge — count of panes with pending activity
-   notifications across the whole workspaces list. Rendered in the
-   sidebar header brand row. Hidden when the count is 0. Logical
-   inset used elsewhere in the header carries through, so no
-   [dir="rtl"] override needed here. */
-.sidebar-notif-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  margin-inline-start: 6px;
-  border-radius: 9px;
-  background: var(--w-warning, #e0af68);
-  color: #0b0d16;
-  font-size: var(--w-fs-xs);
-  font-weight: 600;
-  line-height: 1;
-  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--w-warning) 45%, transparent);
-}
 
 /* ─── cmux-A A2: workspace groups ──────────────────────────────────
    Collapsible sidebar sections. Header carries color swatch + name +

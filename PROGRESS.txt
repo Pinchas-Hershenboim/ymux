@@ -3112,3 +3112,112 @@ it measured the FIRST GLYPH, which for a right-aligned latin string sits at the
 string's left end, so the "gap" it reported was just the name's width. Measuring
 the whole run's near edge is the correct probe. Noted because the same mistake
 is easy to repeat on any RTL alignment check.
+
+--------------------------------------------------------------------------------
+2026-08-19 (later still) -- Sidebar masthead + collapse control
+--------------------------------------------------------------------------------
+Yossi confirmed the alignment fix live, then asked for two things: centre the
+logo and let it fill / scale with the row, and sort out the navbar's
+open/close button.
+
+WHAT WAS THERE: .sidebar-header stacked two rows -- the brand row, then the
+collapse arrow on a line of its own inside a 1px bordered box. That spent ~19px
+of permanent vertical space on a control used about once a day, and the border
+made a rare toggle read as a primary action. The brand was also pinned at 22px
+logo + --w-fs-lg regardless of how wide the rail was dragged.
+
+WHAT IT IS NOW: one row, a three-column grid -- [collapse] [brand] [badge].
+Both side slots are the SAME fixed 26px, which is what keeps the brand
+optically centred whether or not the badge is rendering; a flex row with
+`margin: auto` drifts the moment one side appears. Grid tracks follow the
+writing direction, so the arrow lands on the rail's OUTER edge in LTR and RTL
+alike, pointing the way it collapses.
+
+The masthead scales off --sidebar-w, the live width Sidebar.tsx now publishes
+inline (the same widthPx already threaded for [data-narrow]). Everything in the
+lockup is em-based off one clamped root, so the mark tracks the wordmark
+instead of staying pinned:
+  --sb-brand: clamp(15px, calc(var(--sidebar-w) * 0.115), 32px)
+
+The collapse button lost its border. Quiet --w-text-faint at rest, surfaces on
+hover; the global :focus-visible ring keeps it reachable.
+
+MEASURED in the fixture (now 7 views, added a 420px wide rail to see the top of
+the clamp):
+  brand      19px @165  ->  26px @224  ->  32px @420 (clamp ceiling)
+  logo       em-locked at 1.15em, so 21.8 -> 29.6 -> 36.8
+  centring   centreOffset {0} in ALL seven views, badge present
+  header     ~74px -> 49-63px in full; ~19px handed back to the list
+  overflow   0 -- nothing spills the rail at 165px
+
+REGRESSION CAUGHT BY THE MEASUREMENT, fixed before commit: moving the notif
+badge out of .sidebar-brand-row gave it a row of its own in the 48px ICONS
+strip, pushing that header from 74px to 99px. It rides the logo's corner as an
+absolutely-positioned count bubble there instead -- which is what a narrow rail
+wants anyway. Back to 75px.
+
+Deliberately NOT changed: the wordmark's blue->teal gradient. It is existing
+brand identity, not a call to make while fixing layout -- and themes-redesign
+already neutralises it for the four design directions.
+
+NOT VERIFIED LIVE (Rule #14) -- fixture + tsc + vite build only.
+
+--------------------------------------------------------------------------------
+2026-08-19 (cont.) -- Masthead becomes the control; the notif badge dies
+--------------------------------------------------------------------------------
+Yossi: "why is there a notifications button on the right when nobody expects it
+there?" He was right, and it was worse than the placement:
+
+  - .sidebar-notif-badge was a <span>. No onClick, anywhere. Styled as an amber
+    pill with a glow, so it read as a control and did nothing when clicked.
+  - There was nothing to click TO. showNotifCenter was folded out (App.tsx:161).
+  - The three-column grid I had just built made it WORSE: a fixed slot mirroring
+    the collapse button implies a matched pair. One was a button, one was dead.
+  - And my own ASCII diagram misled him -- I drew LOGICAL order and labelled it
+    RTL. Under dir=rtl grid col 1 is on the RIGHT, so the arrow was right and
+    the badge left, the opposite of what the diagram showed.
+
+What it counted: paneNotified().size, panes with a pending OSC 9/99/777. That
+signal already renders on the pane itself (LayoutView.tsx:171 isNotified), but
+Sidebar never received it -- so for a workspace you were NOT looking at, an
+undifferentiated number in the masthead was the only surface, with no way to
+tell which workspace wanted you.
+
+DECIDED (Yossi): fold it into the row's existing attention dot, then he went
+further -- kill the collapse button too, one-column grid, DOUBLE-CLICK the logo
+to collapse. "0 instead of another button."
+
+  - .sidebar-header in full mode: one column. The wordmark spans the entire
+    content width -- measured rowSpansHeader 207/207 at 224px, 148/148 at 165,
+    403/403 at 420. That is the original "fill the row" ask, literally.
+  - .sidebar-brand-row is now the <button>. Single click does NOTHING (the rail
+    collapsing because you brushed its header would be a nasty surprise),
+    dblclick toggles, Enter/Space toggles so the keyboard and screen readers
+    keep a labelled path. Ctrl+B still works. It inherits the app's bare-element
+    button styling, so background/border/padding/font all have to be stripped
+    explicitly or the wordmark renders inside a surface-filled box.
+  - notifiedWorkspaceIds derived in App.tsx on the liveWorkspaceIds pattern.
+  - ONE dot, two intensities, no fifth marker: blocking = filled + pulsing
+    (unchanged), activity = transparent with a 1.5px inset ring, no animation.
+    Blocking outranks activity on a row that is both.
+
+MEASURED (7 fixture views):
+  header    full 47-63px; ICONS 74px -> 45px, the button row is simply gone
+  brand     19 @165 -> 26 @224 -> 32 @420 (clamp ceiling)
+  centring  centreOffset {0} everywhere; overflow 0 at the 165px narrowest
+  button    tagName BUTTON, background transparent, border 0 -- chrome stripped
+  dots      blocking: filled + ymux-attn-dot; activity: transparent + inset ring
+            + animation none. Verified in both the tokyo and modernist palettes.
+  leftovers 0 nodes matching .sidebar-collapse-btn / .sidebar-notif-badge
+
+Checked rather than assumed: themes-redesign.css:95 puts a 3px double rule under
+.sidebar-brand-row for broadsheet. My `border: none` is less specific AND loads
+first, so the theme still wins -- toggled the preset live and confirmed
+"3px double | pad 6px".
+
+Also removed: the pendingNotifCount prop, .sidebar-collapse-btn and
+.sidebar-notif-badge CSS entirely, and the two App.css breadcrumbs that named
+them. 3 new i18n keys x 4 locales.
+
+NOT VERIFIED LIVE (Rule #14). In particular the dblclick gesture and the
+Enter/Space path have never been exercised by a real pointer or keyboard.
