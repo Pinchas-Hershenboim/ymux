@@ -3032,8 +3032,18 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
     rebuild. (The app.exe left in target/release right now is that unscrubbed
     measurement build. Harmless -- gitignored, and build-release.ps1 rebuilds
     it -- but do not hand-copy it anywhere.)
-  - remote-manifest.json showed NO git churn across five builds. That is the
-    ci-windows.yml "always-on drift notice" complaint (FOLLOWUPS P2) fixed.
+  - remote-manifest.json showed NO git churn across five LOCAL builds.
+    CORRECTION after run 32199948594: this does NOT quieten the CI drift
+    notice, and I said it did. CI still emitted
+      ##[notice]remote-manifest sha256 changed
+    with sha fbf2c01c / 2,498,992 bytes against the committed 8ecb0623 /
+    2,521,136 -- i.e. exactly the toolchain difference FOLLOWUPS P2 describes
+    (CI takes dtolnay/rust-toolchain@stable, this box is 1.95.0) and that I
+    did NOT fix. The step only ever emitted ::notice on a real sha change, so
+    the mtime guard was never what was firing it. What the guard does buy is
+    local: no spurious rebuild of the app crate, and no working-tree churn
+    between builds on one machine. The CI notice stays on until the toolchain
+    is pinned (rust-toolchain.toml) or the binary stops being committed.
 
   LANDMINE FOUND THE HARD WAY: Windows PowerShell 5.1 reads BOM-less UTF-8 as
     ANSI. A UTF-8 em-dash inside a .ps1 STRING LITERAL decodes to a smart
@@ -3058,10 +3068,44 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
     by exact image path afterwards; Yossi's 7 untouched.
   - ci-windows.yml parse-check run locally against all three scripts: ok.
 
-  NOT VERIFIED: none of the CI changes have run on CI yet. warm-rust-cache.yml
-    has never executed. Next step is a workflow_dispatch of build-windows on
-    this branch (expect NSIS only, and a cold cache until warm-rust-cache runs
-    on main), then merge and let the warmer populate.
+  MEASURED ON CI AFTER THE CHANGE. Dispatched build-windows twice on this
+  branch (cold, then warm off the cache the first run saved), plus ci-windows:
+
+    build-windows COLD  32199929496  16m05s  build step 798s (was 813s / 15m37s)
+    build-windows WARM  32201124206   7m06s  build step 336s (was 420s / 9m24s)
+    ci-windows    COLD  32199948594   9m12s  (was ~10m50s cold)
+
+  Warm is the number that matters -- warm-rust-cache.yml is what makes warm
+  the normal case for a branch that has never built. Cold total got 28s WORSE
+  even though the build step dropped 15s, because a cold run now also pays to
+  SAVE a ~700 MB cache it previously never wrote. That is the trade, once.
+
+  WARM 336s BREAKDOWN, from the [timing] lines the scripts now emit:
+    musl ymux    29.6s   (cold: 76.8s)
+    host ymux    16.1s   (cold: 42.7s)
+    vite         14.0s   (cold: 14.0s)
+    app crate   232.0s   (cold: 622s)  <- still 69% of the build
+    NSIS         35.0s   (cold: 27s)
+
+  TWO PLANNING ESTIMATES THE MEASUREMENTS KILLED, recorded so nobody repeats
+  them: dropping the MSI was guessed at 1.5-2.5 min and is worth ~30-60s
+  (NSIS alone is 27-35s, so WiX was never the monster it looked like); and the
+  crate-type fix CANNOT be isolated from this data -- warm went 420s -> 336s
+  with both changes in, so 84s is the honest COMBINED figure, not 84s for
+  either one.
+
+  ci-windows step detail: parse-check 2s, cargo test 267s, type-check 8s
+  (was npm-i-typescript + tsc), frontend build 16s, go test 32s. Both new
+  asserts in build-windows passed ("Assert the frontend is embedded",
+  "Assert the developer path scrub"), and "Upload MSI" correctly SKIPPED on a
+  workflow_dispatch run.
+
+  STILL NOT VERIFIED: warm-rust-cache.yml has never executed -- it cannot be
+  dispatched until it exists on main, so its first real run is post-merge.
+  Until then the warm numbers above come from a cache this branch saved
+  itself. NEXT: merge, confirm warm-rust-cache runs green on main, then
+  dispatch build-windows from an unrelated fresh branch -- THAT is the test
+  of the actual fix.
 
   WORKTREE NOTE: this worktree had no target/, so it was junctioned to the
     main checkout's (mklink /J). Documented in CONTRIBUTING.md with its
