@@ -503,13 +503,13 @@ export function PaneView(p: Props) {
   // branch: live sessions → picker; otherwise a plain regular shell. A target
   // with no tmux (a Windows shell) connects straight away.
   //
-  // Gated on tmuxPersistence, not "is it SSH". A WSL pane keeps tmux sessions
+  // Gated on sessionPersistence, not "is it SSH". A WSL pane keeps tmux sessions
   // like a remote one, and the old `!isSsh()` branch connected it with
   // `persistent: false` — i.e. no tmux at all. That silently defeated session
   // restore at the source: there was never a session left behind to come back
   // to, no matter what the restore loop did on the next boot.
   const smartConnect = async () => {
-    if (!caps().tmuxPersistence) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
+    if (!caps().sessionPersistence) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
     setConnectProbing(true);
     try {
       // Idempotent, PTY-free, tmux-free; no-ops on password-auth (can't prompt

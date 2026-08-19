@@ -1849,6 +1849,10 @@ fn spawn_local_pty(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    // 2026-08-19: `Some(name)` makes this a persistent pane — the shell is
+    // spawned exactly as before and `zellij attach -c <name>` is typed into
+    // it afterwards. `None` keeps the historical plain-shell behaviour.
+    zellij_session: Option<String>,
 ) -> Result<String, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -1950,10 +1954,39 @@ fn spawn_local_pty(
             writer,
             master: pair.master,
             killer,
-            tmux_session: None,
+            // Native-local panes now carry a multiplexer session name too
+            // (zellij, not tmux — the field predates the rename). This is
+            // what lights up `pane_persistence_list`, and with it the
+            // persistence badge / Detach / Kill-session UI, none of which
+            // needed changing.
+            tmux_session: zellij_session.clone(),
             wsl_distro: None,
         }),
     );
+
+    // Persistent mode: type the attach-or-create line into the shell 900ms
+    // after spawn — the same timing the WSL path uses, chosen to land after
+    // `schedule_setup_injection` fires at 500ms so the user's env exports and
+    // setup_command have settled first. Deliberately NOT spawning zellij as
+    // the pane process: `pick_default_shell` + `utf8_shell_args` set up
+    // `chcp 65001` for PowerShell, and losing that UTF-8 handling would put
+    // this session's Hebrew work straight back on the floor.
+    if let Some(name) = zellij_session {
+        let sessions_clone = state.core.sessions.clone();
+        let id_clone = id.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            let line = build_zellij_attach_command(&name);
+            let mut sessions = sessions_clone.lock().unwrap();
+            if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
+                use std::io::Write as _;
+                // Rule #1: a fixed control string built from a sanitized
+                // session name — never PTY content.
+                let _ = l.writer.write_all(line.as_bytes());
+                let _ = l.writer.flush();
+            }
+        });
+    }
     Ok(id)
 }
 
@@ -1964,6 +1997,138 @@ fn spawn_local_pty(
 /// skips the YMUX_* env injection into tmux's global environment
 /// (WSL panes pass empty until the WSL RPC bridge hands them a real
 /// address). `fallback_msg` must not contain single quotes.
+/// 2026-08-19: the Zellij attach-or-create line typed into a native Windows
+/// shell, the local counterpart of `build_tmux_attach_script`.
+///
+/// Deliberately a SEPARATE function rather than an arm inside that one: it is
+/// pure POSIX (`command -v`, `exec`, `$HOME`, `\r\n` into a shell) and
+/// load-bearing for SSH and WSL both, and Phase 65 records what a careless
+/// edit there costs. None of it parses in cmd.exe or PowerShell anyway.
+///
+/// `zellij attach -c` is attach-or-create, the same semantics as tmux's
+/// `new-session -A -s`. There is no `exec` on Windows, so the shell stays as
+/// the parent process — when zellij exits the user lands back in a working
+/// shell rather than a closed pane, which is the nicer failure mode.
+///
+/// **No guard around the command on purpose.** If zellij is missing, cmd and
+/// PowerShell each print their own "not recognized" and leave a perfectly
+/// usable plain shell. Writing a cross-shell existence check would mean two
+/// dialects of quoting for a worse fallback than the one we get free.
+/// How ymux invokes zellij from Rust (listing / killing sessions), as opposed
+/// to the bare `zellij` word typed into the user's shell.
+///
+/// The winget MSI puts the binary at `%LOCALAPPDATA%\Zellij\zellij.exe` and
+/// adds that directory to the USER PATH — but a PATH edit only reaches
+/// processes started afterwards, so a ymux that was already running when
+/// zellij got installed would not find it by name. Prefer the canonical path
+/// when it exists and fall back to PATH, which also covers a scoop/cargo/
+/// hand-placed install.
+fn zellij_exe() -> String {
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let p = std::path::Path::new(&local).join("Zellij").join("zellij.exe");
+        if p.is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    "zellij".to_string()
+}
+
+fn build_zellij_attach_command(name: &str) -> String {
+    // Session names come from `sanitize_session_name`, which emits only
+    // `[A-Za-z0-9_-]`, so there is nothing here to quote or escape. Asserted
+    // by `zellij_attach_command_is_a_single_safe_line` below.
+    format!("zellij attach -c {name}\r\n")
+}
+
+/// Parse `zellij list-sessions -n` (`--no-formatting`, which upstream
+/// documents as "useful for parsing").
+///
+/// Real output captured 2026-08-19 from zellij 0.44.3 on Windows:
+/// ```text
+/// spike [Created 12m 30s ago]
+/// old-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
+/// current-one [Created 5s ago] (current)
+/// ```
+/// Written as its own parser rather than a branch in `parse_tmux_sessions`,
+/// which decodes a completely different `<<<YMUX_META>>>` record joined
+/// against `session-meta.json`.
+///
+/// Zellij lists EXITED sessions too — they are resurrectable, which is the
+/// one thing it does that tmux cannot (they survive a reboot). They are
+/// returned here, marked `attached: false`, so the picker can offer them.
+fn parse_zellij_sessions(text: &str) -> Vec<TmuxSessionInfo> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut out: Vec<TmuxSessionInfo> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("No active zellij sessions") {
+            continue;
+        }
+        let name = match line.split_whitespace().next() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        // `[Created <dur> ago]` → seconds. Absent or unparseable simply means
+        // "unknown age": fall back to `now` rather than dropping the session,
+        // since a session we cannot date is still one the user can attach to.
+        let age = line
+            .split_once("[Created ")
+            .and_then(|(_, rest)| rest.split_once(" ago]"))
+            .map(|(dur, _)| parse_zellij_duration(dur))
+            .unwrap_or(0);
+        out.push(TmuxSessionInfo {
+            name,
+            created: now - age,
+            // Zellij marks the session the CALLING client is inside as
+            // "(current)". ymux always asks from outside a session, so this
+            // is never us; treat it as "someone is attached".
+            attached: line.contains("(current)"),
+            // Zellij has no window count in this output. 1 is the honest
+            // floor — a session always has at least one pane — and the
+            // picker renders it as a hint, not a fact it acts on.
+            windows: 1,
+            last_attached: 0,
+            label: None,
+            claude_title: None,
+            claude_session_id: None,
+            origin: None,
+        });
+    }
+    // Newest first, matching parse_tmux_sessions' ordering contract.
+    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out
+}
+
+/// `12m 30s` / `3h 4m 1s` / `5s` / `2days 1h` → seconds. Unknown units are
+/// skipped rather than poisoning the whole duration, so a future zellij
+/// spelling degrades to a slightly wrong age instead of a lost session.
+fn parse_zellij_duration(s: &str) -> i64 {
+    let mut total: i64 = 0;
+    for tok in s.split_whitespace() {
+        let digits: String = tok.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let n: i64 = match digits.parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let unit = &tok[digits.len()..];
+        total += match unit {
+            u if u.starts_with('s') => n,
+            u if u.starts_with("ms") => 0,
+            u if u.starts_with('m') => n * 60,
+            u if u.starts_with('h') => n * 3600,
+            u if u.starts_with('d') => n * 86_400,
+            _ => 0,
+        };
+    }
+    total
+}
+
 fn build_tmux_attach_script(
     name: &str,
     socket_addr: &str,
@@ -6276,9 +6441,10 @@ async fn pane_connect(
     accept_unknown_host: Option<bool>,
     cols: u16,
     rows: u16,
-    // Phase 11.A: when true the SSH shell is wrapped in `tmux new-session -A`
-    // so reconnects resume the same shell. Ignored for local panes for now —
-    // can be added later via WSL/conpty + tmux on linux.
+    // Phase 11.A: when true the shell is wrapped in a multiplexer so
+    // reconnects resume it — `tmux new-session -A` over SSH, `zellij attach
+    // -c` on a native Windows pane (2026-08-19). Every connection kind
+    // honours it now.
     persistent: Option<bool>,
     // Phase 12.B Smart Connect: when set, after the shell is up we inject a
     // mode-specific command. `mode` is one of: "default" (current behavior),
@@ -6377,8 +6543,36 @@ async fn pane_connect(
     }
 
     let session_id = match conn {
+        // 2026-08-19: native Windows panes are persistent by default too,
+        // via zellij. This arm used to DROP `persistent` / `mode` /
+        // `effective_tmux_name` on the floor, which is why the connect
+        // wizard's persistence toggle was a live control with no effect.
         Connection::Local { shell } => {
-            spawn_local_pty(&state, pane_id.clone(), &app, shell, cwd, cols, rows)?
+            let effective_persistent = match mode.as_deref() {
+                Some("tmux") => true,
+                Some("plain") => false,
+                _ => persistent.unwrap_or(true),
+            };
+            let zellij_name = if effective_persistent {
+                Some(
+                    effective_tmux_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| sanitize_tmux_session_name(&pane_id)),
+                )
+            } else {
+                None
+            };
+            spawn_local_pty(
+                &state,
+                pane_id.clone(),
+                &app,
+                shell,
+                cwd,
+                cols,
+                rows,
+                zellij_name,
+            )?
         }
         // Phase 80: WSL panes default to PERSISTENT (tmux) — persistence
         // is the point of the smart local setup. mode="plain" still
@@ -6553,6 +6747,32 @@ struct SessionMetaEntryMirror {
 /// exist. Used by the Connect (tmux) split-button to populate a
 /// picker so users can attach to an orphan session whose original
 /// pane was closed.
+/// Ask zellij for its sessions. Used by both the workspace-level list and
+/// the per-pane probe; unlike SSH there is no handle or auth involved, so
+/// this answers from cold whenever the binary is present.
+///
+/// A missing binary is NOT an error here — it is an empty list. `zellij_exe`
+/// falls back to the bare word, so a machine that never ran the installer
+/// simply has no sessions, and the picker renders its "new session" row.
+async fn list_zellij_sessions() -> Vec<TmuxSessionInfo> {
+    let mut c = local_setup::hidden_cmd(&zellij_exe());
+    c.arg("list-sessions").arg("-n");
+    match tokio::time::timeout(std::time::Duration::from_secs(6), c.output()).await {
+        Ok(Ok(out)) => {
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            parse_zellij_sessions(&text)
+        }
+        Ok(Err(e)) => {
+            log_debug("PTY", &format!("list_zellij_sessions: spawn failed: {e}"));
+            Vec::new()
+        }
+        Err(_) => {
+            log_warn("PTY", "list_zellij_sessions: timed out after 6s");
+            Vec::new()
+        }
+    }
+}
+
 #[tauri::command]
 async fn pane_list_tmux_sessions(
     state: State<'_, AppState>,
@@ -6576,6 +6796,21 @@ async fn pane_list_tmux_sessions(
             .await
             .unwrap_or((-1, String::new()));
         return Ok(parse_tmux_sessions(&text));
+    }
+
+    // 2026-08-19: native Windows workspaces answer from zellij. Without this
+    // arm a local workspace fell through to the SSH branch below and got a
+    // silent Ok([]), which is why the picker never appeared for local panes.
+    let is_local = {
+        let file = state.workspaces.lock().unwrap();
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| matches!(w.connection, None | Some(Connection::Local { .. })))
+            .unwrap_or(false)
+    };
+    if is_local {
+        return Ok(list_zellij_sessions().await);
     }
 
     // Phase 23.H: silent Ok([]) fallback when no live SSH handle.
@@ -6811,6 +7046,13 @@ async fn pane_probe_tmux_sessions(
                     .await
                     .unwrap_or((-1, String::new()));
             return Ok(Some(parse_tmux_sessions(&text)));
+        }
+        // 2026-08-19: a native Windows pane answers from zellij, from cold —
+        // no handle, no auth. Previously it fell into the `_` arm below and
+        // returned None ("couldn't ask"), so boot-time session restore
+        // skipped local panes entirely.
+        None | Some(Connection::Local { .. }) => {
+            return Ok(Some(list_zellij_sessions().await));
         }
         _ => return Ok(None),
     };
@@ -7371,6 +7613,8 @@ async fn pane_kill_session(
     enum KillTarget {
         Ssh(Arc<client::Handle<SshClient>>, String),
         Wsl(Option<String>, String),
+        // 2026-08-19: a native Windows pane's zellij session.
+        Zellij(String),
         None,
     }
     let target = {
@@ -7380,9 +7624,19 @@ async fn pane_kill_session(
                 Some(name) => KillTarget::Ssh(s.handle.clone(), name.clone()),
                 None => KillTarget::None,
             },
-            Some(Session::Local(l)) => match &l.tmux_session {
-                Some(name) => KillTarget::Wsl(l.wsl_distro.clone(), name.clone()),
-                None => KillTarget::None,
+            // `Session::Local` covers BOTH a WSL pane and a native Windows
+            // pane, so the distro — not the variant — is what tells them
+            // apart. Before 2026-08-19 a native-local session never carried a
+            // name, so this arm was unreachable for it; populating
+            // `tmux_session` for zellij would have quietly routed a local
+            // kill into `wsl.exe -- tmux kill-session` against the DEFAULT
+            // distro. Split explicitly rather than relying on that.
+            Some(Session::Local(l)) => match (&l.tmux_session, &l.wsl_distro) {
+                (Some(name), Some(distro)) => {
+                    KillTarget::Wsl(Some(distro.clone()), name.clone())
+                }
+                (Some(name), None) => KillTarget::Zellij(name.clone()),
+                (None, _) => KillTarget::None,
             },
             None => KillTarget::None,
         }
@@ -7431,6 +7685,32 @@ async fn pane_kill_session(
                 )),
                 Ok(_) => {}
                 Err(e) => log_warn("PTY", &format!("pane_kill_session(wsl): spawn failed: {e}")),
+            }
+        }
+        KillTarget::Zellij(name) => {
+            // Pure argv, no shell in between (Rule #3). `kill-session` ends
+            // the running session; the serialized copy zellij keeps for
+            // resurrection is dropped by `delete-session`, which is a
+            // separate, more destructive verb we deliberately do not call
+            // here — "kill" should not also discard the scrollback the user
+            // could still resurrect.
+            // hidden_cmd: CREATE_NO_WINDOW + piped stdio, so a GUI parent
+            // does not flash a console (local_setup.rs:383).
+            let mut c = local_setup::hidden_cmd(&zellij_exe());
+            c.arg("kill-session").arg(&name);
+            match c.output().await {
+                Ok(out) if !out.status.success() => log_warn(
+                    "PTY",
+                    &format!(
+                        "pane_kill_session(zellij): kill-session exited {:?}",
+                        out.status.code()
+                    ),
+                ),
+                Ok(_) => {}
+                Err(e) => log_warn(
+                    "PTY",
+                    &format!("pane_kill_session(zellij): spawn failed: {e}"),
+                ),
             }
         }
         KillTarget::None => {}
@@ -9347,5 +9627,101 @@ mod utf8_pty_live_tests {
             !out.contains('\u{FFFD}'),
             "replacement chars in the stream:\n{out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod zellij_tests {
+    // Parser tests written against output CAPTURED from zellij 0.44.3 on
+    // Windows on 2026-08-19, not from the docs — the spike session Yossi left
+    // running produced `spike [Created 12m 30s ago]` verbatim.
+    use super::{build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions};
+
+    #[test]
+    fn parses_the_real_captured_line() {
+        let out = parse_zellij_sessions("spike [Created 12m 30s ago]\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "spike");
+        assert!(!out[0].attached);
+        // created = now - 750s; allow a couple of seconds of clock drift.
+        let age = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - out[0].created;
+        assert!((748..=752).contains(&age), "age was {age}, expected ~750");
+    }
+
+    #[test]
+    fn an_exited_session_is_kept_because_it_can_be_resurrected() {
+        // Surviving a reboot is the one thing zellij does that tmux cannot.
+        // Dropping these rows would throw away the whole point.
+        let out = parse_zellij_sessions(
+            "old [Created 3h 4m 1s ago] (EXITED - attach to resurrect)\n",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "old");
+        assert!(!out[0].attached);
+    }
+
+    #[test]
+    fn current_marks_the_session_as_attached() {
+        let out = parse_zellij_sessions("mine [Created 5s ago] (current)\n");
+        assert!(out[0].attached);
+    }
+
+    #[test]
+    fn the_empty_message_is_not_a_session() {
+        // zellij prints this sentence on stdout rather than an empty body.
+        assert!(parse_zellij_sessions("No active zellij sessions found.\n").is_empty());
+        assert!(parse_zellij_sessions("").is_empty());
+        assert!(parse_zellij_sessions("   \n\n").is_empty());
+    }
+
+    #[test]
+    fn sessions_come_back_newest_first() {
+        let out = parse_zellij_sessions(
+            "older [Created 2h ago]\nnewest [Created 3s ago]\nmiddle [Created 10m ago]\n",
+        );
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["newest", "middle", "older"]);
+    }
+
+    #[test]
+    fn an_undateable_row_is_still_offered() {
+        // A future zellij could reword the bracket. Losing the age is fine;
+        // losing a session the user can still attach to is not.
+        let out = parse_zellij_sessions("weird-format-session\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "weird-format-session");
+    }
+
+    #[test]
+    fn durations_add_up_across_units() {
+        assert_eq!(parse_zellij_duration("30s"), 30);
+        assert_eq!(parse_zellij_duration("12m 30s"), 750);
+        assert_eq!(parse_zellij_duration("3h 4m 1s"), 3 * 3600 + 4 * 60 + 1);
+        assert_eq!(parse_zellij_duration("2days 1h"), 2 * 86_400 + 3600);
+        // Unknown units are skipped, not treated as seconds.
+        assert_eq!(parse_zellij_duration("5fortnights 10s"), 10);
+        assert_eq!(parse_zellij_duration(""), 0);
+    }
+
+    #[test]
+    fn ms_does_not_get_read_as_minutes() {
+        // "m" is a prefix of "ms"; ordering the match arms wrong would turn
+        // 500ms into 500 minutes and date every session eight hours old.
+        assert_eq!(parse_zellij_duration("500ms"), 0);
+        assert_eq!(parse_zellij_duration("5m"), 300);
+    }
+
+    #[test]
+    fn zellij_attach_command_is_a_single_safe_line() {
+        let cmd = build_zellij_attach_command("ymux-p_1a2b_0");
+        assert_eq!(cmd, "zellij attach -c ymux-p_1a2b_0\r\n");
+        // One line typed into a shell: a stray newline would run whatever
+        // followed it as a second command.
+        assert_eq!(cmd.matches('\n').count(), 1);
+        assert!(cmd.ends_with("\r\n"));
     }
 }

@@ -338,8 +338,10 @@ export interface ConnCaps {
   posixExec: boolean;
   /** A POSIX filesystem can be listed / read / written. */
   fileTransfer: boolean;
-  /** tmux sessions outlive the app, so panes can re-attach on boot. */
-  tmuxPersistence: boolean;
+  /** Multiplexer sessions outlive the app, so panes can re-attach on boot.
+   *  tmux over SSH, zellij on a native Windows pane (2026-08-19). Renamed
+   *  from `tmuxPersistence` when it stopped being tmux-only. */
+  sessionPersistence: boolean;
   /** A control-plane server (ymux-server / insights) can serve it. */
   controlServer: boolean;
   portForward: PortForwardKind;
@@ -353,7 +355,10 @@ export interface ConnCaps {
 const LOCAL_CAPS: ConnCaps = {
   posixExec: false,
   fileTransfer: false,
-  tmuxPersistence: false,
+  // 2026-08-19: native Windows panes gained persistence via zellij, which
+  // is what makes WSL unnecessary. Not a user setting — a local pane is
+  // persistent the same way an SSH pane is.
+  sessionPersistence: true,
   controlServer: true, // native insights_local
   portForward: "none",
   sessionBound: false,
@@ -363,7 +368,7 @@ const LOCAL_CAPS: ConnCaps = {
 const SSH_CAPS: ConnCaps = {
   posixExec: true,
   fileTransfer: true,
-  tmuxPersistence: true,
+  sessionPersistence: true,
   controlServer: true,
   portForward: "ssh",
   sessionBound: true,
@@ -379,7 +384,7 @@ const WSL_CAPS: ConnCaps = {
   // session". Flip it in the same commit that lands the WSL file backend;
   // a capability table that lies is worse than the boolean it replaced.
   fileTransfer: false,
-  tmuxPersistence: true,
+  sessionPersistence: true,
   controlServer: true,
   portForward: "sharedLoopback",
   sessionBound: false,

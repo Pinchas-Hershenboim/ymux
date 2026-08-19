@@ -1949,7 +1949,7 @@ function App() {
   // so the user lands back in their conversations instead of a grid of
   // [Connect] buttons.
   //
-  // SSH *and* WSL. The gate is `caps.tmuxPersistence`, not "is it SSH": a WSL
+  // SSH *and* WSL. The gate is `caps.sessionPersistence`, not "is it SSH": a WSL
   // pane keeps its tmux session across an app restart exactly like a remote
   // one does. The hints were already being recorded for WSL by
   // refreshPersistence (pane_persistence_list reports WSL tmux names too) —
@@ -2074,7 +2074,7 @@ function App() {
         continue;
       }
       seenTerminals++;
-      if (!paneCaps(pane, ws.connection).tmuxPersistence) {
+      if (!paneCaps(pane, ws.connection).sessionPersistence) {
         skippedNoTmux++;
         continue;
       }
@@ -2112,7 +2112,7 @@ function App() {
     // is why `sessionBound` gates only the ensure-connected call.
     const wsc = wsCaps(ws);
     let alive: Set<string> | null = null;
-    if (wsc.tmuxPersistence) {
+    if (wsc.sessionPersistence) {
       try {
         if (wsc.sessionBound) {
           await invoke("workspace_ensure_connected", { workspaceId: ws.id });
