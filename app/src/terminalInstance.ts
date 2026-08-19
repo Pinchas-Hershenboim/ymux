@@ -618,6 +618,23 @@ export class TerminalInstance {
     return this.tuiOwnsBidi && this.rtl.tuiOwnsBidi;
   }
 
+  /* NOTE FOR THE NEXT SESSION — the two facts this cost three rounds to pin:
+   *
+   *  1. Claude Code on Windows writes RTL in VISUAL order. Measured with
+   *     `zellij action dump-screen` on a live pane: the cwd came back as
+   *     U+05E8 U+05D1 U+05E6, which is צבר reversed. Anything that reorders
+   *     on top of that is a SECOND pass and produces logical order on screen,
+   *     i.e. "the letters are backwards".
+   *
+   *  2. `dir` does not suppress reordering. It picks the paragraph's base
+   *     direction; rule L2 still reverses RTL runs inside it. Only
+   *     `unicode-bidi: bidi-override` renders bytes verbatim.
+   *
+   * Together they say: a pre-reordered stream needs NO bidi, and the only two
+   * ways to get none are the WebGL renderer (rtl_mode="off") or bidi-override
+   * on the row. Reach for either of those, not for `dir`.
+   */
+
   /** Re-run the direction pass after a live settings change. */
   refreshRowDirections(): void {
     this.applyRowDirections(true);
@@ -1220,11 +1237,25 @@ export class TerminalInstance {
       ? detectRowDirections(texts, this.rtl.directionPolicy === "tui_dominance")
       : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
 
+    // 2026-08-19: `dir` alone cannot do what bidiOwnedByTui promises.
+    //
+    // `dir` sets a row's PARAGRAPH direction. It does not stop the browser
+    // reordering an RTL run inside that paragraph — UAX #9 rule L2 reverses
+    // every run at level >= 1 whichever way the paragraph faces. So forcing
+    // dir="ltr" over Claude's already-visual output still double-reordered it,
+    // and the setting looked like it did nothing. `unicode-bidi: bidi-override`
+    // is the only thing that suppresses reordering outright: it makes every
+    // character strong in `direction`, so the bytes are painted in the order
+    // they arrived — which is exactly what a pre-reordered stream needs, and
+    // exactly what the WebGL renderer gives for free in rtl_mode="off".
+    const override = this.bidiOwnedByTui;
     for (let i = 0; i < children.length; i++) {
       const el = children[i];
       this.dirCache.set(el, texts[i]);
       const dir = dirs[i];
       if (el.getAttribute("dir") !== dir) el.setAttribute("dir", dir);
+      const want = override ? "bidi-override" : "";
+      if (el.style.unicodeBidi !== want) el.style.unicodeBidi = want;
     }
     this.logDirections(dirs, texts);
   }

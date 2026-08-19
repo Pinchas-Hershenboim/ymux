@@ -607,11 +607,16 @@ pub(crate) fn migrate_rtl_profiles(t: &mut TerminalSettings) -> bool {
     // The other three ARE carried over — they are orthogonal to the
     // local/remote split and the user may have tuned them deliberately.
     let defaults = RtlProfiles::default();
-    let carry = |mode: String| RtlProfile {
-        rtl_mode: mode,
+    let carry = |d: RtlProfile| RtlProfile {
+        rtl_mode: d.rtl_mode,
         auto_direction: t.auto_direction,
         mirror_arrows_rtl: t.mirror_arrows_rtl,
-        tui_owns_bidi: t.tui_owns_bidi,
+        // 2026-08-19: the flat field defaults to FALSE, so a false here is the
+        // ABSENCE of a choice, not a choice — carrying it verbatim silently
+        // overrode the per-profile default and local never received
+        // tui_owns_bidi=true. Only a true is a real user decision, so only a
+        // true is carried; otherwise the profile's own default wins.
+        tui_owns_bidi: t.tui_owns_bidi || d.tui_owns_bidi,
         // Not carried from anything: `direction_policy` postdates the split,
         // so there is no deprecated flat field to inherit. A migrating install
         // lands on the pre-2026-08-19 rule, which is what it was already
@@ -619,8 +624,8 @@ pub(crate) fn migrate_rtl_profiles(t: &mut TerminalSettings) -> bool {
         direction_policy: default_direction_policy(),
     };
     t.rtl = Some(RtlProfiles {
-        local: carry(defaults.local.rtl_mode),
-        remote: carry(defaults.remote.rtl_mode),
+        local: carry(defaults.local),
+        remote: carry(defaults.remote),
     });
     true
 }
@@ -2535,6 +2540,33 @@ mod tests {
         let d = RtlProfiles::default();
         assert_eq!(d.remote.direction_policy, "any_rtl", "remote must stay on any_rtl");
         assert_eq!(d.local.direction_policy, "any_rtl", "tui_dominance is opt-in");
+    }
+
+    #[test]
+    fn migration_does_not_clobber_the_local_tui_owns_bidi_default() {
+        // Yossi's settings.json had no `rtl` block and no `tui_owns_bidi`, so
+        // the migration ran with the flat field at its serde default of false
+        // and wrote that into BOTH profiles — silently overriding the local
+        // default and leaving the pane doing a second bidi pass over Claude's
+        // already-visual output. An absent flat field is not a decision.
+        let mut t = TerminalSettings { rtl: None, ..TerminalSettings::default() };
+        t.tui_owns_bidi = false; // as serde produces it when the key is absent
+        assert!(migrate_rtl_profiles(&mut t));
+        let r = t.rtl.expect("seeded");
+        assert!(r.local.tui_owns_bidi, "local keeps its own default");
+        assert!(!r.remote.tui_owns_bidi, "remote keeps its own default");
+    }
+
+    #[test]
+    fn migration_still_carries_an_explicit_tui_owns_bidi() {
+        // A true IS a decision — it can only have come from the user ticking
+        // the box — so it reaches both profiles.
+        let mut t = TerminalSettings { rtl: None, ..TerminalSettings::default() };
+        t.tui_owns_bidi = true;
+        assert!(migrate_rtl_profiles(&mut t));
+        let r = t.rtl.expect("seeded");
+        assert!(r.local.tui_owns_bidi);
+        assert!(r.remote.tui_owns_bidi, "an explicit opt-in reaches remote too");
     }
 
     #[test]
