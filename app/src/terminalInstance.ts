@@ -183,7 +183,8 @@ const g_rtl: Record<RtlProfileKind, RtlProfileSettings> = {
     rtlMode: "auto_per_line",
     autoDirection: true,
     mirrorArrowsRtl: true,
-    tuiOwnsBidi: false,
+    // See `default_local_rtl` in settings.rs for the measurement behind this.
+    tuiOwnsBidi: true,
     directionPolicy: "any_rtl",
   },
   remote: {

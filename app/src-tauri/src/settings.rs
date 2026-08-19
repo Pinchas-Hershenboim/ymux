@@ -462,8 +462,38 @@ pub(crate) struct RtlProfiles {
 /// a second reorder of already-logical text. The split still earns its
 /// keep — a user can still tune the two apart — but it no longer needs
 /// different defaults, and pretending otherwise would ship a wrong one.
+/// 2026-08-19, third revision of this default and the first one MEASURED
+/// rather than inferred. `zellij action dump-screen` on
+/// Yossi's live local pane, which was running Claude Code, held exactly one
+/// Hebrew run and it was `U+05E8 U+05D1 U+05E6` -- the cwd `\u05e6\u05d1\u05e8` in VISUAL order,
+/// reversed against logical `U+05E6 U+05D1 U+05E8`.
+///
+/// So Claude Code on Windows writes RTL PRE-REORDERED, exactly as the header of
+/// textDirection.ts says it does. Every second bidi pass on top of that is a
+/// double reorder, which is why all THREE rtl_modes were reported broken on a
+/// local pane while remote was fine:
+///   off             leaves the bytes alone -> letters CORRECT, left aligned
+///   auto_per_line   the browser reverses the run -> reversed
+///   bidi_reorder    our logical->visual pass reverses it again -> reversed
+///
+/// `tui_owns_bidi` is the switch built for exactly this, and it was default-off
+/// because an earlier round concluded Claude had started emitting logical order.
+/// The dump above contradicts that conclusion, so local turns it back on.
+///
+/// KNOWN TRADE-OFF, not a bug to chase: with a pre-reordered stream you cannot
+/// have correct letters AND right alignment. Right alignment needs dir="rtl",
+/// which invokes the browser's bidi, which reverses an already-reversed run.
+/// Getting both requires un-reversing the stream to logical first and then
+/// rendering RTL -- a visual->logical pass, and the piece of work that drags in
+/// the cursor/partial-repaint problem already logged in FOLLOWUPS.
+///
+/// REMOTE IS DELIBERATELY NOT CHANGED. It renders correctly today and Yossi's
+/// instruction was to work on local without touching it.
 fn default_local_rtl() -> RtlProfile {
-    RtlProfile::default() // auto_per_line, same as remote
+    RtlProfile {
+        tui_owns_bidi: true,
+        ..RtlProfile::default() // auto_per_line renderer, as remote
+    }
 }
 
 impl Default for RtlProfiles {
@@ -2505,6 +2535,23 @@ mod tests {
         let d = RtlProfiles::default();
         assert_eq!(d.remote.direction_policy, "any_rtl", "remote must stay on any_rtl");
         assert_eq!(d.local.direction_policy, "any_rtl", "tui_dominance is opt-in");
+    }
+
+    #[test]
+    fn local_owns_bidi_by_default_and_remote_does_not() {
+        // Measured 2026-08-19 with `zellij action dump-screen` on a live local
+        // pane: Claude Code on Windows writes the cwd's Hebrew in VISUAL order
+        // (U+05E8 U+05D1 U+05E6, reversed against logical), so any second bidi
+        // pass double-reorders it. That is why all three rtl_modes read as
+        // broken on local while remote was fine.
+        //
+        // Remote stays OFF: it renders correctly as it is, and the standing
+        // instruction is not to touch it while working on local.
+        let d = RtlProfiles::default();
+        assert!(d.local.tui_owns_bidi, "local must not bidi Claude's output twice");
+        assert!(!d.remote.tui_owns_bidi, "remote is deliberately unchanged");
+        // The renderer is the same on both sides; only this knob differs.
+        assert_eq!(d.local.rtl_mode, d.remote.rtl_mode);
     }
 
     #[test]

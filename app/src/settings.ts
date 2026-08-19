@@ -500,19 +500,23 @@ export function resolveRtlProfiles(
   const pick = (
     p: RtlProfileFields | undefined,
     fallbackMode: RtlMode,
+    // 2026-08-19: local defaults this ON and remote OFF, because Claude Code on
+    // Windows writes RTL already in visual order (measured with
+    // `zellij action dump-screen`) while the remote path does not need it.
+    fallbackTuiOwnsBidi: boolean,
   ): RtlProfileSettings => ({
     rtlMode: (p?.rtl_mode ?? t.rtl_mode ?? fallbackMode) as RtlMode,
     autoDirection: p?.auto_direction ?? t.auto_direction ?? true,
     mirrorArrowsRtl: p?.mirror_arrows_rtl ?? t.mirror_arrows_rtl ?? true,
-    tuiOwnsBidi: p?.tui_owns_bidi ?? t.tui_owns_bidi ?? false,
+    tuiOwnsBidi: p?.tui_owns_bidi ?? t.tui_owns_bidi ?? fallbackTuiOwnsBidi,
     // No flat-field fallback on purpose: `direction_policy` postdates the
     // split, so there is no deprecated global to inherit from, and an absent
     // value must mean the older rule rather than the newer one.
     directionPolicy: p?.direction_policy ?? "any_rtl",
   });
   return {
-    local: pick(t.rtl?.local, "auto_per_line"),
-    remote: pick(t.rtl?.remote, "auto_per_line"),
+    local: pick(t.rtl?.local, "auto_per_line", true),
+    remote: pick(t.rtl?.remote, "auto_per_line", false),
   };
 }
 
