@@ -183,7 +183,7 @@ export function QuickLocalCreateFlow(p: Props) {
         />
       </label>
       {/* Distinct datalist id — the edit modal used to own
-          "winmux-recent-paths"; a collision would cross-wire the
+          "ymux-recent-paths"; a collision would cross-wire the
           combobox suggestions if both ever mount. */}
       <datalist id="setup-recent-paths">
         <For each={recentPaths()}>

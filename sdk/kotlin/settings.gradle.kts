@@ -1,1 +1,1 @@
-rootProject.name = "winmux-sdk"
+rootProject.name = "ymux-sdk"

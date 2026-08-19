@@ -299,7 +299,7 @@ fn download_verified(asset: &FontAsset) -> Result<Vec<u8>, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let resp = winmux_core::http::get_with_retry(|| ureq::get(asset.url))
+    let resp = ymux_core::http::get_with_retry(|| ureq::get(asset.url))
         .map_err(|e| format!("download failed: {e}"))?;
 
     // Cap the read at a generous multiple of the expected size: a redirect to

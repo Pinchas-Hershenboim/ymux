@@ -35,7 +35,7 @@ import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
-import { WinmuxToolsTab } from "./WinmuxToolsTab";
+import { YmuxToolsTab } from "./YmuxToolsTab";
 import { createLogger } from "./logger";
 
 const log = createLogger("SETTINGS");
@@ -76,7 +76,7 @@ function formatBytes(n: number): string {
 
 /**
  * Shown under a font select whose chosen family isn't installed. When
- * winmux can install that family itself, the notice carries the button —
+ * ymux can install that family itself, the notice carries the button —
  * telling the user what's wrong without offering the fix is only half an
  * answer, and hunting down a .ttf is exactly the step that stalls an
  * onboarding call.
@@ -570,10 +570,10 @@ export function SettingsModal(p: Props) {
                   <label class="settings-checkbox">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.use_winmux_tmux_config ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, use_winmux_tmux_config: e.currentTarget.checked })}
+                      checked={p.settings.terminal.use_ymux_tmux_config ?? true}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, use_ymux_tmux_config: e.currentTarget.checked })}
                     />
-                    <span>{t("settings.terminal.use_winmux_tmux_config.label")}</span>
+                    <span>{t("settings.terminal.use_ymux_tmux_config.label")}</span>
                   </label>
                 </section>
                 {/* Phase 81: tmux session picker scope — shared (all
@@ -794,6 +794,15 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
                   </label>
+                  <label class="settings-checkbox" style="margin-top:8px">
+                    <input
+                      type="checkbox"
+                      checked={p.settings.terminal.tui_owns_bidi ?? false}
+                      onChange={(e) => update("terminal", { ...p.settings.terminal, tui_owns_bidi: e.currentTarget.checked })}
+                    />
+                    <span>{t("settings.terminal.tui_owns_bidi.label")}</span>
+                  </label>
+                  <p class="settings-hint">{t("settings.terminal.tui_owns_bidi.hint")}</p>
                 </section>
               </Show>
 
@@ -1517,7 +1526,7 @@ export function SettingsModal(p: Props) {
                   </Show>
                 </section>
                 <AddonsTab workspaceId={p.activeWorkspaceId} />
-                <WinmuxToolsTab workspaceId={p.activeWorkspaceId} />
+                <YmuxToolsTab workspaceId={p.activeWorkspaceId} />
               </Show>
             </div>
           </div>

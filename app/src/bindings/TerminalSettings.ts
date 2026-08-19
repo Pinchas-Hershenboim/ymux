@@ -12,14 +12,18 @@ export type TerminalSettings = {
 rtl_mode: string, 
 /**
  * Phase tmux-conf: when true (default), tmux is launched with
- * `-f ~/.winmux/tmux.conf` so the bundled scrollback-friendly
+ * `-f ~/.ymux/tmux.conf` so the bundled scrollback-friendly
  * config applies (wheel scrolls the scrollback ring instead of
  * shell history, 50k-line buffer, mouse on, sane truecolour).
  * Set false to fall back to the user's own `~/.tmux.conf`. The
  * conf file is uploaded by the bootstrap regardless, so the
  * toggle takes effect on the NEXT pane connect.
+ * `alias`: settings.json files written before the winmux → ymux
+ * rename carry the old key. Without it a user who had explicitly
+ * turned this OFF would silently get it back on after upgrading,
+ * because the unknown key falls through to `default_true`.
  */
-use_winmux_tmux_config: boolean, 
+use_ymux_tmux_config: boolean, 
 /**
  * Phase HH: mirror the physical Left/Right arrow keys when the
  * terminal line under the cursor is right-to-left (Hebrew/Arabic).
@@ -36,6 +40,25 @@ mirror_arrows_rtl: boolean,
  * LTR-only terminal behaviour.
  */
 auto_direction: boolean, 
+/**
+ * 2026-08-18: force every row LTR while a self-bidi TUI (Claude Code)
+ * holds the pane. Written in 2026-07 because Claude 2.1.74–2.1.210
+ * emitted Hebrew ALREADY in visual order, so the per-line RTL pass
+ * bidi'd it a second time and scrambled it.
+ *
+ * DEFAULT FALSE, and that is the whole point: current Claude
+ * (verified live against claude-fable-5) emits Hebrew in LOGICAL
+ * order like any other program, so forcing LTR is now what breaks
+ * it. Measured on a live local pane — Hebrew scrambled with this on,
+ * correct with it off, while SSH panes were never affected because
+ * tmux swallows the OSC title the detector depends on.
+ *
+ * Kept rather than deleted because the visual-order behaviour was
+ * real one month ago and may still be, on an older Claude or another
+ * self-bidi TUI. Detection and its `tui-owns-bidi` log line run
+ * regardless of this flag; only the LTR forcing is gated.
+ */
+tui_owns_bidi: boolean, 
 /**
  * v0.4.4-beta.2: on connect/attach, clear stale mouse-tracking modes an
  * unclean app exit (vim/fzf/less/htop killed) can leave on — which makes

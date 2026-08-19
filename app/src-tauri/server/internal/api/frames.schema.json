@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://winmux.dev/schemas/frames.schema.json",
-  "title": "WinmuxFrame",
-  "description": "winmux-server WebSocket frame contract (PHASE-77-DESIGN §4.4, frame_version 2). Every frame is a flat JSON object discriminated by `type`. Envelope fields (seq, session_id, ts) sit alongside the type-specific fields. snake_case throughout, matching the REST surface. SDK generators turn this into a Kotlin sealed interface / TS tagged union.",
+  "$id": "https://ymux.dev/schemas/frames.schema.json",
+  "title": "YmuxFrame",
+  "description": "ymux-server WebSocket frame contract (PHASE-77-DESIGN §4.4, frame_version 2). Every frame is a flat JSON object discriminated by `type`. Envelope fields (seq, session_id, ts) sit alongside the type-specific fields. snake_case throughout, matching the REST surface. SDK generators turn this into a Kotlin sealed interface / TS tagged union.",
   "oneOf": [
     { "$ref": "#/$defs/HelloFrame" },
     { "$ref": "#/$defs/UserInputFrame" },

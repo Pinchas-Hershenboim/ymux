@@ -3,7 +3,7 @@
 //! Two responsibilities:
 //!
 //! 1. **Level push** (`push_log_level*`): write the Settings → Logs level
-//!    into `~/.winmux/log-level` on remote hosts. The Go server watches the
+//!    into `~/.ymux/log-level` on remote hosts. The Go server watches the
 //!    file (30s ticker, no restart) and the CLI hooks read it once per
 //!    process, so the whole fleet converges on the desktop's setting.
 //!
@@ -26,7 +26,7 @@ use std::sync::Arc;
 use russh::client::Handle as SshHandle;
 use serde::{Deserialize, Serialize};
 
-use winmux_core::{append_raw_line, log_debug, log_info, log_warn, shell_quote};
+use ymux_core::{append_raw_lines, log_debug, log_info, log_warn, shell_quote};
 
 use crate::addons::exec;
 use crate::{AppState, Session, SshClient};
@@ -44,19 +44,19 @@ const TRUNCATE_RESUME_BYTES: u64 = 64 * 1024;
 
 /// The three remote logs, id → path relative to the remote `$HOME`.
 const REMOTE_FILES: [(&str, &str); 3] = [
-    ("server", ".winmux/server/insights.log"),
-    ("hooks", ".winmux/hook-debug.log"),
-    ("install", ".winmux/logs/mobile-install.log"),
+    ("server", ".ymux/server/insights.log"),
+    ("hooks", ".ymux/hook-debug.log"),
+    ("install", ".ymux/logs/mobile-install.log"),
 ];
 
 // ─── level push ─────────────────────────────────────────────────────────────
 
-/// Write `~/.winmux/log-level` on one remote host (Rule 3: quoted args, no
+/// Write `~/.ymux/log-level` on one remote host (Rule 3: quoted args, no
 /// interpolation of anything user-shaped — `level` is a validated enum str).
 pub(crate) async fn push_log_level(handle: &SshHandle<SshClient>, level: &str) -> Result<(), String> {
-    let lvl = winmux_core::LogLevel::from_str(level).as_str();
+    let lvl = ymux_core::LogLevel::from_str(level).as_str();
     let cmd = format!(
-        "mkdir -p \"$HOME/.winmux\" && printf %s {} > \"$HOME/.winmux/log-level\"",
+        "mkdir -p \"$HOME/.ymux\" && printf %s {} > \"$HOME/.ymux/log-level\"",
         shell_quote(lvl)
     );
     exec(handle, &cmd, 8).await.map(|_| ())
@@ -101,7 +101,7 @@ fn collect_host_handles(state: &AppState) -> Vec<(String, Arc<SshHandle<SshClien
 type CursorMap = HashMap<String, HashMap<String, u64>>;
 
 fn cursor_path() -> Result<std::path::PathBuf, String> {
-    Ok(winmux_core::config_dir_pub()?.join("log-sync.json"))
+    Ok(ymux_core::config_dir_pub()?.join("log-sync.json"))
 }
 
 fn load_cursors() -> CursorMap {
@@ -225,9 +225,11 @@ fn ingest_section(host: &str, sec: &Section, old_offset: Option<u64>) -> u64 {
         "SYNC",
         &format!("--- {host} {}: {n} lines ---", sec.file_id),
     );
-    for line in complete.lines() {
-        append_raw_line(line);
-    }
+    // Phase 80: ONE submission, not one per line. A cycle can carry
+    // 256 KiB x 3 files x N hosts, and feeding those in individually is what
+    // turned a routine sync into thousands of open/stat/write/write/close
+    // sequences — the biggest single source of interleaved log records.
+    append_raw_lines(complete.lines());
     old_offset + complete_end as u64
 }
 
@@ -368,10 +370,10 @@ mod tests {
 
     #[test]
     fn cursor_holds_back_partial_trailing_line() {
-        // WINMUX_CONFIG_DIR isolation so append_raw_line writes to a temp dir.
-        let dir = std::env::temp_dir().join(format!("winmux-logsync-test-{}", std::process::id()));
+        // YMUX_CONFIG_DIR isolation so the sync writes to a temp dir.
+        let dir = std::env::temp_dir().join(format!("ymux-logsync-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::env::set_var("WINMUX_CONFIG_DIR", &dir);
+        std::env::set_var("YMUX_CONFIG_DIR", &dir);
 
         let sec = Section {
             file_id: "hooks".into(),
@@ -381,6 +383,8 @@ mod tests {
         let new = ingest_section("host1", &sec, Some(10));
         // 10 + len("full line one\nfull line two\n")
         assert_eq!(new, 10 + 28);
+        // Phase 80: writes are asynchronous now — read-back needs a flush.
+        ymux_core::flush_log();
         let text = std::fs::read_to_string(dir.join("debug.log")).expect("log written");
         assert!(text.contains("full line two"));
         assert!(!text.contains("partial without"));
@@ -393,7 +397,7 @@ mod tests {
         };
         assert_eq!(ingest_section("host1", &sec2, Some(42)), 42);
 
-        std::env::remove_var("WINMUX_CONFIG_DIR");
+        std::env::remove_var("YMUX_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -407,7 +411,7 @@ mod tests {
         assert!(cmd.contains("tail -c +501"));
         assert_eq!(cmd.matches("tail -c").count(), 1);
         assert!(cmd.contains("===WMX %s %s==="));
-        assert!(cmd.contains(".winmux/hook-debug.log"));
+        assert!(cmd.contains(".ymux/hook-debug.log"));
         assert!(cmd.contains("head -c 262144"));
     }
 }

@@ -1,4 +1,4 @@
-// Package push is winmux's self-hosted push subsystem (no Firebase/FCM/APNs).
+// Package push is ymux's self-hosted push subsystem (no Firebase/FCM/APNs).
 // A paired device holds a long-lived WebSocket (GET /api/v2/push/subscribe) via
 // an Android foreground service; the server delivers notification-worthy events
 // over it, and queues them per-device when the socket is down for replay on
@@ -19,7 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"winmux-server/internal/logging"
+	"ymux-server/internal/logging"
 )
 
 // logger is the push subsystem's component logger (Phase 79.D).

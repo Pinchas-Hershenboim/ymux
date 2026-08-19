@@ -78,16 +78,16 @@ const CHROME_BOTTOM_PX = 16;
  *  handles (native content paints above HTML). Matches .fw-resize width. */
 const CHROME_SIDE_PX = 6;
 
-const GEOM_KEY = (id: string) => `winmux.workspace-browser-geometry.${id}`;
-const PORT_KEY = (id: string) => `winmux.workspace-browser-port.${id}`;
-const PATH_KEY = (id: string) => `winmux.workspace-browser-path.${id}`;
+const GEOM_KEY = (id: string) => `ymux.workspace-browser-geometry.${id}`;
+const PORT_KEY = (id: string) => `ymux.workspace-browser-port.${id}`;
+const PATH_KEY = (id: string) => `ymux.workspace-browser-path.${id}`;
 // Beta.3: per-workspace tabs. Each tab captures its own (port, path) —
 // no free-form URL — matching the port-picker model of the port bar
 // below. Legacy PORT_KEY / PATH_KEY are migrated into a single tab on
 // first load, then this key takes over.
-const TABS_KEY = (id: string) => `winmux.workspace-browser-tabs.${id}`;
+const TABS_KEY = (id: string) => `ymux.workspace-browser-tabs.${id}`;
 const ACTIVE_TAB_KEY = (id: string) =>
-  `winmux.workspace-browser-active-tab.${id}`;
+  `ymux.workspace-browser-active-tab.${id}`;
 
 /** One tab inside the workspace browser. `port`/`path` mirror what the
  *  port bar shows — nothing else is captured; the visible label is

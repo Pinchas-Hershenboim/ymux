@@ -4,7 +4,7 @@ package files
 // reflects request/response structs into the server's OpenAPI (Phase 77 S4), so
 // the spec can no longer drift from the handlers. The wire contract is byte-for
 // -byte the same as the S2 stdlib handlers: same query params, status codes,
-// headers (X-Winmux-Truncated, Content-Disposition), and JSON shapes.
+// headers (X-Ymux-Truncated, Content-Disposition), and JSON shapes.
 //
 // Binary responses (read/download) use huma.StreamResponse so we own the body
 // writer directly — huma's format registry only marshals JSON/CBOR, and these
@@ -20,7 +20,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"winmux-server/internal/core"
+	"ymux-server/internal/core"
 )
 
 // secured is the bearer requirement stamped on every Files operation; the api
@@ -89,7 +89,7 @@ func (s *Service) RegisterHuma(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "files-read", Method: http.MethodGet, Path: "/api/v2/files/read",
-		Summary: "Read up to max_bytes of a file (raw bytes; X-Winmux-Truncated header)",
+		Summary: "Read up to max_bytes of a file (raw bytes; X-Ymux-Truncated header)",
 		Tags:    []string{"files"}, Security: secured,
 		Responses: octetResponses(),
 	}, func(_ context.Context, in *struct {
@@ -103,6 +103,9 @@ func (s *Service) RegisterHuma(api huma.API) {
 		return &huma.StreamResponse{Body: func(ctx huma.Context) {
 			ctx.SetHeader("Content-Type", "application/octet-stream")
 			if truncated {
+				ctx.SetHeader("X-Ymux-Truncated", "true")
+				// Pre-rename header, for SDK builds older than the
+				// winmux → ymux rename. Drop once 0.5.0 is the floor.
 				ctx.SetHeader("X-Winmux-Truncated", "true")
 			}
 			_, _ = ctx.BodyWriter().Write(data)

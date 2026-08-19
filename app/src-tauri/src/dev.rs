@@ -1,4 +1,4 @@
-// Phase 8.E: introspection helpers for `winmux dev`. The Tauri commands and
+// Phase 8.E: introspection helpers for `ymux dev`. The Tauri commands and
 // RPC handlers live alongside the rest of the app — this module owns just the
 // shared data structures and pure helpers (state-snapshot building, console
 // ring buffer, log/bug-report file IO).
@@ -153,7 +153,7 @@ pub(crate) struct NotesCounts {
     pub by_tag: HashMap<String, u32>,
 }
 
-/// Write a bug report blob to `<appdata>/winmux/bug-reports/<ts>.json`. Returns
+/// Write a bug report blob to `<appdata>/ymux/bug-reports/<ts>.json`. Returns
 /// the absolute path written. The caller assembles the Value (state + free-form
 /// description fields).
 pub(crate) fn write_bug_report(appdata_dir: &Path, body: &Value) -> Result<PathBuf, String> {

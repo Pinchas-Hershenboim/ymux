@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"winmux-server/internal/logging"
+	"ymux-server/internal/logging"
 )
 
 // logger is the chat subsystem's component logger (Phase 79.D unified format).
@@ -80,7 +80,7 @@ type SessionManager struct {
 	sessions map[string]*Session
 
 	// rpcAddr/paneIndex are populated by the hook-RPC server (69.C). When
-	// rpcAddr is empty, sessions spawn without the WINMUX_* hook env (so the
+	// rpcAddr is empty, sessions spawn without the YMUX_* hook env (so the
 	// chat path is testable before 69.C lands).
 	rpcAddr   string
 	paneIndex map[string]string // "mob_<sessionID>" -> sessionID
@@ -101,7 +101,10 @@ type chatConfig struct {
 }
 
 func NewSessionManager(store *ChatStore) *SessionManager {
-	bin := os.Getenv("WINMUX_CLAUDE_BIN")
+	bin := os.Getenv("YMUX_CLAUDE_BIN")
+	if bin == "" {
+		bin = os.Getenv("WINMUX_CLAUDE_BIN") // pre-rename spelling, honoured for existing unit files
+	}
 	if bin == "" {
 		if p, err := exec.LookPath("claude"); err == nil {
 			bin = p
@@ -285,7 +288,15 @@ func (s *Session) spawn(systemPrompt, resumeID string) error {
 func (m *SessionManager) spawnEnv(s *Session) []string {
 	env := os.Environ()
 	if m.rpcAddr != "" {
+		// Both spellings — the hook binary Claude invokes may still be a
+		// pre-rename `winmux` CLI on a remote that hasn't been
+		// re-bootstrapped yet. The current CLI promotes WINMUX_* → YMUX_*
+		// at startup, so the duplicate is inert there. Drop the legacy
+		// trio once 0.5.0 is the floor.
 		env = append(env,
+			"YMUX_SOCKET_ADDR="+m.rpcAddr,
+			"YMUX_TUNNEL_TOKEN="+s.rpcToken,
+			"YMUX_PANE_ID=mob_"+s.id,
 			"WINMUX_SOCKET_ADDR="+m.rpcAddr,
 			"WINMUX_TUNNEL_TOKEN="+s.rpcToken,
 			"WINMUX_PANE_ID=mob_"+s.id,

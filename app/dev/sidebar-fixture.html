@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>sidebar fixture</title>
+<script type="module">
+  import "/src/App.css";
+  import "/src/sidebar.css";
+  import "/src/tokens.css";
+  import "/src/themes-redesign.css";
+</script>
+<style>
+  body { margin: 0; font-family: var(--w-font-ui); }
+  .stage { display: flex; gap: 0; height: 100vh; }
+  .col { display: flex; flex-direction: column; border-inline-end: 2px solid #888; }
+  .col > .cap { padding: 4px 8px; font: 11px/1.4 monospace; background: #444; color: #fff; }
+  .col > .app { flex: 1; min-height: 0; }
+  .app { display: grid; height: 100%; background: var(--w-bg); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<script type="module">
+// Mirrors the DOM Sidebar.tsx emits, so the fixture exercises the real CSS.
+const WS = [
+  { n: "Claudius DeV", c: "#9ece6a", badge: ["2", "split"], live: 1, chev: 1 },
+  { n: "fleet-ops",    c: "#7aa2f7", badge: ["2", "split"], wt: 1, chev: 1 },
+  { n: "Whatsapp",     c: "#9ece6a", badge: ["S", "ssh"],   live: 1 },
+  { n: "server-7",     c: "#f7768e", badge: ["2", "split"], wait: 1 },
+  { n: "boost",        c: "#9ece6a", badge: ["2", "split"], live: 1, act: 1 },
+  { n: "2- SERVER",    c: "#f7768e", badge: ["S", "ssh"] },
+  { n: "server1",      c: "#7dcfff", badge: ["S", "ssh"], ports: 3 },
+];
+const DEV = [
+  { n: "שרת 9", c: "#7aa2f7", badge: ["2", "split"] },
+  { n: "Local", c: "#7dcfff", badge: ["L", "local"] },
+  { n: "WSL", c: "#bb9af7", badge: ["L", "local"] },
+  { n: "2- SERVER", c: "#f7768e", badge: ["S", "ssh"] },
+  { n: "5- dev", c: "#9ece6a", badge: ["4", "split"], live: 1, active: 1 },
+  { n: "notes",  badge: ["L", "local"] },
+];
+const esc = (s) => s.replace(/[&<>]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[m]));
+const chevD = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>';
+const globe = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>';
+const branch = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6M18 9a9 9 0 0 1-9 9"/><circle cx="18" cy="6" r="3"/></svg>';
+
+const row = (w, depth = 0) => `
+<div class="ws-item ${w.active ? "active" : ""} ${w.wait ? "has-waiting" : ""}"
+     data-has-color="${w.c ? "true" : "false"}"
+     style="--ws-depth: ${depth}${w.c ? `; --ws-color: ${w.c}` : ""}" title="${esc(w.n)}">
+  ${w.chev ? `<button class="ws-chevron">${chevD}</button>` : ""}
+  <span class="ws-dot" style="background: ${w.c || "#6b7682"}"></span>
+  <span class="ws-name">${esc(w.n)}</span>
+  ${w.wt ? `<span class="ws-worktree-chip">${branch}</span>` : ""}
+  <span class="ws-meta">
+    ${w.ports ? `<span class="ws-port-badge">${globe} ${w.ports}</span>` : ""}
+    ${w.wait ? `<span class="ws-waiting-dot"></span>` : ""}
+    ${w.act ? `<span class="ws-waiting-dot activity"></span>` : ""}
+    ${w.live ? `<span class="ws-live"></span>` : ""}
+    <span class="ws-badge ${w.badge[1]}">${w.badge[0]}</span>
+  </span>
+</div>`;
+
+const group = (name, color, rows, extra = "") => `
+<div class="group-header">
+  ${color ? `<span class="group-swatch" style="--group-color: ${color}"></span>` : ""}
+  <span class="group-header-name">${esc(name)}</span>
+  <span class="group-header-count">(${rows.length})</span>
+  ${color ? `<span class="group-header-chevron">${chevD}</span>` : ""}
+</div>${rows.map((r) => row(r)).join("")}${extra}`;
+
+const sidebar = (mode, narrow) => `
+<div class="sidebar ${mode}" ${narrow ? 'data-narrow="true"' : ""}>
+  <div class="sidebar-header">
+    <button class="sidebar-brand-row" title="Double-click to collapse the sidebar">
+      <svg class="sidebar-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
+      <span class="sidebar-brand">YMUX</span>
+    </button>
+  </div>
+  <div class="sidebar-list">
+    <div class="group-header" style="cursor: default">
+      <span class="group-header-name">ללא קבוצה</span>
+      <span class="group-header-count">(0)</span>
+    </div>
+    ${group("לוקאלי", "#e0af68", [])}
+    ${group("וואטסאפ", "#7aa2f7", WS, row({ n: "feature/auth", c: "#9ece6a", badge: ["L", "local"] }, 1))}
+    ${group("פיתוח", "#9ece6a", DEV)}
+    ${group("קורס AI", "#bb9af7", [])}
+  </div>
+  <div class="sidebar-actions-row">
+    <button class="ws-action-half"><span class="ws-action-label">פתקים</span></button>
+    <button class="ws-action-half"><span class="ws-action-label">הגדרות</span></button>
+    <button class="ws-action-half"><span class="ws-action-label">פורטים</span></button>
+  </div>
+  <button class="ws-add"><span class="ws-action-label">+ סביבת עבודה</span></button>
+</div>`;
+
+// applyTheme() normally writes these inline from the Rust preset. Only the
+// presets that need a palette the CSS does not already carry are listed.
+const PRESETS = {
+  modernist: { "--w-bg": "#f3f2f2", "--w-surface": "#f8f4f4", "--w-surface-hi": "#eae5e5",
+    "--w-border": "#201e1d", "--w-border-hi": "#3a3634", "--w-text": "#201e1d",
+    "--w-text-dim": "#605d5d", "--w-text-faint": "#8d8785", "--w-accent": "#ec3013",
+    "--w-success": "#2f7d4f", "--w-warning": "#9a6a00", "--w-error": "#ec3013" },
+};
+
+const VIEWS = [
+  { cap: "he/RTL · light · tokyo-night · 224px", dir: "rtl", mode: "light", w: 224 },
+  { cap: "he/RTL · dark · tokyo-night · 224px", dir: "rtl", mode: "dark", w: 224 },
+  { cap: "he/RTL · light · 165px (narrow)", dir: "rtl", mode: "light", w: 165, narrow: 1 },
+  { cap: "en/LTR · light · 165px (narrow)", dir: "ltr", mode: "light", w: 165, narrow: 1 },
+  { cap: "he/RTL · modernist (light, radius 0)", dir: "rtl", mode: "light", w: 224,
+    preset: "modernist", family: "redesign" },
+  { cap: "he/RTL · icons (48px)", dir: "rtl", mode: "dark", w: 48, icons: 1 },
+  { cap: "he/RTL · light · 420px (wide)", dir: "rtl", mode: "light", w: 420 },
+];
+
+document.getElementById("stage").innerHTML = VIEWS.map((v, i) => `
+  <div class="col" style="width:${v.w + 2}px">
+    <div class="cap">${v.cap}</div>
+    <div class="app" id="app${i}" dir="${v.dir}" data-theme-mode="${v.mode}"
+         ${v.preset ? `data-theme-preset="${v.preset}" data-theme-family="${v.family}"` : ""}
+         style="grid-template-columns:${v.w}px; --sidebar-w:${v.w}px">${sidebar(v.icons ? "icons" : "full", v.narrow)}</div>
+  </div>`).join("");
+
+// tokens.css keys light mode off the ROOT element, so each column has to
+// carry the vars itself.
+VIEWS.forEach((v, i) => {
+  const el = document.getElementById("app" + i);
+  if (v.mode === "light" && !v.preset) {
+    Object.entries({ "--w-bg": "#eef1f6", "--w-surface": "#ffffff", "--w-surface-hi": "#e7ecf3",
+      "--w-border": "#d3dae4", "--w-border-hi": "#bcc6d4", "--w-text": "#1a1f2b",
+      "--w-text-dim": "#55617a", "--w-text-faint": "#8794aa", "--w-accent": "#365fd6",
+      "--w-success": "#1f8a6d", "--w-warning": "#9a6a00", "--w-error": "#cf3049",
+    }).forEach(([k, val]) => el.style.setProperty(k, val));
+  }
+  if (v.preset) Object.entries(PRESETS[v.preset]).forEach(([k, val]) => el.style.setProperty(k, val));
+});
+</script>
+</body>
+</html>

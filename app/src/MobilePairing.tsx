@@ -309,7 +309,7 @@ export function MobilePairing(p: { workspaceId?: string }) {
             <input
               type="text"
               dir="auto"
-              placeholder="winmux.example.com"
+              placeholder="ymux.example.com"
               value={domain()}
               onInput={(e) => setDomain(e.currentTarget.value)}
             />

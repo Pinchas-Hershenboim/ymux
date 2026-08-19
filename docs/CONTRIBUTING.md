@@ -146,7 +146,7 @@ We have two logging mechanisms:
 
 | Use | When |
 |---|---|
-| `dlog("msg")` | Operational events that we'd want to see post-mortem from a user's machine: load/save, bootstrap steps, tunnel handshake outcomes, every SSH exec command. Writes to `%APPDATA%\winmux\debug.log` unconditionally. |
+| `dlog("msg")` | Operational events that we'd want to see post-mortem from a user's machine: load/save, bootstrap steps, tunnel handshake outcomes, every SSH exec command. Writes to `%APPDATA%\ymux\debug.log` unconditionally. |
 | `tracing::info!` / `tracing::warn!` / `tracing::debug!` | Engineer-facing log output. Visible only when running via `cargo run` / `tauri dev` (the standalone exe runs with the `windows_subsystem = "windows"` flag and has no console). |
 
 When in doubt: use `dlog` for things you'd want to see if a user reports a bug.
@@ -187,10 +187,10 @@ fix outright. Documenting so future contributors don't chase it.
   double-newlined.
 - **tmux side.** Without `aggressive-resize on`, tmux uses the LARGEST attached
   client's geometry when reflowing — which leaves narrow trailing columns black
-  on the new smaller winmux pane. Phase 55-C flipped that on in
-  `app/src-tauri/resources/winmux-tmux.conf`. Alt-screen apps (vim, htop) now
+  on the new smaller ymux pane. Phase 55-C flipped that on in
+  `app/src-tauri/resources/ymux-tmux.conf`. Alt-screen apps (vim, htop) now
   see their full terminal area shrink on every resize, which is what we want
-  for winmux's split-heavy workflow.
+  for ymux's split-heavy workflow.
 - **What we DO trigger** on resize: `fitAndResize()` on every pane after a
   layout edit, maximize toggle, or distribute-evenly. That re-fits + re-emits
   pty_resize so future output uses the new column width — only the scrollback
@@ -232,7 +232,7 @@ that lands in a GitHub release. Four parts:
 
 Example (modeled on Phase 39.D):
 
-> **SYMPTOM:** `sftp create …winmux-linux-x64: Failure: Failure` on every
+> **SYMPTOM:** `sftp create …ymux-linux-x64: Failure: Failure` on every
 > reconnect after the Phase 39 CLI rebuild changed the bundled binary's
 > hash. **DISCOVERY:** OpenSSH server logs showed `ETXTBSY` returned to
 > the SFTP layer; matched against the leftover `port-watch` process
@@ -242,7 +242,7 @@ Example (modeled on Phase 39.D):
 > `SSH_FX_FAILURE` and renders it as the unhelpful "Failure" string.
 > **FIX:** Upload to `<name>.tmp`, then shell `mv -f` (rename atomically
 > swaps the dir-entry to a new inode — the running process keeps its
-> own inode). Also `pkill -f winmux-linux-x64` first to free orphaned
+> own inode). Also `pkill -f ymux-linux-x64` first to free orphaned
 > watchers; belt-and-suspenders.
 
 A future-you reading the log a year from now should understand the

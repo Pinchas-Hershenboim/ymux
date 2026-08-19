@@ -6,12 +6,12 @@
 
 В Windows (PowerShell):
 ```powershell
-ssh-keygen -t ed25519 -f $HOME\.ssh\winmux_key -C "winmux-<server-name>"
+ssh-keygen -t ed25519 -f $HOME\.ssh\ymux_key -C "ymux-<server-name>"
 ```
 
 В macOS или Linux:
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/winmux_key -C "winmux-<server-name>"
+ssh-keygen -t ed25519 -f ~/.ssh/ymux_key -C "ymux-<server-name>"
 ```
 
 Когда будет запрошена passphrase, нажмите Enter, чтобы оставить пустой, или задайте свою для дополнительной защиты.
@@ -20,17 +20,17 @@ ssh-keygen -t ed25519 -f ~/.ssh/winmux_key -C "winmux-<server-name>"
 
 В Windows (PowerShell):
 ```powershell
-Get-Content $HOME\.ssh\winmux_key.pub | Set-Clipboard
+Get-Content $HOME\.ssh\ymux_key.pub | Set-Clipboard
 ```
 
 В macOS:
 ```bash
-pbcopy < ~/.ssh/winmux_key.pub
+pbcopy < ~/.ssh/ymux_key.pub
 ```
 
 В Linux:
 ```bash
-cat ~/.ssh/winmux_key.pub
+cat ~/.ssh/ymux_key.pub
 ```
 
 ## Шаг 3 — Установите ключ на сервере
@@ -48,15 +48,15 @@ chmod 600 ~/.ssh/authorized_keys
 
 Если есть `ssh-copy-id`, шаги 2 и 3 можно объединить:
 ```bash
-ssh-copy-id -i ~/.ssh/winmux_key.pub user@server.example.com
+ssh-copy-id -i ~/.ssh/ymux_key.pub user@server.example.com
 ```
 
-## Шаг 4 — Настройте winmux
+## Шаг 4 — Настройте ymux
 
-Откройте настройки рабочей области и укажите путь к SSH-ключу — `~/.ssh/winmux_key` (или туда, куда вы сохранили приватный ключ).
+Откройте настройки рабочей области и укажите путь к SSH-ключу — `~/.ssh/ymux_key` (или туда, куда вы сохранили приватный ключ).
 
 ## Устранение неполадок
 
 - **Permission denied (publickey)**: проверьте права на файлы — `~/.ssh` должен быть 700, `authorized_keys` — 600, приватный ключ — 600.
 - **Не тот пользователь на сервере**: убедитесь, что добавили ключ в `~/.ssh/authorized_keys` нужного пользователя, а не root по умолчанию.
-- **Несколько ключей**: SSH перебирает ключи по очереди; укажите конкретный с помощью `ssh -i ~/.ssh/winmux_key user@host`.
+- **Несколько ключей**: SSH перебирает ключи по очереди; укажите конкретный с помощью `ssh -i ~/.ssh/ymux_key user@host`.

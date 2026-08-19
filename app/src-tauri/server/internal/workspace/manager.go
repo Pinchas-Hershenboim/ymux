@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"winmux-server/internal/core"
-	"winmux-server/internal/logging"
+	"ymux-server/internal/core"
+	"ymux-server/internal/logging"
 )
 
 // logger is the workspace subsystem's component logger (Phase 79.D).

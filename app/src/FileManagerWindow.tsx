@@ -34,7 +34,7 @@ const DEFAULT_GEOMETRY: Geometry = { x: 160, y: 100, w: 1100, h: 700 };
 const MIN_W = 600;
 const MIN_H = 380;
 const STORAGE_KEY = (workspaceId: string) =>
-  `winmux.workspace-files-geometry.${workspaceId}`;
+  `ymux.workspace-files-geometry.${workspaceId}`;
 
 function loadGeometry(workspaceId: string): Geometry {
   // Phase 64 (N): always clamp to the viewport (stored OR default) so the

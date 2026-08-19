@@ -42,7 +42,7 @@ Format per entry:
 ## D-004 — Windows named pipe over localhost TCP for RPC
 
 - **Context:** The app's RPC server has to serve a Windows CLI, a bundled MCP exe, and reverse-tunneled clients from remotes. Needs auth + access control.
-- **Decision:** Named pipe `\\.\pipe\winmux-<user>` with HMAC-SHA256 challenge/response.
+- **Decision:** Named pipe `\\.\pipe\ymux-<user>` with HMAC-SHA256 challenge/response.
 - **Alternatives:**
   - 127.0.0.1 TCP on a fixed port: any process on the box (or any browser tab via DNS rebinding) can reach it; would need careful auth-on-every-request.
   - Unix socket: not portable to Windows.
@@ -65,7 +65,7 @@ Format per entry:
   - Plaintext JSON: no.
   - Windows Credential Manager via `wincred`: per-credential GUI surface, painful for bulk reads, no clean way to enumerate ours.
   - Cross-platform `keyring` crate: another C dep on macOS/Linux (we're Win-only today; revisit when porting).
-- **Consequences:** Secrets are bound to the current Windows user account — copying `%APPDATA%\winmux` to another machine fails decryption. That's the correct behavior. The user can't manually back up secrets (unintentional but acceptable).
+- **Consequences:** Secrets are bound to the current Windows user account — copying `%APPDATA%\ymux` to another machine fails decryption. That's the correct behavior. The user can't manually back up secrets (unintentional but acceptable).
 
 ## D-007 — Per-workspace identity inherits to panes
 

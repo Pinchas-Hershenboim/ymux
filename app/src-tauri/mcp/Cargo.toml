@@ -1,10 +1,10 @@
 [package]
-name = "winmux-mcp"
+name = "ymux-mcp"
 version = "0.4.5"
 edition = "2021"
 
 [[bin]]
-name = "winmux-mcp"
+name = "ymux-mcp"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,8 +1,8 @@
-﻿winmux — Ideas Ranking Table
+﻿ymux — Ideas Ranking Table
 טבלת החלטה מהירה לבחירה מה לאמץ.
 
 
-כל שורה מכילה הפניה (ID) לפירוט המלא ב-winmux-comparison-report.md. דירוג: ⭐ = יכול לחולל שינוי קטגוריה · ✅ = MUST (להכניס) · 🟢 = SHOULD (כדאי) · 🟡 = COULD (אם יש זמן) · ⚪ = SKIP/לא דחוף
+כל שורה מכילה הפניה (ID) לפירוט המלא ב-ymux-comparison-report.md. דירוג: ⭐ = יכול לחולל שינוי קטגוריה · ✅ = MUST (להכניס) · 🟢 = SHOULD (כדאי) · 🟡 = COULD (אם יש זמן) · ⚪ = SKIP/לא דחוף
 
 
 ________________
@@ -432,4 +432,4 @@ ________________
 
 
 
-מסמך החלטה — שמור לצד winmux-comparison-report.md.
+מסמך החלטה — שמור לצד ymux-comparison-report.md.

@@ -1,12 +1,12 @@
-//! winmux-tools skills registry — per-workspace skill installer.
+//! ymux-tools skills registry — per-workspace skill installer.
 //!
 //! A "skill" is a folder `<name>/` (SKILL.md + scripts) living in the local
-//! source registry at `config_dir()/winmux-tools/skills/<name>/`. The user
+//! source registry at `config_dir()/ymux-tools/skills/<name>/`. The user
 //! installs a skill onto a workspace's `~/.claude/skills/<name>/` — locally
 //! via a plain filesystem copy, or over the workspace's existing SSH session
 //! via SFTP for a remote workspace. This module owns the four `skills_*` /
 //! `skill_*` Tauri commands; the source registry itself (populating
-//! `winmux-tools/skills/`) is out of scope here.
+//! `ymux-tools/skills/`) is out of scope here.
 
 use std::path::{Path, PathBuf};
 
@@ -37,9 +37,9 @@ fn valid_skill_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }
 
-/// `config_dir()/winmux-tools/skills/`. Missing dir ⇒ caller treats as empty.
+/// `config_dir()/ymux-tools/skills/`. Missing dir ⇒ caller treats as empty.
 fn registry_dir() -> Result<PathBuf, String> {
-    Ok(crate::config_dir_pub()?.join("winmux-tools").join("skills"))
+    Ok(crate::config_dir_pub()?.join("ymux-tools").join("skills"))
 }
 
 /// Count top-level files (not directories) under `dir`.

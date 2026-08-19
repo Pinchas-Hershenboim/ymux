@@ -1,7 +1,7 @@
 {
-  "winmux_hooks_version": "1.3.0",
+  "ymux_hooks_version": "1.4.0",
   "agent": "claude-code",
-  "min_winmux_version": "0.1.0",
+  "min_ymux_version": "0.1.0",
   "settings_file": "~/.claude/settings.json",
   "_notes": [
     "v1.2.0 (2026-07): dropped Notification + SessionStart — observability-only",
@@ -12,8 +12,14 @@
     "  CLI. Lifecycle matchers are the empty string — the documented",
     "  'applies always' form ('*' is a literal, not a wildcard). This syncs",
     "  the github spec with the CLI's bundled v1.2.0 (cli/src/hooks.rs).",
-    "v1.3.0 (2026-08, issue #4): added UserPromptSubmit as the turn-start",
-    "  signal for the winmux-tools chrome Ticker. It fires in every permission",
+    "v1.4.0 (2026-08): the winmux -> ymux rename. Every command now expands",
+  "  ${YMUX_BIN} and resolves to ~/.ymux/bin/ymux, so settings.json files",
+  "  written against the old path must be re-synced — hence the bump. The",
+  "  CLI still expands a leftover ${WINMUX_BIN} and treats an entry naming",
+  "  either binary as its own, so the re-sync replaces rather than",
+  "  duplicates.",
+  "v1.3.0 (2026-08, issue #4): added UserPromptSubmit as the turn-start",
+    "  signal for the ymux-tools chrome Ticker. It fires in every permission",
     "  mode (unlike pre-tool-use, which the CLI short-circuits in",
     "  acceptEdits/bypass). The desktop keeps it OFF the feed — no card, no",
     "  toast — it only stamps per-pane turn timing (rpc_server.rs feed.push).",
@@ -30,35 +36,35 @@
     "  Claude Code only blocks on the hook when permission_mode is the",
     "  default 'plan'/'default' mode; if the user has flipped to",
     "  acceptEdits / bypassPermissions / skip, the tool runs regardless,",
-    "  so winmux's `pre-tool-use` short-circuits with allow in those modes",
+    "  so ymux's `pre-tool-use` short-circuits with allow in those modes",
     "  (otherwise the user would see a dead card they can't act on).",
-    "Stop: fires when the assistant finishes a turn. winmux uses it to",
+    "Stop: fires when the assistant finishes a turn. ymux uses it to",
     "  trigger the optional Claude auto-summary (Phase 17) and to update",
     "  the server-side session-meta map (Phase 81: tmux session ->",
-    "  claude_session_id + title in ~/.winmux/session-meta.json).",
+    "  claude_session_id + title in ~/.ymux/session-meta.json).",
     "SessionEnd: teardown; Phase 81 prunes dead sessions from the map.",
     "The PreToolUse matcher is intentionally narrow — restricting which",
-    "  tools surface a winmux card. Override with `--matcher-mode all` (or",
+    "  tools surface a ymux card. Override with `--matcher-mode all` (or",
     "  Settings → Hooks → 'Match all tools') to route EVERY tool through",
-    "  winmux. Use `custom` if you've hand-edited ~/.claude/settings.json",
+    "  ymux. Use `custom` if you've hand-edited ~/.claude/settings.json",
     "  and don't want setup-hooks to overwrite the matchers."
   ],
   "events": {
     "PreToolUse": {
       "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Task",
-      "command": "${WINMUX_BIN} claude-hook pre-tool-use"
+      "command": "${YMUX_BIN} claude-hook pre-tool-use"
     },
     "SessionEnd": {
       "matcher": "",
-      "command": "${WINMUX_BIN} claude-hook session-end"
+      "command": "${YMUX_BIN} claude-hook session-end"
     },
     "Stop": {
       "matcher": "",
-      "command": "${WINMUX_BIN} claude-hook stop"
+      "command": "${YMUX_BIN} claude-hook stop"
     },
     "UserPromptSubmit": {
       "matcher": "",
-      "command": "${WINMUX_BIN} claude-hook user-prompt-submit"
+      "command": "${YMUX_BIN} claude-hook user-prompt-submit"
     }
   }
 }

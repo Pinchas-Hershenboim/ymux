@@ -1,17 +1,17 @@
-//! `winmux setup-hooks` — register agent hooks that point at the local winmux CLI
+//! `ymux setup-hooks` — register agent hooks that point at the local ymux CLI
 //! so AI coding agents (Claude Code etc.) can pipe permission requests / lifecycle
 //! events back through the tunnel into the Windows app's UI.
 //!
 //! Phase 18: the hook spec used to be a hardcoded `&[(event, subcmd, matcher)]`
 //! slice. It now ships as a JSON file at the repo root (`hooks/<agent>.json`)
 //! that the CLI fetches from raw.githubusercontent.com at install time, with
-//! a `~/.winmux/cache/hooks/` fallback and the bundled spec as a final
-//! last resort. The settings.json is annotated with `winmux_hooks_version` so
+//! a `~/.ymux/cache/hooks/` fallback and the bundled spec as a final
+//! last resort. The settings.json is annotated with `ymux_hooks_version` so
 //! the desktop's outdated-check (also in Phase 18) can flag installs whose
 //! hook spec is older than the latest published one.
 //!
-//! Designed to be idempotent and additive: existing entries unrelated to winmux are
-//! preserved, and our entries are detected by a `winmux ... claude-hook` substring
+//! Designed to be idempotent and additive: existing entries unrelated to ymux are
+//! preserved, and our entries are detected by a `ymux ... claude-hook` substring
 //! match so we replace ourselves instead of accumulating duplicates.
 
 use serde::Deserialize;
@@ -27,7 +27,7 @@ pub enum AgentStatus {
         backup: Option<PathBuf>,
         path: PathBuf,
         unchanged: bool,
-        /// Phase 18: the `winmux_hooks_version` that just landed in
+        /// Phase 18: the `ymux_hooks_version` that just landed in
         /// settings.json — used by the calling print code so the user
         /// sees which version we installed.
         hooks_version: Option<String>,
@@ -49,7 +49,7 @@ pub trait HookAdapter {
 /// `matcher_mode` choice. `restrictive` is a passthrough (whatever the
 /// hook spec already says, typically the narrow risky-tool regex);
 /// `all` rewrites every event's matcher to `.*` so EVERY tool call
-/// surfaces a winmux card — useful for debugging missing-card issues;
+/// surfaces a ymux card — useful for debugging missing-card issues;
 /// `custom` is a passthrough too (the caller is hand-managing
 /// settings.json and we should leave the spec intact). We only ever
 /// override matchers on events the spec actually declared — we don't
@@ -71,7 +71,7 @@ pub fn apply_matcher_mode(spec: &mut HookSpec, matcher_mode: &str) {
 /// Parsed spec for one agent. Matches the JSON in `hooks/<agent>.json`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct HookSpec {
-    pub winmux_hooks_version: String,
+    pub ymux_hooks_version: String,
     #[allow(dead_code)]
     pub agent: String,
     #[serde(default)]
@@ -88,10 +88,10 @@ pub struct HookEvent {
 /// `source=bundled` AND as the version recorded when no fetched spec
 /// was applied. Bump whenever you ship a new hook in a release with a
 /// matching `hooks/claude-code.json` change.
-const BUNDLED_CLAUDE_VERSION: &str = "1.3.0";
+const BUNDLED_CLAUDE_VERSION: &str = "1.4.0";
 
 /// The bundled fallback spec for Claude Code. Mirrors what
-/// `hooks/claude-code.json` carries at the same `winmux_hooks_version`
+/// `hooks/claude-code.json` carries at the same `ymux_hooks_version`
 /// — kept in sync by hand for now (a `build.rs` that bakes the file
 /// into the binary is on the roadmap).
 fn bundled_claude_spec() -> HookSpec {
@@ -101,7 +101,7 @@ fn bundled_claude_spec() -> HookSpec {
         "PreToolUse".into(),
         HookEvent {
             matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit|Task".into(),
-            command: "${WINMUX_BIN} claude-hook pre-tool-use".into(),
+            command: "${YMUX_BIN} claude-hook pre-tool-use".into(),
         },
     );
     // v0.4.4: no longer register Notification / SessionStart — they were
@@ -111,7 +111,7 @@ fn bundled_claude_spec() -> HookSpec {
     // that still calls `claude-hook notification|session-start` is silent-acked
     // by the CLI, so dropping them here is safe on already-set-up machines.
     // UserPromptSubmit (v1.3.0, issue #4): turn-start signal for the
-    // winmux-tools chrome Ticker. Fires in every permission mode (unlike
+    // ymux-tools chrome Ticker. Fires in every permission mode (unlike
     // pre-tool-use, which the CLI short-circuits in acceptEdits/bypass).
     // The desktop keeps it off the feed — it only stamps per-pane turn timing.
     for (ev, sub) in [
@@ -126,30 +126,30 @@ fn bundled_claude_spec() -> HookSpec {
                 // the documented "applies always" form. `"*"` is NOT a
                 // documented wildcard (it's a literal), so avoid it.
                 matcher: "".into(),
-                command: format!("${{WINMUX_BIN}} claude-hook {sub}"),
+                command: format!("${{YMUX_BIN}} claude-hook {sub}"),
             },
         );
     }
     HookSpec {
-        winmux_hooks_version: BUNDLED_CLAUDE_VERSION.into(),
+        ymux_hooks_version: BUNDLED_CLAUDE_VERSION.into(),
         agent: "claude-code".into(),
         events,
     }
 }
 
 /// Resolve the spec per `--source`:
-///   - `github`: fetch `raw.githubusercontent.com/yyhezkel/winmux/main/hooks/<agent>.json`,
+///   - `github`: fetch `raw.githubusercontent.com/yyhezkel/ymux/main/hooks/<agent>.json`,
 ///     fall through to cache, then to bundled.
 ///   - `bundled`: skip the network entirely.
 ///   - `url=<u>`: fetch from a custom URL, no cache fallback (the user
 ///     is opting into a specific source — silently swapping to bundled
 ///     would surprise them).
 /// On every successful fetch, write the JSON to
-/// `~/.winmux/cache/hooks/<agent>.json` so the next call without
+/// `~/.ymux/cache/hooks/<agent>.json` so the next call without
 /// network connectivity still picks up the latest spec.
 pub fn load_spec(source: &str, agent_id: &str) -> Result<HookSpec, String> {
     let canonical_url = format!(
-        "https://raw.githubusercontent.com/yyhezkel/winmux/main/hooks/{agent_id}.json"
+        "https://raw.githubusercontent.com/yyhezkel/ymux/main/hooks/{agent_id}.json"
     );
 
     match source {
@@ -199,7 +199,7 @@ fn bundled_spec_for(agent_id: &str) -> HookSpec {
         // spec so the caller's apply step is a no-op. The github
         // path is the only way they get useful hooks today.
         other => HookSpec {
-            winmux_hooks_version: "0.0.0".into(),
+            ymux_hooks_version: "0.0.0".into(),
             agent: other.into(),
             events: Default::default(),
         },
@@ -251,7 +251,7 @@ fn cache_path(agent_id: &str) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(
         PathBuf::from(home)
-            .join(".winmux")
+            .join(".ymux")
             .join("cache")
             .join("hooks")
             .join(format!("{agent_id}.json")),
@@ -281,7 +281,7 @@ impl HookAdapter for Claude {
     }
 
     fn run(&self, dry: bool, force: bool, source: &str, matcher_mode: &str) -> AgentStatus {
-        // Phase 80: USERPROFILE fallback — `winmux setup-hooks` now also
+        // Phase 80: USERPROFILE fallback — `ymux setup-hooks` now also
         // runs on native Windows (the app's local smart-install step),
         // where only USERPROFILE is set.
         let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
@@ -294,9 +294,9 @@ impl HookAdapter for Claude {
         }
 
         // Phase 80: on Windows the hook command must point at THIS
-        // winmux-cli.exe (there is no ~/.winmux/bin/winmux — the CLI
+        // ymux-cli.exe (there is no ~/.ymux/bin/ymux — the CLI
         // ships next to the app). Double-quote it inside the command
-        // string: it typically lives under "C:\Program Files\winmux\…"
+        // string: it typically lives under "C:\Program Files\ymux\…"
         // and Claude Code executes hook commands through a shell.
         let exe_path = if cfg!(windows) {
             match std::env::current_exe() {
@@ -305,7 +305,7 @@ impl HookAdapter for Claude {
             }
         } else {
             match home.to_str() {
-                Some(s) => format!("{}/.winmux/bin/winmux", s),
+                Some(s) => format!("{}/.ymux/bin/ymux", s),
                 None => return AgentStatus::Error("non-UTF-8 $HOME".into()),
             }
         };
@@ -331,10 +331,16 @@ impl HookAdapter for Claude {
     }
 }
 
-/// Substitute `${WINMUX_BIN}` (and the legacy bare `winmux`) in a
+/// Substitute `${YMUX_BIN}` (and the legacy bare `ymux`) in a
 /// spec command string with the absolute path we just computed.
+///
+/// `${WINMUX_BIN}` is still expanded: a hook spec cached under
+/// `~/.ymux/cache/hooks/` (or fetched from a raw.githubusercontent URL
+/// that hasn't been re-published yet) can predate the rename, and an
+/// unexpanded placeholder would be handed to the shell verbatim.
 fn expand_command(cmd: &str, exe_path: &str) -> String {
-    cmd.replace("${WINMUX_BIN}", exe_path)
+    cmd.replace("${YMUX_BIN}", exe_path)
+        .replace("${WINMUX_BIN}", exe_path)
 }
 
 fn apply_to_settings(
@@ -373,8 +379,8 @@ fn apply_to_settings(
             .as_array()
             .cloned()
             .unwrap_or_default();
-        let has_winmux = entries.iter().any(is_winmux_entry);
-        if has_winmux && !force {
+        let has_ymux = entries.iter().any(is_ymux_entry);
+        if has_ymux && !force {
             already_present.push(event.clone());
             continue;
         }
@@ -394,13 +400,13 @@ fn apply_to_settings(
         // Even when no event entries change, refresh the meta tag so
         // the desktop's outdated-check picks up a version bump that's
         // purely a no-op (e.g. a spec rebuild with identical events).
-        if root["winmux_meta"]
+        if root["ymux_meta"]
             .get("hooks_version")
             .and_then(|v| v.as_str())
-            != Some(spec.winmux_hooks_version.as_str())
+            != Some(spec.ymux_hooks_version.as_str())
         {
-            root["winmux_meta"] = json!({
-                "hooks_version": spec.winmux_hooks_version,
+            root["ymux_meta"] = json!({
+                "hooks_version": spec.ymux_hooks_version,
                 "agent": spec.agent,
             });
             let text = serde_json::to_string_pretty(&root).unwrap_or_default();
@@ -411,7 +417,7 @@ fn apply_to_settings(
             backup: None,
             path: path.to_path_buf(),
             unchanged: true,
-            hooks_version: Some(spec.winmux_hooks_version.clone()),
+            hooks_version: Some(spec.ymux_hooks_version.clone()),
         };
     }
 
@@ -431,7 +437,7 @@ fn apply_to_settings(
             .as_array()
             .cloned()
             .unwrap_or_default();
-        entries.retain(|e| !is_winmux_entry(e));
+        entries.retain(|e| !is_ymux_entry(e));
         entries.push(json!({
             "matcher": matcher,
             "hooks": [{ "type": "command", "command": cmd }]
@@ -441,14 +447,19 @@ fn apply_to_settings(
 
     // Phase 18: stamp the version into settings.json so the desktop's
     // outdated check has somewhere to read it back from. Lives under
-    // a sibling `winmux_meta` key so we don't risk colliding with
+    // a sibling `ymux_meta` key so we don't risk colliding with
     // anything Claude Code itself adds to its config.
-    root["winmux_meta"] = json!({
-        "hooks_version": spec.winmux_hooks_version,
+    root["ymux_meta"] = json!({
+        "hooks_version": spec.ymux_hooks_version,
         "agent": spec.agent,
     });
+    // Retire the pre-rename sibling rather than leaving a second, now
+    // permanently stale, version stamp next to the live one.
+    if let Some(obj) = root.as_object_mut() {
+        obj.remove("winmux_meta");
+    }
 
-    let tmp = claude_dir.join(format!("settings.json.winmux-tmp.{}", std::process::id()));
+    let tmp = claude_dir.join(format!("settings.json.ymux-tmp.{}", std::process::id()));
     let text = match serde_json::to_string_pretty(&root) {
         Ok(t) => t,
         Err(e) => return AgentStatus::Error(format!("serialize: {e}")),
@@ -466,7 +477,7 @@ fn apply_to_settings(
         backup,
         path: path.to_path_buf(),
         unchanged: false,
-        hooks_version: Some(spec.winmux_hooks_version.clone()),
+        hooks_version: Some(spec.ymux_hooks_version.clone()),
     }
 }
 
@@ -490,8 +501,8 @@ fn apply_to_legacy(
     for (event, ev_spec) in &spec.events {
         let cmd = expand_command(&ev_spec.command, exe_path);
         let entries = config[event].as_array().cloned().unwrap_or_default();
-        let has_winmux = entries.iter().any(is_winmux_entry);
-        if has_winmux && !force {
+        let has_ymux = entries.iter().any(is_ymux_entry);
+        if has_ymux && !force {
             continue;
         }
         to_apply.push((event.clone(), cmd, ev_spec.matcher.clone()));
@@ -502,7 +513,7 @@ fn apply_to_legacy(
             backup: None,
             path: path.to_path_buf(),
             unchanged: true,
-            hooks_version: Some(spec.winmux_hooks_version.clone()),
+            hooks_version: Some(spec.ymux_hooks_version.clone()),
         };
     }
 
@@ -520,7 +531,7 @@ fn apply_to_legacy(
             .as_array()
             .cloned()
             .unwrap_or_default();
-        entries.retain(|e| !is_winmux_entry(e));
+        entries.retain(|e| !is_ymux_entry(e));
         entries.push(json!({
             "matcher": matcher,
             "hooks": [{ "type": "command", "command": cmd }]
@@ -536,7 +547,7 @@ fn apply_to_legacy(
         backup,
         path: path.to_path_buf(),
         unchanged: false,
-        hooks_version: Some(spec.winmux_hooks_version.clone()),
+        hooks_version: Some(spec.ymux_hooks_version.clone()),
     }
 }
 
@@ -551,7 +562,7 @@ fn kind_of(v: &Value) -> &'static str {
     }
 }
 
-fn is_winmux_entry(entry: &Value) -> bool {
+fn is_ymux_entry(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(|v| v.as_array())
@@ -559,7 +570,14 @@ fn is_winmux_entry(entry: &Value) -> bool {
             hooks.iter().any(|h| {
                 h.get("command")
                     .and_then(|c| c.as_str())
-                    .map(|c| c.contains("winmux") && c.contains("claude-hook"))
+                    // Both spellings. "winmux" does NOT contain "ymux" as a
+                    // substring, so matching only the new name would leave
+                    // every pre-rename entry in place and then push a second
+                    // one beside it — two hooks firing per event.
+                    .map(|c| {
+                        (c.contains("ymux") || c.contains("winmux"))
+                            && c.contains("claude-hook")
+                    })
                     .unwrap_or(false)
             })
         })
@@ -652,8 +670,61 @@ fn print_status(label: &str, status: &AgentStatus) {
                 }
             }
             if let Some(v) = hooks_version {
-                println!("  → winmux_hooks_version = {v}");
+                println!("  → ymux_hooks_version = {v}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── winmux → ymux rename ───────────────────────────────────────
+    //
+    // Both assertions below cover the same trap, which the compiler
+    // cannot see: the substring "winmux" DOES NOT CONTAIN "ymux".
+    // Every pre-rename hook command and every pre-rename settings.json
+    // says winmux, so a check written against the new name alone is
+    // silently blind to exactly the installs that need handling.
+
+    fn entry(command: &str) -> Value {
+        json!({
+            "matcher": "Bash",
+            "hooks": [{ "type": "command", "command": command }]
+        })
+    }
+
+    #[test]
+    fn ours_is_recognised_under_either_name() {
+        assert!(is_ymux_entry(&entry("/home/y/.ymux/bin/ymux claude-hook pre-tool-use")));
+        // The one that mattered: left unmatched, `retain` keeps this entry
+        // and then pushes a second one beside it — two permission cards
+        // per tool call on every machine that ran the old build.
+        assert!(is_ymux_entry(&entry("/home/y/.winmux/bin/winmux claude-hook pre-tool-use")));
+    }
+
+    #[test]
+    fn someone_elses_hook_is_left_alone() {
+        // `claude-hook` is half the predicate; a third-party hook that
+        // merely lives under our directory is not ours to rewrite.
+        assert!(!is_ymux_entry(&entry("/usr/local/bin/other-tool run")));
+        assert!(!is_ymux_entry(&entry("/home/y/.ymux/bin/some-other-thing --flag")));
+    }
+
+    #[test]
+    fn both_bin_placeholders_expand() {
+        let exe = "/home/y/.ymux/bin/ymux";
+        assert_eq!(
+            expand_command("${YMUX_BIN} claude-hook stop", exe),
+            "/home/y/.ymux/bin/ymux claude-hook stop"
+        );
+        // A spec cached under ~/.ymux/cache/hooks/ before the rename still
+        // carries the old placeholder; unexpanded, it reaches the shell
+        // verbatim and the hook silently never fires.
+        assert_eq!(
+            expand_command("${WINMUX_BIN} claude-hook stop", exe),
+            "/home/y/.ymux/bin/ymux claude-hook stop"
+        );
     }
 }

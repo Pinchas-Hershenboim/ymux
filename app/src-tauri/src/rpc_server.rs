@@ -21,8 +21,8 @@ use crate::{
 
 const FEED_MAX_ITEMS_LIMIT: usize = 50;
 
-// Phase 51.C: pipe_name moved to winmux-core (shared with winmux-tunnel).
-pub use winmux_core::pipe_name;
+// Phase 51.C: pipe_name moved to ymux-core (shared with ymux-tunnel).
+pub use ymux_core::pipe_name;
 
 // Phase 39.A: removed the 8-cap that caused ERROR_PIPE_NOT_AVAILABLE
 // storms under concurrent RPC.
@@ -71,6 +71,11 @@ fn make_listener(name: &str) -> Result<NamedPipeServer, String> {
 #[cfg(windows)]
 const LISTENER_POOL_SIZE: usize = 8;
 
+/// Listeners kept on the pre-rename pipe name. Two, not eight: this is a
+/// compatibility path for stragglers, not the hot route.
+#[cfg(windows)]
+const LEGACY_LISTENER_POOL_SIZE: usize = 2;
+
 #[cfg(windows)]
 pub async fn run(state: AppState, app: AppHandle) {
     let name = pipe_name();
@@ -79,7 +84,18 @@ pub async fn run(state: AppState, app: AppHandle) {
         name,
         LISTENER_POOL_SIZE
     );
-    spawn_listener_pool(name, LISTENER_POOL_SIZE, state, app);
+    spawn_listener_pool(name, LISTENER_POOL_SIZE, state.clone(), app.clone());
+
+    // winmux → ymux rename: answer on the old pipe too, so a `winmux-cli`
+    // left on PATH by a previous install — or an MCP host config written
+    // against it — still reaches this app instead of failing at connect.
+    let legacy = ymux_core::pipe_name_legacy();
+    tracing::info!(
+        "rpc: also listening on legacy {} (pool of {})",
+        legacy,
+        LEGACY_LISTENER_POOL_SIZE
+    );
+    spawn_listener_pool(legacy, LEGACY_LISTENER_POOL_SIZE, state, app);
 }
 
 /// Unix/macOS: a single Unix-domain-socket listener replaces the whole
@@ -87,7 +103,14 @@ pub async fn run(state: AppState, app: AppHandle) {
 /// none of the 254-instance / ERROR 231 machinery applies.
 #[cfg(not(windows))]
 pub async fn run(state: AppState, app: AppHandle) {
-    let name = pipe_name();
+    spawn_unix_listener(pipe_name(), state.clone(), app.clone());
+    // winmux → ymux rename: a CLI from a pre-rename install still dials
+    // the old socket path and has no way to learn otherwise.
+    spawn_unix_listener(ymux_core::pipe_name_legacy(), state, app);
+}
+
+#[cfg(not(windows))]
+fn spawn_unix_listener(name: String, state: AppState, app: AppHandle) {
     // Stale socket file from a previous crash blocks bind — remove it.
     // A second live instance is prevented upstream (single-instance app).
     let _ = std::fs::remove_file(&name);
@@ -275,7 +298,7 @@ fn show_toast_with_sound(title: &str, body: &str, with_sound: bool) {
     let body = body.to_string();
     std::thread::spawn(move || {
         let mut n = notify_rust::Notification::new();
-        n.summary(&title).body(&body).appname("winmux");
+        n.summary(&title).body(&body).appname("ymux");
         if with_sound {
             #[cfg(target_os = "windows")]
             {
@@ -479,7 +502,7 @@ fn resolve_workspace_name(state: &AppState, ws_id: Option<&str>) -> String {
 
 /// Phase 66 (66.D): record a passive feed item for a policy decision that
 /// resolved WITHOUT a card (an Auto allow or a Block deny). Gives the user
-/// an audit trail in the feed — "what did winmux silently allow / block?"
+/// an audit trail in the feed — "what did ymux silently allow / block?"
 /// — without ever blocking the agent. Mirrors the passive-item registration
 /// in the feed.push handler.
 fn push_policy_audit(
@@ -820,10 +843,10 @@ async fn dispatch(
             }
         }
 
-        // ─── B1: full LLM control over winmux ──────────────────────────
+        // ─── B1: full LLM control over ymux ──────────────────────────
         // Six methods covering discovery + action + (best-effort) read
-        // surface. Companion winmux-mcp tools wrap each one. Together
-        // they let an agent running inside or outside winmux drive
+        // surface. Companion ymux-mcp tools wrap each one. Together
+        // they let an agent running inside or outside ymux drive
         // workspace creation / connection, pane splitting, and key
         // injection, plus get a structured view of the current UI.
 
@@ -1255,7 +1278,7 @@ async fn dispatch(
                     .unwrap_or("?")
             ));
 
-            // ── issue #4 (winmux-tools chrome Ticker): per-pane turn timing ──
+            // ── issue #4 (ymux-tools chrome Ticker): per-pane turn timing ──
             // turn-start = UserPromptSubmit, turn-end = Stop, cleared on
             // SessionEnd. UserPromptSubmit fires in EVERY permission mode
             // (pre-tool-use does not — the CLI short-circuits it in
@@ -1339,7 +1362,7 @@ async fn dispatch(
                         .get("tool_input")
                         .and_then(|ti| ti.get("command"))
                         .and_then(|c| c.as_str());
-                    let verdict = winmux_policy::evaluate_with(
+                    let verdict = ymux_policy::evaluate_with(
                         tool_name,
                         bash_cmd,
                         &hooks_cfg.custom_block,
@@ -1350,12 +1373,12 @@ async fn dispatch(
                         tool_name, verdict.decision, verdict.matched, req_id
                     ));
                     match verdict.decision {
-                        winmux_policy::Decision::Auto => {
+                        ymux_policy::Decision::Auto => {
                             // Auto is the 99% common case (every safe Bash /
                             // Write / Edit). Pushing a passive "✓ matched no
                             // risky pattern" audit item for each one floods the
                             // feed — a single session produced 300 unread dots,
-                            // which read as "winmux keeps asking me to ack
+                            // which read as "ymux keeps asking me to ack
                             // things". The forensic trail already lives in
                             // debug.log (the log_debug line above), so DON'T
                             // surface Auto in the feed. Block still audits
@@ -1367,7 +1390,7 @@ async fn dispatch(
                                 "policy": "auto",
                             }));
                         }
-                        winmux_policy::Decision::Block => {
+                        ymux_policy::Decision::Block => {
                             push_policy_audit(
                                 state,
                                 app,
@@ -1391,7 +1414,7 @@ async fn dispatch(
                             }));
                         }
                         // Gate: fall through to the blocking card below.
-                        winmux_policy::Decision::Gate => {}
+                        ymux_policy::Decision::Gate => {}
                     }
                 }
             }
@@ -1451,11 +1474,11 @@ async fn dispatch(
                     let sound = hook_toast_should_sound(&s.hook_notifications, &subkind);
                     // v0.4.4: `stop` fires at the END OF EVERY TURN, so a toast
                     // per turn would be noise when the user is already watching
-                    // winmux (they see the feed card + sidebar highlight).
+                    // ymux (they see the feed card + sidebar highlight).
                     // Historically we suppressed the stop toast whenever the main
                     // window was focused — but that silently overrode an explicit
                     // stop-SOUND opt-in: the user ticks "play a sound on Stop" and
-                    // then hears nothing while watching winmux. The OS couples a
+                    // then hears nothing while watching ymux. The OS couples a
                     // native toast with its sound (no sound-only banner), so honor
                     // the opt-in: if a Stop sound was requested, fire the full
                     // notification even when focused. Only keep suppressing the
@@ -1984,7 +2007,7 @@ async fn dispatch(
 
         // Phase 48-C: /doctor diagnostic snapshot. Same payload as the
         // tauri `doctor` command, reusable from the bundled CLI via
-        // `winmux doctor` so support tickets can be dumped at the
+        // `ymux doctor` so support tickets can be dumped at the
         // command line.
         "doctor" => Ok(crate::build_doctor_snapshot(state)),
 
@@ -2060,13 +2083,14 @@ async fn dispatch(
                 .and_then(|v| v.as_str())
                 .unwrap_or("v4")
                 .to_string();
-            // Phase 39: never report winmux's own reverse-tunnel port.
-            let is_internal = {
-                let m = state.core.internal_reverse_tunnel_remote_ports.lock().unwrap();
-                m.get(&workspace_id).map(|s| s.contains(&port)).unwrap_or(false)
-            };
+            // Phase 39: never report ymux's own reverse-tunnel port.
+            // Phase 80: every LIVE registration, headless and pane-backed —
+            // both are ours. The set this replaced only ever grew, so after a
+            // few reconnects it was suppressing ports the remote had since
+            // recycled to a real user server.
+            let is_internal = state.tunnel_registry.ports_for(&workspace_id).contains(&port);
             if is_internal {
-                return Ok(json!({ "ok": true, "skipped": "winmux internal port" }));
+                return Ok(json!({ "ok": true, "skipped": "ymux internal port" }));
             }
             let enabled = {
                 let file = state.workspaces.lock().unwrap();
@@ -2138,11 +2162,11 @@ async fn dispatch(
 // version/git_hash/build_time which are baked in at compile time by build.rs.
 fn build_dev_state(state: &AppState, log_tail_n: usize, console_tail_n: usize) -> Value {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
-    const GIT_HASH: &str = match option_env!("WINMUX_GIT_HASH") {
+    const GIT_HASH: &str = match option_env!("YMUX_GIT_HASH") {
         Some(h) => h,
         None => "unknown",
     };
-    let build_time: u64 = option_env!("WINMUX_BUILD_TIME")
+    let build_time: u64 = option_env!("YMUX_BUILD_TIME")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
@@ -2300,7 +2324,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let name = format!(r"\\.\pipe\winmux-test-39c-{n}");
+        let name = format!(r"\\.\pipe\ymux-test-39c-{n}");
         let listener = make_listener(&name);
         assert!(
             listener.is_ok(),
@@ -2327,7 +2351,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let name = format!(r"\\.\pipe\winmux-test-44-pool-{n}");
+        let name = format!(r"\\.\pipe\ymux-test-44-pool-{n}");
 
         // Mini-pool mirroring spawn_listener_pool's accept loop, but
         // without the full handler (a no-op task takes the connection so
@@ -2395,7 +2419,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let name = format!(r"\\.\pipe\winmux-test-031-leak-{n}");
+        let name = format!(r"\\.\pipe\ymux-test-031-leak-{n}");
 
         for _ in 0..POOL_SIZE {
             let name = name.clone();

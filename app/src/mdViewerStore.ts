@@ -25,7 +25,7 @@ export function closeMarkdown(): void {
   setDoc(null);
 }
 
-/** True for file names winmux renders as markdown (vs opening in the OS). */
+/** True for file names ymux renders as markdown (vs opening in the OS). */
 export function isMarkdownFile(name: string): boolean {
   return /\.(md|markdown|mdown|mkd|mkdn)$/i.test(name);
 }

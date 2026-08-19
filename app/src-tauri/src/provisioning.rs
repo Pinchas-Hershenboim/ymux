@@ -4,10 +4,10 @@
 //!   - inspects the remote (OS, package manager, disk)
 //!   - applies a profile of steps (update, install basics, create user,
 //!     deploy SSH key, harden sshd, install language runtimes, install
-//!     Claude Code, run `winmux setup-hooks`)
+//!     Claude Code, run `ymux setup-hooks`)
 //!   - streams progress to the frontend via `provisioning:progress`
 //!     events so the wizard's live log feels native
-//!   - persists profiles in `%APPDATA%\winmux\provisioning-profiles.json`
+//!   - persists profiles in `%APPDATA%\ymux\provisioning-profiles.json`
 //!     and original credentials in `…\provisioning-secrets.json` (DPAPI
 //!     wrap planned — see below) so a second pass can resume
 //!
@@ -56,14 +56,14 @@ pub(crate) enum StepKind {
     /// New in Phase 14.A.2: Gemini CLI (`npm i -g @google/gemini-cli@latest`).
     /// Same Node.js dependency as Codex.
     InstallGemini,
-    /// Phase 18: append `~/.winmux/bin` to the new user's shell rc
+    /// Phase 18: append `~/.ymux/bin` to the new user's shell rc
     /// file. Runs as the new user via `sudo -u`. Idempotent — the
     /// bootstrap auto-fires the same snippet on every connect, so
     /// running this step after a fresh provisioning typically
     /// reports "already configured" (no-op). The point is to make
     /// the action visible + checkable in the wizard UI.
-    AddWinmuxToPath,
-    SetupWinmuxHooks,
+    AddYmuxToPath,
+    SetupYmuxHooks,
 }
 
 impl StepKind {
@@ -83,8 +83,8 @@ impl StepKind {
             StepKind::InstallClaudeCode => "Install Claude Code (Anthropic, curl installer)",
             StepKind::InstallCodex => "Install Codex CLI (OpenAI, npm)",
             StepKind::InstallGemini => "Install Gemini CLI (Google, npm)",
-            StepKind::AddWinmuxToPath => "Add winmux to PATH (~/.bashrc or equivalent)",
-            StepKind::SetupWinmuxHooks => "Run winmux setup-hooks",
+            StepKind::AddYmuxToPath => "Add ymux to PATH (~/.bashrc or equivalent)",
+            StepKind::SetupYmuxHooks => "Run ymux setup-hooks",
         }
     }
 }
@@ -128,8 +128,8 @@ pub(crate) fn default_profiles() -> Vec<ProvisioningProfile> {
                 StepKind::DeployPubkey,
                 StepKind::TestNewKey,
                 StepKind::InstallClaudeCode,
-                StepKind::AddWinmuxToPath,
-                StepKind::SetupWinmuxHooks,
+                StepKind::AddYmuxToPath,
+                StepKind::SetupYmuxHooks,
             ],
         },
         ProvisioningProfile {
@@ -145,8 +145,8 @@ pub(crate) fn default_profiles() -> Vec<ProvisioningProfile> {
                 StepKind::DisableRootSsh,
                 StepKind::DisablePasswordSsh,
                 StepKind::InstallClaudeCode,
-                StepKind::AddWinmuxToPath,
-                StepKind::SetupWinmuxHooks,
+                StepKind::AddYmuxToPath,
+                StepKind::SetupYmuxHooks,
             ],
         },
         ProvisioningProfile {
@@ -177,8 +177,8 @@ pub(crate) fn default_profiles() -> Vec<ProvisioningProfile> {
                 StepKind::InstallClaudeCode,
                 StepKind::InstallCodex,
                 StepKind::InstallGemini,
-                StepKind::AddWinmuxToPath,
-                StepKind::SetupWinmuxHooks,
+                StepKind::AddYmuxToPath,
+                StepKind::SetupYmuxHooks,
             ],
         },
     ]
@@ -261,12 +261,12 @@ fn dpapi_protect(secret: &str) -> Result<String, String> {
             "-Command",
             "$ErrorActionPreference = 'Stop'; \
              Add-Type -AssemblyName System.Security; \
-             $in = $env:WINMUX_SECRET; \
+             $in = $env:YMUX_SECRET; \
              $bytes = [System.Text.Encoding]::UTF8.GetBytes($in); \
              $prot = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, 'CurrentUser'); \
              [Convert]::ToBase64String($prot)",
         ])
-        .env("WINMUX_SECRET", &secret)
+        .env("YMUX_SECRET", &secret)
         .output()
         .map_err(|e| format!("dpapi spawn: {e}"))?;
     if !out.status.success() {
@@ -277,7 +277,7 @@ fn dpapi_protect(secret: &str) -> Result<String, String> {
 
 #[cfg(not(target_os = "windows"))]
 fn dpapi_protect(secret: &str) -> Result<String, String> {
-    // On non-Windows builds (cross-compile for resources/winmux-linux-x64)
+    // On non-Windows builds (cross-compile for resources/ymux-linux-x64)
     // the secret store is unused — provisioning runs UI-side on Windows.
     Ok(format!("noprotect:{secret}"))
 }
@@ -429,7 +429,7 @@ pub(crate) struct ProvisionInput {
     pub initial_key_passphrase: Option<String>,
     pub new_user: String,
     /// Local path to drop the freshly-generated keypair. If absent we
-    /// compute `~/.ssh/winmux-<workspace>-<new_user>`.
+    /// compute `~/.ssh/ymux-<workspace>-<new_user>`.
     #[serde(default)]
     pub local_key_path: Option<String>,
     pub profile_id: String,
@@ -648,7 +648,7 @@ async fn run_provisioning(
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
-        format!("{home}\\.ssh\\winmux-{}-{}", input.workspace_id, input.new_user)
+        format!("{home}\\.ssh\\ymux-{}-{}", input.workspace_id, input.new_user)
     });
 
     // Phase 14.A.2 outcome tracking. Three milestones must all hit OK
@@ -696,8 +696,8 @@ async fn run_provisioning(
                        sudo useradd -m -s /bin/bash {u} && \
                        sudo usermod -aG sudo {u} 2>/dev/null || sudo usermod -aG wheel {u}; \
                      fi; \
-                     echo '{u} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/90-winmux-{u} >/dev/null && \
-                     sudo chmod 0440 /etc/sudoers.d/90-winmux-{u}"
+                     echo '{u} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/90-ymux-{u} >/dev/null && \
+                     sudo chmod 0440 /etc/sudoers.d/90-ymux-{u}"
                 );
                 run_step(&mut handle, &app, &run_id, idx, kind, &cmd).await
             }
@@ -849,8 +849,8 @@ async fn run_provisioning(
                 );
                 run_step(&mut handle, &app, &run_id, idx, kind, &cmd).await
             }
-            StepKind::AddWinmuxToPath => {
-                // Phase 18: append `~/.winmux/bin` to the new user's
+            StepKind::AddYmuxToPath => {
+                // Phase 18: append `~/.ymux/bin` to the new user's
                 // shell rc. Runs the bootstrap's PATH_RC_SNIPPET
                 // under `sudo -u <new_user>` so the rc that gets
                 // touched is the runner's, not root's.
@@ -864,11 +864,11 @@ async fn run_provisioning(
                 // -H sets HOME to the target user's home so $HOME
                 // expansions inside the snippet point at the
                 // runner's directory. The single-quoted heredoc tag
-                // (`<<'WINMUX_PATH_EOF'`) means bash doesn't expand
+                // (`<<'YMUX_PATH_EOF'`) means bash doesn't expand
                 // anything while READING the body — the inner bash
                 // does the expansion when it executes.
                 let cmd = format!(
-                    "sudo -Hu {u} bash <<'WINMUX_PATH_EOF'\n{snippet}\nWINMUX_PATH_EOF\n\
+                    "sudo -Hu {u} bash <<'YMUX_PATH_EOF'\n{snippet}\nYMUX_PATH_EOF\n\
                      # Translate the snippet's machine-readable output to a\n\
                      # user-friendly status line. Last line is what the\n\
                      # wizard log surfaces.\n\
@@ -898,11 +898,11 @@ async fn run_provisioning(
                 };
                 r
             }
-            StepKind::SetupWinmuxHooks => {
-                // Best-effort — winmux CLI on remote is bootstrapped on
+            StepKind::SetupYmuxHooks => {
+                // Best-effort — ymux CLI on remote is bootstrapped on
                 // first SSH connection from the desktop app, so it may
                 // not be there yet. Wrap in `command -v`.
-                let cmd = "if command -v winmux >/dev/null; then winmux setup-hooks --agent claude || true; else echo 'winmux CLI not yet bootstrapped — connect once to install, then re-run'; fi";
+                let cmd = "if command -v ymux >/dev/null; then ymux setup-hooks --agent claude || true; else echo 'ymux CLI not yet bootstrapped — connect once to install, then re-run'; fi";
                 run_step(&mut handle, &app, &run_id, idx, kind, cmd).await
             }
         };
@@ -1141,7 +1141,7 @@ async fn local_step_generate_keypair(local_path: &str, comment: &str) -> Result<
         .args([
             "-t", "ed25519", "-N", "", "-C",
         ])
-        .arg(format!("winmux/{comment}"))
+        .arg(format!("ymux/{comment}"))
         .arg("-f")
         .arg(local_path)
         .output()
@@ -1508,7 +1508,7 @@ fn local_hostname() -> String {
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "winmux".to_string())
+        .unwrap_or_else(|| "ymux".to_string())
 }
 
 /// Phase 65.B: filesystem-safe token (keeps alnum / `-` / `_` / `.`).
@@ -1536,7 +1536,7 @@ fn short_uuid() -> String {
 }
 
 /// Phase 65.B: local path for the freshly-generated keypair —
-/// `~/.ssh/winmux-<user>@<host>-<localhost>-<uuid>`. Ensures `~/.ssh`
+/// `~/.ssh/ymux-<user>@<host>-<localhost>-<uuid>`. Ensures `~/.ssh`
 /// exists (ssh-keygen won't create it).
 fn build_connect_key_path(user: &str, host: &str) -> Result<String, String> {
     let home = std::env::var("USERPROFILE")
@@ -1545,7 +1545,7 @@ fn build_connect_key_path(user: &str, host: &str) -> Result<String, String> {
     let ssh_dir = std::path::Path::new(&home).join(".ssh");
     std::fs::create_dir_all(&ssh_dir).map_err(|e| format!("mkdir ~/.ssh: {e}"))?;
     let name = format!(
-        "winmux-{}@{}-{}-{}",
+        "ymux-{}@{}-{}-{}",
         sanitize_path_token(user),
         sanitize_path_token(host),
         sanitize_path_token(&local_hostname()),
@@ -1646,7 +1646,7 @@ async fn connect_existing_execute_inner(
 
     // 3. Generate the per-machine keypair locally.
     let local_key_path = build_connect_key_path(target, host)?;
-    local_step_generate_keypair(&local_key_path, &format!("winmux {}", local_hostname()))
+    local_step_generate_keypair(&local_key_path, &format!("ymux {}", local_hostname()))
         .await
         .map_err(|e| format!("generate keypair: {e}"))?;
 
@@ -1668,7 +1668,7 @@ async fn connect_existing_execute_inner(
          DATE=$(date +%F 2>/dev/null || echo unknown); \
          [ -n \"$HOME_DIR\" ] || {{ echo 'could not resolve home dir'; exit 1; }}; \
          {sp}install -d -m 700 -o \"$U\" -g \"$GRP\" \"$HOME_DIR/.ssh\" && \
-         printf '# winmux: added by %s on %s\\n%s\\n' {lhost_esc} \"$DATE\" {key_esc} \
+         printf '# ymux: added by %s on %s\\n%s\\n' {lhost_esc} \"$DATE\" {key_esc} \
            | {sp}tee -a \"$HOME_DIR/.ssh/authorized_keys\" >/dev/null && \
          {sp}chown \"$U:$GRP\" \"$HOME_DIR/.ssh/authorized_keys\" && \
          {sp}chmod 600 \"$HOME_DIR/.ssh/authorized_keys\""
@@ -1782,8 +1782,8 @@ pub(crate) fn provisioning_step_catalog() -> Vec<(String, String)> {
         StepKind::InstallClaudeCode,
         StepKind::InstallCodex,
         StepKind::InstallGemini,
-        StepKind::AddWinmuxToPath,
-        StepKind::SetupWinmuxHooks,
+        StepKind::AddYmuxToPath,
+        StepKind::SetupYmuxHooks,
     ];
     all.into_iter()
         .map(|k| (format!("{k:?}"), k.label().to_string()))

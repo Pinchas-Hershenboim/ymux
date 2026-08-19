@@ -11,8 +11,8 @@ export type LogsSettings = {
 retention_days: number, 
 /**
  * Unified-logger threshold: "debug" | "info" (internally warn/error
- * always pass). Applied via `winmux_core::set_log_level` on every load
- * and save, and pushed to connected remote hosts (`~/.winmux/log-level`).
+ * always pass). Applied via `ymux_core::set_log_level` on every load
+ * and save, and pushed to connected remote hosts (`~/.ymux/log-level`).
  */
 level: string, 
 /**

@@ -1,7 +1,7 @@
 package insights
 
 // Phase 76: server-side process hygiene. Detects the two leaks Yossi hit —
-// duplicate `winmux port-watch` processes (should be exactly one per
+// duplicate `ymux port-watch` processes (should be exactly one per
 // workspace) and orphaned long-running `claude` sessions with no terminal —
 // and can reap the safe ones on request. The desktop Monitor surfaces this in
 // a "Cleanup" tab. Uses gopsutil (already a dep) so it stays cross-platform
@@ -15,7 +15,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// PortWatcher is one `winmux port-watch --workspace X` process. Duplicate is
+// PortWatcher is one `ymux port-watch --workspace X` process. Duplicate is
 // true for every instance of a workspace EXCEPT the newest (smallest etime) —
 // those are the safe-to-kill leaks.
 type PortWatcher struct {
@@ -103,7 +103,7 @@ func collectHygiene() Hygiene {
 			etime = nowUnix - ct/1000
 		}
 		switch {
-		case strings.Contains(joined, "winmux port-watch"):
+		case strings.Contains(joined, "ymux port-watch"):
 			cpu := 0.0
 			if t, err := p.Times(); err == nil {
 				cpu = t.User + t.System

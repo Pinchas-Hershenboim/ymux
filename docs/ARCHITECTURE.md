@@ -2,7 +2,7 @@
 
 ## The model
 
-winmux organizes terminal work into a tree:
+ymux organizes terminal work into a tree:
 
 ```
 window  →  workspace  →  layout (binary tree of splits)  →  pane (leaf)  →  session (PTY or SSH channel)
@@ -20,8 +20,8 @@ workspaces and their layouts are persisted.
 | Process | Path | Role |
 |---|---|---|
 | `app.exe` | `src-tauri/target/debug/app.exe` | The Tauri app: WebView2 frontend (SolidJS) + Rust backend (PTY/SSH/RPC). Long-running. |
-| `winmux.exe` | same dir | Windows-side CLI client. Talks to the running app over a named pipe. |
-| `winmux-linux-x64` | bundled in resources, copied to `~/.winmux/bin/` on the SSH server | Linux CLI client. Talks to the Windows app via a reverse SSH tunnel. |
+| `ymux.exe` | same dir | Windows-side CLI client. Talks to the running app over a named pipe. |
+| `ymux-linux-x64` | bundled in resources, copied to `~/.ymux/bin/` on the SSH server | Linux CLI client. Talks to the Windows app via a reverse SSH tunnel. |
 
 ## Communication channels
 
@@ -44,8 +44,8 @@ workspaces and their layouts are persisted.
 │    │ │ │ │                             ║ │
 │    │ │ │ └─ portable-pty ──► local shell processes (ConPTY)
 │    │ │ │                                 │
-│    │ │ └─ Named Pipe RPC ◄── winmux.exe (local CLI)
-│    │ │      \\.\pipe\winmux-<user>       │
+│    │ │ └─ Named Pipe RPC ◄── ymux.exe (local CLI)
+│    │ │      \\.\pipe\ymux-<user>       │
 │    │ │                                   │
 │    │ └─ russh ──── SSH ──┐                │
 │    │                    │                │
@@ -60,7 +60,7 @@ workspaces and their layouts are persisted.
 │                         │                │
 │        sshd ────────────┘                │
 │         │                                │
-│         ├── shell (with WINMUX_*         │
+│         ├── shell (with YMUX_*         │
 │         │    env vars + last.env file)   │
 │         │                                │
 │         ├── 127.0.0.1:<remote_port>      │
@@ -68,8 +68,8 @@ workspaces and their layouts are persisted.
 │         │    Windows via russh)          │
 │         │     ▲                          │
 │         │     │  TCP                     │
-│         └─────┴── winmux-linux-x64       │
-│                   (~/.winmux/bin/)       │
+│         └─────┴── ymux-linux-x64       │
+│                   (~/.ymux/bin/)       │
 └──────────────────────────────────────────┘
 ```
 
@@ -78,7 +78,7 @@ workspaces and their layouts are persisted.
   which the frontend subscribes to with `listen()`. PTY data flows backend → frontend
   exclusively as events; user keystrokes flow frontend → backend as `pty_write` invokes.
 - **CLI ⇄ app on Windows:** newline-delimited JSON-RPC v2 over a per-user Named Pipe at
-  `\\.\pipe\winmux-<user>`. ACL is whatever Windows assigns by default to a pipe
+  `\\.\pipe\ymux-<user>`. ACL is whatever Windows assigns by default to a pipe
   created by the user's process — effectively user-only. No HMAC needed (the pipe
   ACL is the auth boundary).
 - **CLI on remote ⇄ app on Windows:** TCP via a russh **reverse tunnel** opened on
@@ -100,12 +100,18 @@ workspaces and their layouts are persisted.
 | `last.env` | `~/.winmux/run/` (remote) | Written by tunnel bootstrap before the shell starts; CLI on Linux loads it as a fallback when sshd strips per-channel env vars. |
 | `session-meta.json` | `~/.winmux/` (remote) | Phase 81 multi-machine sync: tmux session → `{claude_session_id, claude_title, auto_name, label, origin, updated_at}`. Written by the Linux CLI (`session-meta` subcommand + the Claude `stop`/`session-end`/`user-prompt-submit` hooks); read by the desktop in the same SSH roundtrip as `tmux list-sessions`. Atomic tmp+rename, last-writer-wins, lazy-pruned against `tmux ls` on every write. **`claude_title` vs `auto_name`:** the title churns (Claude rewrites its own summary, re-read every turn); `auto_name` is the stable identity — `"<two words> · <YYYY-MM-DD HH:MM>"` derived once from the session's first real prompt by the `user-prompt-submit` hook, re-derived only when a NEW Claude session takes over the same tmux key. Display precedence: `label > auto_name > claude_title > raw name`. |
 | `machine-id` | `%APPDATA%\winmux\` | Phase 81: stable per-install id (`<COMPUTERNAME>-<4hex>`), the `origin` value for sessions this machine creates. Deliberately outside settings.json so "Reset settings" keeps identity. |
+| `workspaces.json` | `%APPDATA%\ymux\` | `lib.rs` on every mutation; loaded once at `setup()`. |
+| `known_hosts.json` | `%APPDATA%\ymux\` | `lib.rs::SshClient::check_server_key` on first/match/replace. |
+| `debug.log` | `%APPDATA%\ymux\` | `dlog()` everywhere. Append-only. |
+| `last.env` | `~/.ymux/run/` (remote) | Written by tunnel bootstrap before the shell starts; CLI on Linux loads it as a fallback when sshd strips per-channel env vars. |
+| `session-meta.json` | `~/.ymux/` (remote) | Phase 81 multi-machine sync: tmux session → `{claude_session_id, claude_title, label, origin, updated_at}`. Written by the Linux CLI (`session-meta` subcommand + the Claude `stop`/`session-end` hooks); read by the desktop in the same SSH roundtrip as `tmux list-sessions`. Atomic tmp+rename, last-writer-wins, lazy-pruned against `tmux ls` on every write. |
+| `machine-id` | `%APPDATA%\ymux\` | Phase 81: stable per-install id (`<COMPUTERNAME>-<4hex>`), the `origin` value for sessions this machine creates. Deliberately outside settings.json so "Reset settings" keeps identity. |
 
 ## Bundled resources
 
 | Resource | Origin |
 |---|---|
-| `resources/winmux-linux-x64` | Cross-compiled by `scripts/build-linux-cli.ps1` (musl, static-PIE ELF). Bundled into `app.exe` via `tauri.conf.json` `bundle.resources`. Auto-uploaded to remote on first SSH connect by `remote_bootstrap.rs`. |
+| `resources/ymux-linux-x64` | Cross-compiled by `scripts/build-linux-cli.ps1` (musl, static-PIE ELF). Bundled into `app.exe` via `tauri.conf.json` `bundle.resources`. Auto-uploaded to remote on first SSH connect by `remote_bootstrap.rs`. |
 | `resources/remote-manifest.json` | Generated next to the binary. Carries the SHA-256 + size + build timestamp. The manifest path/hash schema is keyed by triple (`x86_64-linux`; `aarch64-linux` reserved for later). UTF-8 **without** BOM (writer hardened in 6.2). |
 
 ## Phase history

@@ -45,7 +45,7 @@ export function ConnectExistingFlow(p: Props) {
   type Mode = "existing" | "new";
   const [mode, setMode] = createSignal<Mode>("existing");
   const [existingUser, setExistingUser] = createSignal("");
-  const [newUser, setNewUser] = createSignal("winmux-user");
+  const [newUser, setNewUser] = createSignal("ymux-user");
   const [grantSudo, setGrantSudo] = createSignal(true);
   const [workspaceName, setWorkspaceName] = createSignal("");
 
@@ -82,7 +82,7 @@ export function ConnectExistingFlow(p: Props) {
       });
       setDiscovery(d);
       // Phase 65.R-fix: diagnostic — confirms discover ran and what the
-      // picker will offer (captured by `winmux dev console-tail`).
+      // picker will offer (captured by `ymux dev console-tail`).
       log.debug(
         `discovered users=${JSON.stringify(d.users)} ` +
           `is_root=${d.is_root} can_sudo=${d.can_sudo} → step=choose`
@@ -311,7 +311,7 @@ export function ConnectExistingFlow(p: Props) {
                   <input
                     value={newUser()}
                     onInput={(e) => setNewUser(e.currentTarget.value)}
-                    placeholder="winmux-user"
+                    placeholder="ymux-user"
                   />
                 </label>
                 <label class="provisioning-mode-row">

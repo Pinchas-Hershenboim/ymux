@@ -9,24 +9,24 @@
 Two related needs:
 
 1. **Visibility** — a server sometimes goes slow because something
-   (often a broken Docker container) eats RAM/CPU, and today winmux gives
+   (often a broken Docker container) eats RAM/CPU, and today ymux gives
    no way to *see* that without dropping to a shell and running `top` /
    `docker stats`. We want a Monitor surface.
-2. **Uniform install** — winmux already pushes several "add-ons" to a
+2. **Uniform install** — ymux already pushes several "add-ons" to a
    remote (the CLI binary, the tmux.conf, the Claude hooks), but each has
-   its own ad-hoc install path in `winmux-bootstrap` / `cli/hooks.rs`.
+   its own ad-hoc install path in `ymux-bootstrap` / `cli/hooks.rs`.
    Adding Insights as yet another bespoke installer would compound the
    mess. We want ONE framework that installs/updates/removes/detects any
    add-on, for both freshly-provisioned and already-existing servers.
 
 So Phase 68 = an **Add-on framework** (68.A/B) + its first big new add-on,
-the **`winmux-insights` daemon** (68.C), + the **desktop UIs** that drive
+the **`ymux-insights` daemon** (68.C), + the **desktop UIs** that drive
 them (68.D Monitor, 68.E Add-ons settings, 68.F wizard step).
 
 ## 2. Architecture overview
 
 ```
-┌─ winmux desktop (Windows, Tauri) ──────────────────────────────────────┐
+┌─ ymux desktop (Windows, Tauri) ──────────────────────────────────────┐
 │  Settings → Add-ons tab        Monitor window (📊)                       │
 │        │                              │                                  │
 │        ▼ addon_* Tauri cmds           ▼ insights_* Tauri cmds            │
@@ -41,11 +41,11 @@ them (68.D Monitor, 68.E Add-ons settings, 68.F wizard step).
               │ SSH                            │ reverse tunnel (existing)
 ┌─────────────▼──────────────────────────────▼────────────────────────────┐
 │ remote server                                                            │
-│   ~/.winmux/bin/winmux           (addon: winmux-cli)                      │
-│   ~/.winmux/tmux.conf            (addon: tmux-conf)                       │
+│   ~/.ymux/bin/ymux           (addon: ymux-cli)                      │
+│   ~/.ymux/tmux.conf            (addon: tmux-conf)                       │
 │   ~/.claude/settings.json hooks  (addon: hooks)                          │
-│   ~/.winmux/bin/winmux-insights  (addon: insights) ── systemd/user svc   │
-│        └── SQLite at ~/.winmux/insights/metrics.db                        │
+│   ~/.ymux/bin/ymux-insights  (addon: insights) ── systemd/user svc   │
+│        └── SQLite at ~/.ymux/insights/metrics.db                        │
 │        └── HTTP API on 127.0.0.1:PORT                                     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -64,15 +64,15 @@ into the desktop (a `const`); the schema is also serialisable so a future
 "community add-ons" directory can drop JSON files.
 
 ```rust
-// crates/winmux-addons/src/lib.rs  (new pure crate, like winmux-policy)
+// crates/ymux-addons/src/lib.rs  (new pure crate, like ymux-policy)
 #[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct AddonManifest {
-    pub id: String,            // stable key: "hooks" | "tmux-conf" | "winmux-cli" | "insights"
+    pub id: String,            // stable key: "hooks" | "tmux-conf" | "ymux-cli" | "insights"
     pub name: String,          // display name: "Claude Code Hooks"
     pub description: String,
     /// Version this desktop build ships / can install.
     pub version: String,
-    /// Other add-on ids that must be installed first (e.g. insights → winmux-cli).
+    /// Other add-on ids that must be installed first (e.g. insights → ymux-cli).
     #[serde(default)]
     pub dependencies: Vec<String>,
     /// How each lifecycle step is performed. Either a shell snippet run via
@@ -93,7 +93,7 @@ pub struct AddonManifest {
 #[derive(Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AddonAction {
-    /// Run this shell snippet on the remote (ssh_exec). `${WINMUX_BIN}` and
+    /// Run this shell snippet on the remote (ssh_exec). `${YMUX_BIN}` and
     /// `${REMOTE_HOME}` are substituted before exec.
     Shell { script: String },
     /// Call a built-in Rust routine by name — for add-ons that need SFTP
@@ -149,10 +149,10 @@ re-homed so the framework + UI can drive them):
 
 | id           | today                                                   | detect                                            | needs_sudo |
 |--------------|---------------------------------------------------------|---------------------------------------------------|------------|
-| `winmux-cli` | `winmux-bootstrap::bootstrap` (SFTP upload + symlink)   | `~/.winmux/bin/winmux --version`                  | no         |
-| `tmux-conf`  | `ensure_tmux_conf` (SFTP upload, hash-gated)            | `sha256sum ~/.winmux/tmux.conf` vs manifest       | no         |
-| `hooks`      | `winmux setup-hooks` (Phase 66; settings.json edits)    | read `winmux_meta.hooks_version` in settings.json | no         |
-| `insights`   | NEW (68.C)                                               | `winmux-insights --version` + service-active check | usually*  |
+| `ymux-cli` | `ymux-bootstrap::bootstrap` (SFTP upload + symlink)   | `~/.ymux/bin/ymux --version`                  | no         |
+| `tmux-conf`  | `ensure_tmux_conf` (SFTP upload, hash-gated)            | `sha256sum ~/.ymux/tmux.conf` vs manifest       | no         |
+| `hooks`      | `ymux setup-hooks` (Phase 66; settings.json edits)    | read `ymux_meta.hooks_version` in settings.json | no         |
+| `insights`   | NEW (68.C)                                               | `ymux-insights --version` + service-active check | usually*  |
 
 \* insights needs sudo only to install a *system* systemd unit; without
 sudo it falls back to a `systemd --user` unit (or a nohup-launched
@@ -161,7 +161,7 @@ process), so it's installable on locked-down accounts too.
 Migration keeps the auto-install-on-bootstrap behaviour (Phase 66.B) but
 routes it through `addon_install` so there's a single code path.
 
-## 5. 68.C — `winmux-insights` daemon (Go)
+## 5. 68.C — `ymux-insights` daemon (Go)
 
 A new, separate Go binary (not Rust) — Go's static cross-compile + tiny
 runtime fits a <50 MB-RAM agent, and `gopsutil` + the Docker SDK give us
@@ -180,7 +180,7 @@ metrics + container control with little code.
 ### 5.2 HTTP API (bound 127.0.0.1:PORT, default 7879)
 
 Auth: a bearer token generated at install, stored remote-side at
-`~/.winmux/insights/token` (mode 600) and desktop-side in the workspace
+`~/.ymux/insights/token` (mode 600) and desktop-side in the workspace
 record. Same model as the tunnel HMAC (Rule #8 — never logged).
 
 ```
@@ -243,7 +243,7 @@ then `PRAGMA wal_checkpoint(TRUNCATE)`. WAL mode, `synchronous=NORMAL`
 - Target **<50 MB RSS, <1% CPU avg**. Sampling at 5s with gopsutil is
   cheap; the SQLite writes are the main cost — batch each tick in one tx.
 - Self-limit: if the DB exceeds e.g. 200 MB, drop the oldest day early.
-- Log to `~/.winmux/insights/insights.log`, size-rotated (e.g. 5×1 MB).
+- Log to `~/.ymux/insights/insights.log`, size-rotated (e.g. 5×1 MB).
 - `GET /history` caps `step`/range so a huge query can't OOM the daemon.
 
 ## 6. 68.D — Monitor UI (desktop)
@@ -283,7 +283,7 @@ per-server). Table driven by `addon_list`:
 ```
 Add-on              Installed   Available   Status        Actions
 ──────────────────────────────────────────────────────────────────
-winmux CLI          0.2.9       0.2.9       ✓ up to date  [Reinstall]
+ymux CLI          0.2.9       0.2.9       ✓ up to date  [Reinstall]
 tmux config         274a97f6    274a97f6    ✓ up to date  [Update][Remove]
 Claude Code Hooks   1.1.0       1.2.0       ⬆ update       [Update][Remove][Logs]
 Server Insights     —           1.0.0       not installed [Install]
@@ -320,8 +320,8 @@ add-on's log tail.
   not exec arbitrary input.
 
 ## 10. Open questions (need Yossi's call before build)
-1. **Insights distribution** — bundle `winmux-insights` (Go) into the
-   desktop resources like `winmux-linux-x64` (adds ~8-12 MB to the
+1. **Insights distribution** — bundle `ymux-insights` (Go) into the
+   desktop resources like `ymux-linux-x64` (adds ~8-12 MB to the
    installer per arch), or fetch from GitHub releases on first install?
    *(Recommend: bundle x64, fetch arm64 — mirrors the CLI story.)*
 2. **Go dependency** — OK to introduce a second language/toolchain (Go) to
@@ -338,7 +338,7 @@ add-on's log tail.
 6. **Chart lib** — uPlot (tiny) vs recharts (familiar, heavier). 
 
 ---
-*When approved, suggested build order: 68.A (framework + winmux-addons
+*When approved, suggested build order: 68.A (framework + ymux-addons
 crate) → 68.B (migrate existing, no behaviour change, verify) → 68.C
 (insights daemon + API + SQLite) → 68.D (monitor UI) → 68.E (settings) →
 68.F (wizard).* Each is its own branch off the v0.2.x line; nothing here

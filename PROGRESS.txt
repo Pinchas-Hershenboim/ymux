@@ -2649,3 +2649,668 @@ NOTES: no hook-spec change and no setup-hooks re-run needed - UserPromptSubmit
       deliberately breaking it.
 
 =========================================================================
+2026-08-18 — RTL: tuiOwnsBidi restored after 18 days missing (lost in a merge)
+
+TASK
+  Yossi asked to (a) replace WSL with Zellij as the Windows tmux, and (b) fix
+  RTL "by taking inspiration from RTLTERMINAL, or reordering the BiDi so it
+  prints reversed". Investigation changed both framings.
+
+FINDING 1 — RTL was not missing, it regressed.
+  Both proposed approaches already exist in the tree:
+    - "reorder the BiDi"   = rtl_mode "bidi_reorder"  (app/src/bidi.ts, bidi-js)
+    - RTLTERMINAL's trick  = rtl_mode "auto_per_line" (DOM renderer + per-row
+      dir), in a smarter block-aware form (textDirection.ts protects tables and
+      box-drawing; ar-terminal has a 30ms unshaped flash and mismatched
+      selection, we have neither).
+  The real cause of the reversed Hebrew: tuiOwnsBidi was silently dropped by
+  merge bcaa330 (2026-07-31). Verified three ways —
+    456f0ed ("round-10 diagnosis — TUI-owns-bidi restored, saga closed"): 9 hits
+    45b6592 (other parent):                                                0 hits
+    bcaa330 (merge result) and main ever since:                            0 hits
+  The merge also deleted nextTuiOwnsBidi from textDirection.ts (27 lines) AND
+  its 10 unit tests — which is why the suite stayed green through the loss.
+  docs/DECISIONS.md still claimed "State: Open — feature IN on
+  claude/integration". False since 2026-07-31.
+
+FINDING 2 — collateral from the SAME merge.
+  Phase 79's createLogger conversion in terminalInstance.ts was thrown away too.
+  Logger sites / console.* per ref: 456f0ed 24/0, 45b6592 0/17, bcaa330 0/17,
+  HEAD 2/19. FOLLOWUPS.md:19 (2026-08-11) had logged this as "untouched
+  pre-existing debt" — wrong diagnosis. Entry corrected and raised P3 -> P2.
+  NOT fixed here, to keep this diff reviewable.
+
+FILES
+  app/src/textDirection.ts        +27  (nextTuiOwnsBidi; now byte-identical to
+                                        456f0ed)
+  app/src/textDirection.test.ts   +53  (10 cases; 37 -> 47)
+  app/src/terminalInstance.ts     7 hunks, hand-applied
+  docs/DECISIONS.md               TUI-owns-bidi entry corrected; new Open entry
+                                  for Zellij
+  docs/RTL-TEST.md                "23 cases" -> 47; new TUI-owns-bidi smoke
+                                  section
+  FOLLOWUPS.md                    logging entry re-diagnosed as a regression
+
+HOW (deliberately not `git checkout 456f0ed -- terminalInstance.ts`)
+  That would have destroyed readClipboardText() and the WebView2 paste fix
+  (82b6c0c), which landed after. 7 hunks applied by hand, bottom-up. Only
+  substantive change vs the original: log.info -> termLog.info, because `log`
+  does not exist at HEAD (see FINDING 2) — copying verbatim is a compile error.
+  Fixed a latent bug while restoring the tests: the powershell-path case used a
+  plain "" literal, so \v was a vertical tab and \W \S \p were dropped; it
+  asserted against a mangled string. Now String.raw.
+
+NOT DONE, deliberately
+  No set-titles in the tmux conf. The conf has none (zero hits repo-wide) and
+  tmux defaults it off, so onTitleChange should never fire inside tmux — yet
+  DECISIONS records it engaging on a live SSH pane. Instrument before designing
+  around an unexplained observation: the restored termLog.info line now puts
+  the answer in debug.log. TRAP if someone adds it later: tmux's default
+  set-titles-string always contains the session name, so it is never empty,
+  nextTuiOwnsBidi falls through to `return prev`, and the feature latches ON
+  forever — strictly worse than the bug. Must be the pair `set -g set-titles on`
+  + `set -g set-titles-string "#T"`, in build_tmux_attach_script (lib.rs), not
+  the conf (the conf is skipped when use_winmux_tmux_config is off).
+
+RESULT
+  47/47 unit tests pass. tsc --noEmit clean. vite build clean (only the known
+  1.4MB chunk-size warning, DECISIONS.md:97).
+  COMPILES, UNTESTED LIVE — per CLAUDE.md that is not "verified". The smoke is
+  docs/RTL-TEST.md "TUI-owns-bidi smoke", 8 steps; step 5 (two full cycles in
+  one pane) and step 7 (inside tmux over SSH) are the ones that matter.
+
+ZELLIJ (Part B) — no code written, spike gates everything.
+  My first assumption was wrong: Zellij 0.44.0 (2026-03-23) DOES run natively
+  on Windows, no WSL. And Yossi's goal is better founded than it sounds —
+  LOCAL_CAPS.tmuxPersistence=false (types.ts:352) is the only gap; native Claude
+  Code (local_setup.rs:1220) and winmux-cli.exe already exist, so persistence is
+  the last thing WSL is needed for. Zellij also serialises sessions to disk,
+  which survives a reboot — tmux does not.
+  BUT the port is 5 months old and the open issues hit exactly what we'd buy:
+  #5365 keyboard input dies after detach/reattach (the one feature), #5348
+  "does not run properly on Windows shells", #5451 a pane renders never in a
+  multi-tab layout, #5360 Ctrl+Alt dead. Manual spike outside the repo first;
+  if detach/reattach or layout rendering fails, the idea is dead until upstream
+  moves. Logged as an Open decision.
+
+--------------------------------------------------------------------------------
+2026-08-18 (same day, later) — CI build + boot verification for the RTL restore
+--------------------------------------------------------------------------------
+  Merged origin/main (27 commits) into claude/zellinj-tmux-windows-3a5afe first,
+  so the test build would not be stale. One conflict, PROGRESS.txt, both sides
+  kept. The three RTL code files were untouched upstream, so the restore applied
+  cleanly. tsc clean + 47/47 on the merged tree. Pushed the branch (no push to
+  main, no force-push).
+
+  build-windows.yml via workflow_dispatch: run 32181379397, SUCCESS in 16m39s.
+  v0.4.5. Rule #13's guard RAN and PASSED, it did not skip:
+    "OK: production build — 'index-CKmxjA94.js' is embedded"
+  SHA256 app.exe c106677557938f56de04aee25e03b36d16cd1f933f9596cb2d782454b4503cde
+         setup   79ca5d6e00e0cae004f7f84fe14fb4268a8debf7763534ea5adbcae71e2082e2
+         msi     5814f5718caa1c00909de09fa082ecfb4bcfb7899d0373e214f0be68b793abc7
+
+  Rule #14 (a build that compiles is not a build that runs): downloaded the bare
+  exe, SHA verified against CI, and LAUNCHED it. Decisive evidence it really
+  boots is the frontend-tagged line in debug.log —
+    [UI:APP] longtask self 304ms
+  [UI:*] only exists if the embedded JS bundle executed, i.e. boot got PAST
+  "rpc server spawned", which is exactly where a dev-mode binary dies silently.
+
+  Launched with WINMUX_CONFIG_DIR=%APPDATA%\winmux-rtl-smoke, NOT the real
+  config, because of the FOLLOWUPS P1: two winmux builds sharing %APPDATA%
+  means the older one strips parent_id / is_project_root on every save. This
+  build carries the project-folders v4 schema, so it is exactly the pairing
+  that entry warns about. Instance stopped and the smoke config dir removed
+  afterwards; the real %APPDATA%\winmux was never opened.
+
+  STATUS: boots. RTL itself is STILL NOT VERIFIED — that needs Hebrew in a live
+  Claude pane and a human looking at it. docs/RTL-TEST.md "TUI-owns-bidi smoke",
+  8 steps; steps 5 (two full cycles in one pane, catches a latched-ON state) and
+  7 (inside tmux over SSH, decides the set-titles question) are the ones that
+  cannot be inferred from anything already checked.
+
+--------------------------------------------------------------------------------
+2026-08-19 — TUI-owns-bidi turned OFF by default: the premise expired
+--------------------------------------------------------------------------------
+  Live test of v0.4.5 (the restore) produced the opposite of the expected result.
+  Yossi: local pane broken, SSH fine. debug.log had exactly ONE pane with
+  transitions:
+    23:44:16 [UI:TERM] tui-owns-bidi on  pane=p_18ab17f9e2257cd8_1
+    23:50:01 [UI:TERM] tui-owns-bidi off pane=p_18ab17f9e2257cd8_1
+  The feature engaged exactly where Hebrew broke, and never engaged where Hebrew
+  worked. SSH panes are spared only because tmux swallows the OSC title the
+  detector needs (no set-titles in the bundled conf).
+
+  Diagnosis: Claude changed. The feature was verified in 2026-07 against Claude
+  2.1.74-2.1.210, which printed Hebrew ALREADY reversed for BiDi-less terminals.
+  claude-fable-5 prints logical order like everything else, so the ordinary
+  per-line RTL pass is correct and forcing dir="ltr" is what scrambles it.
+  MY RESTORE MADE LOCAL PANES WORSE. Said plainly because the DECISIONS entry
+  it was based on is what made it look safe.
+
+  Fix: setting terminal.tui_owns_bidi, DEFAULT FALSE, Settings -> Terminal
+  toggle, en/he/ar/ru. Not deleted — deleting it silently is how this loop
+  started. Detection + the tui-owns-bidi log line still run unconditionally;
+  only the LTR forcing is gated, via `bidiOwnedByTui` in terminalInstance.ts.
+  That log line is the only reason this took minutes instead of days.
+
+  FILES  settings.rs (field + Default), terminalInstance.ts (g_tuiOwnsBidiEnabled,
+         setTuiOwnsBidiEnabled, bidiOwnedByTui getter, refreshRowDirections,
+         3 effect sites regated), App.tsx (2 wiring sites), SettingsModal.tsx,
+         settings.ts, bindings/TerminalSettings.ts (ts-rs confirmed my
+         hand-written binding byte-for-byte), i18n x4, DECISIONS, PROGRESS.
+
+  A SECOND BUG FOUND, NOT FIXED: dir="ltr" would not have worked even for the
+  old visual-order Claude. `dir` sets only the paragraph base direction; UAX #9
+  rule L2 still reverses Hebrew runs inside an LTR paragraph. Suppressing
+  reordering needs `unicode-bidi: bidi-override`, which appears nowhere near
+  .xterm-rows (checked: every unicode-bidi in App.css targets other surfaces).
+  So the legacy path is likely broken for the Claude it was written for too.
+  Left alone deliberately — it is behind a default-off flag now, and fixing an
+  unverifiable path against a Claude version nobody here runs is speculation.
+  Anyone enabling the flag should add bidi-override first.
+
+  PROCESS: I confirmed the original symptom with a multiple-choice question
+  whose first option was the answer I expected, and built a restore on it. The
+  discriminating question — what breaks WHERE — took one sentence from Yossi to
+  answer and would have redirected the whole session. Ask for the observation
+  that splits hypotheses, not the one that confirms yours.
+
+  CHECKS  247 cargo tests pass. 47/47 textDirection tests. tsc --noEmit clean.
+  NOT VERIFIED LIVE — needs a local pane with Hebrew in Claude on the new build.
+
+--------------------------------------------------------------------------------
+2026-08-19 — MEASURED what Claude emits, and fixed the neutrals bug in bidi.ts
+--------------------------------------------------------------------------------
+  THE MEASUREMENT that ended the guessing: Yossi set rtl_mode="off" (WebGL, no
+  browser bidi, no reorder — the screen shows the PTY stream verbatim) and
+  Hebrew came out REVERSED. So Claude Code emits Hebrew in LOGICAL order.
+  Two consequences, both certain:
+    - tui_owns_bidi=false (shipped in ac71bfb) is correct. Forcing LTR is wrong.
+    - The `unicode-bidi: bidi-override` idea I floated is DEAD. It would render
+      exactly what "off" rendered: reversed. Good thing it was never built.
+  Rule #1 forbids logging PTY content, so this could only ever be measured by a
+  human looking at the screen. Asking for it was worth more than any code I
+  wrote today.
+
+  WORKING CONFIG (Yossi's, after testing all three): rtl_mode=bidi_reorder
+  (Legacy) + auto_direction on + mirror_arrows_rtl on + tui_owns_bidi off.
+
+  BUG FIXED  app/src/bidi.ts:11 hard-coded the paragraph base direction:
+      bidi.getEmbeddingLevels(line, "ltr")
+  So neutrals (?, !!!, .) at the end of a Hebrew sentence resolved against an
+  LTR paragraph and rendered at the RIGHT edge — the START of the sentence.
+  Yossi: "characters show at the beginning of the line instead of the end".
+
+  FIRST ATTEMPT WAS WRONG and the tests caught it: hard-coding "rtl" fixes the
+  punctuation but mirrors Claude's status line, which is mostly Latin with one
+  Hebrew word — the same layout flip auto_per_line produces. Replaced with
+  bidi-js's own UAX #9 P2/P3 resolution (first strong character wins), correct
+  for all three shapes: pure-Hebrew sentence -> rtl; "> " + Hebrew (neutral
+  first) -> rtl; Latin-first status line -> ltr.
+
+  NEW  app/src/bidi.test.ts — 11 cases, the file had none. Includes a written
+  orientation note, because I got the first two assertions backwards: the
+  output is VISUAL order painted L-to-R, so index 0 is the LEFTMOST glyph,
+  which in an RTL sentence is its END. Sentence-final punctuation belongs at
+  index 0. One test specifically pins the status line against mirroring.
+
+  STILL OPEN, not fixed, genuinely hard: the caret pinned to the right and not
+  tracking the text, and partial-repaint glitches ("part rewritten correctly
+  and part in the middle rewritten again"). Both are inherent to transforming
+  the byte stream for a TUI that repaints regions and positions the cursor in
+  columns of the ORIGINAL text — two coordinate systems that diverge. This is
+  what terminal-wg calls "the cursed cursor"; no xterm.js-based terminal has
+  solved it. A real fix means reassembling whole visual lines before reordering
+  and tracking cursor position through the transform. Logged in DECISIONS.
+
+  CHECKS  11/11 bidi tests, 47/47 textDirection, tsc clean, vite clean.
+  NOT VERIFIED LIVE.
+
+
+2026-08-18 — winmux -> YMUX: full repo rename + compatibility layers
+Branch: claude/app-rename-ymux-f8404e (worktree app-rename-ymux-f8404e)
+
+TASK
+Yossi renamed the app to YMUX ("it isn't limited to Windows any more") and
+asked for the whole repo to follow. Two scope questions were put to him
+before any sed ran, because the answers change the work materially:
+  - depth   -> "full rename + compatibility layers" (over clean-cut / branding-only)
+  - history -> "leave history, update live docs"
+Both decisions and their reasoning are in docs/DECISIONS.md (Decided,
+2026-08-18). This entry is the mechanical record.
+
+BASELINE
+cargo check --workspace --all-targets was run BEFORE touching anything and
+exited 0, so every error after this point is attributable to the rename.
+
+WHAT MOVED
+  git mv: 8 crates (crates/winmux-* -> ymux-*), resources/winmux-{linux-x64,
+    server-linux-x64, server-linux-arm64, tmux.conf}, server/cmd/winmux-server,
+    docs/winmux-server/, winmux-tools/, sdk/kotlin .../dev/winmux/ (+ tests),
+    WinmuxClient.kt -> YmuxClient.kt, app/src/WinmuxToolsTab.tsx.
+  sed over 226 text files: WINMUX->YMUX, WinMux->YMUX, Winmux->Ymux,
+    winMux->yMux, winmux->ymux.
+  Excluded from sed, deliberately: PROGRESS.txt, docs/DECISIONS.md,
+    docs/COMPETITIVE-SCAN.md, .claude/worktree-audit-2026-08-03.txt,
+    manifest.json, Cargo.lock, package-lock.json, remote-manifest.json,
+    and the three binaries (renamed + rebaked instead).
+
+  GOTCHA, caught immediately: the sweep rewrote the worktree's own `.git`
+  FILE (it holds "gitdir: .../programing/winmux/.git/worktrees/..."), which
+  detached the worktree from the repo. Restored by hand in the next command.
+  Any future repo-wide sed must exclude `.git` explicitly -- the usual
+  -not -path './.git/*' does NOT match the file itself.
+
+CASING
+  ymux = machine-facing (paths, crate names, binaries, env-var stems,
+         productName, bundle identifier)
+  YMUX = human-facing (window title, tray menu + tooltip, index.html
+         <title>, i18n VALUES, README)
+  The i18n pass rewrites JSON values only, and skips any `ymux` glued to
+  [~/.`-] or followed by [/-] -- so `~/.ymux/tmux.conf`, `ymux-cli` and the
+  keys use_ymux_tmux_config / DeployYmuxCliToWsl / add_ymux_to_path all
+  stayed lowercase. 69 values brand-cased across en/he/ar/ru; all four
+  re-parsed as JSON afterwards.
+
+COMPAT LAYERS ADDED (each guards a specific upgrade path)
+  crates/ymux-core         config_dir(): renames %APPDATA%\winmux -> ymux
+                           once, behind a Once -- the log_* calls re-enter
+                           config_dir(), so without the latch a FAILING
+                           rename recurses forever. WINMUX_CONFIG_DIR still
+                           honoured. pipe_name_legacy() added.
+  crates/ymux-bootstrap    migrate_legacy_remote_dir(): merges ~/.winmux
+                           into ~/.ymux over SSH BEFORE the hash check, so
+                           an unchanged CLI isn't needlessly re-uploaded.
+                           cp -an, not mv -- both dirs can exist and
+                           `mv A B` would nest A inside B. Drops the stale
+                           winmux-* binaries the copy drags along.
+  cli/src/main.rs          adopt_legacy_env(): promotes every WINMUX_* var
+                           to YMUX_* once at startup, before any thread
+                           exists. One function instead of 13 per-call-site
+                           fallbacks -- and a pane outlives the app that
+                           opened it, so a long-lived tmux session still
+                           carries whatever set-environment -g put there.
+                           migrate_legacy_home_dir(): local twin of the
+                           bootstrap migration, for hosts it never touches.
+                           Handshake + pipe connect: read/mirror either
+                           dialect; legacy pipe tried as a fallback.
+  ymux-tunnel + hookrpc    Handshake: accept YMUX-* or WINMUX-*, answer in
+                           the dialect we were spoken to.
+  lib.rs, tunnel, spawnEnv Dual-WRITE of the env trio (pane id, socket
+                           addr, tunnel token) in all three injectors.
+  settings.rs              #[serde(alias = "use_winmux_tmux_config")] --
+                           without it a user who had turned the toggle OFF
+                           silently gets it back on after upgrading.
+  cli/src/hooks.rs         ${WINMUX_BIN} still expanded; stale winmux_meta
+                           dropped when the new stamp is written.
+  addons.rs                Insights detect / uninstall / install now also
+                           see winmux-server + winmux-insights (unit,
+                           binary, symlink, old home).
+  cmd/ymux-server/main.go  Data-dir migration chain extended with
+                           ~/.winmux/{server,insights} -- otherwise every
+                           paired phone would have been silently unpaired.
+  files/huma.go + client.ts  X-Winmux-Truncated sent + read.
+  rpc_server.rs            Second listener pool on the legacy pipe name
+                           (2 slots -- compat path, not the hot route).
+
+WHY THE WIRE TAG DID NOT FLIP
+A pre-rename winmux-linux-x64 does a literal strip_prefix("WINMUX-CHALLENGE ")
+and hangs up on anything else. Emitting YMUX-CHALLENGE would break exactly
+the already-provisioned remotes that the chosen option was picked to
+protect. So both ends learned to read AND mirror either dialect, and the tag
+we EMIT stays legacy for one release. The flip is one line per side and is
+tracked as FOLLOWUPS P1.
+
+TWO REAL BUGS THE RENAME SURFACED (neither is a compile error)
+  1. cli/src/hooks.rs is_ymux_entry() matched the substring "ymux" -- and
+     "winmux" DOES NOT CONTAIN "ymux". Left alone, setup-hooks would have
+     kept every pre-rename entry and pushed a second one beside it: two
+     permission cards per tool call, on every machine that ran the old build.
+  2. addons.rs hooks_uninstall_script's Python filter had the identical
+     flaw -- uninstall would have printed "removed" and removed nothing.
+  Both now match either spelling.
+
+VERSION BUMPS (lockstep, per the 2026-07-15 rebake precedent)
+  core.Version + INSIGHTS_VERSION     2.1.4 -> 2.2.0
+  ymux_hooks_version + BUNDLED_...    1.3.0 -> 1.4.0
+
+BINARIES REBAKED (not just renamed)
+  ymux-linux-x64            musl, via npm run build:linux-cli
+  ymux-server-linux-x64     go build GOOS=linux GOARCH=amd64
+  ymux-server-linux-arm64   go build GOOS=linux GOARCH=arm64
+  grep -a confirms the only winmux strings left are the deliberate compat
+  literals. remote-manifest.json regenerated with the new sha256.
+
+RESULT
+  cargo check --workspace --all-targets   PASS
+  cargo test --workspace                  PASS
+  go vet ./... + go test ./...            PASS (all packages)
+  tsc --noEmit                            PASS
+  vite build                              PASS
+  New tests: TestHookHandshakeAcceptsBothDialects,
+             TestHookHandshakeDeniesInClientDialect
+
+NOT VERIFIED LIVE -- Rule #14. The app was never launched. Every compat
+layer above only executes on an UPGRADE, which no test in this repo can
+reach. The ordered smoke list is FOLLOWUPS P1 (2026-08-18).
+
+STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
+  - Rename the GitHub repo to ymux. Every URL in the tree already says
+    yyhezkel/ymux and 404s until then; rename FIRST, the redirect covers
+    the rest.
+  - Cut as 0.5.0, not 0.4.6: com.winmux.app -> com.ymux.app is the MSI/NSIS
+    upgrade key, so the new package installs SIDE BY SIDE and the old one
+    stays in Programs and Features. No shim exists for this -- the
+    identifier IS the identity. Release notes need an uninstall step.
+
+[2026-08-19] Diagnosis: "strange sudden disconnects" (log forensics only, no code changed)
+  Source read: %APPDATA%\ymux\debug.log (10,093 lines), debug.flooded-2026-08-18.log, log-sync.json
+  Files implicated: app/src-tauri/src/lib.rs:6253 + :3028 + :3544,
+                    app/src-tauri/crates/ymux-tunnel/src/lib.rs:279 (write_remote_env_file),
+                    app/src-tauri/cli/src/main.rs:1223,
+                    app/src-tauri/src/claude_usage.rs:262
+  Result: ROOT CAUSE IDENTIFIED, not fixed, not verified live.
+    SSH itself never fails (20/20 connects ok=true). The reverse tunnel re-allocates a
+    remote port 20 times but rewrites the remote ~/.winmux/run/last.env only 5 times, so
+    the remote CLI hook dials dead ports -> 23 x "Connection refused (os error 111)" ->
+    BRANCH=rpc-error-fallback -> Claude Code's own UI replaces ymux's permission card.
+    That is what the user perceives as a disconnect. The headless workspace_ensure_connected
+    path allocates port+token+watcher, then drops its handle without rolling any of them
+    back; the clobbered token explains the 2 x "server closed before challenge".
+    Race confirmed by two forwards 38ms apart + "stale slot" + 4 server-side
+    "hygiene auto-reaped duplicate port-watchers".
+  Also found (unrelated, filed P2): non-atomic log writes tearing ~120 lines;
+    claude_usage backoff logging 15,477 identical lines.
+  Filed: FOLLOWUPS.md — 1 x P0, 2 x P2. No fix applied — fix shape needs Yossi's decision.
+
+[2026-08-19] Phase 80: sudden disconnects + a single owner for debug.log
+  Branch: claude/strange-disconnections-logs-2c6a49 (worktree)
+  Commits: 80.A TunnelRegistry / 80.B sticky port + connect lock / 80.C CLI retry /
+           80.D log writer
+  New files: app/src-tauri/src/tunnel_registry.rs
+             app/src-tauri/crates/ymux-core/src/log_writer.rs
+  Touched:   src/lib.rs, src/log_sync.rs, src/rpc_server.rs, src/tray.rs,
+             src/updater.rs, crates/ymux-core/src/lib.rs,
+             crates/ymux-tunnel/src/lib.rs, cli/src/main.rs
+
+  DIAGNOSIS CORRECTION worth remembering: the first pass blamed the 20-vs-5 gap
+  between `tcpip_forward got remote port` and `wrote ... last.env`. That was
+  wrong. last.env was written CORRECTLY at 19:56:27 (44495) and the same pane's
+  hook still dialed 34173 four seconds later — the port from 73 minutes earlier.
+  A long-lived claude inherits YMUX_SOCKET_ADDR at spawn, its hooks inherit it,
+  and nothing can rewrite a running process's environment; cli/src/main.rs:1026
+  then skips last.env precisely because the variable IS set. The port has to
+  stop changing, hence the sticky port. The missing env writes were a real but
+  separate correctness bug, fixed alongside.
+
+  Result: cargo test --workspace green (274 app / 39 ymux-core / 20 cli /
+  6 ymux-tunnel), tsc --noEmit clean, release exe built through the Tauri CLI.
+  18 new tunnel tests + 7 CLI env tests + 6 writer tests + a 16-thread x 500-line
+  no-torn-lines regression.
+
+  TWO TRAPS HIT AND WORTH KNOWING:
+   1. russh tcpip_forward returns Ok(0) for a NONZERO port request ("returns 0
+      otherwise" in its docs). Reading the return value as the granted port
+      silently produces a dead tunnel with no error. request_reverse_forward()
+      is the single place that knows this.
+   2. Naming AppState::default() from a #[cfg(test)] module drags tauri's webview
+      runtime into the test binary, which then dies with 0xc0000139
+      STATUS_ENTRYPOINT_NOT_FOUND before any test runs. Build CoreState +
+      TunnelRegistry directly instead. Cost ~30 min to find; the comment on
+      tunnel_lease_tests::fixture() now says so.
+
+  STILL UNVERIFIED (Rule #14): no live SSH run. Sticky-port grant/denial against
+  a real sshd is the behaviour no test here covers. Repro C in FOLLOWUPS is the
+  smoke test that settles it.
+
+================================================================================
+2026-08-19 -- Sidebar design pass (branch claude/sidebar-design-1985e3)
+================================================================================
+Yossi pointed at two screenshots of the rail in Hebrew/RTL light mode: it read
+as confetti, not as a list. Root causes found, in order of blame:
+
+  1. .ws-item[data-has-color] painted the workspace colour THREE times -- the
+     dot, a 3px inline-start rule, and a 12% row tint. At 12% over dark that
+     is a hint; over light mode's #ffffff surface every row became a different
+     pastel bar. Deleted the strip and the tint; the dot alone carries colour
+     now (Design Pass 01 P3 -- colour is meaning, not decoration).
+  2. No meta column. .ws-name{flex:1} pushed each marker to wherever flex left
+     room, so the pane-count badge landed at a different offset on every row.
+     Added .ws-meta, flush to the inline end, fixed order
+     ports -> waiting -> live -> badge. Badge LAST (the only always-present
+     one) + min-width:1.7em, which is what actually makes it a column.
+  3. .has-waiting::after was position:absolute at inset-inline-end:10px and
+     painted OVER the badges. Now a real .ws-waiting-dot element in the
+     cluster. Class stays on the row -- themes-redesign.css and the pulse
+     key off it.
+  4. Narrow-drag `full` mode was undesigned: names ellipsized at the wrong
+     side and there was no tooltip at all (title was set only in icons mode).
+
+FILES
+  app/src/sidebar.css        NEW -- the rail's CSS, lifted out of App.css
+  app/src/App.css            -707 lines, breadcrumbs left at each site
+  app/src/App.tsx            import + widthPx={sidebarPx()}
+  app/src/Sidebar.tsx        .ws-meta, .ws-waiting-dot, unconditional title
+  app/src/themes-redesign.css  .ws-waiting-dot rename; .ws-badge:not(.local);
+                               .group-menu/.ws-port-badge added to the
+                               radius-flattening list
+  app/src/i18n/{en,he,ar,ru}.json  sidebar.workspaceWaitingTitle
+  app/dev/sidebar-fixture.html     NEW -- dev harness, 6 configurations
+  docs/RTL-TEST.md           new "Sidebar" section (it had ZERO sidebar cases)
+
+The CSS split was committed separately (b16537d) and proved content-identical
+by normalising both trees and diffing against HEAD, so this commit's diff is
+only the design change.
+
+MEASURED, not eyeballed (fixture in the browser, computed layout read back):
+  row height          29px -> 26px, uniform across all rows
+  row backgrounds     only transparent + the active accent tint (no per-ws)
+  border-inline-start 0 everywhere
+  badge column        RTL offset {8}, LTR offset {8} -- single value = aligned
+                      (was {8,20,22,46})
+  waiting dot         no longer intersects the badge; ::after content = none
+  bidi                latin name in an RTL rail: first glyph at fromLeft:0
+                      with plaintext, fromLeft:-25 (head clipped off-box)
+                      without. Hebrew still fromRight:0. This IS the ...rver-7
+                      bug, reproduced and fixed.
+  narrow (<190px)     port badge drops, name keeps the room
+  modernist preset    .ws-badge and .ws-port-badge both flatten to 0px
+
+TWO REGRESSIONS CAUGHT DURING THE PASS, both fixed before commit:
+  - Deleting the redesign .ws-badge.local override let the generic
+    [data-theme-family] .ws-badge win (equal specificity, loads later) and put
+    the chip back in all four directions. Fixed with :not(.local) on the
+    generic instead.
+  - .ws-meta's margin-inline-start:auto still consumed free space in icons
+    mode even with every child hidden, knocking the 18px dot 10px off centre.
+    Fixed by floating the cluster (position:absolute) in icons mode, which
+    also preserves the waiting dot's old overlay behaviour there. Verified
+    back to offCentre 0.
+
+NOT VERIFIED LIVE -- Rule #14. The Tauri app was never launched; everything
+above was measured in the vite dev server against the real stylesheets with a
+DOM fixture, plus tsc + vite build clean. The fixture cannot exercise: real
+workspace data, drag-reorder, context menus, inline group rename, the colour
+picker, the settings font-size slider, or 11 of the 13 presets. Logged as
+FOLLOWUPS P1.
+
+Correction to my own diagnosis: I had claimed the group header rendered LARGER
+than its children. It did not -- 13px hardcoded vs the rows' 17.3px. The group
+layer's real defect was the hardcoded px (the Settings font slider moved only
+half the rail) and 4px of margin, which is why groups did not read as sections.
+Both fixed; the size relationship was already correct and is preserved.
+
+--------------------------------------------------------------------------------
+2026-08-19 (later) -- Sidebar follow-up: name alignment regression
+--------------------------------------------------------------------------------
+Yossi ran the merged build and sent a screenshot. The confetti was gone and the
+badge column was straight, but every LATIN name had drifted off the start edge:
+`Local`, `WSL`, `boost`, `server1` hung in the middle of the row with a gap
+between the dot and the name, while `שרת 9` stayed flush right.
+
+CAUSE, mine: `unicode-bidi: plaintext` + `text-align: start` on .ws-name. Under
+plaintext, `start` is resolved against the PARAGRAPH's per-string base
+direction, not the container's -- so in a Hebrew rail a latin name resolves LTR
+and `start` flips to the left. Fixing the ellipsis side had silently taken the
+alignment with it.
+
+FIX: keep plaintext (it is what puts the ellipsis on the right end), pin the
+alignment explicitly to the rail:
+  [dir="rtl"] .ws-name { text-align: right; }
+  [dir="ltr"] .ws-name { text-align: left; }
+
+MEASURED, A/B in the fixture (distance from the box's start edge to the whole
+text run, 0 = flush):
+  before   13 distinct gaps, 0-123px   <- the ragged gutter in the screenshot
+  after    {0} in BOTH the RTL and the LTR rail
+  ellipsis still per-string: clipped latin names keep firstGlyphFromLeft:0,
+           i.e. the tail is cut, not the head
+  row height {26} and badge column {8} unchanged
+
+Also caught while re-reading the screenshot: `2- SERVER` renders as `2- SERVER`,
+not mangled. The leading-digit names were fine; alignment was the only defect.
+
+My first measurement of this was WRONG and said the fix had only half worked --
+it measured the FIRST GLYPH, which for a right-aligned latin string sits at the
+string's left end, so the "gap" it reported was just the name's width. Measuring
+the whole run's near edge is the correct probe. Noted because the same mistake
+is easy to repeat on any RTL alignment check.
+
+--------------------------------------------------------------------------------
+2026-08-19 (later still) -- Sidebar masthead + collapse control
+--------------------------------------------------------------------------------
+Yossi confirmed the alignment fix live, then asked for two things: centre the
+logo and let it fill / scale with the row, and sort out the navbar's
+open/close button.
+
+WHAT WAS THERE: .sidebar-header stacked two rows -- the brand row, then the
+collapse arrow on a line of its own inside a 1px bordered box. That spent ~19px
+of permanent vertical space on a control used about once a day, and the border
+made a rare toggle read as a primary action. The brand was also pinned at 22px
+logo + --w-fs-lg regardless of how wide the rail was dragged.
+
+WHAT IT IS NOW: one row, a three-column grid -- [collapse] [brand] [badge].
+Both side slots are the SAME fixed 26px, which is what keeps the brand
+optically centred whether or not the badge is rendering; a flex row with
+`margin: auto` drifts the moment one side appears. Grid tracks follow the
+writing direction, so the arrow lands on the rail's OUTER edge in LTR and RTL
+alike, pointing the way it collapses.
+
+The masthead scales off --sidebar-w, the live width Sidebar.tsx now publishes
+inline (the same widthPx already threaded for [data-narrow]). Everything in the
+lockup is em-based off one clamped root, so the mark tracks the wordmark
+instead of staying pinned:
+  --sb-brand: clamp(15px, calc(var(--sidebar-w) * 0.115), 32px)
+
+The collapse button lost its border. Quiet --w-text-faint at rest, surfaces on
+hover; the global :focus-visible ring keeps it reachable.
+
+MEASURED in the fixture (now 7 views, added a 420px wide rail to see the top of
+the clamp):
+  brand      19px @165  ->  26px @224  ->  32px @420 (clamp ceiling)
+  logo       em-locked at 1.15em, so 21.8 -> 29.6 -> 36.8
+  centring   centreOffset {0} in ALL seven views, badge present
+  header     ~74px -> 49-63px in full; ~19px handed back to the list
+  overflow   0 -- nothing spills the rail at 165px
+
+REGRESSION CAUGHT BY THE MEASUREMENT, fixed before commit: moving the notif
+badge out of .sidebar-brand-row gave it a row of its own in the 48px ICONS
+strip, pushing that header from 74px to 99px. It rides the logo's corner as an
+absolutely-positioned count bubble there instead -- which is what a narrow rail
+wants anyway. Back to 75px.
+
+Deliberately NOT changed: the wordmark's blue->teal gradient. It is existing
+brand identity, not a call to make while fixing layout -- and themes-redesign
+already neutralises it for the four design directions.
+
+NOT VERIFIED LIVE (Rule #14) -- fixture + tsc + vite build only.
+
+--------------------------------------------------------------------------------
+2026-08-19 (cont.) -- Masthead becomes the control; the notif badge dies
+--------------------------------------------------------------------------------
+Yossi: "why is there a notifications button on the right when nobody expects it
+there?" He was right, and it was worse than the placement:
+
+  - .sidebar-notif-badge was a <span>. No onClick, anywhere. Styled as an amber
+    pill with a glow, so it read as a control and did nothing when clicked.
+  - There was nothing to click TO. showNotifCenter was folded out (App.tsx:161).
+  - The three-column grid I had just built made it WORSE: a fixed slot mirroring
+    the collapse button implies a matched pair. One was a button, one was dead.
+  - And my own ASCII diagram misled him -- I drew LOGICAL order and labelled it
+    RTL. Under dir=rtl grid col 1 is on the RIGHT, so the arrow was right and
+    the badge left, the opposite of what the diagram showed.
+
+What it counted: paneNotified().size, panes with a pending OSC 9/99/777. That
+signal already renders on the pane itself (LayoutView.tsx:171 isNotified), but
+Sidebar never received it -- so for a workspace you were NOT looking at, an
+undifferentiated number in the masthead was the only surface, with no way to
+tell which workspace wanted you.
+
+DECIDED (Yossi): fold it into the row's existing attention dot, then he went
+further -- kill the collapse button too, one-column grid, DOUBLE-CLICK the logo
+to collapse. "0 instead of another button."
+
+  - .sidebar-header in full mode: one column. The wordmark spans the entire
+    content width -- measured rowSpansHeader 207/207 at 224px, 148/148 at 165,
+    403/403 at 420. That is the original "fill the row" ask, literally.
+  - .sidebar-brand-row is now the <button>. Single click does NOTHING (the rail
+    collapsing because you brushed its header would be a nasty surprise),
+    dblclick toggles, Enter/Space toggles so the keyboard and screen readers
+    keep a labelled path. Ctrl+B still works. It inherits the app's bare-element
+    button styling, so background/border/padding/font all have to be stripped
+    explicitly or the wordmark renders inside a surface-filled box.
+  - notifiedWorkspaceIds derived in App.tsx on the liveWorkspaceIds pattern.
+  - ONE dot, two intensities, no fifth marker: blocking = filled + pulsing
+    (unchanged), activity = transparent with a 1.5px inset ring, no animation.
+    Blocking outranks activity on a row that is both.
+
+MEASURED (7 fixture views):
+  header    full 47-63px; ICONS 74px -> 45px, the button row is simply gone
+  brand     19 @165 -> 26 @224 -> 32 @420 (clamp ceiling)
+  centring  centreOffset {0} everywhere; overflow 0 at the 165px narrowest
+  button    tagName BUTTON, background transparent, border 0 -- chrome stripped
+  dots      blocking: filled + ymux-attn-dot; activity: transparent + inset ring
+            + animation none. Verified in both the tokyo and modernist palettes.
+  leftovers 0 nodes matching .sidebar-collapse-btn / .sidebar-notif-badge
+
+Checked rather than assumed: themes-redesign.css:95 puts a 3px double rule under
+.sidebar-brand-row for broadsheet. My `border: none` is less specific AND loads
+first, so the theme still wins -- toggled the preset live and confirmed
+"3px double | pad 6px".
+
+Also removed: the pendingNotifCount prop, .sidebar-collapse-btn and
+.sidebar-notif-badge CSS entirely, and the two App.css breadcrumbs that named
+them. 3 new i18n keys x 4 locales.
+
+NOT VERIFIED LIVE (Rule #14). In particular the dblclick gesture and the
+Enter/Space path have never been exercised by a real pointer or keyboard.
+
+--------------------------------------------------------------------------------
+2026-08-19 (close) -- Sidebar pass verified live and merged
+--------------------------------------------------------------------------------
+Yossi ran the branch build (a0ce0d0, run 32235591934) and confirmed: colour
+flood gone, badge column straight, names on one vertical line, masthead scaling
+with the rail, double-click on the wordmark collapsing/expanding, and
+Tab + Enter doing the same. PR #10 merged -> main 816cf64.
+
+Merged in order: #8 (the split + the design pass), #9 (name alignment), #10
+(masthead is the control, notif badge removed).
+
+WHAT RUNNING IT ACTUALLY BOUGHT, worth remembering: two defects that six
+measured properties in the fixture did not catch.
+  - #9  latin names drifted off the start edge. unicode-bidi:plaintext resolves
+        text-align:start PER STRING, so fixing the ellipsis side silently took
+        the alignment with it. I had measured row height, badge column, row
+        background, bidi glyph offset, narrow behaviour and preset radii --
+        alignment was simply not on the list.
+  - #10 the notif badge was a <span> styled as a button that did nothing on
+        click. No measurement would ever have found that; Yossi asking "why is
+        there a button there" did.
+The fixture is good for geometry and bad for affordances. Do not let a green
+measurement stand in for a run.
+
+FOLLOWUPS: the P1 is closed. What remains is a P3 for the surfaces still never
+exercised -- the Settings font-size slider (the whole reason for the px ->
+--w-fs-* sweep), drag-reorder, the menus/rename/colour picker, 11 of the 13
+presets, and prefers-reduced-motion.

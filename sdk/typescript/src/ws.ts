@@ -1,10 +1,10 @@
 // ws.ts — typed WebSocket wrapper for a workspace session stream (8a/8b). The
-// server sends WinmuxFrame values (generated union); this wraps subscribe +
+// server sends YmuxFrame values (generated union); this wraps subscribe +
 // the client→server commands. WebSocket is injected so it works in the browser
 // (global), node (`ws` package), or React Native.
-import type { WinmuxFrame } from "./frames.gen.js";
+import type { YmuxFrame } from "./frames.gen.js";
 
-export type { WinmuxFrame } from "./frames.gen.js";
+export type { YmuxFrame } from "./frames.gen.js";
 
 // Minimal structural type for a WebSocket implementation (browser or `ws`).
 export interface WSLike {
@@ -27,7 +27,7 @@ export interface SubscribeOptions {
   cursor?: number;
   /** WebSocket factory. Browser: `(u) => new WebSocket(u)`. */
   makeSocket: WSFactory;
-  onFrame: (frame: WinmuxFrame) => void;
+  onFrame: (frame: YmuxFrame) => void;
   onError?: (err: unknown) => void;
   onClose?: () => void;
 }
@@ -48,7 +48,7 @@ export class WorkspaceSocket {
     this.ws = opts.makeSocket(url);
     this.ws.onmessage = (ev) => {
       try {
-        opts.onFrame(JSON.parse(String(ev.data)) as WinmuxFrame);
+        opts.onFrame(JSON.parse(String(ev.data)) as YmuxFrame);
       } catch (e) {
         opts.onError?.(e);
       }

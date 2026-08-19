@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a problem with winmux
+about: Report a problem with ymux
 title: "[Bug] "
 labels: bug
 ---
@@ -21,14 +21,14 @@ What should have happened instead.
 
 ## Environment
 
-- winmux version (Settings → Updates):
+- ymux version (Settings → Updates):
 - Windows version (winver):
 - Remote (if SSH-related): distro, sshd version, runs in (VM / container / bare-metal / cloud)?
 - Auth method: key / password / agent
 
 ## debug.log relevant lines
 
-Paste the lines around the time of the issue from `%APPDATA%\winmux\debug.log` (Settings → Logs → Open folder).
+Paste the lines around the time of the issue from `%APPDATA%\ymux\debug.log` (Settings → Logs → Open folder).
 
 ```
 [paste here]

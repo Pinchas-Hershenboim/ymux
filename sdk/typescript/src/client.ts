@@ -1,4 +1,4 @@
-// client.ts — the hand-written winmux-server REST client. Thin, dependency-free
+// client.ts — the hand-written ymux-server REST client. Thin, dependency-free
 // (uses the built-in fetch), typed against the generated OpenAPI schemas in
 // types.gen.ts. The WS side lives in ws.ts.
 import type { components } from "./types.gen.js";
@@ -17,7 +17,7 @@ export type Session = Schemas["Session"];
 export type CreateSessionRequest = Schemas["CreateSessionRequest"];
 export type SessionCreated = Schemas["SessionCreated"];
 
-export interface WinmuxClientOptions {
+export interface YmuxClientOptions {
   /** e.g. "http://127.0.0.1:7879" */
   baseUrl: string;
   /** bearer token; omitted only for the public /healthz + /api/version. */
@@ -26,22 +26,22 @@ export interface WinmuxClientOptions {
   fetch?: typeof fetch;
 }
 
-export class WinmuxApiError extends Error {
+export class YmuxApiError extends Error {
   constructor(
     readonly status: number,
     readonly body: string,
   ) {
-    super(`winmux-server ${status}: ${body}`);
-    this.name = "WinmuxApiError";
+    super(`ymux-server ${status}: ${body}`);
+    this.name = "YmuxApiError";
   }
 }
 
-export class WinmuxClient {
+export class YmuxClient {
   private readonly base: string;
   private readonly token?: string;
   private readonly f: typeof fetch;
 
-  constructor(opts: WinmuxClientOptions) {
+  constructor(opts: YmuxClientOptions) {
     this.base = opts.baseUrl.replace(/\/$/, "");
     this.token = opts.token;
     this.f = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -53,7 +53,7 @@ export class WinmuxClient {
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await this.f(this.base + path, { ...init, headers: this.auth(init?.headers as Record<string, string>) });
-    if (!res.ok) throw new WinmuxApiError(res.status, await res.text());
+    if (!res.ok) throw new YmuxApiError(res.status, await res.text());
     return (await res.json()) as T;
   }
 
@@ -104,8 +104,14 @@ export class WinmuxClient {
     const res = await this.f(`${this.base}/api/v2/files/read?path=${encodeURIComponent(path)}${q}`, {
       headers: this.auth(),
     });
-    if (!res.ok) throw new WinmuxApiError(res.status, await res.text());
-    return { bytes: new Uint8Array(await res.arrayBuffer()), truncated: res.headers.get("X-Winmux-Truncated") === "true" };
+    if (!res.ok) throw new YmuxApiError(res.status, await res.text());
+    // `X-Winmux-Truncated` fallback: a server predating the winmux → ymux
+    // rename only sends the old header, and silently reporting a truncated
+    // read as complete is the worst possible failure mode here.
+    const truncated =
+      res.headers.get("X-Ymux-Truncated") === "true" ||
+      res.headers.get("X-Winmux-Truncated") === "true";
+    return { bytes: new Uint8Array(await res.arrayBuffer()), truncated };
   }
   async uploadFile(path: string, data: Blob | Uint8Array, filename = "file"): Promise<UploadResult> {
     const form = new FormData();
@@ -117,7 +123,7 @@ export class WinmuxClient {
     const res = await this.f(`${this.base}/api/v2/files/download?path=${encodeURIComponent(path)}`, {
       headers: this.auth(),
     });
-    if (!res.ok) throw new WinmuxApiError(res.status, await res.text());
+    if (!res.ok) throw new YmuxApiError(res.status, await res.text());
     return new Uint8Array(await res.arrayBuffer());
   }
   deleteFile(path: string): Promise<{ ok: boolean }> {

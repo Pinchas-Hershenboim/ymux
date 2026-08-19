@@ -1,12 +1,12 @@
 // Server-side session metadata (multi-machine sync).
 //
-// `~/.winmux/session-meta.json` maps a tmux session name to the Claude
-// session running inside it plus display metadata, so ANY winmux desktop
+// `~/.ymux/session-meta.json` maps a tmux session name to the Claude
+// session running inside it plus display metadata, so ANY ymux desktop
 // connecting to this server (home, office, laptop) can label the same
 // sessions identically. Written from two directions:
 //   - the Claude `stop` hook (this CLI, inside the pane): claude_session_id
 //     + claude_title extracted from the transcript, every turn;
-//   - the desktop app over an SSH exec (`winmux session-meta set`): the
+//   - the desktop app over an SSH exec (`ymux session-meta set`): the
 //     creating machine's `origin` id and the user's manual `label`.
 //
 // Schema:
@@ -77,7 +77,7 @@ impl Default for SessionMetaFile {
 
 fn meta_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".winmux").join("session-meta.json"))
+    Some(PathBuf::from(home).join(".ymux").join("session-meta.json"))
 }
 
 /// Missing / unreadable / corrupt file all degrade to an empty map — the
@@ -143,13 +143,13 @@ fn sanitize_tmux_session_name(pane_id: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
         .collect();
-    format!("winmux-{}", cleaned)
+    format!("ymux-{}", cleaned)
 }
 
 /// The tmux session this process runs inside. Preferred: ask tmux itself
-/// (exact even when WINMUX_PANE_ID is stale — `set-environment -g` is
+/// (exact even when YMUX_PANE_ID is stale — `set-environment -g` is
 /// tmux-server-global, so on multi-machine servers the env var is
-/// last-connector-wins). Fallback: derive from WINMUX_PANE_ID.
+/// last-connector-wins). Fallback: derive from YMUX_PANE_ID.
 pub fn resolve_session_name() -> Option<String> {
     if std::env::var_os("TMUX").is_some() {
         let mut cmd = std::process::Command::new("tmux");
@@ -169,7 +169,7 @@ pub fn resolve_session_name() -> Option<String> {
             }
         }
     }
-    let pane_id = std::env::var("WINMUX_PANE_ID").ok()?;
+    let pane_id = std::env::var("YMUX_PANE_ID").ok()?;
     if pane_id.is_empty() {
         return None;
     }
@@ -400,7 +400,7 @@ pub fn decode_hex_utf8(hex: &str) -> Result<String, String> {
 }
 
 /// Called from the Claude `stop` / `session-end` hooks (env-gated to
-/// winmux panes by the caller). Best-effort: returns what it learned so
+/// ymux panes by the caller). Best-effort: returns what it learned so
 /// the caller can enrich its feed.push params; `Err` carries an error
 /// KIND string safe for hook-debug.log (no user content).
 ///
@@ -483,8 +483,8 @@ mod tests {
 
     #[test]
     fn sanitizer_matches_desktop() {
-        assert_eq!(sanitize_tmux_session_name("p_18f3a2c_1"), "winmux-p_18f3a2c_1");
-        assert_eq!(sanitize_tmux_session_name("a.b:c d"), "winmux-a_b_c_d");
+        assert_eq!(sanitize_tmux_session_name("p_18f3a2c_1"), "ymux-p_18f3a2c_1");
+        assert_eq!(sanitize_tmux_session_name("a.b:c d"), "ymux-a_b_c_d");
     }
 
     #[test]
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn transcript_title_prefers_last_summary() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("winmux-meta-test-{}.jsonl", std::process::id()));
+        let path = dir.join(format!("ymux-meta-test-{}.jsonl", std::process::id()));
         let lines = [
             r#"{"type":"summary","summary":"Old title","leafUuid":"a"}"#,
             r#"{"type":"summary","summary":"Fix auth bug","leafUuid":"b"}"#,
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn transcript_title_falls_back_to_first_user_message() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("winmux-meta-test2-{}.jsonl", std::process::id()));
+        let path = dir.join(format!("ymux-meta-test2-{}.jsonl", std::process::id()));
         let lines = [
             r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"}}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"real question here"}]}}"#,

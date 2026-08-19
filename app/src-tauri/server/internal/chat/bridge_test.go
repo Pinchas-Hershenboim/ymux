@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"winmux-server/internal/workspace"
+	"ymux-server/internal/workspace"
 )
 
 // TestBridgeTranslate locks the engine→workspace frame mapping (the shapes the

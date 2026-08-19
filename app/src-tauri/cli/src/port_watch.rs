@@ -1,7 +1,7 @@
 //! Phase 36 (#2.2): listening-port watcher.
 //!
 //! Runs on the remote Linux box (this binary cross-compiles to
-//! `winmux-linux-x64`). Every 500ms it reads `/proc/net/tcp` +
+//! `ymux-linux-x64`). Every 500ms it reads `/proc/net/tcp` +
 //! `/proc/net/tcp6`, extracts sockets in the LISTEN state, and diffs
 //! the set against the previous tick. New ports trigger a `port.opened`
 //! RPC notification to the Windows backend (which opens an SSH
@@ -10,7 +10,7 @@
 //! Only loopback (127.0.0.1 / ::1) and bind-any (0.0.0.0 / ::) listeners
 //! are considered — those are what dev servers use. Specific-LAN-IP
 //! binds are ignored. Ports below 1024, SSH (22), and anything in
-//! `WINMUX_PORTFORWARD_EXCLUDE` are filtered out.
+//! `YMUX_PORTFORWARD_EXCLUDE` are filtered out.
 
 use std::collections::HashSet;
 
@@ -129,7 +129,7 @@ pub fn should_forward(port: u16, exclude: &HashSet<u16>) -> bool {
 }
 
 fn parse_exclude_env() -> HashSet<u16> {
-    let mut set: HashSet<u16> = std::env::var("WINMUX_PORTFORWARD_EXCLUDE")
+    let mut set: HashSet<u16> = std::env::var("YMUX_PORTFORWARD_EXCLUDE")
         .ok()
         .map(|s| {
             s.split(',')
@@ -137,11 +137,11 @@ fn parse_exclude_env() -> HashSet<u16> {
                 .collect()
         })
         .unwrap_or_default();
-    // Phase 39: never report winmux's own reverse-tunnel port. The
+    // Phase 39: never report ymux's own reverse-tunnel port. The
     // backend filters it too (defence in depth), but excluding it here
-    // avoids even sending the port.opened RPC. WINMUX_SOCKET_ADDR is
+    // avoids even sending the port.opened RPC. YMUX_SOCKET_ADDR is
     // "127.0.0.1:<remote_port>".
-    if let Ok(addr) = std::env::var("WINMUX_SOCKET_ADDR") {
+    if let Ok(addr) = std::env::var("YMUX_SOCKET_ADDR") {
         if let Some(port) = addr.rsplit(':').next().and_then(|p| p.trim().parse::<u16>().ok()) {
             set.insert(port);
         }

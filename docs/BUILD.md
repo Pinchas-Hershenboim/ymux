@@ -1,6 +1,6 @@
 # Build
 
-How to build winmux from source on Windows. Linux/macOS hosts aren't supported yet
+How to build ymux from source on Windows. Linux/macOS hosts aren't supported yet
 (the Tauri app needs WebView2 + the Windows-only PTY backends).
 
 ## Prerequisites
@@ -32,7 +32,7 @@ You want `cl.exe` to resolve and the targets list to include both
 ## File layout
 
 ```
-winmux/
+ymux/
   README.md
   LICENSE
   docs/
@@ -50,7 +50,7 @@ winmux/
       capabilities/default.json
       icons/
       resources/
-        winmux-linux-x64          # static-PIE ELF, bundled into app.exe
+        ymux-linux-x64          # static-PIE ELF, bundled into app.exe
         remote-manifest.json      # SHA-256 + metadata
       src/
         main.rs                   # 6-line bin entry
@@ -60,12 +60,12 @@ winmux/
         tunnel.rs                 # reverse SSH tunnel + HMAC handshake
       cli/                        # separate workspace member
         Cargo.toml
-        src/main.rs               # the standalone winmux CLI
+        src/main.rs               # the standalone ymux CLI
       target/
         debug/
           app.exe                 # Tauri app
-          winmux.exe              # Windows CLI
-          x86_64-unknown-linux-musl/release/winmux  # Linux CLI source
+          ymux.exe              # Windows CLI
+          x86_64-unknown-linux-musl/release/ymux  # Linux CLI source
         release/                  # not used currently
 ```
 
@@ -98,16 +98,16 @@ Output:
 | File | Size (today) | Description |
 |---|---|---|
 | `app/src-tauri/target/release/app.exe` | ~13 MB | Stripped, release-profile binary |
-| `app/src-tauri/target/release/winmux.exe` | ~1.5 MB | Windows CLI, release |
-| `app/src-tauri/target/release/bundle/msi/winmux_0.1.0_x64_en-US.msi` | ~6 MB | MSI installer |
-| `app/src-tauri/target/release/bundle/nsis/winmux_0.1.0_x64-setup.exe` | ~4 MB | NSIS installer |
+| `app/src-tauri/target/release/ymux.exe` | ~1.5 MB | Windows CLI, release |
+| `app/src-tauri/target/release/bundle/msi/ymux_0.1.0_x64_en-US.msi` | ~6 MB | MSI installer |
+| `app/src-tauri/target/release/bundle/nsis/ymux_0.1.0_x64-setup.exe` | ~4 MB | NSIS installer |
 
-The MSI installs to `C:\Program Files\winmux\` by default. After install:
-- `C:\Program Files\winmux\winmux.exe` — the GUI app (launched from Start Menu)
-- `C:\Program Files\winmux\resources\winmux-cli.exe` — the CLI
-- `C:\Program Files\winmux\resources\winmux-linux-x64` — bundled for the SSH bootstrap
-- `C:\Program Files\winmux\resources\remote-manifest.json` — sha256 + metadata
-- `C:\Program Files\winmux\resources\LICENSE` — GPL-3.0
+The MSI installs to `C:\Program Files\ymux\` by default. After install:
+- `C:\Program Files\ymux\ymux.exe` — the GUI app (launched from Start Menu)
+- `C:\Program Files\ymux\resources\ymux-cli.exe` — the CLI
+- `C:\Program Files\ymux\resources\ymux-linux-x64` — bundled for the SSH bootstrap
+- `C:\Program Files\ymux\resources\remote-manifest.json` — sha256 + metadata
+- `C:\Program Files\ymux\resources\LICENSE` — GPL-3.0
 
 The CLI is **not** auto-added to `PATH` (the MSI bundler doesn't expose that yet
 without a custom WiX template — see [README.md](../README.md#install-release) for
@@ -119,10 +119,10 @@ After the MSI builds:
 
 ```cmd
 gh release create v0.1.0 \
-  --title "winmux v0.1.0" \
+  --title "ymux v0.1.0" \
   --notes "Initial release. Phases 1-5 + 6.x as described in CHANGELOG / README." \
-  app/src-tauri/target/release/bundle/msi/winmux_0.1.0_x64_en-US.msi \
-  app/src-tauri/target/release/bundle/nsis/winmux_0.1.0_x64-setup.exe
+  app/src-tauri/target/release/bundle/msi/ymux_0.1.0_x64_en-US.msi \
+  app/src-tauri/target/release/bundle/nsis/ymux_0.1.0_x64-setup.exe
 ```
 
 The repo is private; `gh release create --private`-style flags aren't needed —
@@ -144,8 +144,8 @@ This:
 
 Output:
 - `app/src-tauri/target/debug/app.exe` — the standalone app, ~21 MB
-- `app/src-tauri/target/debug/winmux.exe` — the Windows CLI, ~3 MB
-- `app/src-tauri/target/debug/resources/winmux-linux-x64` — bundled, ~2 MB
+- `app/src-tauri/target/debug/ymux.exe` — the Windows CLI, ~3 MB
+- `app/src-tauri/target/debug/resources/ymux-linux-x64` — bundled, ~2 MB
 - `app/src-tauri/target/debug/resources/remote-manifest.json` — bundled
 
 The MSI bundling step can fail with `error 32: file in use` if you have the app
@@ -160,15 +160,15 @@ powershell -ExecutionPolicy Bypass -File .\app\scripts\build-linux-cli.ps1
 
 The script:
 1. Ensures `x86_64-unknown-linux-musl` is installed.
-2. `cargo build --release --target x86_64-unknown-linux-musl -p winmux`.
-3. Copies `target/x86_64-unknown-linux-musl/release/winmux` to
-   `src-tauri/resources/winmux-linux-x64`.
+2. `cargo build --release --target x86_64-unknown-linux-musl -p ymux`.
+3. Copies `target/x86_64-unknown-linux-musl/release/ymux` to
+   `src-tauri/resources/ymux-linux-x64`.
 4. Writes `remote-manifest.json` next to it. **Without BOM** — the script uses
    `[System.IO.File]::WriteAllText($p, $json, [System.Text.UTF8Encoding]::new($false))`.
    Don't switch back to `Set-Content -Encoding utf8` — that adds a BOM and
    `serde_json::from_str` rejects it.
 
-The script prints `Built winmux-linux-x64: <bytes> bytes, sha256=<hash>` on success.
+The script prints `Built ymux-linux-x64: <bytes> bytes, sha256=<hash>` on success.
 
 ## Run the standalone
 
@@ -179,10 +179,10 @@ The script prints `Built winmux-linux-x64: <bytes> bytes, sha256=<hash>` on succ
 Connect to an SSH workspace. The bootstrap will:
 - Detect the remote arch.
 - SHA-256 compare against the manifest.
-- SFTP-upload the binary to `~/.winmux/bin/winmux-linux-x64` if mismatched.
-- Symlink `~/.winmux/bin/winmux` → `winmux-linux-x64`.
+- SFTP-upload the binary to `~/.ymux/bin/ymux-linux-x64` if mismatched.
+- Symlink `~/.ymux/bin/ymux` → `ymux-linux-x64`.
 
-Inside the SSH pane, `~/.winmux/bin/winmux list-workspaces` should round-trip back.
+Inside the SSH pane, `~/.ymux/bin/ymux list-workspaces` should round-trip back.
 
 ## Common gotchas
 
@@ -192,7 +192,7 @@ If you launch a process from a sandboxed shell (e.g. some test harnesses, or
 within an AppContainer like Claude Code's session), `%APPDATA%` may resolve to a
 sandbox-redirected path (`%LOCALAPPDATA%\Packages\<sandbox>\LocalCache\Roaming\…`).
 The standalone `app.exe` launched from Explorer always uses the **real**
-`%APPDATA%` (`C:\Users\<user>\AppData\Roaming\winmux\…`).
+`%APPDATA%` (`C:\Users\<user>\AppData\Roaming\ymux\…`).
 
 When debugging persistence, always use the **literal real path** for inspection,
 not `$env:APPDATA`, because the latter resolves to whatever your shell sees.
