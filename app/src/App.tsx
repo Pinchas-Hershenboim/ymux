@@ -55,6 +55,7 @@ import {
   pasteIntoActiveTerminal,
   readClipboardText,
   setCtrlCCopyOnSelect,
+  setPaneTuiSignal,
 } from "./terminalInstance";
 import { saveRemoteFileAs } from "./download";
 import { MarkdownViewer } from "./MarkdownViewer";
@@ -1728,6 +1729,12 @@ function App() {
     // Phase 62.B (item J): tag the terminal with its workspace so an
     // OSC 8 file:// link click knows which remote to SFTP-download from.
     ti.workspaceId = ws.id;
+    // 2026-08-19: when ymux itself launches Claude, nothing has to be
+    // detected. Claude Code writes RTL pre-reordered, so the pane must not
+    // bidi it a second time — and the title-based detector never learns this
+    // inside zellij, which eats the title. `null` on any other connect hands
+    // the decision back to the title / the hooks.
+    ti.setTuiSignal(opts.mode === "claude" ? true : null);
     setStatus(paneId, "connecting…", false);
     try {
       const sessionId = await invoke<string>("pane_connect", {
@@ -2793,6 +2800,17 @@ function App() {
         // waiting red-dot highlight. Passive hooks never touch the feed.
         if (isBlocking) {
           setFeedItems((prev) => [f, ...prev.filter((i) => i.request_id !== f.request_id)]);
+        }
+        // 2026-08-19: session-start / session-end are literally "Claude
+        // started / stopped in pane X" — the hook already carries
+        // YMUX_PANE_ID (cli/src/main.rs) — so they drive the per-pane
+        // "don't bidi this twice" state. This works over SSH and through any
+        // multiplexer, unlike the terminal title, which zellij consumes.
+        // session-end clears back to null rather than asserting false, so the
+        // title can still speak if it ever starts arriving.
+        if (f.pane_id) {
+          if (f.subkind === "session-start") setPaneTuiSignal(f.pane_id, true);
+          else if (f.subkind === "session-end") setPaneTuiSignal(f.pane_id, null);
         }
         // Every hook is recorded in the Notification Center history; feedToNotif
         // carries the workspace_id so the entry shows which workspace it's from.

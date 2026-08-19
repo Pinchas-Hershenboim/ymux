@@ -1896,6 +1896,26 @@ fn cleanup_session_maps(
 
 // ─── Local PTY spawn ─────────────────────────────────────────────────────────
 
+/// Resolve the bundled zellij config (ymux-zellij.kdl). Same shape as
+/// `local_setup::resolve_ymux_cli` — installed builds carry it under the Tauri
+/// resource dir, and a dev build finds it beside the binary.
+///
+/// `None` is a supported state, not a failure: without the file zellij just
+/// uses its own defaults and the pane still works, only with the frame back.
+fn resolve_zellij_config(app: &AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let root = app.path().resource_dir().ok()?;
+    for c in [
+        root.join("resources").join("ymux-zellij.kdl"),
+        root.join("ymux-zellij.kdl"),
+    ] {
+        if c.is_file() {
+            return Some(c);
+        }
+    }
+    None
+}
+
 fn spawn_local_pty(
     state: &AppState,
     pane_id: String,
@@ -1950,6 +1970,19 @@ fn spawn_local_pty(
     // pre-rename install reads the old spelling and would otherwise
     // env-gate itself out. Drop once 0.5.0 is the floor.
     cmd.env("WINMUX_PANE_ID", &pane_id);
+    // 2026-08-19: point zellij at ymux's own config (`pane_frames false`).
+    //
+    // An ENV VAR rather than `zellij --config <path>` in the line we type into
+    // the shell: the resource path contains spaces, that line has to parse in
+    // both cmd.exe and PowerShell, and Rule #3 says do not assemble shell
+    // strings. `--config` documents `[env: ZELLIJ_CONFIG_FILE=]`, so this is
+    // the same knob without any quoting.
+    //
+    // Skipped silently when the resource is missing — zellij falls back to its
+    // own config and the pane works, just with the frame.
+    if let Some(kdl) = resolve_zellij_config(app) {
+        cmd.env("ZELLIJ_CONFIG_FILE", &kdl);
+    }
     tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + YMUX_PANE_ID env vars");
     let mut child = pair
         .slave
@@ -2130,6 +2163,22 @@ fn zellij_args_kill(name: &str) -> Vec<String> {
 
 fn zellij_args_delete(name: &str) -> Vec<String> {
     vec!["delete-session".into(), name.to_string()]
+}
+
+/// Type `chars` into a named session, as if the user had typed them.
+///
+/// `-s <name>` is a ROOT option, so it comes before the subcommand — the same
+/// targeting that made a rename attempt list the active sessions by name.
+/// This is how the connect wizard's command reaches the shell INSIDE zellij
+/// instead of the shell zellij was launched from; see `pane_connect`.
+fn zellij_args_write_chars(session: &str, chars: &str) -> Vec<String> {
+    vec![
+        "-s".into(),
+        session.to_string(),
+        "action".into(),
+        "write-chars".into(),
+        chars.to_string(),
+    ]
 }
 
 /// Run one zellij verb to completion. Returns whether it exited 0.
@@ -6671,6 +6720,10 @@ async fn pane_connect(
         }
     }
 
+    // 2026-08-19: set by the Local arm below when the pane is persistent, so
+    // the smart-connect injection at the end of this function can address the
+    // zellij session directly instead of typing into the shell in front of it.
+    let mut zellij_target: Option<String> = None;
     let session_id = match conn {
         // 2026-08-19: native Windows panes are persistent by default too,
         // via zellij. This arm used to DROP `persistent` / `mode` /
@@ -6692,6 +6745,7 @@ async fn pane_connect(
             } else {
                 None
             };
+            zellij_target = zellij_name.clone();
             spawn_local_pty(
                 &state,
                 pane_id.clone(),
@@ -6806,8 +6860,51 @@ async fn pane_connect(
         if !script.is_empty() {
             let sessions_clone = state.core.sessions.clone();
             let session_id_clone = session_id.clone();
+            let zellij_target = zellij_target.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                // 2026-08-19: a persistent local pane runs its shell INSIDE
+                // zellij, and the attach line is typed at 900ms while this
+                // fired at 1100ms. Those 200ms were the only thing keeping
+                // `claude --continue` from landing in the outer PowerShell —
+                // no margin at all on a cold start of a 48MB binary.
+                //
+                // Address the session instead of racing it: wait for it to
+                // appear, then have zellij type the script into it. Pure argv,
+                // no shell in between (Rule #3).
+                if let Some(name) = zellij_target {
+                    let mut appeared = false;
+                    for _ in 0..8 {
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        if list_zellij_sessions()
+                            .await
+                            .iter()
+                            .any(|s| s.name == name && !s.exited)
+                        {
+                            appeared = true;
+                            break;
+                        }
+                    }
+                    if appeared
+                        && zellij_run(
+                            &zellij_args_write_chars(&name, &script),
+                            "write-chars",
+                        )
+                        .await
+                    {
+                        return;
+                    }
+                    // Fell through: zellij never came up, or refused the
+                    // write. The pane is still a working shell, so type into
+                    // it directly rather than dropping the user's command.
+                    log_debug(
+                        "PTY",
+                        &format!(
+                            "smart-connect: zellij delivery unavailable (appeared={appeared}), typing into the pane"
+                        ),
+                    );
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                }
                 let mut sessions = sessions_clone.lock().unwrap();
                 if let Some(s) = sessions.get_mut(&session_id_clone) {
                     match s {
@@ -9773,7 +9870,7 @@ mod zellij_tests {
     // running produced `spike [Created 12m 30s ago]` verbatim.
     use super::{
         build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions,
-        zellij_args_delete, zellij_args_kill, zellij_args_list,
+        zellij_args_delete, zellij_args_kill, zellij_args_list, zellij_args_write_chars,
     };
 
     #[test]
@@ -9865,6 +9962,33 @@ mod zellij_tests {
             zellij_args_delete("ymux-p_1a2b_0"),
             vec!["delete-session", "ymux-p_1a2b_0"]
         );
+    }
+
+    #[test]
+    fn zellij_write_chars_targets_the_session_before_the_subcommand() {
+        // `-s` is a ROOT option in zellij's CLI, so it has to precede `action`.
+        // Getting that order wrong is a silent no-op: zellij would look for a
+        // session named "action" and the wizard's command would vanish.
+        let a = zellij_args_write_chars("ymux-p_1a2b_0", "claude --continue
+");
+        assert_eq!(
+            a,
+            vec!["-s", "ymux-p_1a2b_0", "action", "write-chars", "claude --continue
+"]
+        );
+    }
+
+    #[test]
+    fn zellij_write_chars_keeps_the_script_in_one_argv_slot() {
+        // The script carries spaces, quotes, backslashes and a CRLF. It must
+        // reach zellij as ONE argument with no shell in between (Rule #3) — a
+        // split here would execute fragments of the user's command.
+        let script = "cd \"C:\\Program Files\\x\" && claude --continue\r\n";
+        let a = zellij_args_write_chars("s", script);
+        assert_eq!(a.len(), 5);
+        assert_eq!(a[4], script);
+        assert!(a[4].contains(' '), "spaces stay inside the slot");
+        assert!(a[4].ends_with("\r\n"), "the newline is what submits it");
     }
 
     #[test]

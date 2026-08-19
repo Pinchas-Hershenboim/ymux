@@ -345,6 +345,33 @@ export function detectRowDirections(
 //     is the off signal. Shells set path-like titles, never empty ones.
 // The machine is deliberately conservative: ON only on a title containing
 // "claude", OFF only on an empty title, hold otherwise.
+/**
+ * Fold the two sources of "a self-reordering TUI is in front of this pane".
+ *
+ * 2026-08-19. The title-only machine below turned out never to turn ON in
+ * practice: inside zellij the title reaching ymux is zellij's own, and Claude's
+ * never matched. Yossi's debug.log has `tui=0` on every direction pass, on
+ * every pane, both profiles.
+ *
+ * So a second source was added that does not travel in-band at all:
+ *   - the connect wizard, when ymux itself launches Claude (mode="claude"), and
+ *   - the Claude hooks, which already carry YMUX_PANE_ID and fire
+ *     session-start / session-end (cli/src/main.rs, rpc_server.rs).
+ * Both survive any multiplexer, and the hooks work over SSH too.
+ *
+ * Precedence is explicit-wins: an out-of-band signal KNOWS, while the title is
+ * an inference. `null` means "nobody told us", and only then does the title
+ * decide. session-end clears back to null rather than asserting false, so a
+ * later manually-typed `claude` can still be picked up by the title if the
+ * title ever starts arriving.
+ */
+export function foldTuiOwnsBidi(
+  explicit: boolean | null,
+  fromTitle: boolean,
+): boolean {
+  return explicit ?? fromTitle;
+}
+
 export function nextTuiOwnsBidi(prev: boolean, title: string): boolean {
   if (/claude/i.test(title)) return true;
   if (title.trim() === "") return false;

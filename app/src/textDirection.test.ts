@@ -9,6 +9,7 @@ import {
   detectRowDirections,
   classifyRow,
   nextTuiOwnsBidi,
+  foldTuiOwnsBidi,
   strongCounts,
   RTL_DOMINANCE,
   stripPaneFrame,
@@ -414,6 +415,39 @@ test("bonus: single standalone Hebrew line -> RTL", () => {
 // -- nextTuiOwnsBidi (Claude visual-order RTL) tests --------------------------
 // The title-driven state machine: ON on a "claude" title, OFF on an empty
 // title, hold on anything else (shell paths, Claude's auto topic titles).
+
+// -- foldTuiOwnsBidi: explicit beats the title -------------------------------
+//
+// The title-only machine never turned ON in practice — inside zellij the title
+// reaching ymux is zellij's own. So the connect wizard (ymux launched Claude)
+// and the Claude hooks (session-start/end, already carrying YMUX_PANE_ID) each
+// supply an out-of-band answer, and those outrank an inference from a title.
+
+test("fold: no explicit signal defers to the title", () => {
+  assert.equal(foldTuiOwnsBidi(null, true), true);
+  assert.equal(foldTuiOwnsBidi(null, false), false);
+});
+
+test("fold: an explicit ON wins over a title that never matched", () => {
+  // The whole zellij case: the title says nothing useful, the wizard knows.
+  assert.equal(foldTuiOwnsBidi(true, false), true);
+});
+
+test("fold: an explicit OFF wins over a stale ON title", () => {
+  // Claude exited without resetting the title — the machine below holds ON
+  // for any non-empty title, so something has to be able to say otherwise.
+  assert.equal(foldTuiOwnsBidi(false, true), false);
+});
+
+test("fold: session-end clears to null, it does not assert false", () => {
+  // Clearing hands the decision back to the title rather than pinning it, so
+  // a later manually-typed `claude` can still be picked up if titles ever
+  // start arriving. This asserts the SHAPE the App.tsx wiring relies on.
+  const afterEnd: boolean | null = null;
+  assert.equal(foldTuiOwnsBidi(afterEnd, true), true, "title may still speak");
+  assert.equal(foldTuiOwnsBidi(afterEnd, false), false);
+});
+
 
 test("tuiOwnsBidi: 'claude' startup title turns on", () => {
   assert.equal(nextTuiOwnsBidi(false, "claude"), true);

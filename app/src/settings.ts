@@ -515,7 +515,7 @@ export function resolveRtlProfiles(
     directionPolicy: p?.direction_policy ?? "any_rtl",
   });
   return {
-    local: pick(t.rtl?.local, "off", true),
+    local: pick(t.rtl?.local, "auto_per_line", true),
     remote: pick(t.rtl?.remote, "auto_per_line", false),
   };
 }

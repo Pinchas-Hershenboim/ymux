@@ -42,6 +42,7 @@ const termLog = createLogger("TERM");
 import {
   detectDirection,
   detectRowDirections,
+  foldTuiOwnsBidi,
   strongCounts,
   nextTuiOwnsBidi,
 } from "./textDirection";
@@ -180,10 +181,12 @@ export type DirectionPolicy = "any_rtl" | "tui_dominance";
  */
 const g_rtl: Record<RtlProfileKind, RtlProfileSettings> = {
   local: {
-    // "off" — the one mode that applies no bidi at all. Claude Code on Windows
-    // writes RTL pre-reordered, so anything else is a second pass. See
-    // `default_local_rtl` in settings.rs for the measurement and the cost.
-    rtlMode: "off",
+    // Back to auto_per_line, together with the detection that makes
+    // `tuiOwnsBidi` real. A local SHELL is logical order and renders perfectly
+    // this way — Yossi's side-by-side screenshot shows cmd.exe correct and
+    // right-aligned. Only Claude needs the bidi switched off, and that is now
+    // driven per pane rather than by pinning the whole profile to "off".
+    rtlMode: "auto_per_line",
     autoDirection: true,
     mirrorArrowsRtl: true,
     tuiOwnsBidi: true,
@@ -335,6 +338,15 @@ export function setRtlProfiles(next: Record<RtlProfileKind, RtlProfileSettings>)
     ti.applyRenderer();
     ti.ensureDirObserver();
     ti.refreshRowDirections();
+  }
+}
+
+/** Route an out-of-band "Claude is in front" signal to one pane. Used by
+ *  App.tsx for the connect wizard and for session-start/end hooks; a pane that
+ *  is not open yet simply has nothing to tell. */
+export function setPaneTuiSignal(paneId: string, on: boolean | null): void {
+  for (const ti of g_terminals) {
+    if (ti.paneId === paneId) ti.setTuiSignal(on);
   }
 }
 
@@ -616,8 +628,26 @@ export class TerminalInstance {
    *  diagnosis possible in minutes — but the LTR forcing is gated, because
    *  current Claude emits logical-order Hebrew and forcing LTR corrupts it.
    *  See settings.rs `tui_owns_bidi`. */
+  /** Out-of-band "Claude is in front", from the connect wizard or a Claude
+   *  hook. `null` = nobody told us, fall back to the title. See
+   *  `foldTuiOwnsBidi` for why this outranks the title. */
+  private tuiExplicit: boolean | null = null;
+
+  /** Called by App.tsx: `true` on connect-with-Claude and on a session-start
+   *  hook for this pane, `null` when Claude ends or the pane connects to
+   *  something else. */
+  setTuiSignal(on: boolean | null): void {
+    if (this.tuiExplicit === on) return;
+    this.tuiExplicit = on;
+    termLog.info(
+      `tui-signal pane=${this.paneId} ` +
+        `explicit=${on === null ? "-" : on ? 1 : 0} title=${this.tuiOwnsBidi ? 1 : 0}`,
+    );
+    this.applyRowDirections(true);
+  }
+
   private get bidiOwnedByTui(): boolean {
-    return this.tuiOwnsBidi && this.rtl.tuiOwnsBidi;
+    return foldTuiOwnsBidi(this.tuiExplicit, this.tuiOwnsBidi) && this.rtl.tuiOwnsBidi;
   }
 
   /* NOTE FOR THE NEXT SESSION — the two facts this cost three rounds to pin:
@@ -1175,6 +1205,19 @@ export class TerminalInstance {
    *  prints before the title-driven state lands, and shell scrollback is
    *  still visible when Claude exits). */
   private onTitleChanged(title: string): void {
+    // 2026-08-19: report EVERY title, not only the ones that change the state.
+    // Nothing else could answer "does zellij forward a title at all, and does
+    // it ever contain 'claude'" — the absence of transitions in the log was
+    // equally consistent with "no titles" and "titles that never matched".
+    //
+    // Rule #1: a title can be Claude's auto topic name, i.e. derived from
+    // conversation content. Whether it matched and how long it was are
+    // metadata; the text itself is never logged and a length cannot
+    // reconstruct it.
+    termLog.info(
+      `title-seen pane=${this.paneId} match=${/claude/i.test(title) ? 1 : 0} ` +
+        `len=${title.length}`,
+    );
     const next = nextTuiOwnsBidi(this.tuiOwnsBidi, title);
     if (next === this.tuiOwnsBidi) return;
     this.tuiOwnsBidi = next;

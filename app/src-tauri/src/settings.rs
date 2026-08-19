@@ -507,16 +507,19 @@ pub(crate) struct RtlProfiles {
 /// instruction was to work on local without touching it.
 fn default_local_rtl() -> RtlProfile {
     RtlProfile {
-        // "off" is the WebGL renderer with no reorder and no per-row `dir` —
-        // the only mode that applies NO bidi at all, which is exactly what a
-        // pre-reordered stream needs. Confirmed by Yossi on the build that
-        // added the diagnostic: "עכשיו דווקא ב-OFF זה עובד כמו שצריך".
-        rtl_mode: "off".to_string(),
-        // Kept true even though the detector is currently blind (see above):
-        // when the pane learns that Claude is in front by some means other
-        // than the title, local is already opted in.
+        // `tui_owns_bidi` ON is the whole local story: a local SHELL is logical
+        // order and renders correctly under auto_per_line — Yossi's
+        // side-by-side screenshot has cmd.exe right-aligned with the "?" at the
+        // left end — while Claude Code is pre-reordered and must not be bidi'd
+        // again. Only the second case needs the switch, and it is now driven
+        // per pane by the connect wizard and the Claude hooks rather than by
+        // the terminal title, which zellij consumes.
+        //
+        // This briefly shipped as rtl_mode="off", which fixed Claude by
+        // breaking the shell. It is a profile-wide hammer for a per-pane
+        // problem; the mode stays auto_per_line and the switch does the work.
         tui_owns_bidi: true,
-        ..RtlProfile::default()
+        ..RtlProfile::default() // auto_per_line, as remote
     }
 }
 
@@ -2549,7 +2552,7 @@ mod tests {
         };
         assert!(migrate_rtl_profiles(&mut t), "absent rtl must migrate");
         let r = t.rtl.expect("seeded");
-        assert_eq!(r.local.rtl_mode, "off", "local takes its own default");
+        assert_eq!(r.local.rtl_mode, "auto_per_line", "local takes its own default");
         assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote takes its own");
         for p in [&r.local, &r.remote] {
             assert_ne!(p.rtl_mode, "bidi_reorder", "the flat mode is not carried");
@@ -2619,10 +2622,11 @@ mod tests {
         let d = RtlProfiles::default();
         assert!(d.local.tui_owns_bidi, "local must not bidi Claude's output twice");
         assert!(!d.remote.tui_owns_bidi, "remote is deliberately unchanged");
-        assert_ne!(
-            d.local.rtl_mode, d.remote.rtl_mode,
-            "the two classes need different modes: local visual, remote logical"
-        );
+        // The MODE is the same on both — both render logical-order text. The
+        // switch is the only difference, because only a local pane can have a
+        // pre-reordered TUI in front of it. Asserted here so a future change
+        // that splits the modes again has to come past this line.
+        assert_eq!(d.local.rtl_mode, d.remote.rtl_mode);
     }
 
     #[test]
@@ -2653,19 +2657,19 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_defaults_split_local_off_from_remote_auto() {
-        // They converged on auto_per_line when zellij went in front of local
-        // panes, on the belief that zellij normalised the byte order. It does
-        // not: `zellij action dump-screen` returned the cwd as
-        // U+05E8 U+05D1 U+05E6, i.e. VISUAL order, because Claude Code on
-        // Windows writes it pre-reordered. "off" is the only mode that applies
-        // no bidi, so it is the only one that leaves such a stream alone.
-        //
-        // Remote is NOT touched: it delivers logical order and renders
-        // correctly on auto_per_line.
+    fn fresh_install_defaults_share_the_mode_and_differ_on_the_switch() {
+        // Both render logical-order text, so both use auto_per_line. What
+        // differs is that a LOCAL pane can have Claude Code in front of it
+        // writing VISUAL order (`zellij action dump-screen` returned the cwd
+        // as U+05E8 U+05D1 U+05E6), and `tui_owns_bidi` is what stands that
+        // down — per pane, while Claude holds it, not profile-wide.
         let r = RtlProfiles::default();
-        assert_eq!(r.local.rtl_mode, "off", "local must not bidi a visual stream");
+        assert_eq!(r.local.rtl_mode, "auto_per_line", "a local SHELL is logical order");
         assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote is unchanged");
+        // The difference between the two classes is the switch, not the mode:
+        // only local has a pre-reordered TUI to protect against.
+        assert!(r.local.tui_owns_bidi);
+        assert!(!r.remote.tui_owns_bidi);
     }
 
     #[test]

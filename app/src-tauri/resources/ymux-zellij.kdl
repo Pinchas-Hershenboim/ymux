@@ -1,0 +1,26 @@
+// ymux's zellij configuration.
+//
+// Companion to ymux-tmux.conf, which does the same job for the other
+// multiplexer. Pointed at by the ZELLIJ_CONFIG_FILE env var that
+// spawn_local_pty sets on the pane's shell, so nothing has to be quoted into
+// a command line and the user's own zellij config is left untouched.
+//
+// KEEP THIS SMALL — deliberately one option. Every key here is one more thing
+// that can disagree with what a user configured for their own zellij, and
+// anything not needed for a ymux-embedded session is noise. `mouse_mode` and
+// `scroll_buffer_size` were drafted and removed: xterm.js already owns the
+// wheel and the scrollback, and forcing zellij's mouse handling is how the
+// equivalent tmux setting degraded drag-to-select (FOLLOWUPS, 2026-08-11).
+
+// A ymux pane already draws its own header, and each zellij session sits
+// inside exactly one of them — so the frame duplicates the title, costs two
+// columns on every side, and adds a SCROLL counter nobody reads.
+//
+// It also actively broke RTL. The frame puts a vertical bar at both edges of
+// EVERY row, which makes every row look like a table row to the per-row
+// direction pass: the whole screen merged into one direction block, and three
+// Hebrew letters in Claude Code's cwd flipped 13 of 15 rows to RTL — the
+// mirrored-English screenshot from 2026-08-19. `stripPaneFrame` in
+// app/src/textDirection.ts defends against that for any framed TUI; this
+// removes ymux's own contribution to it at the source.
+pane_frames false
