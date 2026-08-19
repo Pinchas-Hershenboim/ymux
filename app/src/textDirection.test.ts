@@ -9,6 +9,8 @@ import {
   detectRowDirections,
   classifyRow,
   nextTuiOwnsBidi,
+  strongCounts,
+  RTL_DOMINANCE,
 } from "./textDirection.ts";
 
 const LTR = "ltr";
@@ -48,6 +50,71 @@ for (const [input, expected, label] of cases) {
     assert.equal(detectDirection(input), expected);
   });
 }
+
+// -- RTL_DOMINANCE (2026-08-19): a TUI status bar must not flip -------------
+//
+// The row that motivated the rule. Claude Code paints its footer as ONE
+// terminal row: an update banner, the cwd, the model, and a context gauge.
+// Under the old "any Hebrew wins" rule the three letters of `צבר` turned the
+// whole row RTL and UAX #9 L2 mirrored every Latin run in it.
+const CLAUDE_STATUS_ROW =
+  "Update available! Run winget upgrade Anthropic.ClaudeCode" +
+  "   ~ צבר·full · claude-fable-5[1m]  0k/1M 0% [░░░░░░░░]";
+
+test("dominance: Claude's status row stays LTR (layout is positional)", () => {
+  const { rtl, ltr } = strongCounts(CLAUDE_STATUS_ROW);
+  assert.equal(rtl, 3); // צבר
+  assert.ok(ltr > rtl * RTL_DOMINANCE, `expected ${ltr} > ${rtl * RTL_DOMINANCE}`);
+  assert.equal(detectDirection(CLAUDE_STATUS_ROW), LTR);
+});
+
+test("dominance: the same row's Hebrew alone is still RTL", () => {
+  // Proof the rule is about the ROW, not about צבר losing its direction.
+  assert.equal(detectDirection("צבר"), RTL);
+});
+
+test("dominance: a Hebrew note on a long path still wins", () => {
+  // 4 Hebrew vs 14 Latin -- the near miss the factor is calibrated against.
+  assert.equal(detectDirection("2. /opt/wa/.shared.env - הערה"), RTL);
+});
+
+test("dominance: neutrals count for neither side", () => {
+  // A progress bar, a box border and a pile of digits must not outvote
+  // Hebrew, or every framed Hebrew message would flip to LTR.
+  const { rtl, ltr } = strongCounts("│ שלום │ [███░░] 12345 │");
+  assert.equal(ltr, 0);
+  assert.equal(rtl, 4);
+  assert.equal(detectDirection("│ שלום │ [███░░] 12345 │"), RTL);
+});
+
+test("dominance: exactly at the threshold, Hebrew wins", () => {
+  // 2 Hebrew, 8 Latin -> 2*4 >= 8. The tie goes to RTL on purpose.
+  assert.equal(detectDirection("abcdefgh של"), RTL);
+  // One more Latin char and it tips.
+  assert.equal(detectDirection("abcdefghi של"), LTR);
+});
+
+test("dominance: block vote uses the whole block, not one row", () => {
+  // Claude's bordered input box sitting under a long Latin help line: the
+  // block holds Hebrew, but nowhere near enough of it to mirror the border.
+  const rows = [
+    "┌" + "─".repeat(60) + "┐",
+    "│ Using claude-fable-5 (from .claude/settings.json) - /model to change │",
+    "│ של                                                                 │",
+    "└" + "─".repeat(60) + "┘",
+  ];
+  assert.deepEqual(detectRowDirections(rows), [LTR, LTR, LTR, LTR]);
+});
+
+test("dominance: a Hebrew box still flips entire", () => {
+  const rows = [
+    "┌──────┐",
+    "│ שלום │",
+    "└──────┘",
+  ];
+  assert.deepEqual(detectRowDirections(rows), [RTL, RTL, RTL]);
+});
+
 
 // -- Approach C+ (block-aware) tests -----------------------------------------
 

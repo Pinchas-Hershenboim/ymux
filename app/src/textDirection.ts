@@ -11,6 +11,10 @@
 //   - line is pure Latin                     -> LTR
 //   - digits / symbols / whitespace only     -> LTR   (safe default)
 //
+// 2026-08-19 amendment: "ANY Hebrew" is now "Hebrew unless massively
+// outnumbered" -- see RTL_DOMINANCE. A TUI status bar is a positional row,
+// and flipping its paragraph direction mirrors layout the TUI already placed.
+//
 // v0.4.4-beta.3 (Approach C+): pure per-line detection breaks TABLES and BOXES.
 // Claude Code drawing a Hebrew table produces:
 //     | שם | ערך |     <- Hebrew content, per-line rule -> RTL
@@ -33,12 +37,54 @@
 
 const HEBREW = /[֐-׿]/; // Hebrew block
 const ARABIC = /[؀-ۿݐ-ݿ]/; // Arabic + Arabic Supplement
-const LATIN = /[A-Za-z]/;
+// Global twins of the above, for COUNTING rather than testing.
+const HEBREW_G = /[֐-׿]/g;
+const ARABIC_G = /[؀-ۿݐ-ݿ]/g;
+const LATIN_G = /[A-Za-z]/g;
+
+/**
+ * 2026-08-19: how much Latin it takes to OUTVOTE the Hebrew on one row.
+ *
+ * The rule used to be "any Hebrew char anywhere -> the whole row is RTL",
+ * which is right for prose and catastrophic for a TUI status bar. Claude
+ * Code's footer is a single terminal row carrying ~60 Latin characters of
+ * layout plus the cwd -- and when that cwd is `צבר`, three Hebrew letters
+ * flipped the row's paragraph direction and UAX #9 rule L2 mirrored every
+ * Latin run inside it. From Yossi's screenshot, "Update available! Run winget
+ * upgrade ..." came out as "winget upgrade ... :Update available! Run" -- with
+ * the Hebrew itself rendering perfectly. Such a row is POSITIONAL: the TUI
+ * already chose the column of every glyph, and bidi has no way to reconstruct
+ * a layout it just mirrored.
+ *
+ * So Hebrew still wins by default, and loses only when the row is
+ * overwhelmingly Latin -- the signature of TUI chrome, not of a sentence.
+ *
+ * This moves the PARAGRAPH direction only. An LTR row still has its RTL runs
+ * reversed by the browser, so `צבר` reads correctly either way; what changes
+ * is the alignment and which end the neutrals land on.
+ *
+ * 4 is calibrated, not derived. It has to keep `2. /opt/wa/.shared.env -
+ * הערה` (4 Hebrew, 14 Latin) RTL while letting the status bar (3 Hebrew,
+ * ~64 Latin) go LTR; anything from ~3.6 to ~20 separates those two, and 4
+ * leaves the margin on the Hebrew side, which is the side users notice.
+ */
+export const RTL_DOMINANCE = 4;
+
+/**
+ * Count strong directional characters. Neutrals -- digits, punctuation,
+ * box-drawing, whitespace -- deliberately count for neither side, so a
+ * progress bar or a table border cannot outvote a Hebrew word.
+ */
+export function strongCounts(text: string): { rtl: number; ltr: number } {
+  const heb = text.match(HEBREW_G)?.length ?? 0;
+  const ara = text.match(ARABIC_G)?.length ?? 0;
+  return { rtl: heb + ara, ltr: text.match(LATIN_G)?.length ?? 0 };
+}
 
 export function detectDirection(text: string): "ltr" | "rtl" {
-  if (HEBREW.test(text) || ARABIC.test(text)) return "rtl"; // mixed or pure RTL
-  if (LATIN.test(text)) return "ltr"; // pure Latin
-  return "ltr"; // digits / symbols / whitespace / empty -> safe LTR default
+  const { rtl, ltr } = strongCounts(text);
+  if (rtl === 0) return "ltr"; // pure Latin / digits / symbols / empty
+  return rtl * RTL_DOMINANCE >= ltr ? "rtl" : "ltr";
 }
 
 // -- Approach C+ (block-aware direction) -------------------------------------
@@ -87,8 +133,10 @@ export function classifyRow(text: string): BlockRole {
  *   - Standalone rows: everything else, resolved per-row via detectDirection.
  *
  * Direction for a block:
- *   - Any Hebrew/Arabic char anywhere in the block   -> whole block RTL
- *   - Otherwise inherit direction from the nearest resolved row BEFORE the block
+ *   - Block holds Hebrew/Arabic  -> detectDirection over the block's joined
+ *     text, so the RTL_DOMINANCE rule sees the whole block at once
+ *   - No RTL at all              -> inherit from the nearest resolved row
+ *                                   BEFORE the block
  *   - Otherwise LTR (safe default)
  *
  * The block heuristic keeps tables coherent: a table with a single Hebrew cell
@@ -159,11 +207,16 @@ export function detectRowDirections(rows: string[]): ("ltr" | "rtl")[] {
     for (let k = b.start; k <= b.end; k++) {
       if (hasRtl[k]) { anyRtl = true; break; }
     }
-    if (anyRtl) {
-      for (let k = b.start; k <= b.end; k++) result[k] = "rtl";
-    } else {
+    if (!anyRtl) {
       unresolved.push(b);
+      continue;
     }
+    // 2026-08-19: the dominance rule (see RTL_DOMINANCE) is applied to the
+    // block AS A WHOLE, not per row -- so one Hebrew word inside a wall of
+    // Latin (Claude's bordered input box under its status bar) no longer
+    // mirrors the box's columns, while a Hebrew table still flips entire.
+    const dir = detectDirection(rows.slice(b.start, b.end + 1).join(" "));
+    for (let k = b.start; k <= b.end; k++) result[k] = dir;
   }
 
   // 3. Standalone (non-block) rows: classic per-row detection.
