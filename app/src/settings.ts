@@ -502,7 +502,7 @@ export function resolveRtlProfiles(
     tuiOwnsBidi: p?.tui_owns_bidi ?? t.tui_owns_bidi ?? false,
   });
   return {
-    local: pick(t.rtl?.local, "bidi_reorder"),
+    local: pick(t.rtl?.local, "auto_per_line"),
     remote: pick(t.rtl?.remote, "auto_per_line"),
   };
 }

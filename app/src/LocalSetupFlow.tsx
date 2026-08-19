@@ -524,7 +524,9 @@ export function LocalSetupFlow(p: Props) {
                 })}
               </p>
             </Show>
-            <Show when={!result()!.wsl_chain_ok}>
+            {/* 2026-08-19: keyed on whether a workspace actually came back,
+                not on the (now removed) WSL chain. */}
+            <Show when={!result()!.workspace_id}>
               <p class="prov-error-hint">{t("localSetup.done.failed.no_workspace")}</p>
             </Show>
           </div>

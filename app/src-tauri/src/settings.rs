@@ -431,23 +431,26 @@ pub(crate) struct RtlProfiles {
     pub remote: RtlProfile,
 }
 
-/// Measured on 2026-08-19, a native Windows pane, same build and same session
-/// as the remote test: `bidi_reorder` renders Hebrew correctly there, while
-/// both `off` and `auto_per_line` render it reversed. Remote is the opposite —
-/// `auto_per_line` is correct and `off` is reversed — which is why the default
-/// differs per profile instead of one value serving both.
+/// 2026-08-19, SUPERSEDED SAME DAY. The first measurement had a native
+/// Windows pane needing `bidi_reorder`, because raw ConPTY hands over
+/// Hebrew already in visual order. Then zellij went in front of local panes
+/// — and it NORMALISES the stream to logical order, the way a Linux pty
+/// does. Re-measured inside a live zellij pane: `off` renders reversed
+/// (so the stream is logical) and `auto_per_line` renders correctly.
+///
+/// So the two profiles converged, and `bidi_reorder` on local would now be
+/// a second reorder of already-logical text. The split still earns its
+/// keep — a user can still tune the two apart — but it no longer needs
+/// different defaults, and pretending otherwise would ship a wrong one.
 fn default_local_rtl() -> RtlProfile {
-    RtlProfile {
-        rtl_mode: "bidi_reorder".to_string(),
-        ..RtlProfile::default()
-    }
+    RtlProfile::default() // auto_per_line, same as remote
 }
 
 impl Default for RtlProfiles {
     fn default() -> Self {
         Self {
             local: default_local_rtl(),
-            remote: RtlProfile::default(), // auto_per_line
+            remote: RtlProfile::default(),
         }
     }
 }
@@ -2457,7 +2460,7 @@ mod tests {
         };
         assert!(migrate_rtl_profiles(&mut t), "absent rtl must migrate");
         let r = t.rtl.expect("seeded");
-        assert_eq!(r.local.rtl_mode, "bidi_reorder", "local must not inherit 'off'");
+        assert_eq!(r.local.rtl_mode, "auto_per_line", "local must not inherit 'off'");
         assert_eq!(r.remote.rtl_mode, "auto_per_line", "remote must not inherit 'off'");
         for p in [&r.local, &r.remote] {
             assert!(!p.auto_direction, "auto_direction must carry over");
@@ -2485,14 +2488,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_defaults_differ_per_profile() {
-        // Measured 2026-08-19 on one machine, same build: a native Windows
-        // pane needs bidi_reorder, an SSH pane needs auto_per_line. If these
-        // two are ever equal again the split has silently lost its point.
+    fn fresh_install_defaults_are_auto_per_line_on_both_sides() {
+        // These differed until zellij went in front of local panes and
+        // normalised their byte order to logical, the same as a Linux pty.
+        // Re-measured live inside a zellij pane before this was changed.
         let r = RtlProfiles::default();
-        assert_eq!(r.local.rtl_mode, "bidi_reorder");
+        assert_eq!(r.local.rtl_mode, "auto_per_line");
         assert_eq!(r.remote.rtl_mode, "auto_per_line");
-        assert_ne!(r.local.rtl_mode, r.remote.rtl_mode);
     }
 
     #[test]

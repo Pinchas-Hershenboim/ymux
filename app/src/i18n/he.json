@@ -622,7 +622,7 @@
   "localSetup.done.failed.title": "ההתקנה לא הושלמה",
   "localSetup.done.failed.body": "הצעדים האלה נכשלו: {steps}.",
   "localSetup.done.failed.skipped": "צעדים שדולגו כתוצאה מכך: {steps}.",
-  "localSetup.done.failed.no_workspace": "סביבת ה-WSL לא נוצרה. תקן את הצעד שנכשל והרץ שוב את ההתקנה.",
+  "localSetup.done.failed.no_workspace": "לא נוצרה סביבת עבודה. תקן את הצעד שנכשל והרץ שוב את ההתקנה.",
   "sidebar.settings.tooltip": "הגדרות",
   "settings.updates.logs.title": "לוגים",
   "settings.updates.logs.path": "נתיב:",

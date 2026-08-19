@@ -622,7 +622,7 @@
   "localSetup.done.failed.title": "Установка не завершена",
   "localSetup.done.failed.body": "Эти шаги завершились с ошибкой: {steps}.",
   "localSetup.done.failed.skipped": "В результате пропущено: {steps}.",
-  "localSetup.done.failed.no_workspace": "Рабочая среда WSL не создана. Исправьте неудавшийся шаг и запустите установку снова.",
+  "localSetup.done.failed.no_workspace": "Рабочее пространство не создано. Исправьте шаг с ошибкой и запустите снова.",
   "sidebar.settings.tooltip": "Настройки",
   "settings.updates.logs.title": "Журналы",
   "settings.updates.logs.path": "Путь:",

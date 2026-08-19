@@ -210,7 +210,7 @@ type HooksNotifSubTab = "hooks" | "sound";
  *  They differ on purpose: measured 2026-08-19, a native Windows pane needs
  *  bidi_reorder and an SSH pane needs auto_per_line. */
 const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
-  local: { rtl_mode: "bidi_reorder", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
+  local: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
   remote: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false },
 };
 

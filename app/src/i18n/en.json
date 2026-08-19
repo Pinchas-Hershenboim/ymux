@@ -614,7 +614,7 @@
   "localSetup.done.failed.title": "Setup did not complete",
   "localSetup.done.failed.body": "These steps failed: {steps}.",
   "localSetup.done.failed.skipped": "Skipped as a result: {steps}.",
-  "localSetup.done.failed.no_workspace": "No WSL workspace was created. Fix the failed step and run setup again.",
+  "localSetup.done.failed.no_workspace": "No workspace was created. Fix the failed step and run setup again.",
   "sidebar.settings.tooltip": "Settings",
   "settings.updates.logs.title": "Logs",
   "settings.updates.logs.path": "Path:",

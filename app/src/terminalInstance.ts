@@ -145,15 +145,18 @@ export interface RtlProfileSettings {
  * remote ones and vice versa. They are per-profile now; each TerminalInstance
  * reads through `this.profile` (see `profileFor` in types.ts).
  *
- * Defaults differ because the two classes were measured to need OPPOSITE
- * modes: a native Windows pane gets visual-order Hebrew from ConPTY and wants
- * `bidi_reorder`; an SSH pane gets logical order and wants `auto_per_line`.
+ * The defaults were briefly different — raw ConPTY hands over visual-order
+ * Hebrew, so a native Windows pane wanted `bidi_reorder`. Then zellij went in
+ * front of local panes and normalised the stream to logical order, the way a
+ * Linux pty does, so both sides converged on `auto_per_line`. The split still
+ * lets a user tune them apart; it just no longer needs to.
+ *
  * Real values arrive from settings on boot; these only cover the window before
  * the first `applyTheme`.
  */
 const g_rtl: Record<RtlProfileKind, RtlProfileSettings> = {
   local: {
-    rtlMode: "bidi_reorder",
+    rtlMode: "auto_per_line",
     autoDirection: true,
     mirrorArrowsRtl: true,
     tuiOwnsBidi: false,
