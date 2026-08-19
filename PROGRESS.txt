@@ -3221,3 +3221,32 @@ them. 3 new i18n keys x 4 locales.
 
 NOT VERIFIED LIVE (Rule #14). In particular the dblclick gesture and the
 Enter/Space path have never been exercised by a real pointer or keyboard.
+
+--------------------------------------------------------------------------------
+2026-08-19 (close) -- Sidebar pass verified live and merged
+--------------------------------------------------------------------------------
+Yossi ran the branch build (a0ce0d0, run 32235591934) and confirmed: colour
+flood gone, badge column straight, names on one vertical line, masthead scaling
+with the rail, double-click on the wordmark collapsing/expanding, and
+Tab + Enter doing the same. PR #10 merged -> main 816cf64.
+
+Merged in order: #8 (the split + the design pass), #9 (name alignment), #10
+(masthead is the control, notif badge removed).
+
+WHAT RUNNING IT ACTUALLY BOUGHT, worth remembering: two defects that six
+measured properties in the fixture did not catch.
+  - #9  latin names drifted off the start edge. unicode-bidi:plaintext resolves
+        text-align:start PER STRING, so fixing the ellipsis side silently took
+        the alignment with it. I had measured row height, badge column, row
+        background, bidi glyph offset, narrow behaviour and preset radii --
+        alignment was simply not on the list.
+  - #10 the notif badge was a <span> styled as a button that did nothing on
+        click. No measurement would ever have found that; Yossi asking "why is
+        there a button there" did.
+The fixture is good for geometry and bad for affordances. Do not let a green
+measurement stand in for a run.
+
+FOLLOWUPS: the P1 is closed. What remains is a P3 for the surfaces still never
+exercised -- the Settings font-size slider (the whole reason for the px ->
+--w-fs-* sweep), drag-reorder, the menus/rename/colour picker, 11 of the 13
+presets, and prefers-reduced-motion.
