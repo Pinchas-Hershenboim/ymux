@@ -1338,9 +1338,18 @@ export class TerminalInstance {
       }
       return "-";
     };
+    // `tui=` is the EFFECTIVE answer — what actually gated this pass — not the
+    // title-derived flag. Reporting the raw flag was actively misleading: the
+    // 2026-08-19 log showed `tui=0` moments after `tui-signal explicit=1`,
+    // which reads as "the signal did nothing" when in fact the signal had won
+    // and a different gate (the per-profile setting) was the one saying no.
+    // The three inputs are broken out so the next diagnosis is one line, not
+    // an inference.
     termLog.info(
       `rtl-dirs pane=${this.paneId} profile=${this.profile} ` +
-        `policy=${this.rtl.directionPolicy} tui=${this.tuiOwnsBidi ? 1 : 0} ` +
+        `policy=${this.rtl.directionPolicy} tui=${this.bidiOwnedByTui ? 1 : 0} ` +
+        `(explicit=${this.tuiExplicit === null ? "-" : this.tuiExplicit ? 1 : 0} ` +
+        `title=${this.tuiOwnsBidi ? 1 : 0} setting=${this.rtl.tuiOwnsBidi ? 1 : 0}) ` +
         `rows=${dirs.length} rtl=${rtlRows} ltr=${dirs.length - rtlRows} ` +
         `firstRtl=${sample("rtl")} firstLtr=${sample("ltr")}`,
     );

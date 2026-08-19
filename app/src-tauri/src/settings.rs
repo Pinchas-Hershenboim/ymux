@@ -1758,9 +1758,32 @@ pub(crate) fn settings_load(state: State<'_, AppState>) -> Settings {
 pub(crate) fn settings_save(
     state: State<'_, AppState>,
     app: AppHandle,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<Settings, String> {
     mutate(&state, &app, |s| {
+        // 2026-08-19: a save REPLACES the whole document, so a client holding a
+        // copy from before `terminal.rtl` was seeded wipes it. Yossi's
+        // settings.json went 3870 -> 3521 bytes and lost the block entirely,
+        // while his running UI still showed the profile it had chosen — so a
+        // good part of a day's RTL testing ran against settings that were not
+        // actually in force.
+        //
+        // The UI has no "remove the rtl block" action: it is only ever ADDED,
+        // by `migrate_rtl_profiles` or by editing a profile. So `None` from a
+        // client cannot mean "delete it" — it can only mean "my copy predates
+        // it", and the stored value is the better answer. Keeping it is not a
+        // merge policy for the whole document, just for the one field where
+        // absence is provably not a decision (same reasoning as the
+        // `tui_owns_bidi` carry in `migrate_rtl_profiles`).
+        if settings.terminal.rtl.is_none() {
+            if let Some(existing) = s.terminal.rtl.clone() {
+                log_info(
+                    "SETTINGS",
+                    "settings_save: client sent no terminal.rtl — keeping the stored profiles",
+                );
+                settings.terminal.rtl = Some(existing);
+            }
+        }
         *s = settings;
         Ok(())
     })
