@@ -12,7 +12,7 @@ use russh::{Channel, ChannelMsg};
 use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 
-use ymux_core::{log_debug, log_info, log_warn, pipe_name, SshClient};
+use ymux_core::{log_debug, log_info, log_warn, pipe_name, shell_quote, SshClient};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -273,40 +273,94 @@ pub fn generate_token() -> String {
         .collect()
 }
 
+/// The body of `~/.ymux/run/last.env`. Pure, so the shape is testable
+/// without an SSH session.
+///
+/// Both spellings — the file is read by whatever CLI happens to be on the
+/// remote, which may still be a pre-rename `winmux-linux-x64` until the next
+/// bootstrap replaces it. The current CLI promotes WINMUX_* → YMUX_* at
+/// startup, so duplicating here is harmless. Drop the legacy triple once
+/// 0.5.0 is the floor.
+///
+/// `pane_id: None` omits the pane lines entirely, so the caller's
+/// read-modify-write can preserve whatever the file already had. Writing an
+/// EMPTY pane id would be much worse than omitting it: the remote hook reads
+/// the variable's absence as "ymux is not in this session" and stops gating
+/// tool calls, i.e. every permission card silently disappears.
+pub fn render_env_file(socket_addr: &str, token: &str, pane_id: Option<&str>) -> String {
+    let mut body = format!(
+        "YMUX_SOCKET_ADDR={socket_addr}\nYMUX_TUNNEL_TOKEN={token}\n\
+         WINMUX_SOCKET_ADDR={socket_addr}\nWINMUX_TUNNEL_TOKEN={token}\n"
+    );
+    if let Some(p) = pane_id {
+        body.push_str(&format!("YMUX_PANE_ID={p}\nWINMUX_PANE_ID={p}\n"));
+    }
+    body
+}
+
 /// Write the env file `~/.ymux/run/last.env` on the remote so the CLI can pick up
 /// `YMUX_SOCKET_ADDR` and `YMUX_TUNNEL_TOKEN` even if sshd's `AcceptEnv` rejects
 /// the per-channel `set_env` requests.
+///
+/// Phase 80: `pane_id` is optional, because the headless connect path now
+/// writes this file too and has no pane. When it is `None` the existing
+/// `YMUX_PANE_ID` is read back off the remote and carried over, so a
+/// workspace-level refresh can never blank out a pane's identity.
+///
+/// Also Phase 80: tmp + `mv -f` instead of writing the live file in place.
+/// A hook can be reading `last.env` at the moment we rewrite it, and the old
+/// heredoc left a window where it would see a truncated file.
+///
+/// Takes `&Handle` rather than `&mut` — only `channel_open_session` is used,
+/// and that takes `&self`. That is what lets the caller hold an `Arc<Handle>`.
 pub async fn write_remote_env_file(
-    handle: &mut russh::client::Handle<SshClient>,
+    handle: &russh::client::Handle<SshClient>,
     home: &str,
     socket_addr: &str,
     token: &str,
-    pane_id: &str,
+    pane_id: Option<&str>,
 ) -> Result<(), String> {
     let env_dir = format!("{}/.ymux/run", home);
     let env_file = format!("{}/last.env", env_dir);
-    // Both spellings — the file is read by whatever CLI happens to be on
-    // the remote, which may still be a pre-rename `winmux-linux-x64`
-    // until the next bootstrap replaces it. The current CLI promotes
-    // WINMUX_* → YMUX_* at startup, so duplicating here is harmless.
-    // Drop the legacy triple once 0.5.0 is the floor.
-    let body = format!(
-        "YMUX_SOCKET_ADDR={socket_addr}\nYMUX_TUNNEL_TOKEN={token}\nYMUX_PANE_ID={pane_id}\n\
-         WINMUX_SOCKET_ADDR={socket_addr}\nWINMUX_TUNNEL_TOKEN={token}\nWINMUX_PANE_ID={pane_id}\n"
-    );
+    let body = render_env_file(socket_addr, token, pane_id);
 
-    exec_simple(handle, &format!("mkdir -p {}", env_dir)).await?;
-    let write_cmd = format!(
-        "cat > {} <<'__YMUX_EOF__'\n{}__YMUX_EOF__\nchmod 0600 {}",
-        env_file, body, env_file
+    // Rule #3: a fixed script literal, every interpolated value quoted. The
+    // values are ours (a 127.0.0.1:port, a generated alphanumeric token, an
+    // internally-generated pane id), but quoting them is the rule, not a
+    // judgement call about this particular call site.
+    // The pane lines are appended by `printf` rather than folded into the
+    // shell variable: inside double quotes a `\n` is a literal backslash-n,
+    // so string-concatenating them would write the whole file on one line.
+    let carry_pane = if pane_id.is_none() { "1" } else { "0" };
+    let script = format!(
+        "set -e\n\
+         d={dir}\n\
+         f=\"$d/last.env\"\n\
+         mkdir -p \"$d\"\n\
+         pid=''\n\
+         if [ {carry_pane} = 1 ]; then\n\
+         pid=$(sed -n 's/^YMUX_PANE_ID=//p' \"$f\" 2>/dev/null | tail -n1)\n\
+         fi\n\
+         printf '%s' {body} > \"$f.tmp\"\n\
+         if [ -n \"$pid\" ]; then\n\
+         printf 'YMUX_PANE_ID=%s\\nWINMUX_PANE_ID=%s\\n' \"$pid\" \"$pid\" >> \"$f.tmp\"\n\
+         fi\n\
+         chmod 0600 \"$f.tmp\"\n\
+         mv -f \"$f.tmp\" \"$f\"\n",
+        dir = shell_quote(&env_dir),
+        body = shell_quote(&body),
+        carry_pane = carry_pane,
     );
-    exec_simple(handle, &write_cmd).await?;
-    log_info("TUNNEL", &format!("tunnel: wrote {} ({} bytes)", env_file, body.len()));
+    exec_simple(handle, &script).await?;
+    log_info(
+        "TUNNEL",
+        &format!("tunnel: wrote {} ({} bytes)", env_file, body.len()),
+    );
     Ok(())
 }
 
 async fn exec_simple(
-    handle: &mut russh::client::Handle<SshClient>,
+    handle: &russh::client::Handle<SshClient>,
     cmd: &str,
 ) -> Result<(), String> {
     let mut chan = handle
@@ -346,8 +400,53 @@ pub fn spawn_bridge(
 
 #[cfg(test)]
 mod tests {
-    use super::bridge_copy;
+    use super::{bridge_copy, render_env_file};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn env_file_carries_both_ymux_and_winmux_spellings() {
+        let body = render_env_file("127.0.0.1:44495", "tok123", Some("p_1_0"));
+        // A pre-rename `winmux-linux-x64` is still on already-provisioned
+        // remotes until the next bootstrap replaces it, and it only reads the
+        // legacy names. Both spellings stay until 0.5.0 is the floor.
+        for expect in [
+            "YMUX_SOCKET_ADDR=127.0.0.1:44495",
+            "YMUX_TUNNEL_TOKEN=tok123",
+            "YMUX_PANE_ID=p_1_0",
+            "WINMUX_SOCKET_ADDR=127.0.0.1:44495",
+            "WINMUX_TUNNEL_TOKEN=tok123",
+            "WINMUX_PANE_ID=p_1_0",
+        ] {
+            assert!(
+                body.lines().any(|l| l == expect),
+                "missing line {expect:?} in:\n{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_file_omits_the_pane_id_line_when_the_caller_has_none() {
+        let body = render_env_file("127.0.0.1:1", "t", None);
+        // Omitted, never written empty: the remote hook reads a MISSING
+        // YMUX_PANE_ID as "ymux is not in this session" and stops gating, so
+        // an empty value would silently disable every permission card. The
+        // headless path relies on this and carries the old id over instead.
+        assert!(!body.contains("PANE_ID"), "got:\n{body}");
+        assert!(body.contains("YMUX_SOCKET_ADDR=127.0.0.1:1"));
+    }
+
+    #[test]
+    fn env_file_terminates_every_line_including_the_last() {
+        let with_pane = render_env_file("a", "b", Some("p"));
+        let without = render_env_file("a", "b", None);
+        // The remote reads this with `sed -n 's/^YMUX_PANE_ID=//p'`, which
+        // needs real line breaks — an unterminated tail would fuse into
+        // whatever the read-modify-write appends next.
+        assert!(with_pane.ends_with('\n'), "got: {with_pane:?}");
+        assert!(without.ends_with('\n'), "got: {without:?}");
+        assert_eq!(with_pane.lines().count(), 6);
+        assert_eq!(without.lines().count(), 4);
+    }
 
     // v0.3.1 pipe-leak fix: when the rpc_server handler closes after sending
     // its one-shot reply, the bridge must release PROMPTLY (not hang waiting

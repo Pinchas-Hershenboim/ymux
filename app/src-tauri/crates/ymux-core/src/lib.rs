@@ -816,12 +816,17 @@ pub struct CoreState {
     pub pane_sessions: PaneSessionMap,
     pub forwards: ForwardMap,
     pub port_watchers: Arc<Mutex<std::collections::HashSet<String>>>,
-    pub internal_reverse_tunnel_remote_ports:
-        Arc<Mutex<HashMap<String, std::collections::HashSet<u16>>>>,
+    // Phase 80: `internal_reverse_tunnel_remote_ports` and
+    // `workspace_tunnel_tokens` used to live here. They were read
+    // independently — the port set was sampled with `.iter().next()` and only
+    // ever grew, the token map was cleared nowhere at all — so a watcher
+    // could be handed one connection's port with another's token and get
+    // `-DENIED bad-mac`. Both are now one triple in
+    // `app::tunnel_registry::TunnelRegistry`, which lives on `AppState`
+    // because it also owns the per-workspace connect lock.
     pub detected_ports:
         Arc<Mutex<HashMap<String, HashMap<u16, (String, String)>>>>,
     pub port_watcher_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    pub workspace_tunnel_tokens: Arc<Mutex<HashMap<String, Arc<String>>>>,
     pub diff_pane_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
