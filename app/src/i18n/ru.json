@@ -578,6 +578,7 @@
   "localSetup.hint": "Отмеченные пункты будут установлены. Обнаруженные инструменты уже на месте.",
   "localSetup.tools.title": "Инструменты",
   "localSetup.step.InstallGit": "Git",
+  "localSetup.step.InstallZellij": "Zellij (постоянные сессии)",
   "localSetup.step.InstallNodejs": "Node.js (LTS)",
   "localSetup.step.InstallClaudeCode": "Claude Code",
   "localSetup.step.InstallCodex": "Codex CLI",

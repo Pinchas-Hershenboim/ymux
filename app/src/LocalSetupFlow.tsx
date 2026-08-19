@@ -35,10 +35,14 @@ interface Props {
 // installer is a standalone PowerShell script.
 const TOOL_ROWS: {
   step: string;
-  tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini">;
+  tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini" | "zellij">;
   needsWinget: boolean;
   needsNode: boolean;
 }[] = [
+  // 2026-08-19: session persistence for native Windows panes — the job WSL
+  // used to do. First in the list because it is the one that makes a local
+  // workspace survive closing the app.
+  { step: "InstallZellij", tool: "zellij", needsWinget: true, needsNode: false },
   { step: "InstallGit", tool: "git", needsWinget: true, needsNode: false },
   { step: "InstallNodejs", tool: "node", needsWinget: true, needsNode: false },
   { step: "InstallClaudeCode", tool: "claude", needsWinget: false, needsNode: false },

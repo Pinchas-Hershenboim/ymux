@@ -578,6 +578,7 @@
   "localSetup.hint": "العناصر المحددة سيتم تثبيتها. الأدوات المكتشفة موجودة بالفعل.",
   "localSetup.tools.title": "الأدوات",
   "localSetup.step.InstallGit": "Git",
+  "localSetup.step.InstallZellij": "Zellij (جلسات دائمة)",
   "localSetup.step.InstallNodejs": "Node.js (LTS)",
   "localSetup.step.InstallClaudeCode": "Claude Code",
   "localSetup.step.InstallCodex": "Codex CLI",

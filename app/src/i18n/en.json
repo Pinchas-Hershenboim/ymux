@@ -570,6 +570,7 @@
   "localSetup.hint": "Checked items will be installed. Detected tools are already in place.",
   "localSetup.tools.title": "Tools",
   "localSetup.step.InstallGit": "Git",
+  "localSetup.step.InstallZellij": "Zellij (persistent sessions)",
   "localSetup.step.InstallNodejs": "Node.js (LTS)",
   "localSetup.step.InstallClaudeCode": "Claude Code",
   "localSetup.step.InstallCodex": "Codex CLI",

@@ -578,6 +578,7 @@
   "localSetup.hint": "פריטים מסומנים יותקנו. כלים שזוהו כבר קיימים.",
   "localSetup.tools.title": "כלים",
   "localSetup.step.InstallGit": "Git",
+  "localSetup.step.InstallZellij": "Zellij (סשנים מתמידים)",
   "localSetup.step.InstallNodejs": "Node.js (LTS)",
   "localSetup.step.InstallClaudeCode": "Claude Code",
   "localSetup.step.InstallCodex": "Codex CLI",
