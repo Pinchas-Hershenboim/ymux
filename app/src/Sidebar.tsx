@@ -127,10 +127,12 @@ interface Props {
   // squeeze the name. Container queries would do this without the prop, but
   // WebView2's floor on older Win10 installs isn't guaranteed to have them.
   widthPx: number;
-  // cmux-A A1: aggregate count of panes with pending OSC 9/99/777
-  // activity notifications. Rendered as a small amber badge in the
-  // sidebar header (both full + icons mode). Hidden when 0.
-  pendingNotifCount: number;
+  // workspace_ids holding a pane with a pending OSC 9/99/777 activity
+  // notification. Was an aggregate count in the masthead — a bare number in a
+  // <span> styled like a button that did nothing on click, and no way to tell
+  // WHICH workspace wanted you. It shares the row's one attention dot with
+  // `waitingWorkspaceIds`, at a lower intensity: blocking outranks activity.
+  notifiedWorkspaceIds: Set<string>;
   // cmux-A A2: workspace groups (collapsible sidebar sections). The
   // parent App owns the list — Sidebar renders it + delegates the
   // create/rename/color/delete/collapse actions back up.
@@ -610,22 +612,23 @@ export function Sidebar(p: Props) {
       // length it can do arithmetic on.
       style={{ "--sidebar-w": `${p.widthPx}px` }}
     >
-      {/* One row, three columns: [collapse] [brand] [badge]. The two side
-          slots are the same fixed width, which is what keeps the brand
-          optically centred whether or not the badge is rendering. */}
+      {/* The masthead IS the collapse control — no separate button, so the
+          wordmark gets the whole row. Still a real <button>: single click does
+          nothing (collapsing the rail by brushing its header would be a nasty
+          surprise), double click toggles, Enter/Space toggles for the keyboard
+          since there is no double-Enter idiom. Ctrl+B does it too. */}
       <div class="sidebar-header">
         <button
-          class="sidebar-collapse-btn"
-          onClick={() => p.onSetMode(p.mode === "full" ? "icons" : "full")}
-          title={p.mode === "full" ? t("sidebar.collapse.tooltip") : t("sidebar.expand.tooltip")}
+          class="sidebar-brand-row"
+          title={p.mode === "full" ? t("sidebar.collapse.dblclick") : t("sidebar.expand.dblclick")}
           aria-label={p.mode === "full" ? t("sidebar.collapse.tooltip") : t("sidebar.expand.tooltip")}
+          onDblClick={() => p.onSetMode(p.mode === "full" ? "icons" : "full")}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            p.onSetMode(p.mode === "full" ? "icons" : "full");
+          }}
         >
-          {/* U+00AB is Bidi_Mirrored, so this renders as » under dir="rtl" —
-              which is correct: the rail sits on the right there and the arrow
-              should point at the edge it collapses toward. */}
-          {p.mode === "full" ? "«" : "»"}
-        </button>
-        <div class="sidebar-brand-row">
         <svg
           class="sidebar-logo"
           viewBox="0 0 1024 1024"
@@ -665,15 +668,7 @@ export function Sidebar(p: Props) {
           <circle cx="848" cy="176" r="20" fill="#5cd87f" />
         </svg>
         <span class="sidebar-brand">{t("sidebar.title")}</span>
-        </div>
-        <Show when={p.pendingNotifCount > 0}>
-          <span
-            class="sidebar-notif-badge"
-            title={t("notifications.pending_count", { count: p.pendingNotifCount })}
-          >
-            {p.pendingNotifCount > 99 ? "99+" : p.pendingNotifCount}
-          </span>
-        </Show>
+        </button>
       </div>
       <div class="sidebar-list">
         {/* Design Pass 01 (#1): friendly CTA card while the list is empty,
@@ -1103,8 +1098,15 @@ export function Sidebar(p: Props) {
               pseudo-element was absolutely positioned at inset-inline-end
               and painted ON TOP of the badges. The class stays on the row —
               themes-redesign.css and the pulse both key off it. */}
-          <Show when={p.waitingWorkspaceIds.has(w.id)}>
-            <span class="ws-waiting-dot" title={t("sidebar.workspaceWaitingTitle")} />
+          <Show when={p.waitingWorkspaceIds.has(w.id) || p.notifiedWorkspaceIds.has(w.id)}>
+            <span
+              class={`ws-waiting-dot ${p.waitingWorkspaceIds.has(w.id) ? "" : "activity"}`}
+              title={t(
+                p.waitingWorkspaceIds.has(w.id)
+                  ? "sidebar.workspaceWaitingTitle"
+                  : "sidebar.workspaceActivityTitle",
+              )}
+            />
           </Show>
           <Show when={p.connectedIds.has(w.id)}>
             <span class="ws-live" title={t("sidebar.workspaceConnectedTitle")} />

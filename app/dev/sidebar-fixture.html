@@ -27,7 +27,7 @@ const WS = [
   { n: "fleet-ops",    c: "#7aa2f7", badge: ["2", "split"], wt: 1, chev: 1 },
   { n: "Whatsapp",     c: "#9ece6a", badge: ["S", "ssh"],   live: 1 },
   { n: "server-7",     c: "#f7768e", badge: ["2", "split"], wait: 1 },
-  { n: "boost",        c: "#9ece6a", badge: ["2", "split"], live: 1 },
+  { n: "boost",        c: "#9ece6a", badge: ["2", "split"], live: 1, act: 1 },
   { n: "2- SERVER",    c: "#f7768e", badge: ["S", "ssh"] },
   { n: "server1",      c: "#7dcfff", badge: ["S", "ssh"], ports: 3 },
 ];
@@ -55,6 +55,7 @@ const row = (w, depth = 0) => `
   <span class="ws-meta">
     ${w.ports ? `<span class="ws-port-badge">${globe} ${w.ports}</span>` : ""}
     ${w.wait ? `<span class="ws-waiting-dot"></span>` : ""}
+    ${w.act ? `<span class="ws-waiting-dot activity"></span>` : ""}
     ${w.live ? `<span class="ws-live"></span>` : ""}
     <span class="ws-badge ${w.badge[1]}">${w.badge[0]}</span>
   </span>
@@ -71,12 +72,10 @@ const group = (name, color, rows, extra = "") => `
 const sidebar = (mode, narrow) => `
 <div class="sidebar ${mode}" ${narrow ? 'data-narrow="true"' : ""}>
   <div class="sidebar-header">
-    <button class="sidebar-collapse-btn">&#171;</button>
-    <div class="sidebar-brand-row">
+    <button class="sidebar-brand-row" title="Double-click to collapse the sidebar">
       <svg class="sidebar-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
       <span class="sidebar-brand">YMUX</span>
-    </div>
-    <span class="sidebar-notif-badge">7</span>
+    </button>
   </div>
   <div class="sidebar-list">
     <div class="group-header" style="cursor: default">

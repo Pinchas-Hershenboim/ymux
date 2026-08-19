@@ -29,31 +29,6 @@
 }
 .sidebar-resizer:hover { background: rgba(122, 162, 247, 0.5); }
 
-/* Phase 62.B (item I): collapse / expand toggle in the sidebar header.
-   Borderless on purpose — it used to carry a 1px box, which read as a
-   primary action for something used once a day. Quiet at rest, surfaces
-   on hover; the global :focus-visible ring keeps it reachable. */
-.sidebar-collapse-btn {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  border-radius: var(--w-r-sm);
-  color: var(--w-text-faint);
-  cursor: pointer;
-  font-size: var(--w-fs-md);
-  line-height: 1;
-  transition: color var(--wmx-dur-instant) var(--wmx-ease-standard),
-    background var(--wmx-dur-instant) var(--wmx-ease-standard);
-}
-.sidebar-collapse-btn:hover {
-  color: var(--w-text);
-  background: var(--w-surface-hi);
-}
 
 /* Phase 62.B (item I): action-button emoji + label. Full mode shows
    both inline; icons mode (below) hides the label. */
@@ -84,19 +59,7 @@
 .sidebar.icons .ws-action-emoji { margin-inline-end: 0; font-size: 16px; }
 .sidebar.icons .sidebar-header { padding: 12px 0; }
 .sidebar.icons .sidebar-brand-row { font-size: var(--w-fs-lg); }
-/* In the 48px strip the badge has no side slot to sit in, and letting it
-   take a row of its own pushed the header from 74px to 99px. Ride it on the
-   logo's corner instead — the count bubble on an app icon, which is what a
-   narrow rail wants anyway. */
 .sidebar.icons .sidebar-header { position: relative; }
-.sidebar.icons .sidebar-notif-badge {
-  position: absolute;
-  top: 8px;
-  inset-inline-end: 6px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 3px;
-}
 .sidebar.icons .sidebar-list { padding: 6px 0; }
 .sidebar.icons .ws-item {
   justify-content: center;
@@ -180,31 +143,41 @@
   font-family: var(--w-font-mono);
 }
 
-/* One row: [collapse] [brand] [badge]. Both side slots are the SAME fixed
-   width, so the brand stays optically centred whether or not the badge is
-   rendering — the thing a plain flex row with `margin: auto` gets wrong the
-   moment one side appears. Grid tracks follow the writing direction, so the
-   arrow lands on the rail's outer edge in LTR and RTL alike. */
-.sidebar.full .sidebar-header {
-  display: grid;
-  grid-template-columns: 26px 1fr 26px;
-  align-items: center;
-  gap: 6px;
+/* ONE column. There is no collapse button and no count chip flanking the
+   wordmark — the masthead itself is the control (double-click), so the brand
+   gets the entire row instead of the leftovers between two side slots.
 
-  /* The masthead breathes with the rail. --sidebar-w is the live width,
-     set inline by Sidebar.tsx; clamp keeps it sane at both ends of the
-     160-480px resize range (≈18px at 160, ≈26px at the 224 default, capped
-     at 32 so a wide rail does not turn into a billboard). */
+   The masthead breathes with the rail. --sidebar-w is the live width, set
+   inline by Sidebar.tsx; clamp keeps it sane at both ends of the 160-480px
+   resize range (≈19px at 160, ≈26px at the 224 default, capped at 32 so a
+   wide rail does not turn into a billboard). */
+.sidebar.full .sidebar-header {
   --sb-brand: clamp(15px, calc(var(--sidebar-w, 224px) * 0.115), 32px);
 }
 .sidebar-brand-row {
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: center;
   gap: 0.34em;
   min-width: 0;
   font-size: var(--sb-brand, var(--w-fs-lg));
+
+  /* It is a <button>, so it inherits the app's bare-element button styling
+     (surface fill, border, 6px 12px padding). Strip all of it: this reads as
+     a wordmark, not a control, right up until you hover it. */
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  border-radius: var(--w-r-sm);
+  transition: background var(--wmx-dur-instant) var(--wmx-ease-standard);
 }
+.sidebar-brand-row:hover { background: var(--w-surface-hi); }
 .sidebar-header .sidebar-logo {
   /* em, so the mark tracks the wordmark instead of being pinned at 22px
      while the type around it grows. */
@@ -567,7 +540,13 @@
 
 /* ─── Attention: waiting dot ─── */
 
-/* Rendered by Sidebar.tsx inside .ws-meta. It used to be a
+/* ONE attention dot per row, two intensities — not two dots. Filled and
+   pulsing = a blocking permission request, the thing that stops work.
+   Hollow and still = a pane rang its bell (OSC 9/99/777) while you were
+   elsewhere. Blocking outranks activity, so a row that is both shows the
+   loud state. Design Pass 01 P3: attention is spent, not sprayed.
+
+   Rendered by Sidebar.tsx inside .ws-meta. It used to be a
    `.has-waiting::after` pinned at `inset-inline-end: 10px`, which painted
    over whatever badge sat under it. The class stays on the row — the
    redesign themes and the pulse both key off it. */
@@ -580,6 +559,11 @@
   box-shadow: 0 0 6px 1px color-mix(in srgb, var(--w-warning) 70%, transparent);
   animation: ymux-attn-dot 1.4s ease-in-out infinite;
   pointer-events: none;
+}
+.ws-waiting-dot.activity {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--w-warning);
+  animation: none;
 }
 
 /* ─── Attention: hook pulse ─── */
@@ -645,27 +629,6 @@
 
 /* ─── Notification badge, groups, drag & drop ─── */
 
-/* Sidebar aggregate badge — count of panes with pending activity
-   notifications across the whole workspaces list. Rendered in the
-   sidebar header brand row. Hidden when the count is 0. Logical
-   inset used elsewhere in the header carries through, so no
-   [dir="rtl"] override needed here. */
-.sidebar-notif-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  margin-inline-start: 6px;
-  border-radius: 9px;
-  background: var(--w-warning, #e0af68);
-  color: #0b0d16;
-  font-size: var(--w-fs-xs);
-  font-weight: 600;
-  line-height: 1;
-  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--w-warning) 45%, transparent);
-}
 
 /* ─── cmux-A A2: workspace groups ──────────────────────────────────
    Collapsible sidebar sections. Header carries color swatch + name +
