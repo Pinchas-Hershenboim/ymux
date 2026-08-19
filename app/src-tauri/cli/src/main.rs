@@ -114,7 +114,16 @@ fn hook_log(level: HookLevel, msg: &str) {
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "[{ts}] [{}] [HOOK] {msg}", level.column());
+        // Phase 80: build the whole record, newline included, and issue ONE
+        // write_all. `writeln!` on an unbuffered File splits it into two
+        // syscalls, and hooks run as many concurrent short-lived processes,
+        // so records fused with each other. An in-process queue is impossible
+        // here — separate processes — but O_APPEND makes a single small write
+        // atomic, which is the whole fix. It matters beyond this file:
+        // log_sync copies these lines verbatim into the desktop's debug.log,
+        // so a tear here becomes a tear in the user-visible log too.
+        let line = format!("[{ts}] [{}] [HOOK] {msg}\n", level.column());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

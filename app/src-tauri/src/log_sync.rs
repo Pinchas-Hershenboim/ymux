@@ -26,7 +26,7 @@ use std::sync::Arc;
 use russh::client::Handle as SshHandle;
 use serde::{Deserialize, Serialize};
 
-use ymux_core::{append_raw_line, log_debug, log_info, log_warn, shell_quote};
+use ymux_core::{append_raw_lines, log_debug, log_info, log_warn, shell_quote};
 
 use crate::addons::exec;
 use crate::{AppState, Session, SshClient};
@@ -225,9 +225,11 @@ fn ingest_section(host: &str, sec: &Section, old_offset: Option<u64>) -> u64 {
         "SYNC",
         &format!("--- {host} {}: {n} lines ---", sec.file_id),
     );
-    for line in complete.lines() {
-        append_raw_line(line);
-    }
+    // Phase 80: ONE submission, not one per line. A cycle can carry
+    // 256 KiB x 3 files x N hosts, and feeding those in individually is what
+    // turned a routine sync into thousands of open/stat/write/write/close
+    // sequences — the biggest single source of interleaved log records.
+    append_raw_lines(complete.lines());
     old_offset + complete_end as u64
 }
 
@@ -368,7 +370,7 @@ mod tests {
 
     #[test]
     fn cursor_holds_back_partial_trailing_line() {
-        // YMUX_CONFIG_DIR isolation so append_raw_line writes to a temp dir.
+        // YMUX_CONFIG_DIR isolation so the sync writes to a temp dir.
         let dir = std::env::temp_dir().join(format!("ymux-logsync-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var("YMUX_CONFIG_DIR", &dir);
@@ -381,6 +383,8 @@ mod tests {
         let new = ingest_section("host1", &sec, Some(10));
         // 10 + len("full line one\nfull line two\n")
         assert_eq!(new, 10 + 28);
+        // Phase 80: writes are asynchronous now — read-back needs a flush.
+        ymux_core::flush_log();
         let text = std::fs::read_to_string(dir.join("debug.log")).expect("log written");
         assert!(text.contains("full line two"));
         assert!(!text.contains("partial without"));

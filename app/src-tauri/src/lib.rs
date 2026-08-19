@@ -8160,6 +8160,9 @@ pub fn run() {
         log_error("APP", &format!(
             "PANIC at {location}: {msg}\n  thread: {thread_name}\n  backtrace:\n{bt}"
         ));
+        // Phase 80: writes are queued, and a panic may be on its way to an
+        // abort — get the backtrace onto disk before anything else happens.
+        ymux_core::flush_log();
         // Re-emit to stderr so any wrapping process (cargo run, tauri
         // dev server, etc.) can also surface it inline.
         eprintln!("PANIC at {location}: {msg}");
@@ -8663,8 +8666,17 @@ pub fn run() {
         // normally (the minimize-to-tray surprise was confusing). The tray
         // icon + badge stay for quick access; quit is either the window close
         // or the tray menu.
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // Phase 80: `.build(...).run(|_, event|)` instead of `.run(ctx)`,
+        // purely so the queued log tail reaches disk on the way out. The run
+        // loop is otherwise unchanged, and the `.expect` is still the boot
+        // path Rule #4 exempts.
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                ymux_core::flush_log();
+            }
+        });
 }
 
 #[cfg(test)]

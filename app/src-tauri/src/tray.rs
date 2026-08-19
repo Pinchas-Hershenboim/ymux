@@ -41,7 +41,12 @@ pub(crate) fn init(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 show_main(app);
                 let _ = app.emit("tray:action", "settings");
             }
-            "tray_quit" => app.exit(0),
+            // Phase 80: RunEvent::Exit covers this too, but the queued
+            // tail is cheap insurance on an explicit quit.
+            "tray_quit" => {
+                ymux_core::flush_log();
+                app.exit(0)
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
