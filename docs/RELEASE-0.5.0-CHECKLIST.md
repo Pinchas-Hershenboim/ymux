@@ -323,6 +323,6 @@ main. Measured on CI: **warm 9m24s → 7m06s**; cold unchanged (15m37s → 16m05
 |---|---|
 | Release-shape blockers | 5 |
 | Feature areas | 15 |
-| Individual checks | 71 |
+| Individual checks | 80 (5 release-shape + 75 feature) |
 | Verified live so far | 1 |
 | Open FOLLOWUPS carried in | 38 (2× P0, 8× P1) |
