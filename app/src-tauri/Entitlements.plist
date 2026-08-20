@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened Runtime entitlements. Required by notarisation, and each of
+	  these is here because the runtime BREAKS without it, not defensively:
+
+	  allow-jit + allow-unsigned-executable-memory
+	      WKWebView's JavaScriptCore JITs. Under hardened runtime without
+	      these the webview dies on first script execution and the window
+	      is blank with nothing useful in the log.
+
+	  disable-library-validation
+	      The bundle ships resources/ymux-cli and spawns it. Library
+	      validation refuses to load code signed by a different team ID
+	      than the host — which is what a separately-built helper is until
+	      it is signed with the same Developer ID.
+
+	  network.client + network.server
+	      SSH out, and the local RPC listener the CLI talks back to.
+
+	  files.user-selected.read-write
+	      The native folder picker used by the local-workspace flow.
+
+	  Deliberately NOT present: com.apple.security.app-sandbox. ymux spawns
+	  shells, opens PTYs and writes outside its container by design; the
+	  sandbox would have to be punched through so thoroughly it would stop
+	  meaning anything. Notarisation does not require it — only Mac App
+	  Store distribution does, which is not the channel here.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>
