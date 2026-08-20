@@ -94,6 +94,7 @@ import {
   type ForwardRow,
   type WorktreeEntry,
   type FeedResolvedEvent,
+  type KillSessionOutcome,
   type LayoutNode,
   type Note,
   type NotesFile,
@@ -1934,18 +1935,39 @@ function App() {
 
   // Phase 11.A: hard-kill the remote tmux session (if any) and disconnect.
   const killSession = async (paneId: string) => {
-    let killed = true;
+    // 2026-08-20: the backend now REPORTS what it achieved. This used to be
+    // `let killed = true` with a catch that flipped it — i.e. it only ever
+    // learned about an IPC failure, never about a kill that did nothing, and
+    // with zellij uninstalled that is exactly what happened.
+    let out: KillSessionOutcome | null = null;
     try {
-      await invoke("pane_kill_session", { paneId });
+      out = await invoke<KillSessionOutcome>("pane_kill_session", { paneId });
     } catch (e) {
-      killed = false;
       log.warn("kill_session failed", e);
+    }
+    const killed =
+      out !== null &&
+      (out.result === "killed" ||
+        out.result === "already_gone" ||
+        out.result === "no_session" ||
+        // SSH/tmux cannot read its own exit status yet (see KillResult).
+        // Treating it as before rather than regressing that path here.
+        out.result === "attempted");
+    if (!killed) {
+      log.warn("kill_session did not destroy the session", out);
+      flashSummaryToast(
+        "err",
+        out?.result === "multiplexer_missing"
+          ? t("pane.kill.noMultiplexer")
+          : t("pane.kill.failed", { name: out?.session ?? paneId }),
+      );
     }
     // The session is gone from the server — drop the restore hint so the next
     // start doesn't probe for a name that can never come back. (disconnectPane
     // deliberately keeps its hint: that path DETACHES, and the session lives.
     // A FAILED kill keeps its hint too — the session may well still be alive,
-    // and forgetting it would cost the user their work on the next start.)
+    // and forgetting it would cost the user their work on the next start.
+    // That branch was unreachable until the outcome above existed.)
     if (killed) forgetPaneSession(paneId);
     const sid = paneToSession.get(paneId);
     if (sid) {
@@ -2125,6 +2147,11 @@ function App() {
     // is why `sessionBound` gates only the ensure-connected call.
     const wsc = wsCaps(ws);
     let alive: Set<string> | null = null;
+    // Names that are EXITED-but-resurrectable, so the per-pane log below can
+    // say which of the two kinds of re-attach it is doing. Accumulated from
+    // both the workspace list and the per-pane probes; only ever read for a
+    // log line, so a name collision across hosts costs nothing.
+    const resurrectable = new Set<string>();
     if (wsc.sessionPersistence) {
       try {
         if (wsc.sessionBound) {
@@ -2160,8 +2187,25 @@ function App() {
         );
         return;
       }
+      // EXITED sessions are counted as alive ON PURPOSE. Do not "fix" this
+      // with `.filter(s => !s.exited)`.
+      //
+      // A Windows reboot leaves EVERY zellij session EXITED, and `attach -c`
+      // resurrects it — that is the one thing zellij does that tmux cannot,
+      // and the reason it was adopted at all (docs/DECISIONS.md). This line
+      // feeding attach IS the reboot-restore path; filtering here would delete
+      // the feature.
+      //
+      // The guarantee that a session the user KILLED does not come back lives
+      // in pane_kill_session, which since 2026-08-20 sends `delete-session -f`
+      // — so a killed session is not in this list at all, EXITED or otherwise,
+      // and the `!liveNames.has()` branch below drops its hint on its own.
       alive = new Set(sessions.map((x) => x.name));
-      restoreLog(`server has ${sessions.length} live tmux session(s)`);
+      for (const x of sessions) if (x.exited) resurrectable.add(x.name);
+      const dead = sessions.filter((x) => x.exited).length;
+      restoreLog(
+        `server has ${sessions.length - dead} live and ${dead} resurrectable session(s)`,
+      );
     } else {
       // Per-pane connections: ask over the PANE's own connection instead
       // (pane_probe_tmux_sessions). A null answer means "couldn't ask" — the
@@ -2193,6 +2237,7 @@ function App() {
         // password-only, passphrase-locked, unknown host key, host down).
         // Distinct from [] = "asked, the host has no sessions".
         result = list ? new Set(list.map((x) => x.name)) : null;
+        if (list) for (const x of list) if (x.exited) resurrectable.add(x.name);
         restoreLog(
           result
             ? `probe: host has ${result.size} live tmux session(s)`
@@ -2248,7 +2293,13 @@ function App() {
         restoreLog(`pane ${c.paneId}: connected manually while waiting — left alone`);
         continue;
       }
-      restoreLog(`pane ${c.paneId}: re-attaching to "${c.tmux}"`);
+      // Say WHICH of the two this is. The log could not tell a live reattach
+      // from a resurrection, which is why "a killed session came back" took a
+      // code read to spot instead of showing up in debug.log.
+      restoreLog(
+        `pane ${c.paneId}: re-attaching to "${c.tmux}"` +
+          (resurrectable.has(c.tmux) ? " (resurrecting a saved session)" : ""),
+      );
       await connectPane(c.paneId, {
         persistent: true,
         tmuxSession: c.tmux,

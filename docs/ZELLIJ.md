@@ -18,22 +18,32 @@ Two kinds of caller, and the difference is the whole safety story:
 
 | what | how it reaches zellij | site |
 |---|---|---|
-| `zellij attach -c <name>` | **typed as a string into the user's shell** — must parse in both cmd.exe and PowerShell | [`build_zellij_attach_command`](../app/src-tauri/src/lib.rs#L2235) |
-| `list-sessions -n` | child process, argv array | [`zellij_args_list`](../app/src-tauri/src/lib.rs#L2181) |
-| `kill-session <name>` | child process, argv array | [`zellij_args_kill`](../app/src-tauri/src/lib.rs#L2185) |
-| `delete-session <name>` | child process, argv array | [`zellij_args_delete`](../app/src-tauri/src/lib.rs#L2189) |
-| `-s <name> action write-chars <chars>` | child process, argv array | [`zellij_args_write_chars`](../app/src-tauri/src/lib.rs#L2199) |
+| `zellij attach -c <name>` | **typed as a string into the user's shell** — must parse in both cmd.exe and PowerShell | [`build_zellij_attach_command`](../app/src-tauri/src/lib.rs#L2374) |
+| `list-sessions -n` | child process, argv array | [`zellij_args_list`](../app/src-tauri/src/lib.rs#L2247) |
+| `delete-session -f <name>` | child process, argv array | [`zellij_args_delete_force`](../app/src-tauri/src/lib.rs#L2257) |
+| `-s <name> action write-chars <chars>` | child process, argv array | [`zellij_args_write_chars`](../app/src-tauri/src/lib.rs#L2276) |
 
 argv only, never a shell — Rule #3. New verbs go through
-[`zellij_run`](../app/src-tauri/src/lib.rs#L2214), which returns `false` (not an
-error) when the binary is missing: zellij being absent is a supported state.
+[`zellij_try`](../app/src-tauri/src/lib.rs#L2325), which reports `Ok` /
+`Failed { code, stderr }` / `Missing`. The last one matters: a missing binary used
+to be the same `false` as a failed verb, which is how a Kill on a machine with no
+zellij installed destroyed nothing and reported success.
+[`zellij_run`](../app/src-tauri/src/lib.rs#L2366) is a bool wrapper over it for
+callers that only need "did it land".
 
-Binary resolution: [`zellij_exe`](../app/src-tauri/src/lib.rs#L2139) prefers
+Binary resolution: [`zellij_exe`](../app/src-tauri/src/lib.rs#L2192) prefers
 `%LOCALAPPDATA%\Zellij\zellij.exe` and falls back to PATH, because the winget MSI's
 PATH edit only reaches processes started *after* the install.
 
 **Deliberately not sent** (keep this list current when you add a verb):
 
+- `kill-session <name>` — it stops a running session but keeps the serialized copy,
+  so the session comes back marked EXITED and `attach` still resurrects it. ymux sent
+  it until 2026-08-20, falling through to `delete-session` only when the kill
+  *failed*, so that one click never destroyed a live session. The intent was a
+  fail-safe two-step; the second step was unreachable, because the first click also
+  drops the pane from `pane_sessions` and the button is gated on `isConnected` /
+  `isTmux()`. See §6.
 - `attach -b` (create detached) — returns 0 and creates nothing without a tty, so
   there is no way to tell success from silence. Panes create by attaching.
 - `action rename-session` — the session name is derived from the pane id so a cold
@@ -134,9 +144,24 @@ never us, and is treated as "someone is attached".
 
 `kill-session <name>` stops a running session — the serialized copy survives, so it
 reappears in the list as `(EXITED - attach to resurrect)`.
-`delete-session [-f|--force] <name>` discards that copy; `-f` kills first if it is
-still running. ymux does **not** pass `-f` — it kills, then deletes, so a failure
-between the two leaves a resurrectable session rather than a silent data loss.
+`delete-session [-f|--force] <name>` discards that copy; `-f` kills it first if it is
+still running.
+
+**ymux sends `delete-session -f` and nothing else.** One verb covers both the live and
+the already-exited case, so "Kill session" means the session is gone rather than
+resurrectable. Captured from 0.44.3 on 2026-08-20, and what the outcome classifier in
+`kill_pane_session_inner` keys on:
+
+```text
+$ zellij delete-session -f a-name-that-does-not-exist
+Session: "a-name-that-does-not-exist" not found.      # on STDERR
+$ echo $?
+2
+```
+
+That case is reported as `already_gone`, not `failed` — there was nothing to destroy,
+which is what the caller wanted. A live delete cannot be exercised headlessly
+(`attach -b` exits 0 without creating anything), so it is a live-checklist item.
 
 ---
 
@@ -436,6 +461,19 @@ mid-session does nothing; the session has to be killed and recreated.
 - **EXITED sessions are real sessions.** They survive a reboot and are resurrectable;
   the picker offers them with `attached: false`.
 - **The website is ahead of the binary.** Check `--help` before adding a verb.
+- **A safety valve nobody can reach is not a safety valve.** The `kill-session` →
+  `delete-session` two-step was designed so one click could never destroy a live
+  session and a failure between the verbs left something resurrectable. Both true, and
+  both irrelevant: the first click removed the pane from `pane_sessions`, so a second
+  one returned early having sent no verb, and the Kill button is gated on
+  `isConnected` / `isTmux()` — false by then, so it was not even rendered.
+  `zellij_args_delete` had exactly one call site and nothing could reach it. The
+  result was a red, danger-classed button labelled "no resume" that left a
+  resurrectable session behind. Replaced 2026-08-20 by one forcing verb plus an
+  honest outcome (`KillSessionOutcome`) the UI can report.
+- **`no_session` is an answer, not an error.** `pane_kill_session` returns
+  `Result<KillSessionOutcome, String>`; `Err` is reserved for "could not even try".
+  A pane with nothing bound to it reports `no_session` and counts as gone.
 
 ---
 

@@ -3422,3 +3422,80 @@ TESTS  7 new in mod zellij_tests, all compile-time: the kdl and the layout are
 NOT VERIFIED  Nothing here has run live. Zero chrome on screen, keys reaching
      the shell, and `default_layout` resolving at session CREATION are all
      checklist items, not claims. Rule #14.
+
+================================================================================
+2026-08-20  Zellij lockdown, part 2: Kill actually kills, and reports what it did
+================================================================================
+WHY  Yossi: "session disconnect doesn't really work today — it should be a
+     delete command." Correct, and worse than it looked.
+
+     pane_kill_session ran `kill-session` and fell through to `delete-session`
+     ONLY IF THE KILL FAILED. On a live session the kill succeeds, so delete
+     never ran: the session came back EXITED-and-resurrectable. The comment
+     called this a deliberate two-step where a second click deletes — and that
+     second click DOES NOT EXIST. The first click removes the pane from
+     pane_sessions, so a second returns early having sent no verb, and the
+     button is gated on isConnected/isTmux(), both false by then, so it is not
+     even rendered. `zellij_args_delete` had exactly one call site in the repo
+     and nothing could reach it. Net: a red danger-classed button labelled
+     "no resume" that left a resurrectable session behind.
+
+WHAT delete-session -f, one verb. Kills if running, then discards the saved
+       copy. zellij_args_kill / zellij_args_delete are gone with the two-step.
+     zellij_try + ZellijOutcome{Ok, Failed{code,stderr}, Missing}. zellij_run
+       stays as a bool wrapper so the smart-connect write-chars call site is
+       untouched. Before this, "the verb failed" and "zellij is not installed"
+       were the same `false` — which is how a Kill on a machine with no zellij
+       destroyed nothing and reported success.
+     KillSessionOutcome{result,backend,session,detail} crosses Tauri IPC AND
+       JSON-RPC. result ∈ killed|already_gone|no_session|multiplexer_missing|
+       failed|attempted. Err(String) stays for "could not even try".
+     kill_pane_session_inner extracted; the Tauri command and the RPC handler
+       now call the SAME code.
+     App.tsx killSession reads the payload instead of assuming success, and
+       toasts on failure while KEEPING the restore hint.
+     i18n en/he/ar/ru: the labels matched neither the old behaviour nor the
+       new one.
+
+THE RPC WAS LYING TOO  rpc_server.rs "pane.kill-session" carried its own copy
+     that matched only Session::Ssh. A zellij or WSL pane fell to `_`, no
+     multiplexer verb ran, the shell was killed — and it still answered
+     {"ok":true,"killed":true}. So `ymux pane-disconnect --kill` reported a
+     kill it had never performed on EVERY native Windows pane. Fixed by
+     construction: the duplicate is gone, `killed` is now derived from the
+     shared outcome.
+
+CAPTURED, NOT GUESSED  `zellij delete-session -f <missing-name>` → exit 2,
+     stderr `Session: "<name>" not found.` That is classified already_gone,
+     not failed: nothing to destroy is the caller's goal. A LIVE delete cannot
+     be exercised headlessly (attach -b exits 0 creating nothing), so it is a
+     checklist item.
+
+RESTORE DELIBERATELY NOT FILTERED  App.tsx builds its live set with no
+     `.exited` filter, and that is the reboot-restore path: a Windows reboot
+     leaves EVERY zellij session EXITED, and attach -c brings them back — the
+     one thing zellij does that tmux cannot, and why it was adopted. The
+     killed-session-resurrects bug was the KILL's fault and is fixed there.
+     Added the comment saying so plus per-pane "(resurrecting a saved
+     session)" logging, because the log could not tell the two apart, which is
+     why this needed a code read to find.
+
+CLOSE-PANE UNCHANGED, by Yossi's call: the session survives (symmetric with
+     SSH/WSL, where X is a detach). Added the log line naming the surviving
+     session, since nothing recorded it. The other half he asked for — keeping
+     the restore hint — is NOT ACHIEVABLE: hints are keyed by pane id and
+     prunePaneSessions reaps any whose pane is gone from every layout. The
+     recovery route that does work is the Connect picker, which lists it.
+
+VERIFIED-BEFORE-TOUCHING  A review flagged `PaneDisconnect{kill:false}` as
+     wrongly routed to pane.kill-session. It is not — it calls pane.disconnect.
+     Misread line. No change made.
+
+CHECKS  289 cargo tests (6 new on this half), cargo check --workspace clean,
+     npx tsc --noEmit clean.
+
+NOT VERIFIED  Rule #14. Nothing here has run live. The whole checklist is in
+     docs + the plan; the load-bearing ones are: kill a live session and
+     confirm `zellij list-sessions -n` does not list it AT ALL; rename
+     zellij.exe and confirm the failure toast + hint kept; reboot and confirm
+     resurrection still works.

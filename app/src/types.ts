@@ -51,6 +51,29 @@ export interface CreateWorkspaceInput {
 // Phase 81: optional fields joined from the server-side
 // ~/.ymux/session-meta.json (absent on old-CLI servers). Display
 // precedence: label > claude_title > name.
+/** What `pane_kill_session` achieved. Mirrors `KillSessionOutcome` in lib.rs.
+ *
+ *  Before 2026-08-20 the command returned nothing and the frontend inferred
+ *  success from "the invoke did not throw" — so a Kill on a machine with no
+ *  multiplexer installed destroyed nothing and reported that it worked. */
+export type KillResult =
+  | "killed"
+  | "already_gone"
+  | "no_session"
+  | "multiplexer_missing"
+  | "failed"
+  /** SSH/tmux: the verb was sent, but `|| true` in the remote command means
+   *  its exit status is not yet readable. Honest placeholder, not a claim. */
+  | "attempted";
+
+export interface KillSessionOutcome {
+  result: KillResult;
+  backend: "zellij" | "tmux" | "none";
+  session?: string;
+  /** The multiplexer's own stderr, truncated. Never PTY content. */
+  detail?: string;
+}
+
 export interface TmuxSessionInfo {
   name: string;
   created: number;

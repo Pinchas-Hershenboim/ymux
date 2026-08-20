@@ -57,7 +57,7 @@
   "common.connect_tmux": "اتصال (tmux)",
   "common.disconnect": "قطع الاتصال",
   "common.detach": "فصل (يبقى قيد التشغيل)",
-  "common.kill_session": "إنهاء الجلسة",
+  "common.kill_session": "حذف الجلسة",
   "common.cancel": "إلغاء",
   "common.save": "حفظ",
   "common.close": "إغلاق",
@@ -117,7 +117,7 @@
   "ws.welcome.sidebar.cta": "مساحة عمل جديدة",
   "pane.tooltip.disconnect": "قطع الاتصال",
   "pane.tooltip.detach": "فصل (الجلسة تستمر)",
-  "pane.tooltip.kill_session": "إنهاء جلسة tmux على الخادم البعيد",
+  "pane.tooltip.kill_session": "إنهاء الجلسة وحذف نسختها المحفوظة — لا استئناف ولا استعادة",
   "pane.tooltip.tmux_badge": "جلسة tmux — تنجو من قطع الاتصال",
   "pane.tooltip.more_connect_options": "خيارات اتصال إضافية",
   "pane.tooltip.split_right": "تقسيم لليمين (Ctrl+Shift+D)",
@@ -1089,5 +1089,7 @@
   "pf.isRepo": "مستودع git — فروع العمل مدرجة أدناه",
   "pf.checkGit": "تحقق من وجود مستودع git",
   "pf.checkGit.found": "“{name}” مستودع git — فروع العمل معروضة الآن",
-  "pf.waitingForConnection": "بانتظار الاتصال…"
+  "pf.waitingForConnection": "بانتظار الاتصال…",
+  "pane.kill.failed": "تعذّر حذف الجلسة ‎{name}‎",
+  "pane.kill.noMultiplexer": "المُضاعِف غير مثبَّت — لم يتم حذف الجلسة"
 }

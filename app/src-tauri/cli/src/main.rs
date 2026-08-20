@@ -785,17 +785,20 @@ enum Cmd {
         op: SettingsOp,
     },
 
-    /// Phase 11.A: disconnect a pane. For tmux-persistent panes, --kill also
-    /// terminates the remote tmux session (otherwise it just detaches).
+    /// Phase 11.A: disconnect a pane. For persistent panes, --kill also
+    /// destroys the multiplexer session (otherwise it just detaches).
     PaneDisconnect {
         #[arg(long)]
         pane: String,
-        /// Also `tmux kill-session` on the remote (no resume possible).
+        /// Also destroy the pane's multiplexer session — tmux over SSH/WSL,
+        /// zellij on a native Windows pane — INCLUDING zellij's saved copy.
+        /// No resume, no resurrect.
         #[arg(long)]
         kill: bool,
     },
 
-    /// Phase 11.A: hard-kill the tmux session bound to a pane (no resume).
+    /// Phase 11.A: destroy the multiplexer session bound to a pane, and its
+    /// saved copy. No resume, no resurrect.
     /// Convenience alias for `pane-disconnect --pane <id> --kill`.
     PaneKillSession {
         #[arg(long)]

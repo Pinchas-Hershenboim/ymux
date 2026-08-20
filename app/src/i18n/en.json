@@ -57,7 +57,7 @@
   "common.connect_tmux": "Connect (tmux)",
   "common.disconnect": "Disconnect",
   "common.detach": "Detach",
-  "common.kill_session": "Kill session",
+  "common.kill_session": "Kill & delete session",
   "common.cancel": "Cancel",
   "common.save": "Save",
   "common.close": "Close",
@@ -117,7 +117,7 @@
   "ws.welcome.sidebar.cta": "New workspace",
   "pane.tooltip.disconnect": "Disconnect",
   "pane.tooltip.detach": "Detach (session keeps running)",
-  "pane.tooltip.kill_session": "Hard-kill remote session (no resume)",
+  "pane.tooltip.kill_session": "Destroy the session and its saved copy — no resume, no resurrect",
   "pane.tooltip.tmux_badge": "tmux session — survives disconnect",
   "pane.tooltip.more_connect_options": "More connect options",
   "pane.tooltip.split_right": "Split right (Ctrl+Shift+D)",
@@ -1089,5 +1089,7 @@
   "pf.isRepo": "git repository — its worktrees are listed below",
   "pf.checkGit": "Check for a git repository",
   "pf.checkGit.found": "“{name}” is a git repository — its worktrees are listed now",
-  "pf.waitingForConnection": "waiting for the connection…"
+  "pf.waitingForConnection": "waiting for the connection…",
+  "pane.kill.failed": "Could not destroy session {name}",
+  "pane.kill.noMultiplexer": "The multiplexer is not installed — the session was NOT destroyed"
 }

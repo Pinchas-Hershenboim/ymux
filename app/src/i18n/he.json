@@ -57,7 +57,7 @@
   "common.connect_tmux": "התחבר (tmux)",
   "common.disconnect": "התנתק",
   "common.detach": "התנתק (השאר ברקע)",
-  "common.kill_session": "סגור session",
+  "common.kill_session": "מחק session",
   "common.cancel": "ביטול",
   "common.save": "שמור",
   "common.close": "סגור",
@@ -117,7 +117,7 @@
   "ws.welcome.sidebar.cta": "סביבת עבודה חדשה",
   "pane.tooltip.disconnect": "התנתק",
   "pane.tooltip.detach": "ניתוק (ה-session ממשיך לרוץ)",
-  "pane.tooltip.kill_session": "הרוג session ברימוט (אין resume)",
+  "pane.tooltip.kill_session": "השמדת ה-session והעותק השמור שלו — אין resume ואין שחזור",
   "pane.tooltip.tmux_badge": "session של tmux — שורד ניתוק",
   "pane.tooltip.more_connect_options": "אפשרויות חיבור נוספות",
   "pane.tooltip.split_right": "פצל ימינה (Ctrl+Shift+D)",
@@ -1089,5 +1089,7 @@
   "pf.isRepo": "מאגר git — ה-worktrees שלו מוצגים מתחת",
   "pf.checkGit": "בדוק אם יש כאן מאגר git",
   "pf.checkGit.found": "“{name}” הוא מאגר git — ה-worktrees שלו מוצגים עכשיו",
-  "pf.waitingForConnection": "מחכה לחיבור…"
+  "pf.waitingForConnection": "מחכה לחיבור…",
+  "pane.kill.failed": "לא ניתן היה להשמיד את ה-session ‎{name}‎",
+  "pane.kill.noMultiplexer": "המולטיפלקסר לא מותקן — ה-session לא הושמד"
 }

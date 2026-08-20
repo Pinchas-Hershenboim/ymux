@@ -96,3 +96,17 @@ patching each one separately.
 
 
 ## Done
+
+## Scrollback inside a locked zellij pane (2026-08-20)
+
+The full lock (`keybinds clear-defaults=true { }` + `mouse_mode false`) takes away every
+way to scroll back inside a zellij pane: no scroll mode, no wheel to zellij, and
+xterm.js's own wheel scrolls its normal buffer, which sits behind zellij's alt screen.
+Accepted deliberately — the pane is a shell and Claude Code redraws anyway — but the
+capability is gone rather than merely awkward.
+
+What would restore it without giving the keys or the mouse back: a ymux-side "show
+scrollback" affordance built on `zellij -s <name> action dump-screen --full`, rendered in
+ymux's own UI. Explicitly NOT a wheel proxy — Phase 65.O already proved that fights
+xterm.js and breaks the plain-shell case (terminalInstance.ts ~882), and one child
+process per wheel tick is not viable.
