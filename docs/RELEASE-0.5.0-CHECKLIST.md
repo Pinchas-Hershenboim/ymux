@@ -1,8 +1,8 @@
 # YMUX 0.5.0 — what shipped since the last cut, and how to verify it
 
-Baseline: `v0.4.5-beta.1` = `bcaa330` (2026-07-31).
+Baseline: `v0.4.5-beta.1` = `bcaa330` (2026-07-31). Updated 2026-08-20 after the Zellij merge.
 Head at time of writing: `f98e079`.
-**151 commits** (85 user-facing: 42 `feat`, 34 `fix`, 1 `perf`, 8 `refactor`).
+**189 commits** — 151 at first writing plus the 38-commit Zellij chain.
 
 This is the pre-release test plan. Nothing here has been run against a
 live build unless the Status column says so — CI green means syntax, not
@@ -10,23 +10,15 @@ behaviour (Rule #14). Work top to bottom: area 1 gates everything else,
 because every other test on an upgraded machine runs through the migrated
 config dir.
 
-> ## ⏸ ON HOLD — 2026-08-20
->
-> An active session on `claude/zellijj-commands-469a3e` (builds on
-> `claude/zellinj-tmux-windows-3a5afe`, **35 commits** ahead of main, last
-> commit today 14:40, uncommitted work in the tree) **replaces WSL with
-> Zellij**. Yossi's call: wait for it, merge everything, then test once.
->
-> **Do not start testing yet.** Two areas below are already wrong:
-> * **Area 5 (RTL)** — 3 commits here become **~18** on that branch. Frozen.
-> * **Area 8 (WSL Smart Install)** — **all 8 checks are dead.** WSL is removed
->   from the UI entirely: no "WSL (tmux)" option, no `W` sidebar badge, and the
->   whole eight-step WSL group is gone from the local-setup wizard.
->
-> Two areas will need to be **written** once the branch lands: Zellij persistent
-> sessions, and the WSL → local workspace migration.
->
-> Everything else (areas 1–4, 6–7, 9–15) stands, but holds until the merge.
+The Zellij chain is **merged** (2026-08-20): all three worktrees
+(`zellinj-tmux-windows` ⊂ `zellijj-rtl-support` ⊂ `zellijj-commands`) were a
+linear chain, so one merge took all 38 commits. Head is **52 commits** ahead of
+`origin/main`, 0 behind. Green after the merge: `tsc`, `cargo check`,
+`cargo test` **450 passed / 0 failed**, `go vet` + `go test` 10/10 packages.
+
+The merge broke the build on exactly one line — `parse_zellij_sessions` is new
+on that branch and predates Phase 81.F, so it omitted `auto_name` from the
+`TmuxSessionInfo` initializer. Patched as `auto_name: None`; see area 16.
 
 **Legend** — Status: `⛔ blocker` · `🔴 untested, has a written repro` ·
 `🟠 untested, no repro written` · `🟢 verified live`
@@ -127,33 +119,38 @@ SVG foreignObject · `95c0f31` remote-command layer · `8478e8f` `6612554` fixes
 
 ---
 
-## 5. RTL / bidi — 3 commits, regression-prone
+## 5. RTL / bidi — 18 commits, rebuilt from the model up ⚠️ highest-churn area
 
-`1643fbf` restore `tuiOwnsBidi` (silently lost in merge `bcaa330` — **18 days gone**) ·
-`ac71bfb` TUI-owns-bidi **off by default**, its premise expired and it broke local panes ·
-`fd1af3d` resolve bidi base direction **per line** instead of forcing LTR.
+The 3 commits in the earlier plan became **18**. This was not polish — the model
+changed. Every fix below was measured on a real build, and several are
+corrections of a fix from earlier the same day.
 
-This area has already regressed once through a silent merge loss. Test both
-pane classes — the settings are split per class (local Windows vs Linux).
+**What the measurements settled** (`0b40012`, same build, same session):
+
+| pane class | correct mode | what `off` did |
+|---|---|---|
+| remote (SSH → Linux) | `auto_per_line` | reversed |
+| local (Windows ConPTY) | `bidi_reorder` | reversed |
+
+So the setting is now **split per pane class**, and `4426ad4` gives each profile
+its own measured default rather than inheriting the old shared value.
 
 | # | Test | Pass condition | Status |
 |---|---|---|---|
-| 5.1 | Hebrew output in a **local Windows** pane | reads correctly; TUI-owns-bidi is off by default here | 🟠 |
-| 5.2 | Hebrew output in a **Linux/SSH** pane | reads correctly | 🟠 |
-| 5.3 | Mixed Hebrew/English lines | base direction resolved per line, not forced LTR | 🟠 |
-| 5.4 | A TUI with a status bar containing a few Hebrew letters | status bar does **not** flip | 🟠 |
-| 5.5 | Settings → RTL | the per-pane-class split is visible and each side takes effect | 🟠 |
+| 5.1 | Hebrew in a **local Windows** pane, all three RTL modes | each mode is separately testable on an **open** pane — xterm swaps renderers live (`bc12388`). Default is `bidi_reorder` | 🔴 |
+| 5.2 | Hebrew in a **remote SSH/Linux** pane, all three modes | default is `auto_per_line`; remote was never broken and must stay that way | 🔴 |
+| 5.3 | Ordinary shell output with **one** Hebrew word (`ls`, a Hebrew filename, a note on a long path) | does **not** flip. The dominance vote is TUI-rows-only (`341f931`) — it reached ordinary output once already | 🔴 |
+| 5.4 | A TUI status bar with three Hebrew letters | does not flip (`bc9665c`) | 🔴 |
+| 5.5 | Direction follows the **pane class**, never what runs inside it (`aeed936`) | run a Hebrew TUI in a remote pane and a Latin one locally — neither changes the rule | 🔴 |
+| 5.6 | **Claude** output in a local pane | letters correct **and** not pinned to the left edge (`322655e` normalises visual→logical on the way in) | 🔴 |
+| 5.7 | Fire a Claude hook, then **detach and reattach** | the RTL signal survives; a reattach must not clear it (`eaab4bf`) | 🔴 |
+| 5.8 | Change any unrelated setting, then reopen Settings | `terminal.rtl` **survives** — `settings_save` replaced the whole document from a stale client copy (`2a7463c`) | 🔴 |
+| 5.9 | Toggle one RTL field | the other pane class's switch is **not** disabled — a partial profile write was wiping it (`05d89f2`) | 🔴 |
+| 5.10 | **Migration**: settings written by 0.4.5 | each profile gets its measured mode, not the old shared one (`4426ad4`) | 🔴 |
 
-> ⏸ **FROZEN — do not test.** ~15 further RTL commits sit on
-> `claude/zellijj-commands-469a3e`, and they change the model, not just the
-> behaviour: RTL settings split **per pane class** (local Windows vs Linux),
-> `bidi-override` replaces `dir`, the dominance vote is restricted to TUI rows,
-> the direction rule follows the pane class rather than what runs inside it, and
-> two settings-write bugs were silently wiping `terminal.rtl`. Zellij also
-> normalises the stream, which changes what "local" should default to. The five
-> checks below will be rewritten against the merged result.
-
----
+> The two settings bugs (5.8, 5.9) are why RTL "kept regressing" — a correct fix
+> was being silently discarded on save. Test them **before** re-reporting any
+> RTL bug.
 
 ## 6. File Manager — streaming uploads + unified transfer UI — 7 commits
 
@@ -187,40 +184,30 @@ field with a real availability probe · `fca8b54` flag not-installed + read HKCU
 
 ---
 
-## 8. ~~WSL Smart Install~~ — SUPERSEDED, do not test ⏸
+## 8. WSL → local migration, then WSL removed — 2 commits ⚠️ DATA-LOSS RISK
 
-`65d6fdc` real install path: preflight, UAC consent, reboot · `f3907fc` **install Claude
-Code inside WSL — the chain never did** · `adfb237` capability layer + tmux session
-restore for WSL workspaces · `9bd44bc` feed `wsl_exec` scripts on stdin (argv lost every
-shell variable) · `fc87078` CreateWslUser reported success without creating a user ·
-`fd1f537` capture elevated output · `6753759` stop reporting failure as success ·
-`5673686` `reset-local-setup.ps1` to re-test the wizard.
+`e4f54dc` migrates first, on its own, **because this is the step that can cost a
+user every workspace they have**. `Connection` is `#[serde(tag = "type")]` and
+lives in `workspaces.json`: deleting the `Wsl` variant while any file in the
+wild still contains `"type":"wsl"` makes serde reject the **whole file**, and
+`load_from_disk` then refuses every later save.
 
-Four of these are "it silently lied about succeeding" fixes, so the thing to
-verify is the **failure** paths, not just the happy one. `reset-local-setup.ps1`
-exists to make this repeatable.
+`137c789` then removes WSL from the UI: the "WSL (tmux)" option, the `W` sidebar
+badge, and the eight-step WSL group in the local-setup wizard (chain constant,
+checkbox, status summary, 51-line UI block). `finalize_wsl_workspace` was
+**converted**, not deleted — it becomes `finalize_local_workspace` and creates a
+native Windows workspace with no WSL chain. The name/folder inputs went away
+with the WSL block and were re-added as their own section.
 
 | # | Test | Pass condition | Status |
 |---|---|---|---|
-| 8.1 | Wizard on a machine with **no** WSL | preflight → UAC consent → install → reboot prompt, all honest | 🟠 |
-| 8.2 | After reboot, resume | user actually created (`fc87078`), Claude Code actually installed inside WSL (`f3907fc`) | 🟠 |
-| 8.3 | Force a failure (deny UAC) | reported as a **failure**, with the elevated output shown (`6753759` + `fd1f537`) | 🟠 |
-| 8.4 | WSL workspace, close and reopen | tmux session restored (`adfb237`) | 🟠 |
-| 8.5 | Env vars inside a WSL setup script | survive (`9bd44bc` — argv used to eat them) | 🟠 |
-
-> ⏸ **All 8 checks above are dead.** `137c789` on the pending branch removes WSL
-> from the UI entirely — the "WSL (tmux)" option, the `W` sidebar badge, and the
-> whole eight-step WSL group in the local-setup wizard (chain constant, checkbox,
-> status summary, 51-line UI block) are gone. `finalize_wsl_workspace` was
-> **converted**, not deleted: it becomes `finalize_local_workspace` and creates a
-> native Windows workspace with no WSL chain. An existing pre-migration `wsl`
-> workspace opened in the edit modal now shows as **local**.
->
-> Kept here only so the eight fixes are on record — four of them were "it silently
-> lied about succeeding" bugs, and that failure mode is worth remembering if the
-> local-setup wizard inherits any of that code.
-
----
+| 8.1 | **Open a `workspaces.json` that still contains `"type":"wsl"`** | file loads, **every** workspace survives, saves still work. This is the data-loss case | 🔴 |
+| 8.2 | A migrated WSL workspace | appears as **local**, opens, and its panes work | 🔴 |
+| 8.3 | Open a pre-migration `wsl` workspace in the edit modal | shows as **local** — what `load_from_disk` turns it into — rather than falling through to an error | 🔴 |
+| 8.4 | Create-workspace modal | no "WSL (tmux)" option anywhere | 🔴 |
+| 8.5 | Sidebar | no `W` badge on any row | 🔴 |
+| 8.6 | Local-setup wizard end to end | no WSL group; finalize creates a **native Windows** workspace, and the name/folder inputs are still there and still work | 🔴 |
+| 8.7 | Restart after migrating | migration is not re-run, nothing duplicated | 🔴 |
 
 ## 9. ymux-tools: statuslines, Ticker, skills registry — 6 commits
 
@@ -337,20 +324,56 @@ main. Measured on CI: **warm 9m24s → 7m06s**; cold unchanged (15m37s → 16m05
 
 ---
 
-## Still to merge — this is what we are waiting for
+## 16. Zellij — session persistence for native Windows panes — 8 commits ⭐ NEW
+
+Native Windows panes were the only class with **no session persistence**, and
+that gap is the entire reason WSL existed in this product — everything else WSL
+supplied already had a native equivalent. Zellij closes it directly, which is
+what makes area 8's removal safe.
+
+Pinned to **zellij 0.44.3**, upstream's own winget package `Zellij.Zellij`
+(deliberately *not* the third-party `arndawg.zellij-windows` fork), binary at
+`%LOCALAPPDATA%\Zellij\zellij.exe`. Issue #5365 reports detach/reattach broken
+on Windows; it does **not** reproduce on 0.44.3.
+
+Verbs, each checked against `zellij 0.44.3 --help` on Windows, now in one
+documented block instead of argv at three call sites (`7cbf097`):
+
+| verb | effect |
+|---|---|
+| `attach -c <name>` | attach-or-create; **also resurrects an EXITED session** |
+| `list-sessions -n` | the parsing form — `-s` drops age *and* the EXITED mark |
+| `kill-session <name>` | stops a RUNNING session; the serialized copy survives |
+| `delete-session <name>` | discards that copy — exited sessions only |
+
+| # | Test | Pass condition | Status |
+|---|---|---|---|
+| 16.1 | **The gate:** native Windows pane → detach → reattach → type | typing works. This is the whole premise; if it fails, WSL should not have been removed | 🔴 |
+| 16.2 | Fresh machine → new-workspace wizard | `InstallZellij` runs via winget, no user knowledge of multiplexers needed; a re-run is a no-op (`winget_already_ok`) | 🔴 |
+| 16.3 | Open a pane | **no frame** — neither the border (`pane_frames false`) nor the two plugin rows above/below, which come from zellij's default layout and no config key touches (`bc3f013`) | 🔴 |
+| 16.4 | Check the log on pane open | `resolve_zellij_config` says whether the config was **found or not** — "the setting does not work" and "the config was never found" used to look identical (`3709c53`) | 🔴 |
+| 16.5 | Run the **portable** exe with `resources\` beside it | config is found next to the running binary, not only via `resource_dir()` | 🔴 |
+| 16.6 | Delete `resources/ymux-zellij.kdl` and open a pane | supported state: zellij uses its own config, pane still works | 🔴 |
+| 16.7 | Press `Ctrl+p n` in a pane | does **not** split the pane — the default keybinds were live and unlocked (`bc3f013`) | 🔴 |
+| 16.8 | Kill a **running** session from the picker | it is gone, **not** resurrectable. The old code sent `delete-session` only when the kill *failed*, so on a live session it came back EXITED (`2b4c9ba`) | 🔴 |
+| 16.9 | Close a pane, then look at the picker | its session is still listed with a resurrect badge — deliberate | 🔴 |
+| 16.10 | An EXITED session in the picker → trash button | actually buried. Before `dfbe384` the list was **append-only** with no way to act on it | 🔴 |
+| 16.11 | Reboot the machine, reopen ymux | sessions survive — the one thing zellij does that tmux cannot | 🔴 |
+| 16.12 | Session name in the picker for a zellij session | falls back to the raw name. **Known gap:** zellij carries no `session-meta` join, so `auto_name` is `None` — see the P2 filed 2026-08-20 | 🔴 |
+| 16.13 | `pane_kill_session` on a machine with **no** multiplexer installed | reports `multiplexer_missing`, not success. It used to return nothing and the frontend inferred success from "the invoke did not throw" | 🔴 |
+
+---
+
+## Merged in — 2026-08-20
 
 | Branch | Commits | State |
 |---|---|---|
-| `claude/zellijj-commands-469a3e` | **35** ahead of main | **ACTIVE.** Builds on `zellinj`. Last commit 2026-08-20 14:40; `copyBidi.ts` + its test still uncommitted. Merges into 0.5.0 once it lands |
+| `claude/zellijj-commands-469a3e` | 38 | ✅ merged. Took the whole chain: `zellinj-tmux-windows` ⊂ `zellijj-rtl-support` ⊂ `zellijj-commands`. Both dormant worktrees removed, branches deleted |
 
-What it brings, and what it will need in this plan:
-
-| Area | Commits | Needs |
-|---|---|---|
-| **Zellij** — persistent sessions for native Windows panes, install from the new-workspace wizard, one command surface for every verb, kill-vs-bury in the picker, frame off, config found beside the running exe | 8 | a **new area**, written from scratch |
-| **WSL → local migration** — existing WSL workspaces converted before the path was removed; `finalize_local_workspace` replaces the WSL chain | 2 | a **new area**; also replaces area 8 |
-| **RTL** — per-pane-class settings, `bidi-override` over `dir`, TUI-row dominance vote, direction follows pane class, two settings-write bugs wiping `terminal.rtl` | ~15 | area 5 **rewritten** |
-| **SSH** — the tmux kill forced its own exit code to 0 | 1 | folds into area 11 |
+Merge cost: 4 conflicts, 3 of them append-only docs. `Sidebar.tsx`, `App.tsx`
+and `PaneView.tsx` all auto-merged clean despite both sides touching them.
+One real break — `parse_zellij_sessions` missing `auto_name` — caught by
+`cargo check`, not by a test.
 
 ## Zombie branches — superseded, safe to delete
 
@@ -366,9 +389,12 @@ What it brings, and what it will need in this plan:
 | | Count |
 |---|---|
 | Release-shape blockers | 5 |
-| Feature areas written | 15 (2 frozen, 2 more to write) |
-| Individual checks | 80 (5 release-shape + 75 feature) |
-| — of those, currently valid | 67 (area 5 frozen, area 8 dead) |
+| Feature areas | 16 |
+| Individual checks | **100** (5 release-shape + 95 feature) |
 | Verified live so far | 1 |
-| Open FOLLOWUPS carried in | 38 (2× P0, 8× P1) |
-| **Status** | **⏸ on hold — waiting for `zellijj-commands-469a3e`** |
+| Open FOLLOWUPS carried in | 40 (2× P0, 8× P1) |
+| **Status** | ✅ all branches merged — **ready to build and test** |
+
+Biggest areas by check count: **Zellij (13)**, **RTL (10)**, **workspace tree
+(10)**. Those three plus the rename (6) and the WSL migration (7) are the ones
+that can lose user data or break the upgrade path — do them first.
