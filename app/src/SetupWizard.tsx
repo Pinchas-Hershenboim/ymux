@@ -1,5 +1,6 @@
 import { createSignal, Show } from "solid-js";
 import { t } from "./i18n";
+import { isWindows } from "./platform";
 import { createLogger } from "./logger";
 
 const log = createLogger("SETUP");
@@ -26,7 +27,7 @@ import { LocalSetupFlow } from "./LocalSetupFlow";
 //   server  → new       → ProvisionNewServerFlow  (full provisioning)
 //   server  → existing  → key      → QuickSshCreateFlow   (record + test)
 //                       → password → ConnectExistingFlow  (smart key install)
-//   local   → existing  → QuickLocalCreateFlow    (plain cmd/pwsh shell)
+//   local   → existing  → QuickLocalCreateFlow    (plain cmd/pwsh shell; zsh/bash on macOS)
 //   local   → new       → LocalSetupFlow          (smart install + WSL tmux)
 //
 // Every level defaults to null — this preserves the 65.R-fix intent: no
@@ -51,6 +52,14 @@ interface Props {
   /** Optional deep-link: palette "SSH: Provision a server" pre-selects server. */
   initialTarget?: Target;
 }
+
+// macOS port: the "existing shell" tile names the shells it will offer,
+// and the "smart setup" tile drops the WSL mention.
+const localExistingKey = () =>
+  isWindows() ? "setup.local.existing" : "setup.local.existing.posix";
+const localNewKey = () => (isWindows() ? "setup.local.new" : "setup.local.new.posix");
+const localNewHintKey = () =>
+  isWindows() ? "setup.local.new.hint" : "setup.local.new.hint.posix";
 
 export function SetupWizard(p: Props) {
   const [target, setTarget] = createSignal<Target | null>(p.initialTarget ?? null);
@@ -114,7 +123,7 @@ export function SetupWizard(p: Props) {
       parts.push(
         tg === "server"
           ? t(fl === "new" ? "provisioning.mode.new" : "provisioning.mode.existing")
-          : t(fl === "new" ? "setup.local.new" : "setup.local.existing")
+          : t(fl === "new" ? localNewKey() : localExistingKey())
       );
     }
     const m = sshMethod();
@@ -248,7 +257,7 @@ export function SetupWizard(p: Props) {
                   active: flavor() === "existing",
                   onPick: () => pickFlavor("existing"),
                   icon: () => <IconTerminal size={14} />,
-                  label: t("setup.local.existing"),
+                  label: t(localExistingKey()),
                   hint: t("setup.local.existing.hint"),
                   radioGroup: "setup-flavor",
                 })}
@@ -256,8 +265,8 @@ export function SetupWizard(p: Props) {
                   active: flavor() === "new",
                   onPick: () => pickFlavor("new"),
                   icon: () => <IconSparkles size={14} />,
-                  label: t("setup.local.new"),
-                  hint: t("setup.local.new.hint"),
+                  label: t(localNewKey()),
+                  hint: t(localNewHintKey()),
                   radioGroup: "setup-flavor",
                 })}
               </div>

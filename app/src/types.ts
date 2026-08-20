@@ -27,6 +27,7 @@ export type { ClaudeUsage } from "./bindings/ClaudeUsage";
 export type { ModelUsage } from "./bindings/ModelUsage";
 
 import type { Connection } from "./bindings/Connection";
+import { isWindows } from "./platform";
 import type { EnvVar } from "./bindings/EnvVar";
 import type { LayoutNode } from "./bindings/LayoutNode";
 import type { PaneKind } from "./bindings/PaneKind";
@@ -364,6 +365,16 @@ const LOCAL_CAPS: ConnCaps = {
   networkAuth: false,
 };
 
+// macOS port: a local shell on a unix host IS a POSIX host with its own
+// tmux server — pane_connect wraps persistent panes in `tmux new-session`
+// and pane_list/probe_tmux_sessions answer from the local binary. Only
+// fileTransfer stays false for the same SFTP-backend reason as WSL.
+const LOCAL_UNIX_CAPS: ConnCaps = {
+  ...LOCAL_CAPS,
+  posixExec: true,
+  tmuxPersistence: true,
+};
+
 const SSH_CAPS: ConnCaps = {
   posixExec: true,
   fileTransfer: true,
@@ -398,10 +409,11 @@ const WSL_CAPS: ConnCaps = {
  * which is exactly what did NOT happen when `wsl` was added.
  */
 export function capsOf(c: Connection | null | undefined): ConnCaps {
-  if (!c) return LOCAL_CAPS; // a workspace with no connection is a local shell
+  const local = isWindows() ? LOCAL_CAPS : LOCAL_UNIX_CAPS;
+  if (!c) return local; // a workspace with no connection is a local shell
   switch (c.type) {
     case "local":
-      return LOCAL_CAPS;
+      return local;
     case "ssh":
       return SSH_CAPS;
     case "wsl":

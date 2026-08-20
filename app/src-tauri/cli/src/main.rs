@@ -1017,6 +1017,65 @@ fn default_pipe_name() -> String {
     format!(r"\\.\pipe\ymux-{}", user)
 }
 
+/// `dirs::config_dir() / "ymux"`, without taking the `dirs` dependency.
+///
+/// Mirrors `ymux_core::config_dir`'s path resolution (not its migration):
+/// the explicit override wins, then the platform config root. Duplicated
+/// rather than shared for the same reason `default_pipe_name` is — this
+/// binary cross-compiles to musl for the remote and must not pull
+/// ymux-core's russh tree in behind it.
+#[cfg(not(windows))]
+fn ymux_config_dir() -> Option<std::path::PathBuf> {
+    if let Some(custom) = std::env::var_os("YMUX_CONFIG_DIR")
+        .or_else(|| std::env::var_os("WINMUX_CONFIG_DIR"))
+        .filter(|v| !v.is_empty())
+    {
+        return Some(std::path::PathBuf::from(custom));
+    }
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    #[cfg(target_os = "macos")]
+    {
+        Some(home.join("Library").join("Application Support").join("ymux"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            Some(x) => Some(std::path::PathBuf::from(x).join("ymux")),
+            None => Some(home.join(".config").join("ymux")),
+        }
+    }
+}
+
+/// Unix-domain socket paths to try, in order — the client half of
+/// `ymux_core::pipe_names()` plus the pre-rename name.
+///
+/// The app binds every one of these, so the first that connects is a live
+/// endpoint. The second exists because macOS caps `sockaddr_un.sun_path`
+/// at 104 bytes and a long `$TMPDIR` can push the primary name over it;
+/// the config dir is short and stable. Keep this list in step with
+/// ymux-core — if the two ends disagree, every local hook fails with
+/// ENOENT on a path nobody is listening on.
+#[cfg(not(windows))]
+fn default_socket_paths() -> Vec<String> {
+    let user = whoami::username();
+    let tmp = std::env::temp_dir();
+    let mut v = vec![tmp
+        .join(format!("ymux-{user}.sock"))
+        .to_string_lossy()
+        .into_owned()];
+    if let Some(cfg) = ymux_config_dir() {
+        v.push(cfg.join("rpc.sock").to_string_lossy().into_owned());
+    }
+    // winmux -> ymux rename: an app still running from before the rename
+    // only serves the old socket name and has no way to learn otherwise.
+    v.push(
+        tmp.join(format!("winmux-{user}.sock"))
+            .to_string_lossy()
+            .into_owned(),
+    );
+    v
+}
+
 /// Pre-rename pipe name, tried only as a fallback — see the connect site
 /// in `rpc_call`. Drop once 0.5.0 is the floor.
 #[cfg(windows)]
@@ -1237,7 +1296,7 @@ async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
                             .await
                             .map_err(|e2| {
                                 format!(
-                                    "connect tcp {fresh_addr}: {e2}                                      (stale {addr} also failed: {e})"
+                                    "connect tcp {fresh_addr}: {e2} (stale {addr} also failed: {e})"
                                 )
                             })?;
                         hook_log(
@@ -1281,9 +1340,33 @@ async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
         return rpc_via(pipe, method, params, None).await;
     }
 
+    // Otherwise on unix, dial the local Unix-domain socket. Without this the
+    // CLI only worked when something had already exported YMUX_SOCKET_ADDR,
+    // so every local hook and statusline call on macOS exited 2 — while the
+    // app had been listening on this socket the whole time.
     #[cfg(not(windows))]
     {
-        Err("no transport configured: set YMUX_SOCKET_ADDR=host:port".into())
+        let explicit = std::env::var("YMUX_PIPE_PATH")
+            .ok()
+            .filter(|s| !s.is_empty());
+        // An explicit path is the caller telling us exactly where to go;
+        // don't second-guess it by walking the defaults.
+        let names = match &explicit {
+            Some(p) => vec![p.clone()],
+            None => default_socket_paths(),
+        };
+        let mut errors: Vec<String> = Vec::new();
+        for name in &names {
+            match tokio::net::UnixStream::connect(name).await {
+                Ok(sock) => return rpc_via(sock, method, params, None).await,
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        Err(format!(
+            "connect to the local ymux socket failed ({}) — is the ymux app running? \
+             (or set YMUX_SOCKET_ADDR=host:port for a remote)",
+            errors.join("; ")
+        ))
     }
 }
 

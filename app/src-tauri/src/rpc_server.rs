@@ -23,6 +23,54 @@ const FEED_MAX_ITEMS_LIMIT: usize = 50;
 
 // Phase 51.C: pipe_name moved to ymux-core (shared with ymux-tunnel).
 pub use ymux_core::pipe_name;
+#[cfg(not(windows))]
+use ymux_core::pipe_names;
+
+/// Why the local RPC endpoint isn't listening, or `None` while it is.
+///
+/// The Unix-socket bind used to fail with a single `log_warn` and a bare
+/// `return`, which meant a dead RPC endpoint looked exactly like "no ports
+/// detected yet" — PortsWindow spun forever with nothing to say. Every hop
+/// upstream of it (the remote `/proc/net/tcp` watcher, the SSH reverse
+/// tunnel) is platform-agnostic, so on macOS this is the ONE link the port
+/// went near and the one that had no way to report itself. `doctor` reads it.
+pub(crate) static BIND_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn bind_error() -> Option<String> {
+    BIND_ERROR.lock().ok().and_then(|g| g.clone())
+}
+
+// Only the Unix bind path can fail outright: the Windows pool retries
+// make_listener forever, so it has no terminal "never came up" state to record.
+#[cfg(not(windows))]
+fn set_bind_error(msg: Option<String>) {
+    if let Ok(mut g) = BIND_ERROR.lock() {
+        *g = msg;
+    }
+}
+
+/// Unix listeners that actually came up. Not a constant: `run` binds every
+/// candidate path in `pipe_names()` plus the legacy name, and some of them
+/// may legitimately fail (that is the whole point of having candidates), so
+/// `doctor` must report what happened rather than what was attempted.
+#[cfg(not(windows))]
+static UNIX_LISTENERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many listeners the RPC server keeps in accept state. Windows needs a
+/// pool (each named-pipe instance serves one client); a Unix listener's
+/// backlog does it in one, so the unix number is "how many paths bound".
+/// Reported by `doctor`, so it must not lie about the platform being
+/// diagnosed.
+pub(crate) fn listener_count() -> usize {
+    #[cfg(windows)]
+    {
+        LISTENER_POOL_SIZE
+    }
+    #[cfg(not(windows))]
+    {
+        UNIX_LISTENERS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 // Phase 39.A: removed the 8-cap that caused ERROR_PIPE_NOT_AVAILABLE
 // storms under concurrent RPC.
@@ -98,29 +146,73 @@ pub async fn run(state: AppState, app: AppHandle) {
     spawn_listener_pool(legacy, LEGACY_LISTENER_POOL_SIZE, state, app);
 }
 
-/// Unix/macOS: a single Unix-domain-socket listener replaces the whole
-/// named-pipe pool — the kernel backlog absorbs concurrent connects, so
-/// none of the 254-instance / ERROR 231 machinery applies.
+/// Unix/macOS: Unix-domain-socket listeners replace the whole named-pipe
+/// pool — one listener per path is enough, because the kernel backlog
+/// absorbs concurrent connects, so none of the 254-instance / ERROR 231
+/// machinery applies. There is more than one path only because of the
+/// `sun_path` cap and the rename shim, not for throughput.
 #[cfg(not(windows))]
 pub async fn run(state: AppState, app: AppHandle) {
-    spawn_unix_listener(pipe_name(), state.clone(), app.clone());
-    // winmux → ymux rename: a CLI from a pre-rename install still dials
-    // the old socket path and has no way to learn otherwise.
-    spawn_unix_listener(ymux_core::pipe_name_legacy(), state, app);
+    // Bind EVERY candidate path, not just the first that works.
+    //
+    // The candidate list exists because macOS caps `sun_path` at 104 bytes
+    // and a long $TMPDIR can push the primary name over it (see
+    // `ymux_core::pipe_names`). ymux-tunnel walks the same list in the same
+    // order, so binding all of them means the two ends can never split:
+    // whichever path the client reaches first, somebody is listening there.
+    // The legacy name rides along for a pre-rename `winmux-cli` left on PATH.
+    let mut errors: Vec<String> = Vec::new();
+    let mut bound = 0usize;
+    let names = pipe_names()
+        .into_iter()
+        .chain(std::iter::once(ymux_core::pipe_name_legacy()));
+    for name in names {
+        match spawn_unix_listener(name.clone(), state.clone(), app.clone()) {
+            Ok(()) => bound += 1,
+            Err(e) => errors.push(format!("{name}: {e}")),
+        }
+    }
+    UNIX_LISTENERS.store(bound, std::sync::atomic::Ordering::Relaxed);
+
+    if bound == 0 {
+        // Loud, and readable from `doctor`: with the socket down, no
+        // detected port, CLI hook, or tunnel RPC can ever arrive, while
+        // SSH panes keep working — an easy failure to misread as "the
+        // ports feature is broken".
+        let msg = errors.join("; ");
+        crate::log_error(
+            "RPC",
+            &format!(
+                "rpc_server: no socket could be bound ({msg}) — port detection, \
+                 CLI hooks and tunnel RPC are all disabled for this session"
+            ),
+        );
+        set_bind_error(Some(msg));
+        return;
+    }
+    // A partial bind is survivable — the client walks the same list — but it
+    // is the early warning for the sun_path cap, so it must not be silent.
+    if !errors.is_empty() {
+        crate::log_warn(
+            "RPC",
+            &format!("rpc_server: {} path(s) failed to bind ({})", errors.len(), errors.join("; ")),
+        );
+    }
+    set_bind_error(None);
 }
 
+/// Bind one Unix socket path and start its accept loop. `Err` means this
+/// path is unusable; the caller decides whether that is fatal.
 #[cfg(not(windows))]
-fn spawn_unix_listener(name: String, state: AppState, app: AppHandle) {
+fn spawn_unix_listener(name: String, state: AppState, app: AppHandle) -> Result<(), String> {
     // Stale socket file from a previous crash blocks bind — remove it.
     // A second live instance is prevented upstream (single-instance app).
     let _ = std::fs::remove_file(&name);
-    let listener = match tokio::net::UnixListener::bind(&name) {
-        Ok(l) => l,
-        Err(e) => {
-            crate::log_warn("RPC", &format!("rpc_server: bind {name} failed: {e}"));
-            return;
-        }
-    };
+    let listener = tokio::net::UnixListener::bind(&name).map_err(|e| {
+        crate::log_warn("RPC", &format!("rpc_server: bind {name} failed: {e}"));
+        e.to_string()
+    })?;
+    crate::log_info("RPC", &format!("rpc_server: listening on {name}"));
     tracing::info!("rpc: listening on {}", name);
     tokio::spawn(async move {
         loop {
@@ -137,6 +229,7 @@ fn spawn_unix_listener(name: String, state: AppState, app: AppHandle) {
             }
         }
     });
+    Ok(())
 }
 
 #[cfg(windows)]

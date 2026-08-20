@@ -1414,6 +1414,104 @@ NOTES: dmg built with hdiutil (tauri bundle_dmg.sh needs Finder, fails headless)
   wizard is WSL-based, no mac-native winmux-cli/mcp bundled. macos-build branch
   kept for CI trigger (workflow runs on push to it + workflow_dispatch).
 ==================================================================
+[2026-08-10] macOS: "UI stall 1000ms" (perceived as connection dropping every second)
+TASK: Yossi reported the mac build "disconnects every second". debug.log showed a
+  clean tunnel/RPC path (handshake OK, bridge done Ok(46)/Ok(107), no ssh-disconnect,
+  no bridge error) plus repeated "[UI:APP] UI stall: ~1000ms (expected ~100ms)".
+  The Phase 48-D 100ms heartbeat firing at exactly 1Hz = macOS App Nap / occluded-
+  window timer coalescing throttling the whole WKWebView JS loop. Backend was fine;
+  the UI was frozen at 1fps.
+FILES:
+  A app/src-tauri/Info.plist (NSAppSleepDisabled=true; Tauri merges it on mac builds)
+  M app/src-tauri/crates/winmux-core/src/lib.rs (write_line: single write_all instead
+    of writeln! — write_fmt emitted body and "\n" as separate writes, so concurrent
+    tunnel/rpc tasks interleaved mid-line under O_APPEND; the pasted log was garbled)
+RESULT: untested — needs a live mac run to confirm the UI stall warnings stop.
+NOTES: if 1Hz persists with the plist in place, it's WebKit page-occlusion throttling
+  rather than App Nap; plan B is disabling NSApplication _windowOcclusionDetectionEnabled
+  (private API) at startup. Verify by checking whether stalls only appear while the
+  winmux window is covered/minimized.
+==================================================================
+
+==================================================================
+[2026-08-10 16:04 IDT] session=macos-ports-upload-fix
+TASK: Yossi (first live run on a real Mac): ports list empty + file
+  upload broken (both drag-drop and SFTP panel), SSH workspace to a
+  remote Linux server.
+DIAGNOSIS: two unrelated causes, neither of them in the SFTP/port
+  transport itself.
+  (1) UPLOAD = frontend Windows assumptions, never touched by the port.
+      There was NO platform awareness anywhere in app/src (no
+      navigator.platform, no plugin-os). Local paths were joined with a
+      literal `\`, so fullLocal() produced `/Users/yossi/Downloads\f.txt`
+      and std::fs::read failed. Drag-drop hit-testing divided the drop
+      position by devicePixelRatio: verified against wry 0.54.4 that
+      webview2/drag_drop.rs:167 gives PHYSICAL px (ScreenToClient on a
+      DPI-aware HWND) but wkwebview/drag_drop.rs:40,57,85 passes
+      draggingLocation through unscaled (logical points, y-flipped) — so
+      on Retina every coord was halved, the hit-test missed, and the drop
+      was swallowed with no upload and no error.
+  (2) PORTS = NOT root-caused. The whole pipeline is platform-agnostic
+      (remote /proc/net/tcp watcher -> SSH reverse tunnel -> rpc_server)
+      EXCEPT the local IPC hop, the one thing the port replaced (named
+      pipe -> Unix socket), so that was the suspect. 53cd284's Mac log
+      REFUTES it: "handshake OK", "bridge done (b->a: Ok(46))" / "Ok(107)"
+      — the Unix socket binds and RPC payloads flow. So the break is
+      UPSTREAM of the socket: either the remote `winmux port-watch` never
+      starts (bootstrap/exec/AcceptEnv for WINMUX_SOCKET_ADDR), or
+      port.opened is filtered in rpc_server.rs:1969. What shipped here is
+      hardening + diagnostics for that hop, which is worth having on its
+      own (its failure mode was a lone log_warn + bare return: no UI
+      signal, no doctor field, and SSH panes keep working because they
+      use russh channels directly, so it read as "ports are broken").
+      NEXT: grep the Mac log for `port-watch[` and `[BOOT]` lines.
+FILES:
+  A app/src/platform.ts (host OS resolved once from Rust, sync accessors)
+  M app/src/index.tsx (await initPlatform before first render; async IIFE,
+      not TLA — vite's default es2020 target rejects TLA)
+  M app/src/FileManagerPane.tsx (sep() for navIntoLocal/goUp/fullLocal;
+      platform-aware C:\ fallback; isMac() drop scaling)
+  M app/src/PaneView.tsx (isMac() drop scaling)
+  M app/src/fmPaths.ts (LOCAL_OK accepts POSIX-absolute; still rejects
+      //host/share so the UNC-replay rule survives)
+  M app/src/fmPaths.test.ts (+1 test: POSIX local paths survive)
+  M app/src/PortsWindow.tsx (doctor probe on open; shows bind_error
+      instead of "waiting for remote ports" forever)
+  M app/src/i18n/{en,ru,ar,he}.json (ports.window.empty.rpcDown)
+  M app/src-tauri/src/lib.rs (host_platform cmd; doctor reports
+      bind_error + real listener count)
+  M app/src-tauri/src/file_manager.rs (expand_path joins with PathBuf,
+      not `\`; home_dir() helper; cfg'd fallback root)
+  M app/src-tauri/src/rpc_server.rs (bind walks pipe_names(), log_error +
+      BIND_ERROR on total failure, listener_count())
+  M app/src-tauri/crates/winmux-core/src/lib.rs (pipe_name_fallback ->
+      <config>/rpc.sock, pipe_names())
+  M app/src-tauri/crates/winmux-tunnel/src/lib.rs (client walks the same
+      candidate list as the server)
+  M docs/ARCHITECTURE.md (documented the Unix-socket transport — the
+      diagram + prose still described named pipes only)
+  M FOLLOWUPS.md (10 other mac gaps found in passing, P1-P3)
+RESULT: cargo check --workspace clean (app crate included — needed
+  apt pkg-config/libwebkit2gtk-4.1-dev/libgtk-3-dev on this box, plus a
+  throwaway resources/winmux-cli.exe so tauri-build's resource check
+  passes; placeholder deleted after). tsc --noEmit clean. vite build OK.
+  Frontend tests 83/83. UPLOAD fixes are root-caused and verified by
+  reading + source-level proof in wry; PORTS work is hardening +
+  diagnostics, NOT a confirmed root cause. Nothing run live on a Mac yet.
+NOTES: ports triage on the Mac, now that the socket is ruled out — grep
+  the log for the watcher, not the transport:
+    grep -E 'port-watch\[|\[BOOT\]|tcpip_forward' \
+      ~/Library/Application\ Support/winmux/debug.log | tail -40
+  Expect "tcpip_forward got remote port <N>" then "port-watch[<ws>]:
+  launched (remote_port=<N>)". Missing launch line => exec or bootstrap;
+  launched but no port.opened => the remote CLI can't dial back, prime
+  suspect being sshd AcceptEnv dropping WINMUX_SOCKET_ADDR /
+  WINMUX_TUNNEL_TOKEN (set via SSH env requests in spawn_port_watcher,
+  lib.rs:3313) — that would break identically on Windows, so confirm
+  there before assuming a mac cause.
+  Windows regression check still owed: SFTP panel nav + upload, and
+  drag-drop on a 125%/150%-scaled display (dpr != 1).
+==================================================================
 
 === 2026-08-09 — Windows CI/CD on GitHub Actions ===
 
@@ -1575,6 +1673,120 @@ SCANNED for the same swallow pattern in the other generated scripts:
 
 cargo test 266/0.
 
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build)
+TASK: local workspace on macOS offered no zsh/bash — only the Windows list.
+ROOT CAUSE: local_wizard::which() returned None on non-Windows,
+  detect_local_shells() was a hardcoded pwsh/powershell/cmd/gitbash/wsl
+  list, pick_default_shell() fell through to "cmd.exe", and the frontend
+  seeded shellId="powershell". Custom commands like "zsh -l" would also
+  fail on unix (execvp needs argv, not one string).
+FILES:
+  app/src-tauri/src/local_wizard.rs — real PATH which() on unix;
+    detect_local_shells split per-OS: unix lists $SHELL first ("(default)"),
+    then zsh/bash/fish/sh (greyed if missing), pwsh only when installed;
+    builtin_defaults() uses native separators (~/Developer, ~/Projects on mac).
+  app/src-tauri/src/lib.rs — pick_default_shell → per-OS: unix = $SHELL,
+    /bin/zsh, /bin/bash, /bin/sh; spawn_local_pty splits the command into
+    argv on unix and adds `-l` (login shell, like Terminal.app — Homebrew
+    PATH lives in .zprofile) when the user gave no args. +3 unit tests.
+  app/src/QuickLocalCreateFlow.tsx — default shellId = first available
+    detected shell; label falls back to Rust label when no i18n row.
+  app/src/SetupWizard.tsx, CreateWorkspaceModal.tsx, i18n/{en,he,ru,ar}.json
+    — ".posix" variants for the Windows-flavored placeholders/tile label.
+  FOLLOWUPS.md — 3 P2 items (2026-08-10) moved to Done.
+RESULT: compiles-on-CI pending (Rule #17), untested live. Windows path
+  unchanged (all new code behind cfg(not(windows)) / same defaults).
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 2
+TASK: full macOS adaptation of "new workspace → local" (both flavors) +
+  local terminal commands. Done via 4 parallel subagents on disjoint files.
+FILES:
+  app/src-tauri/src/local_setup.rs — per-OS step engine. mac: preflight
+    always ready; inspect = brew (in the `winget` slot), git/node/npm/claude/
+    codex/gemini probed on PATH + /opt/homebrew/bin,/usr/local/bin,~/.local/bin,
+    ~/.npm-global/bin,/usr/bin (Finder-launched app has a minimal PATH);
+    new `mac: Option<MacInspect{tmux, tmux_conf_ok}>`. Steps: brew install
+    git/node/tmux, claude via official install.sh, codex/gemini via npm -g,
+    DeployTmuxConfLocal → ~/.winmux/tmux.conf (tmp+rename), InstallLocalHooks
+    → clear error (CLI not bundled on mac). Persistence chain =
+    [InstallTmuxLocal, DeployTmuxConfLocal]; finalize_local_workspace creates
+    Connection::Local{shell:None}. Windows arms untouched, now cfg(windows).
+  app/src/bindings/LocalSetupInspect.ts, MacInspect.ts (new), LocalSetupResult.ts
+    (doc comment) — hand-synced with the Rust structs (ts-rs style).
+  app/src-tauri/src/lib.rs — unix local panes honor persistent/mode=tmux:
+    spawn_local_pty(tmux_name) + build_tmux_attach_script at 900ms (no WINMUX_*
+    exports — hooks bridge N/A), Session::Local.tmux_session set;
+    pane_list_tmux_sessions / pane_probe_tmux_sessions / pane_kill_session
+    work against the local tmux binary (which + /opt/homebrew/bin etc.);
+    shared TMUX_LIST_FORMAT/TMUX_META_MARKER consts; parser tests.
+  app/src/LocalSetupFlow.tsx, SetupWizard.tsx — mac UI: Homebrew label,
+    hooks checkbox hidden (+hint), tmux persistence group instead of WSL,
+    no username/elevation UI, brew-missing hint (brew.sh).
+  app/src/PaneView.tsx, App.tsx — mac-local Connect probes local tmux
+    sessions (picker), tmux/regular toggle in the new-connection modal,
+    startup restore includes mac-local tmux panes.
+  i18n/{en,he,ru,ar}.json — localSetup.mac.*, setup.local.new(.hint).posix,
+    step labels, connect.*.hintLocal (parity 1016 keys each).
+RESULT: compiles-on-CI pending, untested live. Known gap: hooks/CLI on mac.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 3
+BUGS (Yossi, live on mac):
+  1. Directory picker on a local pane fell back to a text input.
+     FIX app/src/PaneView.tsx — local panes (any OS) open the native folder
+     dialog (@tauri-apps/plugin-dialog `open({directory:true})`, already
+     permitted in capabilities) from both the "Open in directory" flow and
+     the new-connection modal's Browse button (now shown for local too).
+     WSL keeps the text input (a host dialog returns a Windows path).
+  2. "Choose from list" resume didn't cd to the session's project dir on
+     local workspaces → `claude --resume` ran from $HOME and missed it.
+     ROOT CAUSE list_claude_sessions_local used the encoded dir name
+     (`-Users-yossi-dev-foo`) as project_path; the FE only cd's to `/…`.
+     FIX lib.rs — peek_claude_jsonl(): head/tail 256KB read for cwd,
+     isSidechain, first user, last assistant (parity with the SSH shell
+     pipeline; no full-file read). FE isAbsolutePath also accepts `C:\…`.
+     +2 unit tests.
+RESULT: CI pending, untested live.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 4
+BUG (Yossi): usage ticker on a local workspace kept showing the SSH
+  account's quota. ROOT CAUSE claude_usage_fetch only had an SSH probe
+  (pick_handle → Err for local) and the FE kept the last value on error.
+FIX claude_usage.rs — run_usage_probe(): SSH handle → remote exec (as
+  before); Wsl → wsl_exec inside the distro; Local/None → local
+  `claude -p /usage --output-format json` (resolve_claude_binary: PATH +
+  ~/.local/bin etc., hidden window, 20s timeout, kill_on_drop, unix PATH
+  env). ClaudeUsageIndicator resets the pill on every workspace/live
+  change so a failed fetch never shows another host's numbers.
+  local_setup.rs: resolve_claude_binary() + unix_path_env pub(crate).
+RESULT: CI pending, untested live.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 5
+BUG (Yossi): Hebrew typing in a local mac pane shows `_`.
+ROOT CAUSE: Finder-launched app has no LANG/LC_* — zsh ZLE + tmux in a
+  non-UTF-8 locale render non-ASCII input as unprintable. Terminal.app
+  sets LANG itself; we didn't.
+FIX lib.rs spawn_local_pty (unix): if LANG/LC_ALL/LC_CTYPE are all unset,
+  inject LANG=<AppleLocale>.UTF-8 when /usr/share/locale has it, else
+  en_US.UTF-8 (default_utf8_locale(), probed once). Note: an already-
+  running tmux server keeps its old env — `tmux kill-server` once.
+
+==================================================================
+[2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 6
+BUG (Yossi): local Insights on mac says Docker socket exists but daemon
+  doesn't answer, shows \\.\pipe\docker_engine.
+ROOT CAUSE: unix connect_docker used bollard local defaults =
+  /var/run/docker.sock only; Docker Desktop on recent macOS defaults the
+  admin "default socket" option OFF, so the daemon listens only on
+  ~/.docker/run/docker.sock. Card text was Windows-only.
+FIX insights_local.rs — probe DOCKER_HOST (unix://), /var/run/docker.sock,
+  ~/.docker/run, ~/.orbstack/run, ~/.colima, ~/.rd, podman machine sock;
+  first that pings wins; connect_docker returns the answering path and
+  the card shows it (both OSes).
 === 2026-08-10 — ROOT CAUSE of the whole WSL saga: wsl_exec lost every shell variable ===
 
 Yossi re-ran the wizard on the repaired distro and CreateWslUser now
@@ -3314,3 +3526,63 @@ FOLLOWUPS: the P1 is closed. What remains is a P3 for the surfaces still never
 exercised -- the Settings font-size slider (the whole reason for the px ->
 --w-fs-* sweep), drag-reorder, the menus/rename/colour picker, 11 of the 13
 presets, and prefers-reduced-motion.
+
+════════════════════════════════════════════════════════════════════════
+2026-08-20 | Phase 82 | session=mac-features-compatibility
+Unify the macOS port into main; retire macos-build.
+
+WHY: macos-build was 65 commits behind main / 14 ahead. Everything from
+Phase 80 onward was missing on Mac; 14 macOS fixes never reached main.
+
+82.A  merge (65b74d5) — 8 conflicted files, 16 hunks.
+      rpc_server: kept BOTH shapes — bind every pipe_names() candidate
+      (macOS sun_path 104-byte cap) AND the legacy name; BIND_ERROR /
+      listener_count retained, unix listener_count is now the real count.
+      PaneView: main's folderAnchor() + branch's isAbsolutePath(), and
+      main's <Show> wrapper around the branch's widened Browse gate.
+      ymux-core write_line: take main (log_writer supersedes); Info.plist
+      survives. peek_claude_jsonl is one-sided, kept.
+      Rename fallout found by reading, each a real defect:
+        - TMUX_META_MARKER was <<<WINMUX_META>>>, script emits YMUX → the
+          session-meta join would have silently dropped.
+        - DeployWinmuxCliToWsl (3 sites) never matched the frontend's
+          DeployYmuxCliToWsl → chain check missed it, no finalize.
+        - use_winmux_tmux_config / winmux_types:: → do not compile.
+        - local tmux.conf written to ~/.winmux while the attach script
+          hardcodes $HOME/.ymux/tmux.conf → folds the legacy copy once.
+
+82.E  CI (f2b7374) — build-macos-intel.yml now on push/PR to main (it was
+      push to macos-build only, i.e. zero coverage after unifying), runs
+      cargo test + tsc + frontend build, asserts the embedded frontend
+      (Rule #13's missing mac half), and stages resources/ymux-cli.
+
+82.D  parity (70a43db) — the holes the merge cannot close:
+      - CLI + MCP Unix-socket transport. Hooks/statusline/MCP did not work
+        on macOS AT ALL; the server had been listening the whole time.
+      - SSH passwords were plaintext at rest on macOS. Now Err (Rule #2
+        "memory only"). NOT Keychain — the store is write-only, nothing
+        reads it back; that is now a P2 to resolve first.
+      - icacls ran unconditionally → every SSH key reported bad perms and
+        "Fix permissions" hard-errored. Unix arms: mode bits / chmod 0600.
+      - "Install update" downloaded a Windows .exe, spawned it, and quit
+        the app 800ms later regardless. Both install commands now refuse.
+      - Font install wrote to ~/Library/Application Support/Microsoft/
+        Windows/Fonts then failed at registration, leaving orphans. Now
+        ~/Library/Fonts; enumeration reuses fonts::full_font_name.
+      - restart_windows was registered on every OS (shutdown.exe);
+        {home}\.ssh\ymux-… backslash join; WebView2 toggle now disabled
+        off Windows instead of silently doing nothing.
+
+RESULT: ci-windows green on 82.A+82.E (run 32376684962). The FIRST mac run
+(32376684988) failed on one test — utf8_shell_tests::shell_kinds_route_to_
+the_right_args — which had only ever been compiled on Windows, where it
+passed vacuously. Real finding, not a test artifact: detect_shell_kind took
+the stem with Path::file_stem, which honours only the host separator, so a
+Windows shell path classifies as Posix off Windows and gets no UTF-8
+preamble. Fixed by normalizing separators first, the idiom path_basename
+already uses. 273 of 274 passed otherwise — the merge itself compiled clean
+on macOS first try.
+STATUS: compiles-and-tests-on-CI. NOT run live on a Mac — rule 14. The
+Keychain refusal, chmod perms and hooks-over-socket have no CI test that
+exercises them and need a real Mac before release.
+════════════════════════════════════════════════════════════════════════
