@@ -3576,3 +3576,45 @@ CHECKS  289 cargo tests, cargo check clean, tsc clean.
 NOT VERIFIED  Live, and this one needs a real server: kill an SSH tmux pane
      (expect gone + killed), then kill one whose session is already gone
      (expect NOT `failed`).
+
+================================================================================
+2026-08-20  Release build + what the build actually proved (Rules #13, #14)
+================================================================================
+BUILT  `npm run tauri build -- --no-bundle` from app/ — 6m40s, exit 0,
+       target/release/app.exe.
+
+RULE #13 PASS  The current asset name `index-hIQeDN-r.js` IS present inside
+       app.exe, so frontendDist is embedded and this is not a devUrl binary.
+
+RESOURCES STAGED  target/release/resources/ymux-zellij.kdl AND
+       target/release/resources/layouts/ymux.kdl both exist. Tauri PRESERVED
+       the nested path rather than flattening it, so the `resources/layouts/*`
+       glob fallback that was held in reserve is not needed. `setup --check`
+       against the STAGED debug copy (not the source tree) exits 0 with
+       [LAYOUT DIR] pointing at the staged layouts dir.
+
+RULE #14 PARTIAL — and the partial is the point.
+       Launched app.exe with YMUX_CONFIG_DIR pointed at a scratch dir so it
+       could not touch Yossi's live install. It stayed up 20s and its log shows
+       [UI:APP] longtask and [UI:SETTINGS] rtl-profiles lines — i.e. the
+       FRONTEND RAN. That is the exact thing Rule #13 exists to catch: a devUrl
+       build stops silently after "rpc server spawned" and never reaches a UI
+       log line. This one did.
+
+       Instance closed afterwards; it shares the RPC pipe name
+       (\.\pipe\ymux-mlastudent371) with the running install, which is why it
+       was not left up and why the RPC was NOT driven to create a pane.
+       Verified after: Yossi's ymux.exe still running, and all 4 zellij
+       sessions unchanged (same names, same ages, same EXITED marker).
+
+STILL NOT VERIFIED, and none of it is inferable from the above:
+       - zero chrome rows on a real pane (needs a pane on screen)
+       - the `zellij config: … (+ layouts/ymux.kdl)` INFO line (only fires in
+         spawn_local_pty, i.e. when a pane spawns)
+       - Ctrl-o/p/t/s/g reaching the shell
+       - wheel + drag-select under mouse_mode false  <- THE open measurement;
+         if the wheel is dead the fallback is mouse_mode true
+       - kill a live session -> absent from `list-sessions -n` entirely
+       - rename zellij.exe -> failure toast + hint kept
+       - reboot -> EXITED session still resurrects
+       - picker trash button, and the mis-click case (row body still attaches)
