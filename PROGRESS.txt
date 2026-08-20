@@ -3323,3 +3323,27 @@ ALSO CONFIRMED FROM THE LOG  stripPaneFrame works (local rows=31 rtl=1, not
      (`rtl-renderer ... now=off renderer=webgl`).
 
 CHECKS  275 cargo tests, 76 JS tests, tsc + vite clean.
+
+================================================================================
+2026-08-20  docs/ZELLIJ.md — the zellij command surface, from the binary
+================================================================================
+WHY  Every zellij verb so far was checked ad-hoc against --help and the finding
+     lived in a doc-comment in lib.rs. Next time we add one we would guess, or
+     read zellij.dev — which documents a NEWER build: it lists focus-last-pane,
+     set-pane-frame-style and toggle-no-ui-fullscreen, none of which exist in
+     the 0.44.3 binary we actually ship against.
+
+WHAT  docs/ZELLIJ.md (new). Generated from `%LOCALAPPDATA%\Zellij\zellij.exe`
+     0.44.3 --help on this machine, not from the website:
+       - what ymux sends today, with file:line, and the not-sent list with why
+       - root options (incl. the -s-before-subcommand rule) + all subcommands
+       - attach / list-sessions / kill / delete in detail
+       - all 75 `zellij action` verbs with args + flags, from the binary
+       - config: how ZELLIJ_CONFIG_FILE is wired, every scalar key by theme,
+         the KDL block shapes, and which of the three ways to set a thing wins
+       - gotchas we already paid for, + the regen script
+
+     CLAUDE.md — one pointer line under "Where to start".
+
+NOTE  Doc only, no code touched. Raw --help dumps are in the session scratchpad,
+     not committed; §7 regenerates them in one paste.
