@@ -335,7 +335,7 @@ multiplexer the user drives.
 | `default_layout "ymux"` | selects `layouts/ymux.kdl`, a bare `pane` — see below |
 | `keybinds clear-defaults=true { }` | zero keybinds; the empty body is required by the parser |
 | `default_mode "locked"` | second lock, so an un-clearable future binding still doesn't fire |
-| `mouse_mode false` | xterm.js owns the wheel and the selection |
+| `mouse_mode true` | zellij owns the wheel — it holds the only scrollback the pane has |
 | `show_release_notes false` / `show_startup_tips false` | either can add a pane ymux never asked for |
 
 **`pane_frames false` is not what removes "the frame".** It removes the border *around*
@@ -352,19 +352,26 @@ layout {
 That is why the frame survived `pane_frames false` for a day. `layouts/ymux.kdl` is
 `layout { pane }` — no plugin rows, which gives every pane back two rows.
 
-**`mouse_mode false` reverses an earlier note in the file, deliberately.** The old
-comment said `mouse_mode` was "drafted and removed" — but that was about forcing it
-**on**, which is how the equivalent tmux setting degraded drag-to-select
-(`FOLLOWUPS.md:33`, `docs/MOUSE-DEBUG.md`). Zellij's default is `true`, so *leaving the
-key out was leaving the mouse captured*. `false` lines up with `ymux-tmux.conf`'s
-`set -g mouse off`.
+**`mouse_mode` was argued both ways on 2026-08-20; `true` is the settled answer.** It
+shipped `false` first, on the theory that xterm.js owns the wheel and the selection. Half
+right — xterm.js does own selection, but its wheel scrolls its NORMAL buffer while zellij
+holds the alt screen. Combined with cleared keybinds (no scroll mode), that left a pane
+with **no way to scroll back at all**. `true` is also what the tmux side already does:
+ymux appends `set -g mouse on` to the tmux attach for exactly this (decision O-3,
+`docs/MOUSE-DEBUG.md`).
 
-**The cost of the full lock, stated rather than discovered: no scrollback inside a
-zellij pane.** No keybinds means no scroll mode, `mouse_mode false` means zellij never
-sees the wheel, and xterm.js's wheel scrolls its normal buffer, which sits behind
-zellij's alt screen. Accepted — the pane is a shell and Claude Code redraws anyway — and
-a ymux-side "show scrollback" affordance built on `action dump-screen --full` is in
-BACKLOG.md.
+What `true` costs, and why each cost is covered:
+
+- zellij captures drag-select, so a drag copies via `copy_on_select` (default `true`) and
+  OSC 52. With keybinds cleared **that is the only way to copy inside the pane**, so
+  leaving `copy_on_select` alone is load-bearing.
+- a native xterm.js selection still works with **Shift** held.
+- mouse-tracking escapes leaking into a bare shell after an unclean exit are already
+  handled transport-agnostically by `resetMouseModes()` on connect and on `pty:exit`.
+
+**Copy comes back as visual-order Hebrew in a Claude pane**, and is un-reversed on the way
+to the clipboard by `app/src/copyBidi.ts`. Owning the mouse was never the blocker for
+that — `ClipboardAddon` has always routed OSC 52 through ymux's own provider.
 
 **Relied-on defaults, not restated in the file:** `session_serialization true` (the
 whole persistence feature) and `on_force_close "detach"` (already the default, and a
@@ -426,12 +433,15 @@ mid-session does nothing; the session has to be killed and recreated.
 
 - `scroll_buffer_size` — zellij owns the buffer behind its alt screen; sizing it
   changes nothing ymux can reach.
-- `simplified_ui`, `auto_layout`, `stacked_resize`, `copy_on_select` — all only matter
-  to chrome, or to a mouse that is now off.
+- `copy_on_select` — **relied on at its default `true`, deliberately not restated.** With
+  keybinds cleared it is the only way to copy inside the pane. Setting it explicitly would
+  invite someone to flip it; a comment on `mouse_mode` says why it must not move.
+- `simplified_ui`, `auto_layout`, `stacked_resize` — chrome only.
 - `on_force_close "detach"` — already the default, and it handles SIGTERM/SIGHUP; on
   Windows the PTY kill has no signal to deliver, so restating it buys noise.
-- `mouse_mode` **was** on this list and has been withdrawn — see above. The rejection
-  was about forcing it on; the default was already on.
+- `mouse_mode` **was** on this list and has been withdrawn twice over — first because the
+  rejection was about forcing it *on* when the default was already on, then because the
+  value we actually want is `true`. See above.
 
 ### Three ways to set the same thing, and which to use
 

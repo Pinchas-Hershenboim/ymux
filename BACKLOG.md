@@ -94,19 +94,18 @@ Payoff is real though — it is what would fix the two FOLLOWUPS above
 (diff_pane on remote workspaces, addons misclassifying WSL) rather than
 patching each one separately.
 
-
 ## Done
 
-## Scrollback inside a locked zellij pane (2026-08-20)
+### Scrollback inside a locked zellij pane (2026-08-20 — closed same day)
 
-The full lock (`keybinds clear-defaults=true { }` + `mouse_mode false`) takes away every
-way to scroll back inside a zellij pane: no scroll mode, no wheel to zellij, and
-xterm.js's own wheel scrolls its normal buffer, which sits behind zellij's alt screen.
-Accepted deliberately — the pane is a shell and Claude Code redraws anyway — but the
-capability is gone rather than merely awkward.
+Filed when the full lock shipped with `mouse_mode false`: no keybinds meant no scroll
+mode, the mouse was withheld, and xterm.js's own wheel scrolls a normal buffer that sits
+behind zellij's alt screen — so a zellij pane could not scroll back at all.
 
-What would restore it without giving the keys or the mouse back: a ymux-side "show
-scrollback" affordance built on `zellij -s <name> action dump-screen --full`, rendered in
-ymux's own UI. Explicitly NOT a wheel proxy — Phase 65.O already proved that fights
-xterm.js and breaks the plain-shell case (terminalInstance.ts ~882), and one child
-process per wheel tick is not viable.
+Closed by giving zellij the wheel (`mouse_mode true`) rather than by building the
+`dump-screen --full` viewer this entry proposed. That viewer is not needed: the wheel is
+the affordance, and it is the same bet the tmux side already took (`set -g mouse on`,
+decision O-3 in docs/MOUSE-DEBUG.md).
+
+(Also: this entry was originally appended below the `## Done` heading by mistake, so it
+read as done on the day it was filed. It is done now, which is a coincidence.)

@@ -10294,7 +10294,7 @@ mod zellij_tests {
             "default_layout \"ymux\"",
             "keybinds clear-defaults=true {",
             "default_mode \"locked\"",
-            "mouse_mode false",
+            "mouse_mode true",
             "show_release_notes false",
             "show_startup_tips false",
         ] {

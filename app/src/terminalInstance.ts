@@ -7,27 +7,7 @@ import type {
   ClipboardSelectionType,
 } from "@xterm/addon-clipboard";
 
-// Phase LL: OSC 52 clipboard provider — WRITE-ONLY. A remote program (e.g.
-// Claude's fullscreen renderer) can copy its selection into the OS clipboard
-// via OSC 52; but we deliberately return "" for OSC 52 READ queries so a
-// remote can NEVER exfiltrate the user's local clipboard. The addon hands us
-// the already-base64-decoded text.
-const g_oscClipboardProvider: IClipboardProvider = {
-  readText(_selection: ClipboardSelectionType): string {
-    return "";
-  },
-  async writeText(
-    _selection: ClipboardSelectionType,
-    text: string,
-  ): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      console.debug("[osc52] copied", text.length, "chars to clipboard");
-    } catch (e) {
-      console.warn("OSC52 clipboard write failed", e);
-    }
-  },
-};
+import { visualToLogical } from "./copyBidi";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { reorderRtlForDisplay } from "./bidi";
@@ -454,13 +434,7 @@ export async function copyTerminalSelection(): Promise<boolean> {
     if (!ti.container.contains(document.activeElement)) continue;
     const sel = ti.term.getSelection();
     if (!sel) return false;
-    try {
-      await navigator.clipboard.writeText(sel);
-      return true;
-    } catch (e) {
-      console.warn("clipboard.writeText failed", e);
-      return false;
-    }
+    return ti.copyToClipboard(sel, "shortcut");
   }
   return false;
 }
@@ -504,11 +478,7 @@ function showTerminalContextMenu(ti: TerminalInstance, x: number, y: number): vo
     menu.appendChild(b);
   };
   addItem(t("term.ctx.copy"), !!sel, () => {
-    if (sel) {
-      navigator.clipboard
-        .writeText(sel)
-        .catch((err) => console.warn("terminal copy failed", err));
-    }
+    if (sel) void ti.copyToClipboard(sel, "context-menu");
   });
   addItem(t("term.ctx.paste"), true, () => {
     readClipboardText()
@@ -650,6 +620,61 @@ export class TerminalInstance {
     return foldTuiOwnsBidi(this.tuiExplicit, this.tuiOwnsBidi) && this.rtl.tuiOwnsBidi;
   }
 
+  /**
+   * Does THIS pane's buffer hold visual-order text? If so, anything copied out
+   * of it has to be un-reversed before it reaches the clipboard.
+   *
+   * Measured on Yossi's machine 2026-08-20, and the two rows are exactly
+   * inverted, which is what makes the rule decidable:
+   *
+   *   plain PowerShell — displays reversed, pastes CORRECTLY  (buffer logical)
+   *   Claude Code      — displays CORRECTLY, pastes reversed  (buffer visual)
+   *
+   * Two independent ways a buffer ends up visual:
+   *
+   *  1. The SOURCE wrote visual order — Claude Code on Windows does. Note this
+   *     reads `foldTuiOwnsBidi` directly and does NOT `&&` in
+   *     `this.rtl.tuiOwnsBidi` the way `bidiOwnedByTui` does. That setting is a
+   *     RENDERING preference; whether Claude is in front is a fact about the
+   *     source. Turning off a render checkbox must not silently put reversed
+   *     text back on the clipboard.
+   *  2. WE reordered it — under rtl_mode="bidi_reorder", flushPending writes
+   *     reordered bytes into the buffer, so the selection inherits them. That
+   *     branch is gated `&& !bidiOwnedByTui`, so the two never stack.
+   */
+  private get bufferIsVisualOrder(): boolean {
+    const sourceIsVisual = foldTuiOwnsBidi(this.tuiExplicit, this.tuiOwnsBidi);
+    const weReordered =
+      this.rtlModeRendered === "bidi_reorder" && !this.bidiOwnedByTui;
+    return sourceIsVisual || weReordered;
+  }
+
+  /**
+   * The one place terminal text becomes clipboard text.
+   *
+   * All four copy paths land here — the OSC 52 provider (which is how zellij's
+   * copy-on-select and Claude's fullscreen renderer copy), Ctrl+C with a
+   * selection, the Ctrl+Shift+C shortcut, and the right-click menu. They used
+   * to call `navigator.clipboard.writeText` separately, which is how a fix
+   * could have landed for local panes and missed SSH ones.
+   */
+  async copyToClipboard(text: string, via: string): Promise<boolean> {
+    if (!text) return false;
+    const flip = this.bufferIsVisualOrder;
+    const out = flip ? visualToLogical(text) : text;
+    try {
+      await navigator.clipboard.writeText(out);
+      // Rule #1: lengths and a route label, never the content itself.
+      console.debug(
+        `[copy] ${via} ${out.length} chars${flip ? " (visual->logical)" : ""}`,
+      );
+      return true;
+    } catch (e) {
+      console.warn(`clipboard write failed (${via})`, e);
+      return false;
+    }
+  }
+
   /* NOTE FOR THE NEXT SESSION — the two facts this cost three rounds to pin:
    *
    *  1. Claude Code on Windows writes RTL in VISUAL order. Measured with
@@ -777,7 +802,25 @@ export class TerminalInstance {
     // (the alt-screen + SGR-mouse mode steals drag-selection, so OSC 52 is
     // how it reaches the system clipboard). xterm.js ignores OSC 52 without
     // this addon — which is exactly why "copy didn't work" in fullscreen.
-    this.term.loadAddon(new ClipboardAddon(undefined, g_oscClipboardProvider));
+    // Phase LL: OSC 52 clipboard provider — WRITE-ONLY. A remote program (e.g.
+    // Claude's fullscreen renderer, or zellij's copy-on-select) can copy its
+    // selection into the OS clipboard via OSC 52; we deliberately return "" for
+    // OSC 52 READ queries so a remote can NEVER exfiltrate the local clipboard.
+    // The addon hands us the already-base64-decoded text.
+    //
+    // 2026-08-20: built PER INSTANCE rather than shared. It used to be a module
+    // singleton, which meant it had no idea which pane the text came from — and
+    // whether a pane's buffer holds visual or logical order is a per-pane fact.
+    const oscClipboard: IClipboardProvider = {
+      readText: (_sel: ClipboardSelectionType): string => "",
+      writeText: async (
+        _sel: ClipboardSelectionType,
+        text: string,
+      ): Promise<void> => {
+        await this.copyToClipboard(text, "osc52");
+      },
+    };
+    this.term.loadAddon(new ClipboardAddon(undefined, oscClipboard));
     // Phase 64 (J, Track B): make Claude's plain-text `[file] <path> (<size>)`
     // lines clickable. Absolute paths reuse the existing OSC 8 file-link
     // download path (Save-As dialog via App); relative paths can't be
@@ -853,9 +896,7 @@ export class TerminalInstance {
       ) {
         const sel = this.term.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch((err) =>
-            console.warn("ctrl-c copy failed", err)
-          );
+          void this.copyToClipboard(sel, "ctrl-c");
           return false; // swallow — don't send SIGINT
         }
       }

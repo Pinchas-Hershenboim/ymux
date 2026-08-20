@@ -16,7 +16,8 @@
 //     with zero zellij chrome.
 //
 // Zellij is a PERSISTENCE LAYER underneath a ymux pane, not a multiplexer the
-// user drives. ymux already owns tabs, splits, the mouse and the scrollback.
+// user drives. ymux owns tabs, splits and the window; zellij owns the pane's
+// scrollback and — since it holds the alt screen — the wheel that reaches it.
 // A key earns its place here only if the invariant breaks without it — and
 // note this file REPLACES the user's own config, it does not merge with it.
 
@@ -66,9 +67,9 @@ default_layout "ymux"
 // uses `action write-chars`, which is IPC to the server and bypasses input
 // modes entirely.
 //
-// THE COST, written down rather than discovered: with no keybinds and no
-// mouse (below) there is no way to reach zellij's scrollback from inside the
-// pane. See docs/ZELLIJ.md §5.
+// This is why `mouse_mode` below is TRUE. With no keybinds there is no scroll
+// mode, so the wheel is the only way left to reach zellij's scrollback — and
+// zellij holds the alt screen, so xterm.js's own wheel reaches nothing.
 //
 // The empty body is REQUIRED, not decoration: `keybinds clear-defaults=true`
 // with no children fails to parse — "keybindings with no children", caught by
@@ -84,18 +85,37 @@ keybinds clear-defaults=true {
 // NOT marked "(Requires restart)" upstream — it applies per client attach.
 default_mode "locked"
 
-// xterm.js owns the wheel and the selection.
+// zellij owns the wheel, because it owns the only scrollback this pane has.
 //
-// This reverses an earlier note in this file, so it is worth being explicit
-// about what changed. The old comment said `mouse_mode` had been "drafted and
-// removed" — but that was about forcing zellij's mouse handling ON, which is
-// how the equivalent tmux setting degraded drag-to-select (FOLLOWUPS
-// 2026-08-11, docs/MOUSE-DEBUG.md). `false` is the opposite of the thing that
-// was rejected: zellij's DEFAULT is true, so leaving this key out was leaving
-// the mouse captured. Setting it false lines up with ymux-tmux.conf's
-// `set -g mouse off`.
+// This key has now been argued both ways in one day, so here is the whole
+// reasoning in one place.
+//
+// It was first set to `false` on the theory that xterm.js owns the wheel and
+// the selection. Half right: xterm.js does own selection, but its wheel scrolls
+// its NORMAL buffer, and zellij holds the alt screen — so with keybinds cleared
+// (no scroll mode) and the mouse withheld, a zellij pane had no way to scroll
+// back at all. That is not a trade, it is a missing feature.
+//
+// `true` is also what the tmux side already does: ymux appends
+// `set -g mouse on` to the tmux attach for exactly this, decision O-3 in
+// docs/MOUSE-DEBUG.md. Same bet, already taken, already surviving in the field.
+//
+// What it costs, and why each cost is covered:
+//   - zellij captures drag-select, so a plain drag copies through
+//     `copy_on_select` (default true) and OSC 52. With keybinds cleared that is
+//     the ONLY way to copy inside the pane, so leaving copy_on_select alone is
+//     load-bearing, not laziness.
+//   - a native xterm.js selection still works with SHIFT held.
+//   - mouse-tracking escapes can leak into the bare shell when the multiplexer
+//     exits uncleanly. Already handled, transport-agnostically: `resetMouseModes()`
+//     runs on connect and on pty:exit (docs/MOUSE-DEBUG.md).
+//
+// The Hebrew that OSC 52 hands back is VISUAL order in a Claude pane; it is
+// un-reversed on the way to the clipboard by app/src/copyBidi.ts. Owning the
+// mouse was never the blocker for that — ClipboardAddon has always routed
+// OSC 52 through our own provider.
 // (Requires restart.)
-mouse_mode false
+mouse_mode true
 
 // Both of these can put content in a fresh session that ymux never asked for.
 // The release-notes pane on the first run after a zellij upgrade breaks
