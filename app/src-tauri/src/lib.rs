@@ -8165,19 +8165,42 @@ pub(crate) async fn kill_pane_session_inner(
     };
     let outcome = match target {
         KillTarget::Ssh(handle, name) => {
-            let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
+            // `2>&1` STAYS — it is how tmux's own message reaches us instead
+            // of vanishing into the server's stderr. `|| true` is GONE: it
+            // forced exit 0, and the drain loop below already receives
+            // ExitStatus and used to throw it away, so this arm could only
+            // ever claim success. It is the same shape of lie the zellij arm
+            // had, one layer down.
+            //
+            // shell_quote is correct here and stays: unlike every other verb
+            // in this function, this one genuinely goes through a remote
+            // shell, so Rule #3's argv rule has nothing to apply to.
+            let cmd = format!("tmux kill-session -t {} 2>&1", shell_quote(&name));
+            let mut status: Option<u32> = None;
+            let mut output = String::new();
+            let mut transport_err: Option<String> = None;
             match handle.channel_open_session().await {
                 Ok(mut ch) => {
                     if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
                         log_warn("SSH", &format!("pane_kill_session: exec failed: {e}"));
+                        transport_err = Some(e.to_string());
                     }
-                    // Drain the channel briefly so the server completes the exec.
+                    // Drain the channel briefly so the server completes the
+                    // exec — and keep what it said, which is the whole point.
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_millis(800),
                         async {
                             while let Some(msg) = ch.wait().await {
-                                if matches!(msg, ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close) {
-                                    break;
+                                match msg {
+                                    ChannelMsg::Data { ref data } => {
+                                        output.push_str(&String::from_utf8_lossy(data));
+                                    }
+                                    ChannelMsg::ExitStatus { exit_status } => {
+                                        status = Some(exit_status);
+                                        break;
+                                    }
+                                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                                    _ => {}
                                 }
                             }
                         },
@@ -8187,15 +8210,38 @@ pub(crate) async fn kill_pane_session_inner(
                 }
                 Err(e) => {
                     log_warn("SSH", &format!("pane_kill_session: channel_open failed: {e}"));
+                    transport_err = Some(e.to_string());
                 }
             }
-            // `|| true` above forces exit 0 and the drain loop throws the
-            // ExitStatus away, so there is nothing here to classify honestly
-            // yet — `attempted` says exactly that rather than claiming a kill.
-            // Upgrading this is its own change: dropping `|| true` means an
-            // already-gone session may start reporting `failed`, which is a
-            // real behaviour change on a remote path.
-            KillSessionOutcome::new("attempted", "tmux", Some(name))
+            let output = output.trim().to_string();
+            match (transport_err, status) {
+                // Could not reach the host at all. Not a failed kill — an
+                // un-attempted one, and it must not drop the restore hint.
+                (Some(e), _) => KillSessionOutcome::new("failed", "tmux", Some(name))
+                    .with_detail(e),
+                (None, Some(0)) => KillSessionOutcome::new("killed", "tmux", Some(name)),
+                (None, Some(code)) => {
+                    // tmux's wording when the session is already gone. That is
+                    // the caller's goal, so it is not a failure.
+                    let r = if output.contains("can't find session")
+                        || output.contains("session not found")
+                    {
+                        "already_gone"
+                    } else {
+                        "failed"
+                    };
+                    log_warn(
+                        "SSH",
+                        &format!("pane_kill_session: tmux exited {code}: {output}"),
+                    );
+                    KillSessionOutcome::new(r, "tmux", Some(name)).with_detail(output)
+                }
+                // Drained to EOF without an ExitStatus, or timed out. The verb
+                // very likely ran, but this does not KNOW that — say so rather
+                // than pick a side.
+                (None, None) => KillSessionOutcome::new("attempted", "tmux", Some(name))
+                    .with_detail(output),
+            }
         }
         KillTarget::Wsl(distro, name) => {
             // Pure argv — tmux receives the name verbatim, no shell in

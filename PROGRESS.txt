@@ -3534,3 +3534,45 @@ CHECKS  26 zellij tests, tsc --noEmit clean, vite build clean.
 NOT VERIFIED  Live: delete an EXITED row and confirm it is gone from
      `zellij list-sessions -n`; and click the row BODY to confirm that still
      attaches and destroys nothing.
+
+================================================================================
+2026-08-20  Zellij lockdown, part 4: the SSH kill was lying the same way
+================================================================================
+WHY  Kept separate on purpose — it touches a REMOTE path, and its failure mode
+     is the opposite of the zellij one.
+
+     `tmux kill-session -t <n> 2>&1 || true` forced exit 0, and the drain loop
+     already received ChannelMsg::ExitStatus and threw it away. So the SSH arm
+     could only ever claim success — the same shape of lie the zellij arm had,
+     one layer down. It was carrying result:"attempted" as a placeholder since
+     part 2 precisely because there was nothing honest to report.
+
+WHAT Dropped `|| true`, KEPT `2>&1` (that is how tmux's own message reaches us
+     instead of vanishing). The drain loop now keeps ChannelMsg::Data and
+     binds ExitStatus. Four outcomes:
+       transport error   -> failed   (could not reach the host; NOT a kill)
+       exit 0            -> killed
+       exit N + "can't find session" -> already_gone
+       exit N otherwise  -> failed
+       EOF/timeout, no ExitStatus -> attempted
+     shell_quote stays: unlike every other verb here this one really does go
+     through a remote shell, so Rule #3's argv rule has nothing to apply to.
+
+"attempted" IS NOW A REAL THIRD STATE, and the frontend treats it as one:
+     no error toast, and the restore hint is KEPT. Reasoning: if the session
+     is really gone, the next start drops the hint when the name is not listed;
+     if it survived, the hint is what brings it back. Self-correcting in both
+     directions, which a toast would not be. The RPC still reports
+     killed:false for it — an unproven kill must not print as a kill.
+
+THE REGRESSION RISK, stated: if a server's tmux returns non-zero for a session
+     that is ALREADY gone with wording other than "can't find session", this
+     now reports `failed` where it used to report success — keeping the hint
+     instead of dropping it. That is the safe direction (a stale [Connect]
+     costs a click; a dropped hint costs the session), but it is a real
+     behaviour change on SSH and needs the live check.
+
+CHECKS  289 cargo tests, cargo check clean, tsc clean.
+NOT VERIFIED  Live, and this one needs a real server: kill an SSH tmux pane
+     (expect gone + killed), then kill one whose session is already gone
+     (expect NOT `failed`).

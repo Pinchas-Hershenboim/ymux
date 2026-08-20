@@ -1945,15 +1945,19 @@ function App() {
     } catch (e) {
       log.warn("kill_session failed", e);
     }
+    // Three states, not two. "We could not prove it" is its own answer.
     const killed =
       out !== null &&
       (out.result === "killed" ||
         out.result === "already_gone" ||
-        out.result === "no_session" ||
-        // SSH/tmux cannot read its own exit status yet (see KillResult).
-        // Treating it as before rather than regressing that path here.
-        out.result === "attempted");
-    if (!killed) {
+        out.result === "no_session");
+    // `attempted` = the verb was sent but its exit status never came back
+    // (SSH drained to EOF or timed out). Almost certainly fine, but not known
+    // — so keep the hint and stay quiet. If the session really is gone,
+    // restore drops the hint on the next start when the name is not listed;
+    // if it survived, the hint is what brings it back. Self-correcting either
+    // way, which a toast here would not be.
+    if (!killed && out?.result !== "attempted") {
       log.warn("kill_session did not destroy the session", out);
       flashSummaryToast(
         "err",
