@@ -3727,3 +3727,39 @@ STILL OPEN, and now isolated: the plain shell DISPLAYS Hebrew reversed. Its
      renderer bug — auto_per_line's DOM renderer plus per-row `dir` should lay
      logical Hebrew out correctly and does not. FOLLOWUPS P2, now carrying the
      truth table as evidence. Same model as this fix, opposite sign.
+
+================================================================================
+2026-08-20  LIVE PASS on the wheel + copy build — verified, not just built
+================================================================================
+Yossi ran the 15:35 build (commit e40f427). Rule #14: this is the run, not the
+compile.
+
+WORKS
+  - WHEEL SCROLLS BACK. This is the thing the whole mouse_mode reversal was for,
+    and it is the one that could not be proved from here.
+  - Copy on Shift+drag — copies the moment the selection is made.
+  - Copy on Ctrl+C with a selection.
+  - The copy paths agree with each other on the same text.
+  - No mouse-escape garbage in the bare shell after leaving zellij, so the
+    existing resetMouseModes() recovery does cover zellij's exit path.
+
+DOES NOT WORK, filed P2 rather than fixed (Yossi: "less important for now")
+  - RIGHT-CLICK Copy on a local zellij pane. Not a hole in the new plumbing —
+    the other three paths share the same copyToClipboard and work. It is a
+    consequence of `mouse_mode true`: zellij now owns the mouse, so either the
+    contextmenu event never reaches our listener, or the menu opens with its
+    Copy item disabled because `term.getSelection()` is empty (the selection
+    belongs to zellij, not to xterm.js). Both causes are consistent with Shift
+    being what makes the working paths work. See FOLLOWUPS.
+
+NOT RE-TESTED THIS PASS  the Hebrew round trip itself (Claude pane pastes
+  correctly AND PowerShell pane still pastes correctly). Yossi confirmed the
+  copy MECHANISM on the paths above; the bidi correctness check is the next
+  thing to look at, and it is the reason copyBidi.ts exists.
+
+BUILD NOTE, worth remembering  the first rebuild FAILED with `failed to remove
+  file ... app.exe / Access is denied (os error 5)` because Yossi had the
+  previous build open. That is the documented case in CLAUDE.md — ask, do not
+  retry. Also: `npm run tauri build | tail` reports TAIL's exit code, so the
+  task notification said "exit code 0" on a failed build. Check the output text,
+  not the status.
