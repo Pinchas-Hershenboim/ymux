@@ -99,8 +99,18 @@ jobs:
       - name: Assert the frontend is embedded
         working-directory: app
         run: |
-          BIN="src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ymux.app/Contents/MacOS/ymux"
-          test -f "$BIN" || { echo "::error::ymux.app binary was not produced"; exit 1; }
+          BUNDLE=src-tauri/target/x86_64-apple-darwin/release/bundle/macos
+          # Glob rather than hardcode: the executable inside Contents/MacOS
+          # is named by Tauri (productName / mainBinaryName), and guessing
+          # it wrong fails this step for a reason that has nothing to do
+          # with what it is meant to check.
+          BIN=$(find "$BUNDLE" -type f -perm -111 -path '*.app/Contents/MacOS/*' | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error::no .app executable under $BUNDLE — here is what the build produced:"
+            ls -R "$BUNDLE" || echo "(bundle dir does not exist)"
+            exit 1
+          fi
+          echo "checking $BIN"
           ASSET=$(ls dist/assets/*.js | head -1 | xargs basename)
           test -n "$ASSET" || { echo "::error::no built JS asset in dist/assets to check against"; exit 1; }
           if LC_ALL=C grep -qa "$ASSET" "$BIN"; then
@@ -115,8 +125,10 @@ jobs:
       - name: Create dmg
         working-directory: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
         run: |
+          APP=$(ls -d *.app | head -1)
+          echo "bundling $APP"
           mkdir dmg-root
-          cp -R ymux.app dmg-root/
+          cp -R "$APP" dmg-root/
           ln -s /Applications dmg-root/Applications
           hdiutil create -volname ymux -srcfolder dmg-root -ov -format UDZO ymux_x64_macos13.dmg
           shasum -a 256 ymux_x64_macos13.dmg
@@ -132,7 +144,7 @@ jobs:
       # exec bits inside a .app bundle.
       - name: Upload .app bundle (tarred)
         working-directory: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
-        run: tar -czf ymux-app.tar.gz ymux.app
+        run: tar -czf ymux-app.tar.gz "$(ls -d *.app | head -1)"
       - uses: actions/upload-artifact@v4
         with:
           name: ymux-macos-intel-app
