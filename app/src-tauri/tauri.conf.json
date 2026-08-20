@@ -37,7 +37,8 @@
       "resources/remote-manifest.json",
       "resources/ymux-cli.exe",
       "resources/ymux-tmux.conf",
-      "resources/ymux-zellij.kdl"
+      "resources/ymux-zellij.kdl",
+      "resources/layouts/ymux.kdl"
     ],
     "windows": {
       "nsis": {

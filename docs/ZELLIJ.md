@@ -257,24 +257,101 @@ which is the form to parse from Rust. Pane-creating verbs (`new-pane`, `run`,
 
 ### How the config reaches zellij
 
-`spawn_local_pty` sets **`ZELLIJ_CONFIG_FILE`** on the pane's shell
-([lib.rs:1988](../app/src-tauri/src/lib.rs#L1988)) pointing at the bundled
-`app/src-tauri/resources/ymux-zellij.kdl`, resolved by
-[`resolve_zellij_config`](../app/src-tauri/src/lib.rs#L1905).
+`spawn_local_pty` sets **two** env vars on the pane's shell, both resolved by
+[`resolve_zellij_config`](../app/src-tauri/src/lib.rs#L1905):
 
-An env var rather than `zellij --config <path>` in the typed line, because the path
-contains spaces and would need two dialects of quoting. `--config` documents
-`[env: ZELLIJ_CONFIG_FILE=]`, so this is the supported form, not a trick. Missing
-file is skipped silently — zellij falls back to the user's own config.
+| var | points at | why |
+|---|---|---|
+| `ZELLIJ_CONFIG_FILE` | `resources/ymux-zellij.kdl` | the settings |
+| `ZELLIJ_CONFIG_DIR` | `resources/` | makes `default_layout "ymux"` resolve |
 
-**This replaces the user's config, it does not merge with it.** Every key we add is
-one more thing that can disagree with what the user configured for their own zellij.
-That is why the file is one option and the header says KEEP THIS SMALL.
+Env vars rather than flags in the typed line, because the path contains spaces and
+would need two dialects of quoting. Both `--config` and `--config-dir` document their
+env var in `--help`, so this is the supported form, not a trick — and there is no flag
+for the layout at all, since `zellij attach` takes no `--layout` and the root `-l`
+conflicts with `attach`. The config file is the only channel.
 
-Current contents: `pane_frames false` — a ymux pane draws its own header, and the
-frame's vertical bars at both edges made every row look like a table row to the
-per-row direction pass in `app/src/textDirection.ts` (the mirrored-English
-screenshot, 2026-08-19).
+**Why `ZELLIJ_CONFIG_DIR` and not `layout_dir`.** `default_layout` names a layout
+*inside* the layout dir, which defaults to a `layouts/` subdirectory of the config dir.
+Setting `layout_dir` explicitly would mean writing an absolute install path into a
+bundled file that ships identical bytes to every machine. Captured from
+`zellij setup --check` on 0.44.3, 2026-08-20:
+
+```text
+[CONFIG DIR]:  …\app\src-tauri\resources
+[CONFIG FILE]: Well defined.
+[LAYOUT DIR]:  …\app\src-tauri\resources\layouts
+[DATA DIR]:    C:\Users\…\AppData\Roaming\Zellij\data
+[PLUGIN DIR]:  C:\Users\…\AppData\Roaming\Zellij\data\plugins
+```
+
+Note what did **not** move: DATA DIR and PLUGIN DIR. It also becomes the base for
+`theme_dir`, which is harmless — ymux ships no themes and sets none.
+
+**Resolution is all-or-nothing.** `pick_zellij_resources` accepts a directory only when
+it holds both `ymux-zellij.kdl` and `layouts/ymux.kdl`. Shipping the config alone would
+promise a `default_layout` the layout dir cannot keep, and zellij is not loud about an
+unknown layout name. Missing either one falls back silently to the user's own config —
+a supported state, logged as a WARN.
+
+**This replaces the user's config, it does not merge with it.** Every key is one more
+thing that can disagree with what the user configured for their own zellij, so the bar
+is "the invariant breaks without it".
+
+### What ymux sets, and why each one
+
+The invariant: **1 ymux pane == 1 zellij session == 1 tab == exactly 1 zellij pane,
+with zero zellij chrome.** Zellij is a persistence layer underneath a ymux pane, not a
+multiplexer the user drives.
+
+| key | reason |
+|---|---|
+| `pane_frames false` | a ymux pane draws its own header; the frame's vertical bars at both edges also made every row look like a table row to the per-row direction pass in `app/src/textDirection.ts` (the mirrored-English screenshot, 2026-08-19) |
+| `default_layout "ymux"` | selects `layouts/ymux.kdl`, a bare `pane` — see below |
+| `keybinds clear-defaults=true { }` | zero keybinds; the empty body is required by the parser |
+| `default_mode "locked"` | second lock, so an un-clearable future binding still doesn't fire |
+| `mouse_mode false` | xterm.js owns the wheel and the selection |
+| `show_release_notes false` / `show_startup_tips false` | either can add a pane ymux never asked for |
+
+**`pane_frames false` is not what removes "the frame".** It removes the border *around*
+a pane. The two rows above and below are **plugin panes** in zellij's default layout:
+
+```text
+layout {
+    pane size=1 borderless=true { plugin location="tab-bar" }
+    pane
+    pane size=1 borderless=true { plugin location="status-bar" }
+}
+```
+
+That is why the frame survived `pane_frames false` for a day. `layouts/ymux.kdl` is
+`layout { pane }` — no plugin rows, which gives every pane back two rows.
+
+**`mouse_mode false` reverses an earlier note in the file, deliberately.** The old
+comment said `mouse_mode` was "drafted and removed" — but that was about forcing it
+**on**, which is how the equivalent tmux setting degraded drag-to-select
+(`FOLLOWUPS.md:33`, `docs/MOUSE-DEBUG.md`). Zellij's default is `true`, so *leaving the
+key out was leaving the mouse captured*. `false` lines up with `ymux-tmux.conf`'s
+`set -g mouse off`.
+
+**The cost of the full lock, stated rather than discovered: no scrollback inside a
+zellij pane.** No keybinds means no scroll mode, `mouse_mode false` means zellij never
+sees the wheel, and xterm.js's wheel scrolls its normal buffer, which sits behind
+zellij's alt screen. Accepted — the pane is a shell and Claude Code redraws anyway — and
+a ymux-side "show scrollback" affordance built on `action dump-screen --full` is in
+BACKLOG.md.
+
+**Relied-on defaults, not restated in the file:** `session_serialization true` (the
+whole persistence feature) and `on_force_close "detach"` (already the default, and a
+signal handler with no signal to deliver on Windows).
+
+**Which keys need a restart.** `default_layout` and `mouse_mode` are marked
+"(Requires restart)" — they are read when the session is *created*, which is the moment
+ymux creates it. `pane_frames` and `keybinds` are client-side and apply on the next
+attach. `default_mode` is not marked at all; it applies per client attach. The practical
+consequence: **a session created before this shipped adopts the change only partly** —
+keybinds and frames yes, layout and mouse no — so an old session comes back with bars
+until it is killed once.
 
 ### Config file shape
 
@@ -322,10 +399,14 @@ mid-session does nothing; the session has to be killed and recreated.
 
 ### Considered and rejected for `ymux-zellij.kdl`
 
-- `mouse_mode` — xterm.js owns the wheel and selection. Forcing zellij's mouse
-  handling is exactly how the equivalent tmux setting degraded drag-to-select
-  (FOLLOWUPS, 2026-08-11).
-- `scroll_buffer_size` — xterm.js owns the scrollback.
+- `scroll_buffer_size` — zellij owns the buffer behind its alt screen; sizing it
+  changes nothing ymux can reach.
+- `simplified_ui`, `auto_layout`, `stacked_resize`, `copy_on_select` — all only matter
+  to chrome, or to a mouse that is now off.
+- `on_force_close "detach"` — already the default, and it handles SIGTERM/SIGHUP; on
+  Windows the PTY kill has no signal to deliver, so restating it buys noise.
+- `mouse_mode` **was** on this list and has been withdrawn — see above. The rejection
+  was about forcing it on; the default was already on.
 
 ### Three ways to set the same thing, and which to use
 

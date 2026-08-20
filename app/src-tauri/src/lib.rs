@@ -1896,39 +1896,76 @@ fn cleanup_session_maps(
 
 // ─── Local PTY spawn ─────────────────────────────────────────────────────────
 
-/// Resolve the bundled zellij config (ymux-zellij.kdl). Same shape as
-/// `local_setup::resolve_ymux_cli` — installed builds carry it under the Tauri
-/// resource dir, and a dev build finds it beside the binary.
+/// The two bundled files zellij needs, resolved together.
 ///
-/// `None` is a supported state, not a failure: without the file zellij just
-/// uses its own defaults and the pane still works, only with the frame back.
-fn resolve_zellij_config(app: &AppHandle) -> Option<std::path::PathBuf> {
+/// `config_dir` is exported as `ZELLIJ_CONFIG_DIR`, which is what makes
+/// `default_layout "ymux"` in the kdl resolve: zellij's layout dir defaults to
+/// a `layouts/` subdirectory of the config dir. Verified with
+/// `zellij setup --check` on 0.44.3 (2026-08-20) — it also leaves DATA DIR and
+/// PLUGIN DIR under `%APPDATA%\Zellij`, so this moves the layout lookup and
+/// nothing else.
+pub(crate) struct ZellijResources {
+    pub(crate) config_file: std::path::PathBuf,
+    pub(crate) config_dir: std::path::PathBuf,
+}
+
+/// Pick the first root that holds BOTH `ymux-zellij.kdl` and
+/// `layouts/ymux.kdl`.
+///
+/// **All-or-nothing on purpose.** The moment the config says
+/// `default_layout "ymux"`, it is a promise the layouts dir has to keep — and
+/// zellij is not loud about an unknown layout name. Accepting a directory with
+/// only the config would mean every new session starts with a `default_layout`
+/// that cannot resolve. Refusing both degrades to the state that is already
+/// supported and already logged: zellij uses the user's own config, the pane
+/// works, and the chrome comes back.
+///
+/// Split out of `resolve_zellij_config` so it can be tested without an
+/// `AppHandle` — it is the only branching logic here.
+pub(crate) fn pick_zellij_resources(roots: &[std::path::PathBuf]) -> Option<ZellijResources> {
+    for root in roots {
+        for dir in [root.join("resources"), root.clone()] {
+            let config_file = dir.join("ymux-zellij.kdl");
+            let layout = dir.join("layouts").join("ymux.kdl");
+            if config_file.is_file() && layout.is_file() {
+                return Some(ZellijResources {
+                    config_file,
+                    config_dir: dir,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the bundled zellij resources. Same shape as
+/// `local_setup::resolve_ymux_cli` — installed builds carry them under the
+/// Tauri resource dir, and a dev build finds them beside the binary.
+///
+/// `None` is a supported state, not a failure: without them zellij just uses
+/// its own defaults and the pane still works, only with the chrome and the
+/// keybinds back.
+fn resolve_zellij_config(app: &AppHandle) -> Option<ZellijResources> {
     use tauri::Manager;
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(r) = app.path().resource_dir() {
         roots.push(r);
     }
-    // 2026-08-19: also look beside the RUNNING BINARY. `resource_dir()` answers
-    // for an installed layout; a portable exe handed over for testing has its
-    // `resources\` folder next to itself, and silently missing the config there
-    // is indistinguishable from the frame setting not working — which is
-    // exactly the loop this cost a round of.
+    // 2026-08-19: also look beside the RUNNING BINARY.
+    //
+    // INERT ON WINDOWS — tauri's `resource_dir()` already returns the exe's
+    // directory there, so this repeats the same two probes. Kept anyway: this
+    // file carries no `cfg(target_os)` gates and `build-macos-intel.yml`
+    // compiles it, and in a macOS bundle `resource_dir()` is
+    // `Contents/Resources` while the exe lives in `Contents/MacOS`. Deleting
+    // it would be a silent behaviour change on the one platform nobody here
+    // tests, to save four stat calls.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             roots.push(dir.to_path_buf());
         }
     }
-    for root in roots {
-        for c in [
-            root.join("resources").join("ymux-zellij.kdl"),
-            root.join("ymux-zellij.kdl"),
-        ] {
-            if c.is_file() {
-                return Some(c);
-            }
-        }
-    }
-    None
+    pick_zellij_resources(&roots)
 }
 
 fn spawn_local_pty(
@@ -1985,27 +2022,43 @@ fn spawn_local_pty(
     // pre-rename install reads the old spelling and would otherwise
     // env-gate itself out. Drop once 0.5.0 is the floor.
     cmd.env("WINMUX_PANE_ID", &pane_id);
-    // 2026-08-19: point zellij at ymux's own config (`pane_frames false`).
+    // 2026-08-19: point zellij at ymux's own config; 2026-08-20: and at its
+    // config DIRECTORY, which is how the single-pane layout gets found.
     //
-    // An ENV VAR rather than `zellij --config <path>` in the line we type into
+    // ENV VARS rather than `zellij --config <path>` in the line we type into
     // the shell: the resource path contains spaces, that line has to parse in
     // both cmd.exe and PowerShell, and Rule #3 says do not assemble shell
-    // strings. `--config` documents `[env: ZELLIJ_CONFIG_FILE=]`, so this is
-    // the same knob without any quoting.
+    // strings. Both `--config` and `--config-dir` document their env var in
+    // `--help`, so these are the same knobs without any quoting — and there is
+    // no flag for the layout at all, since `zellij attach` takes no `--layout`.
     //
-    // Skipped silently when the resource is missing — zellij falls back to its
-    // own config and the pane works, just with the frame.
+    // ZELLIJ_CONFIG_DIR moves the LAYOUT lookup to `<dir>\layouts` and nothing
+    // else: DATA DIR and PLUGIN DIR stay under %APPDATA%\Zellij (checked with
+    // `zellij setup --check`). It also becomes the base for `theme_dir`, which
+    // is harmless — we ship no themes and set none.
+    //
+    // Skipped silently when the resources are missing — zellij falls back to
+    // its own config and the pane works, just with the chrome and the keybinds.
     match resolve_zellij_config(app) {
-        Some(kdl) => {
-            cmd.env("ZELLIJ_CONFIG_FILE", &kdl);
-            // A program path, not user content — safe under Rule #1, and the
-            // only way to tell "the frame setting does not work" apart from
-            // "the config was never found".
-            log_info("PTY", &format!("zellij config: {}", kdl.display()));
+        Some(z) => {
+            cmd.env("ZELLIJ_CONFIG_FILE", &z.config_file);
+            cmd.env("ZELLIJ_CONFIG_DIR", &z.config_dir);
+            // Program paths, not user content — safe under Rule #1, and the
+            // only way to tell "the lock does not work" apart from "the config
+            // was never found". One grep for `zellij config:` answers both
+            // halves, so the layout dir is named here too.
+            log_info(
+                "PTY",
+                &format!(
+                    "zellij config: {} (+ layouts/ymux.kdl)",
+                    z.config_file.display()
+                ),
+            );
         }
         None => log_warn(
             "PTY",
-            "zellij config: ymux-zellij.kdl NOT FOUND — pane frames stay on",
+            "zellij config: ymux-zellij.kdl + layouts/ymux.kdl NOT FOUND — \
+             zellij keeps its own chrome, keybinds and mouse capture",
         ),
     }
     tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + YMUX_PANE_ID env vars");
@@ -2232,6 +2285,10 @@ async fn zellij_run(args: &[String], what: &str) -> bool {
     }
 }
 
+/// Note for anyone tempted to add a flag here: **there is nowhere to put one.**
+/// `zellij attach` has no `--layout`, and the root `-l` conflicts with
+/// `attach`. Every setting reaches the session through the config file that
+/// `spawn_local_pty` points `ZELLIJ_CONFIG_FILE` / `ZELLIJ_CONFIG_DIR` at.
 fn build_zellij_attach_command(name: &str) -> String {
     // Session names come from `sanitize_session_name`, which emits only
     // `[A-Za-z0-9_-]`, so there is nothing here to quote or escape. Asserted
@@ -9895,8 +9952,150 @@ mod zellij_tests {
     // running produced `spike [Created 12m 30s ago]` verbatim.
     use super::{
         build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions,
-        zellij_args_delete, zellij_args_kill, zellij_args_list, zellij_args_write_chars,
+        pick_zellij_resources, zellij_args_delete, zellij_args_kill, zellij_args_list,
+        zellij_args_write_chars,
     };
+
+    // ── The shipped resources ────────────────────────────────────────────
+    //
+    // Embedded with `include_str!`, not read from a path at runtime — the same
+    // choice remote-manifest.json makes above, for the same reason: a runtime
+    // read passes on a dev box and fails on a user's machine, while a missing
+    // or renamed file here fails the BUILD. That is exactly the class of
+    // failure 3709c53 spent a round chasing.
+    const ZELLIJ_KDL: &str = include_str!("../resources/ymux-zellij.kdl");
+    const ZELLIJ_LAYOUT: &str = include_str!("../resources/layouts/ymux.kdl");
+    const TAURI_CONF: &str = include_str!("../tauri.conf.json");
+
+    /// Strip `//` comment lines so an assertion cannot pass on prose. Both kdl
+    /// files are mostly comments, and every one of them mentions the keys.
+    fn code_only(kdl: &str) -> String {
+        kdl.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Zellij is a persistence layer under a ymux pane, not a multiplexer the
+    /// user drives. Each key here is one piece of that; a silent drop would
+    /// show up only as chrome reappearing on someone's screen.
+    #[test]
+    fn zellij_config_is_the_full_lock() {
+        let code = code_only(ZELLIJ_KDL);
+        for key in [
+            "pane_frames false",
+            "default_layout \"ymux\"",
+            "keybinds clear-defaults=true {",
+            "default_mode \"locked\"",
+            "mouse_mode false",
+            "show_release_notes false",
+            "show_startup_tips false",
+        ] {
+            assert!(code.contains(key), "ymux-zellij.kdl lost `{key}`:\n{code}");
+        }
+    }
+
+    /// `keybinds clear-defaults=true` with NO children fails to parse —
+    /// "keybindings with no children", from `zellij setup --check` on
+    /// 2026-08-20. The empty body is load-bearing, so it is pinned.
+    #[test]
+    fn the_cleared_keybinds_block_keeps_its_body() {
+        let code = code_only(ZELLIJ_KDL);
+        let at = code
+            .find("keybinds clear-defaults=true")
+            .expect("keybinds line");
+        assert!(
+            code[at..].starts_with("keybinds clear-defaults=true {"),
+            "the empty `{{ }}` body is required by zellij's parser:\n{}",
+            &code[at..],
+        );
+    }
+
+    /// One pane, no plugin rows. The two plugin rows in zellij's DEFAULT
+    /// layout are what "the frame is still there" actually was — `pane_frames
+    /// false` never touched them.
+    #[test]
+    fn zellij_layout_is_one_pane_and_no_plugins() {
+        let code = code_only(ZELLIJ_LAYOUT);
+        assert!(
+            !code.contains("plugin location="),
+            "a plugin row is chrome the pane cannot afford:\n{code}"
+        );
+        assert!(!code.contains("tab "), "no explicit tab node:\n{code}");
+        assert_eq!(
+            code.matches("pane").count(),
+            1,
+            "exactly one pane — ymux owns splitting:\n{code}"
+        );
+    }
+
+    /// The config selects the layout BY NAME. Renaming one file without the
+    /// other leaves a `default_layout` that resolves to nothing, and zellij is
+    /// not loud about that.
+    #[test]
+    fn the_config_names_the_layout_file_that_ships_with_it() {
+        assert!(
+            code_only(ZELLIJ_KDL).contains("default_layout \"ymux\""),
+            "default_layout must name layouts/ymux.kdl"
+        );
+    }
+
+    /// Wrote the file, forgot the bundle entry — an installed build would then
+    /// find neither and fall back to zellij's own config.
+    #[test]
+    fn bundled_zellij_resources_are_declared_in_tauri_conf() {
+        let conf: serde_json::Value =
+            serde_json::from_str(TAURI_CONF).expect("tauri.conf.json must parse");
+        let res = conf["bundle"]["resources"]
+            .as_array()
+            .expect("bundle.resources must be an array");
+        for want in ["resources/ymux-zellij.kdl", "resources/layouts/ymux.kdl"] {
+            assert!(
+                res.iter().any(|v| v.as_str() == Some(want)),
+                "tauri.conf.json does not bundle `{want}`"
+            );
+        }
+    }
+
+    /// All-or-nothing: a directory holding only the config would promise a
+    /// `default_layout` the layouts dir cannot keep.
+    #[test]
+    fn zellij_resources_are_all_or_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let roots = vec![root.clone()];
+
+        assert!(
+            pick_zellij_resources(&roots).is_none(),
+            "an empty root resolves to nothing"
+        );
+
+        std::fs::write(root.join("ymux-zellij.kdl"), "pane_frames false\n").expect("write config");
+        assert!(
+            pick_zellij_resources(&roots).is_none(),
+            "config without the layout must be refused"
+        );
+
+        std::fs::create_dir_all(root.join("layouts")).expect("mkdir layouts");
+        std::fs::write(root.join("layouts").join("ymux.kdl"), "layout {\n pane\n}\n")
+            .expect("write layout");
+        let got = pick_zellij_resources(&roots).expect("both present resolves");
+        assert_eq!(got.config_dir, root);
+        assert_eq!(got.config_file, root.join("ymux-zellij.kdl"));
+    }
+
+    /// The layout-only half of the same rule, kept separate so a failure names
+    /// which direction broke.
+    #[test]
+    fn a_layout_without_its_config_is_refused() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(root.join("layouts")).expect("mkdir layouts");
+        std::fs::write(root.join("layouts").join("ymux.kdl"), "layout {\n pane\n}\n")
+            .expect("write layout");
+        assert!(pick_zellij_resources(&[root]).is_none());
+    }
 
     #[test]
     fn parses_the_real_captured_line() {

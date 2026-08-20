@@ -3347,3 +3347,78 @@ WHAT  docs/ZELLIJ.md (new). Generated from `%LOCALAPPDATA%\Zellij\zellij.exe`
 
 NOTE  Doc only, no code touched. Raw --help dumps are in the session scratchpad,
      not committed; §7 regenerates them in one paste.
+
+================================================================================
+2026-08-20  Zellij lockdown, part 1: one pane, no chrome, no keybinds
+================================================================================
+WHY  Yossi: "each of our panes should hold exactly ONE zellij pane" — and the
+     frame was still on screen after the 2026-08-19 fix. Both true, and the
+     second had a cause nobody had looked for: `pane_frames false` removes the
+     border AROUND a pane, not the two PLUGIN ROWS zellij's default layout puts
+     above and below it. Captured with `zellij setup --dump-layout default`:
+       layout { pane size=1 {plugin "tab-bar"}  pane  pane size=1 {plugin
+       "status-bar"} }
+     No config key removes those. Only a layout of our own does.
+
+     There was also no lock at all: zellij's default keybinds were live, so
+     Ctrl+p n split the pane — with pane_frames off there was then no boundary
+     between the two shells. And zellij ate Ctrl-o/p/n/t/h/s/g before the
+     program inside ever saw them.
+
+WHAT resources/layouts/ymux.kdl (new) — `layout { pane }`. No plugin rows, no
+       tab node, no swap layouts. This is what gives every pane back 2 rows.
+     resources/ymux-zellij.kdl — rewritten from 1 key to 7:
+       pane_frames false / default_layout "ymux" / keybinds clear-defaults=true
+       {} / default_mode "locked" / mouse_mode false / show_release_notes false
+       / show_startup_tips false
+     lib.rs — resolve_zellij_config now returns ZellijResources {config_file,
+       config_dir} and accepts a directory only when BOTH files are in it
+       (pick_zellij_resources, split out so a test can reach it).
+       spawn_local_pty exports ZELLIJ_CONFIG_DIR alongside ZELLIJ_CONFIG_FILE.
+     tauri.conf.json — bundles resources/layouts/ymux.kdl.
+
+HOW THE LAYOUT IS FOUND  ZELLIJ_CONFIG_DIR=<resources> makes zellij's layout dir
+     default to <resources>\layouts, so `default_layout "ymux"` resolves with NO
+     absolute path in a bundled file (which ships identical bytes everywhere,
+     and `zellij attach` has no --layout to pass one). Verified with
+     `zellij setup --check`: [LAYOUT DIR] moved, [DATA DIR] and [PLUGIN DIR]
+     did not.
+
+TWO THINGS THE GATE CAUGHT BEFORE A BUILD
+     1. `keybinds clear-defaults=true` with no children FAILS TO PARSE —
+        "keybindings with no children". The empty `{ }` body is required.
+        `zellij setup --check` is a real validator (exit 1 + a KDL diagnostic);
+        it is now step 1 of the checklist and it paid for itself immediately.
+     2. `setup --dump-layout <name>` only dumps BUILT-IN layouts — it printed
+        nothing at exit 0 for both our layout and a nonsense name, so it is not
+        a probe in either direction. Layout resolution needs the live run.
+
+mouse_mode REVERSES AN EARLIER NOTE, deliberately. The old comment said
+     mouse_mode was "drafted and removed" — that was about forcing it ON.
+     Zellij's default IS on, so leaving the key out was leaving the mouse
+     captured. `false` lines up with ymux-tmux.conf's `set -g mouse off`.
+
+THE COST, written down rather than discovered: no scrollback inside a zellij
+     pane. No keybinds = no scroll mode; mouse_mode false = zellij never sees
+     the wheel; xterm.js's wheel scrolls its normal buffer, which sits behind
+     zellij's alt screen. Accepted. Checklist item 8 measures it; if the wheel
+     is dead the fallback is mouse_mode true (Shift bypasses capture for
+     selection, which is where the tmux side landed — FOLLOWUPS:33).
+
+OLD SESSIONS ADOPT THIS PARTLY, and that shape is in no design doc: keybinds
+     and pane_frames are client-side and apply on the next attach;
+     default_layout and mouse_mode are "(Requires restart)" and do not. So a
+     session created before this comes back WITH BARS BUT WITHOUT KEYBINDS
+     until it is killed once. There are 4 live ymux-p_* sessions on this box
+     that will show it. Do not start a hunt over that screenshot.
+
+TESTS  7 new in mod zellij_tests, all compile-time: the kdl and the layout are
+     embedded with include_str! (same reason remote-manifest.json is, lib.rs
+     ~8216 — a runtime read passes here and fails on a user's machine), so a
+     renamed resource fails the BUILD. Plus tauri.conf.json parsed and asserted
+     to bundle both, and pick_zellij_resources' all-or-nothing rule in four
+     directions. 21/21 zellij tests green, cargo check clean.
+
+NOT VERIFIED  Nothing here has run live. Zero chrome on screen, keys reaching
+     the shell, and `default_layout` resolving at session CREATION are all
+     checklist items, not claims. Rule #14.
