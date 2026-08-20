@@ -4386,3 +4386,44 @@ TESTS  6 new (15 total in copyBidi.test.ts): escapes byte-for-byte, an OSC
 NOT VERIFIED  Rule #14. The three that matter: Hebrew from Claude correct AND
      right; the CARET while typing Hebrew (the known-risky one); and Claude's
      box-drawing rows not flipping — 770013b is the regression to watch.
+
+================================================================================
+2026-08-20 20:45 — v0.5.0-beta.1 cut from the branch; main deliberately untouched
+================================================================================
+Task: release 0.5.0 after the zellij chain + PR #6 + the merge repairs.
+
+What changed about the plan, and why:
+  origin/main moved 24 commits while we worked — mostly Phase 82, the macOS
+  port (+3018 lines, PRs #12/#13, landed today). Merging it back produced 29
+  conflict blocks across 14 files, and they are architectural: this branch
+  DELETED the WSL wizard scaffolding, and main BUILT macOS ON TOP OF IT
+  (MAC_CHAIN shares wslGroup()). Aborted that merge cleanly — nothing lost.
+
+  Yossi asked what a force-push to main would cost. Measured rather than
+  guessed: 23 of the 24 commits survive on origin/claude/mac-features-
+  compatibility-d7a386; 1 orphan (ce50f0f, a merge commit, no unique content);
+  3 files removed (Info.plist, MacInspect.ts, platform.ts); 0 PRs orphaned.
+  So little CODE is lost — but it breaks Rule #15, leaves PR #12/#13 showing
+  "merged" with their code absent from main, and DEFERS the conflict instead
+  of resolving it. Decision: tag from the branch, merge afterwards.
+
+  Also new on main today: Rule 17 — builds and tests run on CI only, never
+  locally. The local builds earlier in this session predate it; from here the
+  verification step IS the CI run.
+
+Done:
+  - pushed claude/worktrees-clean-build-988849 (plain push, no force)
+  - dispatched ci-windows.yml on the branch (run 32399258663, sha 683f4be) —
+    it is workflow_dispatch + pull_request only, so a branch push alone runs
+    nothing
+  - FOLLOWUPS P1 records the deferred macOS merge WITH the fix already
+    designed (rename wslGroup -> localSetupGroup, keep the group, Windows gets
+    the InstallZellij chain the branch already has, macOS keeps MAC_CHAIN)
+
+Not done, and stated plainly:
+  - 5 of 100 checklist items have passed. 16.1 (detach/reattach — the whole
+    justification for dropping WSL) and 8.1 (workspaces.json holding
+    "type":"wsl", the data-loss case) are unit-tested only, never run live.
+  - the macOS port has not been run by anyone here
+  - manifest.json untouched on purpose: it is what publishes an update, so
+    every existing install stays on 0.4.5. That is the point of a beta.
