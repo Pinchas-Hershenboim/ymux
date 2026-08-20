@@ -35,10 +35,14 @@ interface Props {
 // installer is a standalone PowerShell script.
 const TOOL_ROWS: {
   step: string;
-  tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini">;
+  tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini" | "zellij">;
   needsWinget: boolean;
   needsNode: boolean;
 }[] = [
+  // 2026-08-19: session persistence for native Windows panes — the job WSL
+  // used to do. First in the list because it is the one that makes a local
+  // workspace survive closing the app.
+  { step: "InstallZellij", tool: "zellij", needsWinget: true, needsNode: false },
   { step: "InstallGit", tool: "git", needsWinget: true, needsNode: false },
   { step: "InstallNodejs", tool: "node", needsWinget: true, needsNode: false },
   { step: "InstallClaudeCode", tool: "claude", needsWinget: false, needsNode: false },
@@ -46,22 +50,6 @@ const TOOL_ROWS: {
   { step: "InstallGemini", tool: "gemini", needsWinget: false, needsNode: true },
 ];
 
-// The WSL persistence chain, in execution order. The flow sends only the
-// steps the inspect says are actually needed; the backend additionally
-// skips no-op steps, so this is belt-and-suspenders.
-const WSL_CHAIN = [
-  "InstallWsl",
-  "CreateWslUser",
-  "EnsureDistroReady",
-  "InstallTmuxInWsl",
-  "DeployYmuxCliToWsl",
-  "DeployTmuxConfToWsl",
-  // Before the hooks step, which registers ymux's hooks with Claude:
-  // installing hooks for an agent that is not there produced a green run
-  // and then `claude: command not found` in the first pane.
-  "InstallClaudeCodeInWsl",
-  "InstallHooksInWsl",
-] as const;
 
 export function LocalSetupFlow(p: Props) {
   type FlowStep = "inspect" | "execute" | "done";
@@ -83,9 +71,11 @@ export function LocalSetupFlow(p: Props) {
   const [checkedTools, setCheckedTools] = createSignal<Set<string>>(new Set());
   const [installLocalHooks, setInstallLocalHooks] = createSignal(true);
   // The WSL persistent-environment group (tmux-backed panes).
-  const [wslGroup, setWslGroup] = createSignal(true);
   const [wslUsername, setWslUsername] = createSignal("");
-  const [workspaceName, setWorkspaceName] = createSignal("WSL");
+  // 2026-08-19: the wizard finishes by creating a native Windows workspace
+  // (it used to create a WSL one). Zellij gives it the persistence that was
+  // the only reason to put a local pane inside a distro.
+  const [workspaceName, setWorkspaceName] = createSignal("Local");
   const [workspaceCwd, setWorkspaceCwd] = createSignal("");
 
   // Execute-step state (mirrors ProvisionNewServerFlow).
@@ -162,25 +152,11 @@ export function LocalSetupFlow(p: Props) {
   // Build the effective step list: checked tools (in canonical order) +
   // local hooks + only the *needed* parts of the WSL chain.
   const buildSteps = (): string[] => {
-    const r = inspect();
     const steps: string[] = [];
     for (const row of TOOL_ROWS) {
       if (checkedTools().has(row.step)) steps.push(row.step);
     }
     if (installLocalHooks()) steps.push("InstallLocalHooks");
-    if (wslGroup() && r) {
-      for (const s of WSL_CHAIN) {
-        if (s === "InstallWsl" && r.wsl.wsl_ready && r.wsl.distros.length > 0) continue;
-        if (s === "InstallTmuxInWsl" && r.wsl.tmux_installed === true) continue;
-        if (s === "DeployYmuxCliToWsl" && r.wsl.ymux_cli_state === "ok") continue;
-        if (s === "DeployTmuxConfToWsl" && r.wsl.tmux_conf_ok === true) continue;
-        // claude_inside is `command -v claude` inside the distro, not the
-        // presence of ~/.claude — that directory is created by the hooks
-        // step itself, so the old probe would have skipped this forever.
-        if (s === "InstallClaudeCodeInWsl" && r.wsl.claude_inside === true) continue;
-        steps.push(s);
-      }
-    }
     return steps;
   };
 
@@ -208,7 +184,7 @@ export function LocalSetupFlow(p: Props) {
           distro: inspect()?.wsl.default_distro ?? null,
           wsl_username: wslUsername().trim() || null,
           workspace_name: workspaceName().trim() || null,
-          create_workspace: wslGroup(),
+          create_workspace: true,
           workspace_cwd: workspaceCwd().trim() || null,
         },
       });
@@ -244,15 +220,6 @@ export function LocalSetupFlow(p: Props) {
       ? `${t("localSetup.status.detected")}${ts.version ? ` · ${ts.version}` : ""}`
       : t("localSetup.status.missing");
 
-  const wslStatusSummary = createMemo(() => {
-    const r = inspect();
-    if (!r) return "";
-    if (!r.wsl.wsl_ready || r.wsl.distros.length === 0) return t("localSetup.wsl.none");
-    const d = r.wsl.default_distro ?? r.wsl.distros[0];
-    const tmux = r.wsl.tmux_installed ? "tmux ✓" : "tmux ✗";
-    const cli = r.wsl.ymux_cli_state === "ok" ? "ymux ✓" : "ymux ✗";
-    return `${d} · ${tmux} · ${cli}`;
-  });
 
   return (
     <>
@@ -325,57 +292,29 @@ export function LocalSetupFlow(p: Props) {
                 </label>
               </div>
 
-              <h4 class="provisioning-h4">{t("localSetup.wsl.title")}</h4>
+              {/* 2026-08-19: the wizard finishes by creating a workspace to
+                  land in. This block replaces the WSL group's name/cwd
+                  inputs — same job, native Windows target. */}
+              <h4 class="provisioning-h4">{t("localSetup.workspace.title")}</h4>
               <label class="provisioning-step-row">
+                <span style="min-width:7rem">{t("localSetup.workspace.name")}</span>
                 <input
-                  type="checkbox"
-                  checked={wslGroup()}
-                  onChange={() => setWslGroup(!wslGroup())}
+                  type="text"
+                  value={workspaceName()}
+                  onInput={(e) => setWorkspaceName(e.currentTarget.value)}
                 />
-                <span>
-                  {t("localSetup.wsl.group")}
-                  <span class="provisioning-mode-hint"> — {wslStatusSummary()}</span>
-                </span>
               </label>
-              <p class="settings-hint">{t("localSetup.persistence_scope")}</p>
-              <Show when={wslGroup()}>
-                {/* Stated up front: without an elevated token the WSL
-                    feature enable cannot happen silently. */}
-                <Show when={preflight()?.needs_elevation}>
-                  <div class="prov-error-card">
-                    <div class="prov-error-title">
-                      {t("localSetup.preflight.admin.title")}
-                    </div>
-                    <p class="prov-error-body">{t("localSetup.preflight.admin.body")}</p>
-                  </div>
-                </Show>
-                <Show when={!r().wsl.wsl_ready || r().wsl.distros.length === 0}>
-                  <p class="settings-hint">{t("localSetup.hint.uac")}</p>
-                  <label>
-                    <span>{t("localSetup.field.wsl_username")}</span>
-                    <input
-                      value={wslUsername()}
-                      onInput={(e) => setWslUsername(e.currentTarget.value)}
-                      placeholder={t("localSetup.field.wsl_username.placeholder")}
-                    />
-                  </label>
-                </Show>
-                <label>
-                  <span>{t("provisioning.field.workspace_name")}</span>
-                  <input
-                    value={workspaceName()}
-                    onInput={(e) => setWorkspaceName(e.currentTarget.value)}
-                  />
-                </label>
-                <label>
-                  <span>{t("ws.create.cwd.label")}</span>
-                  <input
-                    value={workspaceCwd()}
-                    onInput={(e) => setWorkspaceCwd(e.currentTarget.value)}
-                    placeholder={t("ws.create.cwd.placeholder")}
-                  />
-                </label>
-              </Show>
+              <label class="provisioning-step-row">
+                <span style="min-width:7rem">{t("localSetup.workspace.cwd")}</span>
+                <input
+                  type="text"
+                  placeholder="C:\path\to\project"
+                  value={workspaceCwd()}
+                  onInput={(e) => setWorkspaceCwd(e.currentTarget.value)}
+                />
+              </label>
+              <p class="settings-hint">{t("localSetup.workspace.hint")}</p>
+
 
               {/* The "this needs admin, continue?" gate. Replaces the
                   action row so the run cannot start behind it. */}
@@ -585,7 +524,9 @@ export function LocalSetupFlow(p: Props) {
                 })}
               </p>
             </Show>
-            <Show when={!result()!.wsl_chain_ok}>
+            {/* 2026-08-19: keyed on whether a workspace actually came back,
+                not on the (now removed) WSL chain. */}
+            <Show when={!result()!.workspace_id}>
               <p class="prov-error-hint">{t("localSetup.done.failed.no_workspace")}</p>
             </Show>
           </div>

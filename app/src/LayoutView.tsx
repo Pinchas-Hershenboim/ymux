@@ -1,4 +1,5 @@
 import { Match, Show, Switch, onCleanup, onMount } from "solid-js";
+import type { RtlProfileKind } from "./types";
 import { Divider } from "./Divider";
 import { paneDragStore, installPaneDragEscape } from "./paneDrag";
 // Phase 53 (rebased): BrowserPane no longer imported — the Browser
@@ -54,7 +55,7 @@ interface Props {
   // issue #4: per-pane agent turn timing + a reactive clock for the Ticker.
   agentRuns: Record<string, { startedAt: number | null; avgMs: number | null }>;
   agentClockMs: () => number;
-  ensureTerm: (paneId: string) => TerminalInstance;
+  ensureTerm: (paneId: string, profile: RtlProfileKind) => TerminalInstance;
   onFocus: (paneId: string) => void;
   onConnect: (paneId: string, opts?: ConnectOpts) => void;
   onSplit: (paneId: string, direction: SplitDirection) => void;

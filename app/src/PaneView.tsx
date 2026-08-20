@@ -3,8 +3,8 @@ import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { Connection, LayoutNode, TmuxSessionInfo } from "./types";
-import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps } from "./types";
+import type { Connection, KillSessionOutcome, LayoutNode, TmuxSessionInfo, RtlProfileKind } from "./types";
+import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps, profileFor } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
 import { createLogger } from "./logger";
@@ -32,6 +32,7 @@ import {
   IconClock,
   IconFolder,
   IconInfo,
+  IconTrash,
 } from "./icons";
 
 interface ClaudeSessionInfo {
@@ -121,7 +122,7 @@ interface Props {
   tmuxSession?: string | null;
   onSetTitle: (paneId: string, title: string) => void;
   onSetAnnotation: (paneId: string, annotation: string) => void;
-  ensureTerm: (paneId: string) => TerminalInstance;
+  ensureTerm: (paneId: string, profile: RtlProfileKind) => TerminalInstance;
   onFocus: (paneId: string) => void;
   onConnect: (paneId: string, opts?: ConnectOpts) => void;
   onSplit: (paneId: string, direction: "horizontal" | "vertical") => void;
@@ -503,13 +504,13 @@ export function PaneView(p: Props) {
   // branch: live sessions → picker; otherwise a plain regular shell. A target
   // with no tmux (a Windows shell) connects straight away.
   //
-  // Gated on tmuxPersistence, not "is it SSH". A WSL pane keeps tmux sessions
+  // Gated on sessionPersistence, not "is it SSH". A WSL pane keeps tmux sessions
   // like a remote one, and the old `!isSsh()` branch connected it with
   // `persistent: false` — i.e. no tmux at all. That silently defeated session
   // restore at the source: there was never a session left behind to come back
   // to, no matter what the restore loop did on the next boot.
   const smartConnect = async () => {
-    if (!caps().tmuxPersistence) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
+    if (!caps().sessionPersistence) { p.onConnect(p.pane.pane_id, { persistent: false }); return; }
     setConnectProbing(true);
     try {
       // Idempotent, PTY-free, tmux-free; no-ops on password-auth (can't prompt
@@ -678,7 +679,7 @@ export function PaneView(p: Props) {
   createEffect(() => {
     const paneId = p.pane.pane_id;
     if (!slotRef) return;
-    const nextTi = p.ensureTerm(paneId);
+    const nextTi = p.ensureTerm(paneId, profileFor(effectiveConn()));
     if (ti && ti !== nextTi) {
       // Detach previous terminal's container from THIS slot before
       // hooking up the new one. If it was moved elsewhere already
@@ -1615,6 +1616,47 @@ export function PaneView(p: Props) {
                             <span class="nc-resume-badge">{s.windows}w</span>
                             <Show when={s.attached}>
                               <span class="nc-resume-badge">{t("connect.newConn.tmuxAttached")}</span>
+                            </Show>
+                            {/* 2026-08-19: zellij lists sessions whose shell
+                                has exited — attaching rebuilds them, which is
+                                the one thing tmux cannot do. Unlabelled, they
+                                looked identical to live ones. */}
+                            <Show when={s.exited}>
+                              <span class="nc-resume-badge">{t("connect.newConn.sessionExited")}</span>
+                              {/* 2026-08-20: the list was append-only. Closing
+                                  a pane deliberately leaves its session
+                                  running, and a reboot leaves everything
+                                  EXITED, so corpses accumulated with no way to
+                                  bury one — only to resurrect it.
+
+                                  stopPropagation is MANDATORY: the row's own
+                                  onClick attaches, so without it a delete
+                                  would attach AND destroy. The confirm is the
+                                  second guard. */}
+                              <button
+                                class="nc-resume-del"
+                                title={t("connect.tmuxPick.delete")}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (!confirm(t("connect.tmuxPick.deleteConfirm", { name: s.name }))) return;
+                                  try {
+                                    await invoke<KillSessionOutcome>("zellij_delete_session", { name: s.name });
+                                  } catch (err) {
+                                    log.warn("zellij_delete_session failed", err);
+                                  }
+                                  // Re-ask the machine rather than splicing the
+                                  // local array: the picker should show what is
+                                  // actually there, including when the delete
+                                  // did not take.
+                                  try {
+                                    setTmuxPick(await invoke<TmuxSessionInfo[]>(
+                                      "pane_list_tmux_sessions", { workspaceId: p.workspaceId },
+                                    ));
+                                  } catch { /* leave the list as it was */ }
+                                }}
+                              >
+                                <IconTrash size={13} />
+                              </button>
                             </Show>
                             <span class="nc-resume-age">{fmtSessionAge(s.last_attached || s.created)}</span>
                           </div>

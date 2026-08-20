@@ -4,7 +4,9 @@ import bidiFactory from "bidi-js";
 const bidi: any = bidiFactory();
 
 const RTL_RE = /[֐-ࣿיִ-ﻼ]/;
-const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))/g;
+/** Exported so the visual->logical pass can protect escapes exactly the way
+ *  this file does — one definition of "what an escape looks like". */
+export const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))/g;
 
 function reorderLine(line: string): string {
   if (!RTL_RE.test(line)) return line;

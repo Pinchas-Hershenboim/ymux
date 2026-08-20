@@ -1,4 +1,5 @@
 import { createSignal, For, Show, onMount, createMemo, createEffect, onCleanup } from "solid-js";
+import type { RtlProfileKind } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -28,6 +29,7 @@ import {
   HookNotificationSettings,
   INTERACTIVE_HOOKS,
   OBSERVABILITY_HOOKS,
+  type RtlProfileFields,
 } from "./settings";
 import { applyI18nSettings, LANGUAGES, t } from "./i18n";
 import { isFontAvailableAsync } from "./fontProbe";
@@ -204,10 +206,29 @@ type Tab = "general" | "textLocale" | "appearance" | "shortcuts" | "agentNotif" 
 // beta.3: sub-tab within the "Hooks & Notifications" card.
 type HooksNotifSubTab = "hooks" | "sound";
 
+/** Per-profile fallbacks, matching RtlProfiles::default() in settings.rs.
+ *
+ *  They are identical today. The two profiles were measured on 2026-08-19 to
+ *  need OPPOSITE modes -- raw ConPTY hands over visual-order Hebrew -- and then
+ *  zellij went in front of local panes and normalised the stream to logical
+ *  order, which converged them. The split still lets a user tune them apart;
+ *  the two lines stay separate so that remains a one-word change.
+ *
+ *  `direction_policy` is `any_rtl` on BOTH: it is the pre-2026-08-19 rule, and
+ *  remote panes are known to render Hebrew correctly on it. */
+const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
+  local: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: true, direction_policy: "any_rtl" },
+  remote: { rtl_mode: "auto_per_line", auto_direction: true, mirror_arrows_rtl: true, tui_owns_bidi: false, direction_policy: "any_rtl" },
+};
+
 export function SettingsModal(p: Props) {
   const [tab, setTab] = createSignal<Tab>("general");
   // beta.3: sub-tab inside the "Hooks & Notifications" card.
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
+  // 2026-08-19: which RTL profile the controls below are editing. Local
+  // (native Windows ConPTY) and remote (SSH/WSL, i.e. anything POSIX) were
+  // measured to need OPPOSITE modes, so they are configured separately.
+  const [rtlProfile, setRtlProfile] = createSignal<RtlProfileKind>("remote");
   const [presets, setPresets] = createSignal<PresetEntry[]>([]);
   const [fonts, setFonts] = createSignal<FontFamilies>({ ui: [], mono: [] });
   const [catalog, setCatalog] = createSignal<FontCatalogItem[]>([]);
@@ -327,6 +348,54 @@ export function SettingsModal(p: Props) {
         setSaving(false);
       }
     }, 500);
+  };
+
+  /** Read one RTL field for the profile currently being edited, falling back
+   *  to the deprecated flat field and then to that profile's own default —
+   *  local and remote deliberately differ. */
+  const rtlField = <K extends keyof RtlProfileFields>(k: K): RtlProfileFields[K] => {
+    const prof = p.settings.terminal.rtl?.[rtlProfile()];
+    const flat = (p.settings.terminal as Record<string, unknown>)[k as string] as
+      | RtlProfileFields[K]
+      | undefined;
+    const fallback = RTL_FIELD_DEFAULTS[rtlProfile()][k];
+    return (prof?.[k] ?? flat ?? fallback) as RtlProfileFields[K];
+  };
+
+  /**
+   * Write one RTL field into the profile being edited, leaving the other
+   * profile untouched — that separation is the whole point.
+   *
+   * 2026-08-19: writes the COMPLETE profile, not just the changed key.
+   *
+   * A partial object round-trips through Rust's `RtlProfile`, where every
+   * field carries `#[serde(default)]` — so an absent key comes back as the
+   * TYPE's default, not the PROFILE's. `tui_owns_bidi` defaults to false on
+   * the type and true for local, so the first time Yossi touched any RTL
+   * control the local switch silently turned itself off and stayed off. His
+   * log: `setting=0`, with `explicit=1` right above it — the signal was
+   * winning and this gate was quietly refusing.
+   *
+   * `rtlField` already resolves profile -> deprecated flat field ->
+   * per-profile default, so seeding from it writes exactly what the UI is
+   * currently showing. Nothing can be lost by omission any more.
+   */
+  const setRtlField = <K extends keyof RtlProfileFields>(k: K, v: RtlProfileFields[K]) => {
+    const cur = p.settings.terminal.rtl ?? {};
+    const kind = rtlProfile();
+    const complete: Required<RtlProfileFields> = {
+      rtl_mode: rtlField("rtl_mode") as Required<RtlProfileFields>["rtl_mode"],
+      auto_direction: rtlField("auto_direction") as boolean,
+      mirror_arrows_rtl: rtlField("mirror_arrows_rtl") as boolean,
+      tui_owns_bidi: rtlField("tui_owns_bidi") as boolean,
+      direction_policy: rtlField(
+        "direction_policy",
+      ) as Required<RtlProfileFields>["direction_policy"],
+    };
+    update("terminal", {
+      ...p.settings.terminal,
+      rtl: { ...cur, [kind]: { ...complete, [k]: v } },
+    });
   };
 
   const update = <K extends keyof Settings>(k: K, v: Settings[K]) =>
@@ -758,6 +827,21 @@ export function SettingsModal(p: Props) {
                 </section>
                 <section>
                   <h4>{t("settings.terminal.rtl.title")}</h4>
+                  {/* Reuses .settings-mode-toggle, the pill control already
+                      used for the theme mode in this same modal. */}
+                  <div class="settings-mode-toggle" style="margin-bottom:8px">
+                    <For each={["local", "remote"] as const}>
+                      {(k) => (
+                        <button
+                          class={`settings-mode-btn ${rtlProfile() === k ? "active" : ""}`}
+                          onClick={() => setRtlProfile(k)}
+                        >
+                          {t(`settings.terminal.rtl.profile.${k}`)}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                  <p class="settings-hint">{t(`settings.terminal.rtl.profile.${rtlProfile()}.hint`)}</p>
                   <For each={[
                     ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
                     ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
@@ -769,8 +853,8 @@ export function SettingsModal(p: Props) {
                           type="radio"
                           name="rtl-mode"
                           value={id}
-                          checked={(p.settings.terminal.rtl_mode ?? "auto_per_line") === id}
-                          onChange={() => update("terminal", { ...p.settings.terminal, rtl_mode: id })}
+                          checked={rtlField("rtl_mode") === id}
+                          onChange={() => setRtlField("rtl_mode", id)}
                         />
                         <span style="flex:1" title={t(descKey)}>
                           <strong>{t(labelKey)}</strong>
@@ -781,28 +865,47 @@ export function SettingsModal(p: Props) {
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.auto_direction ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, auto_direction: e.currentTarget.checked })}
+                      checked={rtlField("auto_direction") as boolean}
+                      onChange={(e) => setRtlField("auto_direction", e.currentTarget.checked)}
                     />
                     <span>{t("settings.terminal.auto_direction.label")}</span>
                   </label>
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.mirror_arrows_rtl ?? true}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, mirror_arrows_rtl: e.currentTarget.checked })}
+                      checked={rtlField("mirror_arrows_rtl") as boolean}
+                      onChange={(e) => setRtlField("mirror_arrows_rtl", e.currentTarget.checked)}
                     />
                     <span>{t("settings.terminal.mirror_arrows_rtl.label")}</span>
                   </label>
                   <label class="settings-checkbox" style="margin-top:8px">
                     <input
                       type="checkbox"
-                      checked={p.settings.terminal.tui_owns_bidi ?? false}
-                      onChange={(e) => update("terminal", { ...p.settings.terminal, tui_owns_bidi: e.currentTarget.checked })}
+                      checked={rtlField("tui_owns_bidi") as boolean}
+                      onChange={(e) => setRtlField("tui_owns_bidi", e.currentTarget.checked)}
                     />
                     <span>{t("settings.terminal.tui_owns_bidi.label")}</span>
                   </label>
                   <p class="settings-hint">{t("settings.terminal.tui_owns_bidi.hint")}</p>
+                  {/* 2026-08-19: the RTL_DOMINANCE vote, per profile and
+                      opt-in. It exists because a TUI status bar is positional
+                      and flipping its row mirrors a layout the TUI already
+                      placed; it is OFF by default because, shipped globally,
+                      it broke remote panes that read fine on the older rule. */}
+                  <label class="settings-checkbox" style="margin-top:8px">
+                    <input
+                      type="checkbox"
+                      checked={rtlField("direction_policy") === "tui_dominance"}
+                      onChange={(e) =>
+                        setRtlField(
+                          "direction_policy",
+                          e.currentTarget.checked ? "tui_dominance" : "any_rtl",
+                        )
+                      }
+                    />
+                    <span>{t("settings.terminal.direction_policy.label")}</span>
+                  </label>
+                  <p class="settings-hint">{t("settings.terminal.direction_policy.hint")}</p>
                 </section>
               </Show>
 

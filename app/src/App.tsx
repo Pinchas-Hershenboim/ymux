@@ -1,4 +1,5 @@
 import { createEffect, createSignal, ErrorBoundary, onCleanup, onMount, Show } from "solid-js";
+import type { RtlProfileKind } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -54,8 +55,7 @@ import {
   pasteIntoActiveTerminal,
   readClipboardText,
   setCtrlCCopyOnSelect,
-  setMirrorArrowsRtl,
-  setTuiOwnsBidiEnabled,
+  setPaneTuiSignal,
 } from "./terminalInstance";
 import { saveRemoteFileAs } from "./download";
 import { MarkdownViewer } from "./MarkdownViewer";
@@ -94,6 +94,7 @@ import {
   type ForwardRow,
   type WorktreeEntry,
   type FeedResolvedEvent,
+  type KillSessionOutcome,
   type LayoutNode,
   type Note,
   type NotesFile,
@@ -770,10 +771,24 @@ function App() {
   const paneToSession = new Map<string, string>();
   const sessionToPane = new Map<string, string>();
 
-  const ensureTerm = (paneId: string): TerminalInstance => {
+  const ensureTerm = (
+    paneId: string,
+    profile: RtlProfileKind = "local",
+  ): TerminalInstance => {
     let ti = terms.get(paneId);
+    // 2026-08-19: a pane can be built before its connection is known (the
+    // effect that mounts the terminal runs before Connect), and local vs
+    // remote want opposite RTL modes. If the profile now resolves differently
+    // AND that flips the renderer, the instance cannot adapt — xterm.js has
+    // no DOM<->WebGL swap — so rebuild it rather than leave a pane that
+    // silently ignores its own settings.
+    if (ti && ti.profile !== profile && ti.staleRenderer) {
+      ti.dispose();
+      terms.delete(paneId);
+      ti = undefined;
+    }
     if (!ti) {
-      ti = new TerminalInstance(paneId);
+      ti = new TerminalInstance(paneId, profile);
       terms.set(paneId, ti);
     }
     return ti;
@@ -1732,6 +1747,18 @@ function App() {
     // Phase 62.B (item J): tag the terminal with its workspace so an
     // OSC 8 file:// link click knows which remote to SFTP-download from.
     ti.workspaceId = ws.id;
+    // 2026-08-19: when ymux itself launches Claude, nothing has to be
+    // detected. Claude Code writes RTL pre-reordered, so the pane must not
+    // bidi it a second time — and the title-based detector never learns this
+    // inside zellij, which eats the title (measured: `title-seen … match=0`
+    // on every title, 57 chars of zellij's own).
+    //
+    // A RESTORE is left alone rather than cleared. Re-attaching to a
+    // persistent session says nothing about what is running inside it — that
+    // is the whole point of persistence — so clearing here would throw away a
+    // signal a hook may have already delivered.
+    if (opts.mode === "claude") ti.setTuiSignal(true);
+    else if (!opts.restoring) ti.setTuiSignal(null);
     setStatus(paneId, "connecting…", false);
     try {
       const sessionId = await invoke<string>("pane_connect", {
@@ -1925,18 +1952,43 @@ function App() {
 
   // Phase 11.A: hard-kill the remote tmux session (if any) and disconnect.
   const killSession = async (paneId: string) => {
-    let killed = true;
+    // 2026-08-20: the backend now REPORTS what it achieved. This used to be
+    // `let killed = true` with a catch that flipped it — i.e. it only ever
+    // learned about an IPC failure, never about a kill that did nothing, and
+    // with zellij uninstalled that is exactly what happened.
+    let out: KillSessionOutcome | null = null;
     try {
-      await invoke("pane_kill_session", { paneId });
+      out = await invoke<KillSessionOutcome>("pane_kill_session", { paneId });
     } catch (e) {
-      killed = false;
       log.warn("kill_session failed", e);
+    }
+    // Three states, not two. "We could not prove it" is its own answer.
+    const killed =
+      out !== null &&
+      (out.result === "killed" ||
+        out.result === "already_gone" ||
+        out.result === "no_session");
+    // `attempted` = the verb was sent but its exit status never came back
+    // (SSH drained to EOF or timed out). Almost certainly fine, but not known
+    // — so keep the hint and stay quiet. If the session really is gone,
+    // restore drops the hint on the next start when the name is not listed;
+    // if it survived, the hint is what brings it back. Self-correcting either
+    // way, which a toast here would not be.
+    if (!killed && out?.result !== "attempted") {
+      log.warn("kill_session did not destroy the session", out);
+      flashSummaryToast(
+        "err",
+        out?.result === "multiplexer_missing"
+          ? t("pane.kill.noMultiplexer")
+          : t("pane.kill.failed", { name: out?.session ?? paneId }),
+      );
     }
     // The session is gone from the server — drop the restore hint so the next
     // start doesn't probe for a name that can never come back. (disconnectPane
     // deliberately keeps its hint: that path DETACHES, and the session lives.
     // A FAILED kill keeps its hint too — the session may well still be alive,
-    // and forgetting it would cost the user their work on the next start.)
+    // and forgetting it would cost the user their work on the next start.
+    // That branch was unreachable until the outcome above existed.)
     if (killed) forgetPaneSession(paneId);
     const sid = paneToSession.get(paneId);
     if (sid) {
@@ -1953,7 +2005,7 @@ function App() {
   // so the user lands back in their conversations instead of a grid of
   // [Connect] buttons.
   //
-  // SSH *and* WSL. The gate is `caps.tmuxPersistence`, not "is it SSH": a WSL
+  // SSH *and* WSL. The gate is `caps.sessionPersistence`, not "is it SSH": a WSL
   // pane keeps its tmux session across an app restart exactly like a remote
   // one does. The hints were already being recorded for WSL by
   // refreshPersistence (pane_persistence_list reports WSL tmux names too) —
@@ -2078,7 +2130,7 @@ function App() {
         continue;
       }
       seenTerminals++;
-      if (!paneCaps(pane, ws.connection).tmuxPersistence) {
+      if (!paneCaps(pane, ws.connection).sessionPersistence) {
         skippedNoTmux++;
         continue;
       }
@@ -2116,7 +2168,12 @@ function App() {
     // is why `sessionBound` gates only the ensure-connected call.
     const wsc = wsCaps(ws);
     let alive: Set<string> | null = null;
-    if (wsc.tmuxPersistence) {
+    // Names that are EXITED-but-resurrectable, so the per-pane log below can
+    // say which of the two kinds of re-attach it is doing. Accumulated from
+    // both the workspace list and the per-pane probes; only ever read for a
+    // log line, so a name collision across hosts costs nothing.
+    const resurrectable = new Set<string>();
+    if (wsc.sessionPersistence) {
       try {
         if (wsc.sessionBound) {
           await invoke("workspace_ensure_connected", { workspaceId: ws.id });
@@ -2151,8 +2208,25 @@ function App() {
         );
         return;
       }
+      // EXITED sessions are counted as alive ON PURPOSE. Do not "fix" this
+      // with `.filter(s => !s.exited)`.
+      //
+      // A Windows reboot leaves EVERY zellij session EXITED, and `attach -c`
+      // resurrects it — that is the one thing zellij does that tmux cannot,
+      // and the reason it was adopted at all (docs/DECISIONS.md). This line
+      // feeding attach IS the reboot-restore path; filtering here would delete
+      // the feature.
+      //
+      // The guarantee that a session the user KILLED does not come back lives
+      // in pane_kill_session, which since 2026-08-20 sends `delete-session -f`
+      // — so a killed session is not in this list at all, EXITED or otherwise,
+      // and the `!liveNames.has()` branch below drops its hint on its own.
       alive = new Set(sessions.map((x) => x.name));
-      restoreLog(`server has ${sessions.length} live tmux session(s)`);
+      for (const x of sessions) if (x.exited) resurrectable.add(x.name);
+      const dead = sessions.filter((x) => x.exited).length;
+      restoreLog(
+        `server has ${sessions.length - dead} live and ${dead} resurrectable session(s)`,
+      );
     } else {
       // Per-pane connections: ask over the PANE's own connection instead
       // (pane_probe_tmux_sessions). A null answer means "couldn't ask" — the
@@ -2184,6 +2258,7 @@ function App() {
         // password-only, passphrase-locked, unknown host key, host down).
         // Distinct from [] = "asked, the host has no sessions".
         result = list ? new Set(list.map((x) => x.name)) : null;
+        if (list) for (const x of list) if (x.exited) resurrectable.add(x.name);
         restoreLog(
           result
             ? `probe: host has ${result.size} live tmux session(s)`
@@ -2239,7 +2314,13 @@ function App() {
         restoreLog(`pane ${c.paneId}: connected manually while waiting — left alone`);
         continue;
       }
-      restoreLog(`pane ${c.paneId}: re-attaching to "${c.tmux}"`);
+      // Say WHICH of the two this is. The log could not tell a live reattach
+      // from a resurrection, which is why "a killed session came back" took a
+      // code read to spot instead of showing up in debug.log.
+      restoreLog(
+        `pane ${c.paneId}: re-attaching to "${c.tmux}"` +
+          (resurrectable.has(c.tmux) ? " (resurrecting a saved session)" : ""),
+      );
       await connectPane(c.paneId, {
         persistent: true,
         tmuxSession: c.tmux,
@@ -2659,8 +2740,6 @@ function App() {
       setCtrlCCopyOnSelect(
         (s.shortcuts ?? DEFAULT_SHORTCUTS).copy_on_select_with_ctrl_c,
       );
-      setMirrorArrowsRtl(s.terminal?.mirror_arrows_rtl ?? true);
-      setTuiOwnsBidiEnabled(s.terminal?.tui_owns_bidi ?? false);
     } catch (e) {
       log.warn("settings_load failed", e);
     }
@@ -2799,6 +2878,30 @@ function App() {
         // waiting red-dot highlight. Passive hooks never touch the feed.
         if (isBlocking) {
           setFeedItems((prev) => [f, ...prev.filter((i) => i.request_id !== f.request_id)]);
+        }
+        // 2026-08-19: session-start / session-end are literally "Claude
+        // started / stopped in pane X" — the hook already carries
+        // YMUX_PANE_ID (cli/src/main.rs) — so they drive the per-pane
+        // "don't bidi this twice" state. This works over SSH and through any
+        // multiplexer, unlike the terminal title, which zellij consumes.
+        // session-end clears back to null rather than asserting false, so the
+        // title can still speak if it ever starts arriving.
+        // A Claude hook can only be fired from INSIDE Claude, and it already
+        // carries YMUX_PANE_ID (cli/src/main.rs), so ANY of them is proof that
+        // Claude holds that pane — which is what decides whether the pane may
+        // bidi its output. session-end is the one that means the opposite.
+        //
+        // Not just session-start: the case that matters most is re-attaching
+        // to a persistent zellij session where Claude never stopped, so no
+        // session-start ever fires. `stop` lands after every reply, so the
+        // state corrects itself on the first interaction. Measured need —
+        // Yossi's log had `tui=0` on panes that had Claude running in them.
+        //
+        // Clears to null rather than false so the title can still speak, in
+        // case it ever starts arriving.
+        if (f.pane_id) {
+          if (f.subkind === "session-end") setPaneTuiSignal(f.pane_id, null);
+          else setPaneTuiSignal(f.pane_id, true);
         }
         // Every hook is recorded in the Notification Center history; feedToNotif
         // carries the workspace_id so the entry shows which workspace it's from.
@@ -3031,8 +3134,6 @@ function App() {
         setCtrlCCopyOnSelect(
           (e.payload.shortcuts ?? DEFAULT_SHORTCUTS).copy_on_select_with_ctrl_c,
         );
-        setMirrorArrowsRtl(e.payload.terminal?.mirror_arrows_rtl ?? true);
-        setTuiOwnsBidiEnabled(e.payload.terminal?.tui_owns_bidi ?? false);
       })
     );
     // Phase 18: agent-hooks outdated event from the backend's

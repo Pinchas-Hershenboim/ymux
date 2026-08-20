@@ -979,6 +979,20 @@ body {
   position: absolute;
   inset: 0;
   background: var(--w-bg);
+  /* 2026-08-19: the terminal grid must NEVER inherit the UI's direction.
+     i18n/index.ts sets dir="rtl" on <html> for a Hebrew/Arabic interface,
+     xterm.js pins no direction of its own (verified: nothing in its CSS or
+     JS), and only rtl_mode="auto_per_line" set dir="ltr" on .xterm-rows —
+     so in "off" and "bidi_reorder" the whole character grid was flipped by
+     the UI language. That is why "off", which is supposed to mean NO bidi
+     at all, looked identical to auto_per_line, and why lines came out
+     aligned to the wrong edge.
+
+     A terminal is a fixed character grid: column 0 is always leftmost. Only
+     a ROW's paragraph direction may vary, and that is set per row with a
+     `dir` attribute, which applies to the element itself and so still wins
+     over this inherited value. */
+  direction: ltr;
 }
 
 .terminal-container .xterm {
@@ -4140,6 +4154,24 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   color: var(--w-text-dim);
 }
 .nc-resume-proj { flex: 1; color: var(--w-text-dim); font-size: var(--w-fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 2026-08-20: bury an EXITED session from the picker. Deliberately quiet
+   until hover — the row's primary action is ATTACH, and this sits inside it,
+   so it must not read as the thing to click. */
+.nc-resume-del {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--w-text-faint);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.nc-resume-row:hover .nc-resume-del { opacity: 1; }
+.nc-resume-del:hover { background: rgba(247, 118, 142, 0.16); color: var(--w-danger, #f7768e); }
+
 .nc-resume-age { color: var(--w-text-faint); font-size: var(--w-fs-xs); }
 .nc-resume-prev {
   margin-top: 3px;

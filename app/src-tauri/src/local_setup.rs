@@ -671,6 +671,9 @@ pub(crate) struct LocalSetupInspect {
     pub claude: ToolStatus,
     pub codex: ToolStatus,
     pub gemini: ToolStatus,
+    /// 2026-08-19: the multiplexer that gives native Windows panes session
+    /// persistence — the job WSL used to do here.
+    pub zellij: ToolStatus,
     pub wsl: WslInspect,
     pub local_hooks_version: Option<String>,
     pub local_claude_dir: bool,
@@ -744,6 +747,17 @@ fn canonical_claude() -> Vec<PathBuf> {
         .join(".local")
         .join("bin")
         .join("claude.exe")]
+}
+
+/// The winget MSI's target. It also puts this directory on the USER PATH,
+/// but that only reaches processes started afterwards — so probing the path
+/// directly is what makes zellij visible to a ymux that was already running
+/// when the install happened.
+fn canonical_zellij() -> Vec<PathBuf> {
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(d) => vec![PathBuf::from(d).join("Zellij").join("zellij.exe")],
+        None => Vec::new(),
+    }
 }
 
 /// Parse `wsl -l -v` — the default distro carries a `*` marker (stable
@@ -892,6 +906,7 @@ pub(crate) async fn local_setup_inspect(distro: Option<String>) -> Result<LocalS
     let claude = probe_tool(&["claude.exe", "claude.cmd"], &canonical_claude()).await;
     let codex = probe_tool(&["codex.cmd", "codex.exe"], &[]).await;
     let gemini = probe_tool(&["gemini.cmd", "gemini.exe"], &[]).await;
+    let zellij = probe_tool(&["zellij.exe"], &canonical_zellij()).await;
     let wsl = inspect_wsl(distro.as_deref()).await;
     Ok(LocalSetupInspect {
         winget,
@@ -901,6 +916,7 @@ pub(crate) async fn local_setup_inspect(distro: Option<String>) -> Result<LocalS
         claude,
         codex,
         gemini,
+        zellij,
         wsl,
         local_hooks_version: local_hooks_version(),
         local_claude_dir: user_profile().join(".claude").is_dir(),
@@ -1188,6 +1204,19 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
         }
         let result: Result<String, ProvisioningError> = match kind {
             "InstallGit" => match winget_install("Git.Git").await {
+                Ok((code, out)) if code == 0 || winget_already_ok(code) => Ok(out),
+                Ok((code, out)) => Err(ProvisioningError::StepFailed {
+                    step: kind.into(),
+                    exit_code: code,
+                    stderr: out,
+                }),
+                Err(e) => Err(ProvisioningError::Generic(e)),
+            },
+            // 2026-08-19: the official upstream package — v0.44.3 really does
+            // ship windows-msvc artifacts, so this is NOT the third-party
+            // `arndawg.zellij-windows` fork. Same winget shape as InstallGit;
+            // winget_already_ok covers a re-run on a machine that has it.
+            "InstallZellij" => match winget_install("Zellij.Zellij").await {
                 Ok((code, out)) if code == 0 || winget_already_ok(code) => Ok(out),
                 Ok((code, out)) => Err(ProvisioningError::StepFailed {
                     step: kind.into(),
@@ -1681,18 +1710,20 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
         log_warn(
             "SETUP",
             &format!(
-                "local-setup[{run_id}] finished with {} failed step(s): {} — WSL workspace {}",
+                "local-setup[{run_id}] finished with {} failed step(s): {} — workspace {}",
                 failed_steps.len(),
                 failed_steps.join(", "),
-                if ran_wsl_chain && !chain_failed { "created" } else { "NOT created" }
+                if input.create_workspace { "created" } else { "NOT created" }
             ),
         );
     }
-    if input.create_workspace && ran_wsl_chain && !chain_failed {
-        match finalize_wsl_workspace(
+    // 2026-08-19: the wizard finishes by creating a real workspace to land
+    // in. It used to require the WSL chain to have succeeded; the workspace
+    // is now a native Windows one, so it depends on nothing but the request.
+    if input.create_workspace {
+        match finalize_local_workspace(
             &state,
             &app,
-            distro,
             input.workspace_name.clone(),
             input.workspace_cwd.clone(),
         ) {
@@ -1707,12 +1738,13 @@ async fn run_local_setup(app: AppHandle, state: AppState, run_id: String, input:
 }
 
 /// Create a fresh workspace with a single terminal pane on
-/// Connection::Wsl — the local twin of provisioning::finalize_workspace
-/// branch 2.
-fn finalize_wsl_workspace(
+/// `Connection::Local` — the local twin of provisioning::finalize_workspace
+/// branch 2. Was `finalize_wsl_workspace` until 2026-08-19; the pane is a
+/// native Windows shell now, and zellij gives it the persistence that used
+/// to be the only reason to put it inside a distro.
+fn finalize_local_workspace(
     state: &AppState,
     app: &AppHandle,
-    distro: Option<String>,
     workspace_name: Option<String>,
     cwd: Option<String>,
 ) -> Result<(String, String), String> {
@@ -1721,8 +1753,8 @@ fn finalize_wsl_workspace(
     let display_name = workspace_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| distro.clone().unwrap_or_else(|| "WSL".into()));
-    let conn = Connection::Wsl { distro };
+        .unwrap_or_else(|| "Local".into());
+    let conn = Connection::Local { shell: None };
     let pane_id = new_pane_id();
     let layout = LayoutNode::Pane {
         pane_id,
