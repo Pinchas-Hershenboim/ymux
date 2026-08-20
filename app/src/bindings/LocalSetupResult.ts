@@ -14,5 +14,9 @@ skipped_steps: Array<string>,
 /**
  * True when the WSL chain ran and came out clean. When false with a
  * non-empty `failed_steps`, no WSL workspace exists.
+ * macOS: same flag, but the "chain" is the tmux persistence chain
+ * (`InstallTmuxLocal` → `DeployTmuxConfLocal`) — true means it ran
+ * clean; a Local workspace is still created when no chain step was
+ * requested at all.
  */
 wsl_chain_ok: boolean, };

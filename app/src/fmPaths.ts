@@ -22,10 +22,15 @@ type Store = Record<string, FmPaths>;
 // they stop is a path this app never produced being replayed UNATTENDED at
 // mount: `\\host\share` would make Windows open an outbound SMB handshake
 // (and leak a NetNTLM challenge) before the user clicked anything. A local
-// path must be drive-absolute, a remote path POSIX-absolute; anything else
+// path must be host-absolute, a remote path POSIX-absolute; anything else
 // is dropped and the column opens at $HOME. Reaching a UNC share still works
 // — it just takes an explicit navigation click, which is where it belongs.
-const LOCAL_OK = /^[A-Za-z]:[\\/]/;
+//
+// macOS port: a local path is drive-absolute (`C:\…`, Windows) OR
+// POSIX-absolute (`/Users/…`, mac/Linux). The leading-`//` exclusion is what
+// keeps the UNC rule above intact — `\\host\share` and `//host/share` are the
+// same replay, and neither is a path this app ever hands out.
+const LOCAL_OK = /^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/;
 const REMOTE_OK = /^\//;
 
 function read(): Store {

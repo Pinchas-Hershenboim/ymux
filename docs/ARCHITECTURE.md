@@ -44,8 +44,10 @@ workspaces and their layouts are persisted.
 │    │ │ │ │                             ║ │
 │    │ │ │ └─ portable-pty ──► local shell processes (ConPTY)
 │    │ │ │                                 │
-│    │ │ └─ Named Pipe RPC ◄── ymux.exe (local CLI)
-│    │ │      \\.\pipe\ymux-<user>       │
+│    │ │ └─ local RPC endpoint ◄── ymux (local CLI)
+│    │ │      win:  \\.\pipe\ymux-<user>   │
+│    │ │      unix: $TMPDIR/ymux-<user>.sock
+│    │ │            (fallback <config>/rpc.sock)
 │    │ │                                   │
 │    │ └─ russh ──── SSH ──┐                │
 │    │                    │                │
@@ -64,8 +66,8 @@ workspaces and their layouts are persisted.
 │         │    env vars + last.env file)   │
 │         │                                │
 │         ├── 127.0.0.1:<remote_port>      │
-│         │   (reverse-forwarded to        │
-│         │    Windows via russh)          │
+│         │   (reverse-forwarded to the    │
+│         │    desktop app via russh)      │
 │         │     ▲                          │
 │         │     │  TCP                     │
 │         └─────┴── ymux-linux-x64       │
@@ -81,11 +83,23 @@ workspaces and their layouts are persisted.
   `\\.\pipe\ymux-<user>`. ACL is whatever Windows assigns by default to a pipe
   created by the user's process — effectively user-only. No HMAC needed (the pipe
   ACL is the auth boundary).
-- **CLI on remote ⇄ app on Windows:** TCP via a russh **reverse tunnel** opened on
+- **Local RPC endpoint on macOS/Linux:** the same newline-delimited JSON-RPC, over a
+  **Unix domain socket** instead (`winmux_core::pipe_name()`). Path is
+  `$TMPDIR/winmux-<user>.sock`; `$TMPDIR` is a per-user private directory on macOS, so
+  it carries the same user isolation the per-user pipe name gives on Windows. If that
+  path can't be bound — `sockaddr_un.sun_path` is capped at 104 bytes on macOS — the
+  server falls back to `<config_dir>/rpc.sock` and `winmux-tunnel` tries the same two
+  paths in the same order (`winmux_core::pipe_names()`). A total bind failure is
+  reported via `doctor`'s `rpc_server.bind_error`, because it silently disables every
+  feature that rides this transport (port detection, CLI hooks, tunnel RPC) while SSH
+  panes keep working and hide the cause. The server is a single `UnixListener` — the
+  254-instance / ERROR-231 pool machinery is Windows-only.
+- **CLI on remote ⇄ desktop app:** TCP via a russh **reverse tunnel** opened on
   every SSH workspace connection. The CLI dials `127.0.0.1:<remote_port>`; the SSH
   session forwards that to a russh client channel; our `tunnel.rs` bridges the channel
-  to a fresh Named Pipe client connection. Auth is **HMAC-SHA256 challenge-response**
-  (Phase 6.4) — the shared token never travels in cleartext.
+  to a fresh client connection on the local RPC endpoint (pipe or socket, per above).
+  Auth is **HMAC-SHA256 challenge-response** (Phase 6.4) — the shared token never
+  travels in cleartext.
 - **Agent hooks:** the Linux CLI's `claude-hook <subcommand>` builds a `feed.push`
   JSON-RPC request from stdin, sends it through the tunnel, and (for blocking kinds)
   waits for a server-side decision before returning an exit code.

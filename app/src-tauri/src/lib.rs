@@ -1688,6 +1688,11 @@ fn pick_default_shell(requested: Option<String>) -> String {
     if let Some(s) = requested.filter(|s| !s.is_empty()) {
         return s;
     }
+    pick_platform_default_shell()
+}
+
+#[cfg(windows)]
+fn pick_platform_default_shell() -> String {
     let path_var = std::env::var("PATH").unwrap_or_default();
     for candidate in ["pwsh.exe", "powershell.exe", "cmd.exe"] {
         for dir in std::env::split_paths(&path_var) {
@@ -1697,6 +1702,70 @@ fn pick_default_shell(requested: Option<String>) -> String {
         }
     }
     "cmd.exe".into()
+}
+
+/// macOS port: what Terminal.app would open — the user's login shell
+/// (`$SHELL`), else zsh (the macOS default since Catalina), bash, sh.
+#[cfg(not(windows))]
+fn pick_platform_default_shell() -> String {
+    if let Some(s) = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty() && Path::new(s).is_file())
+    {
+        return s;
+    }
+    for candidate in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if Path::new(candidate).is_file() {
+            return candidate.to_string();
+        }
+    }
+    "/bin/sh".into()
+}
+
+/// The UTF-8 locale a Terminal.app window would get: the system locale
+/// (`defaults read -g AppleLocale`, e.g. `he_IL`) if the OS ships it under
+/// /usr/share/locale, else `en_US.UTF-8`. Probed once per process.
+#[cfg(not(windows))]
+fn default_utf8_locale() -> &'static str {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let apple = if cfg!(target_os = "macos") {
+            std::process::Command::new("/usr/bin/defaults")
+                .args(["read", "-g", "AppleLocale"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        } else {
+            None
+        };
+        apple
+            // `he_IL@currency=ILS` style suffixes are not locale dirs.
+            .map(|l| l.split('@').next().unwrap_or("").to_string())
+            .filter(|l| {
+                !l.is_empty()
+                    && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && Path::new("/usr/share/locale").join(format!("{l}.UTF-8")).is_dir()
+            })
+            .map(|l| format!("{l}.UTF-8"))
+            .unwrap_or_else(|| "en_US.UTF-8".to_string())
+    })
+    .as_str()
+}
+
+/// Split a user-typed local shell command into (program, args).
+///
+/// Windows never needed this — ConPTY takes one command line and
+/// `CommandBuilder::new("wsl.exe bash -l")` just works. A unix `execvp`
+/// wants argv, so `"zsh -l"` must become `["zsh", "-l"]` or the spawn
+/// fails with "no such file". Whitespace split is enough for a shell
+/// invocation (paths with spaces are not a thing for /bin/* shells);
+/// no quoting rules on purpose — this is a shell picker, not a shell.
+#[cfg_attr(windows, allow(dead_code))]
+fn split_shell_command(cmd: &str) -> (String, Vec<String>) {
+    let mut parts = cmd.split_whitespace().map(str::to_string);
+    let program = parts.next().unwrap_or_default();
+    (program, parts.collect())
 }
 
 fn emit_data(
@@ -1886,6 +1955,11 @@ fn cleanup_session_maps(
 
 // ─── Local PTY spawn ─────────────────────────────────────────────────────────
 
+/// `tmux_name`: macOS/Linux only — when `Some`, the pane's local shell is
+/// wrapped in `tmux new-session -A -s <name>` ~900ms after spawn (the WSL
+/// twin of persistent SSH panes; see `spawn_wsl_pty`). Windows callers
+/// always pass `None` — a ConPTY local pane has no tmux, and the attach
+/// task below is compiled out on Windows.
 fn spawn_local_pty(
     state: &AppState,
     pane_id: String,
@@ -1894,6 +1968,7 @@ fn spawn_local_pty(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    tmux_name: Option<String>,
 ) -> Result<String, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -1906,7 +1981,26 @@ fn spawn_local_pty(
         .map_err(|e| format!("openpty failed: {e}"))?;
 
     let shell_cmd = pick_default_shell(shell);
+    #[cfg(windows)]
     let mut cmd = CommandBuilder::new(&shell_cmd);
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let (program, args) = split_shell_command(&shell_cmd);
+        let mut c = CommandBuilder::new(&program);
+        for a in &args {
+            c.arg(a);
+        }
+        // macOS port: Terminal.app / iTerm spawn the shell as a LOGIN
+        // shell, and that is where the PATH lives on a Mac (Homebrew's
+        // `eval "$(brew shellenv)"` sits in ~/.zprofile, not ~/.zshrc).
+        // Without `-l` a fresh pane can't find brew/node/claude. Only
+        // added when the user didn't pass their own args — a typed
+        // "zsh -c ..." / "bash --norc" is respected verbatim.
+        if args.is_empty() && matches!(detect_shell_kind(&program), ShellKind::Posix) {
+            c.arg("-l");
+        }
+        c
+    };
     for a in utf8_shell_args(detect_shell_kind(&shell_cmd)) {
         cmd.arg(a);
     }
@@ -1925,6 +2019,18 @@ fn spawn_local_pty(
     cmd.env("CLAUDE_CODE_FORCE_HYPERLINKS", "1");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM", "xterm-256color");
+    // macOS port: a Finder-launched app inherits NO locale (Terminal.app
+    // sets LANG itself from the system locale). Without a UTF-8 LC_CTYPE
+    // zsh's line editor and tmux treat every non-ASCII byte as
+    // unprintable — Hebrew keystrokes rendered as `_`. Only fill the gap;
+    // a user-set LANG/LC_ALL/LC_CTYPE (launched from a shell) wins.
+    #[cfg(not(windows))]
+    if ["LANG", "LC_ALL", "LC_CTYPE"]
+        .iter()
+        .all(|k| std::env::var_os(k).map(|v| v.is_empty()).unwrap_or(true))
+    {
+        cmd.env("LANG", default_utf8_locale());
+    }
     // ymux-tools (issue #4): tag the local pane's shell so claude-hook
     // invocations (pre-tool-use gating, the chrome Ticker's user-prompt-submit
     // / stop) pass the CLI's env-gate. Remote panes get this via the ssh
@@ -1995,10 +2101,64 @@ fn spawn_local_pty(
             writer,
             master: pair.master,
             killer,
-            tmux_session: None,
+            tmux_session: tmux_name.clone(),
             wsl_distro: None,
         }),
     );
+
+    // macOS port: persistent LOCAL panes — type the tmux attach-or-create
+    // script into the shell 900ms after spawn, exactly like the WSL/SSH
+    // paths (after env exports + setup_command at 500ms, before the
+    // smart-connect command at 1100ms). The shell is a login shell (`-l`
+    // above), so Homebrew's PATH is present and `command -v tmux`
+    // resolves. No WINMUX_* env injection (empty socket_addr): the local
+    // RPC bridge for hooks is not wired for mac panes yet, and
+    // build_tmux_attach_script skips the exports entirely when the
+    // address is empty. If tmux is missing the fallback echo leaves a
+    // plain shell.
+    #[cfg(not(windows))]
+    {
+        if let Some(name) = tmux_name {
+            // Only pass `-f ~/.ymux/tmux.conf` when the file actually exists
+            // locally — otherwise tmux prints a "No such file" cause into the
+            // pane on every attach. The local setup wizard writes it; until
+            // then the user's own ~/.tmux.conf applies.
+            let conf_present = local_setup::local_tmux_conf_ready();
+            let use_ymux_tmux_conf = state
+                .settings
+                .lock()
+                .ok()
+                .map(|s| s.terminal.use_ymux_tmux_config)
+                .unwrap_or(true)
+                && conf_present;
+            let sessions_clone = state.core.sessions.clone();
+            let id_clone = id.clone();
+            let pane_for_exec = pane_id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                crate::log_info("PTY", &format!(
+                    "tmux(local): new-session -A -s '{}' (pane {}, {} ymux conf)",
+                    name,
+                    pane_for_exec,
+                    if use_ymux_tmux_conf { "with" } else { "without" }
+                ));
+                let script = build_tmux_attach_script(
+                    &name,
+                    "",
+                    "",
+                    &pane_for_exec,
+                    use_ymux_tmux_conf,
+                    "[ymux] tmux not installed — falling back to plain shell",
+                );
+                let mut sessions = sessions_clone.lock().unwrap();
+                if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
+                    use std::io::Write as _;
+                    let _ = l.writer.write_all(script.as_bytes());
+                    let _ = l.writer.flush();
+                }
+            });
+        }
+    }
     Ok(id)
 }
 
@@ -6688,7 +6848,40 @@ async fn pane_connect(
 
     let session_id = match conn {
         Connection::Local { shell } => {
-            spawn_local_pty(&state, pane_id.clone(), &app, shell, cwd, cols, rows)?
+            // Windows local panes: ConPTY, never tmux — unchanged.
+            #[cfg(windows)]
+            let tmux_name: Option<String> = None;
+            // macOS port: local panes can be tmux-persistent like WSL/SSH
+            // ones. Default stays a plain shell (`persistent` unset →
+            // false); mode="tmux" forces it on, mode="plain" forces off.
+            #[cfg(not(windows))]
+            let tmux_name: Option<String> = {
+                let effective_persistent = match mode.as_deref() {
+                    Some("tmux") => true,
+                    Some("plain") => false,
+                    _ => persistent.unwrap_or(false),
+                };
+                if effective_persistent {
+                    Some(
+                        effective_tmux_name
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| sanitize_tmux_session_name(&pane_id)),
+                    )
+                } else {
+                    None
+                }
+            };
+            spawn_local_pty(
+                &state,
+                pane_id.clone(),
+                &app,
+                shell,
+                cwd,
+                cols,
+                rows,
+                tmux_name,
+            )?
         }
         // Phase 80: WSL panes default to PERSISTENT (tmux) — persistence
         // is the point of the smart local setup. mode="plain" still
@@ -6916,6 +7109,24 @@ async fn pane_list_tmux_sessions(
     let handle = match handle {
         Some(h) => h,
         None => {
+            // macOS port: a LOCAL workspace (explicit `Local` connection, or
+            // none — the codebase's "no connection = local" default) lists
+            // the sessions of the tmux server on this machine. Windows keeps
+            // the empty answer: local panes there are ConPTY, never tmux.
+            #[cfg(not(windows))]
+            {
+                let is_local = {
+                    let file = state.workspaces.lock().unwrap();
+                    file.workspaces
+                        .iter()
+                        .find(|w| w.id == workspace_id)
+                        .map(|w| matches!(w.connection, Some(Connection::Local { .. }) | None))
+                        .unwrap_or(false)
+                };
+                if is_local {
+                    return Ok(list_local_tmux_sessions().await);
+                }
+            }
             log_debug("SSH", &format!(
                 "pane_list_tmux_sessions: no live SSH handle for ws={workspace_id}, returning empty list"
             ));
@@ -7010,14 +7221,87 @@ async fn list_tmux_sessions_via_handle(
     Ok(parse_tmux_sessions(&String::from_utf8_lossy(&stdout)))
 }
 
+/// `tmux list-sessions -F` format shared by every list path (SSH, WSL,
+/// local unix) — one line per session, parsed by `parse_tmux_sessions`.
+const TMUX_LIST_FORMAT: &str =
+    "#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}";
+/// Separator between the session list and the appended session-meta JSON.
+const TMUX_META_MARKER: &str = "<<<YMUX_META>>>";
+
+/// macOS/Linux: resolve the local tmux binary. A Finder-launched app
+/// inherits launchd's minimal PATH (no /opt/homebrew/bin), so the PATH
+/// lookup is backed by the canonical Homebrew (arm64 / intel), MacPorts
+/// and system locations.
+#[cfg(not(windows))]
+fn local_tmux_binary() -> Option<PathBuf> {
+    local_wizard::which("tmux").or_else(|| {
+        [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/opt/local/bin/tmux",
+            "/usr/bin/tmux",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+    })
+}
+
+/// macOS/Linux: run the local tmux binary with an argv array (Rule #3) and
+/// return (exit_code, stdout). `Err` only when tmux is absent or fails to
+/// spawn — a non-zero exit (e.g. `no server running`) is `Ok((1, ""))`.
+#[cfg(not(windows))]
+async fn local_tmux_output(args: &[&str]) -> Result<(Option<i32>, String), String> {
+    let tmux = local_tmux_binary().ok_or_else(|| "tmux not found on this machine".to_string())?;
+    let out = tokio::process::Command::new(&tmux)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("spawn {}: {e}", tmux.display()))?;
+    Ok((out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// macOS/Linux: sessions of the tmux server on this machine, joined with
+/// the local `~/.ymux/session-meta.json` when present. Missing tmux, no
+/// server running (`tmux` exits 1) or a spawn failure all yield an empty
+/// list — the picker then shows its "New session" line, never an error.
+#[cfg(not(windows))]
+async fn list_local_tmux_sessions() -> Vec<TmuxSessionInfo> {
+    let mut text = match local_tmux_output(&["list-sessions", "-F", TMUX_LIST_FORMAT]).await {
+        Ok((_code, stdout)) => stdout,
+        Err(e) => {
+            log_debug("PTY", &format!("list_local_tmux_sessions: {e} — returning empty list"));
+            return vec![];
+        }
+    };
+    if let Some(meta) = dirs::home_dir()
+        .and_then(|h| {
+            // winmux -> ymux rename: read the current spelling, fall back to
+            // the pre-rename one for a Mac set up by an older build.
+            std::fs::read_to_string(h.join(".ymux").join("session-meta.json"))
+                .or_else(|_| std::fs::read_to_string(h.join(".winmux").join("session-meta.json")))
+                .ok()
+        })
+    {
+        text.push('\n');
+        text.push_str(TMUX_META_MARKER);
+        text.push('\n');
+        text.push_str(&meta);
+    }
+    parse_tmux_sessions(&text)
+}
+
 /// Phase 80: parse `tmux list-sessions -F '<name>|<created>|<attached>|
 /// <windows>|<last_attached>'` output — shared by the SSH and WSL list
 /// paths. Phase 81: the SSH script appends the server-side session-meta
-/// JSON after a `<<<YMUX_META>>>` marker; when present, label /
+/// JSON after a `TMUX_META_MARKER` marker; when present, label /
 /// claude_title / origin are joined onto the sessions. Garbled or absent
 /// JSON degrades to no metadata, never to an error.
 fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
-    let (list_text, meta_text) = match text.split_once("<<<YMUX_META>>>") {
+    let (list_text, meta_text) = match text.split_once(TMUX_META_MARKER) {
         Some((a, b)) => (a, b),
         None => (text, ""),
     };
@@ -7117,6 +7401,10 @@ async fn pane_probe_tmux_sessions(
             port,
             key_path,
         }) => (host, user, port, key_path),
+        // macOS port: a local pane asks the tmux server on this machine —
+        // a definite answer (possibly "no sessions"), never "couldn't ask".
+        #[cfg(not(windows))]
+        Some(Connection::Local { .. }) => return Ok(Some(list_local_tmux_sessions().await)),
         // A WSL pane answers without any handshake — wsl.exe reaches the
         // distro's tmux server cold. Returning Ok(None) here (the old `_`
         // arm) meant "couldn't ask", and the restore loop correctly left
@@ -7551,13 +7839,16 @@ fn list_claude_sessions_local(
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        // Phase 65 (bug Y) fixed this for the SSH path and missed the
-        // local one: `project_path` was the on-disk directory NAME, i.e.
-        // the encoded form (`C--Users-...`). It stayed invisible only
-        // because the caller's guard is `project_path.startsWith("/")`,
-        // which an encoded Windows path fails by accident. Scoping a
-        // local project folder needs the real value.
-        let project_path = claude_session_cwd(&p).unwrap_or_else(|| {
+        // Same contract as the SSH path: `cwd` from inside the JSONL is the
+        // real project dir (what `claude --resume` must be launched from);
+        // the encoded dir name (`-Users-yossi-dev-foo`) is a display-only
+        // fallback the frontend refuses to `cd` to. Without this a picked
+        // session on a local workspace resumed from $HOME and Claude
+        // couldn't find it. Supersedes `claude_session_cwd` here (still used
+        // by the scope filter above): one read yields cwd, previews and the
+        // sidechain flag instead of three.
+        let peek = peek_claude_jsonl(&p);
+        let project_path = peek.cwd.unwrap_or_else(|| {
             p.parent()
                 .and_then(|q| q.file_name())
                 .and_then(|s| s.to_str())
@@ -7569,12 +7860,91 @@ fn list_claude_sessions_local(
             project_path,
             jsonl_path: p.to_string_lossy().to_string(),
             mtime_unix: mtime,
-            last_user: None,
-            last_assistant: None,
-            is_subagent: false,
+            last_user: peek.first_user,
+            last_assistant: peek.last_assistant,
+            is_subagent: peek.is_subagent,
         });
     }
     Ok(out)
+}
+
+/// What the local session picker needs from one transcript, without
+/// reading the whole file (sessions run to tens of MB): the first
+/// `PEEK_BYTES` give cwd / sidechain flag / first user line, the last
+/// `PEEK_BYTES` give the latest assistant line — the same head/tail
+/// window the SSH-side shell pipeline uses.
+#[derive(Default)]
+struct ClaudeJsonlPeek {
+    cwd: Option<String>,
+    is_subagent: bool,
+    first_user: Option<String>,
+    last_assistant: Option<String>,
+}
+
+const CLAUDE_PEEK_BYTES: u64 = 256 * 1024;
+
+fn peek_claude_jsonl(path: &Path) -> ClaudeJsonlPeek {
+    use std::io::{Seek as _, SeekFrom};
+    let mut out = ClaudeJsonlPeek::default();
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return out;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+
+    let mut head = Vec::new();
+    let _ = std::io::Read::by_ref(&mut f).take(CLAUDE_PEEK_BYTES).read_to_end(&mut head);
+    let head = String::from_utf8_lossy(&head);
+    for line in head.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if out.cwd.is_none() {
+            out.cwd = v
+                .get("cwd")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+        }
+        if v.get("isSidechain").and_then(|x| x.as_bool()) == Some(true) {
+            out.is_subagent = true;
+        }
+        if out.first_user.is_none() && v.get("type").and_then(|x| x.as_str()) == Some("user") {
+            let text = extract_text_field(line);
+            if !text.is_empty() {
+                out.first_user = Some(text);
+            }
+        }
+        if out.cwd.is_some() && out.first_user.is_some() {
+            break;
+        }
+    }
+
+    // Tail: last full line of type "assistant". Skip the first (likely
+    // partial) line when we seeked into the middle of the file.
+    let tail_start = len.saturating_sub(CLAUDE_PEEK_BYTES);
+    if f.seek(SeekFrom::Start(tail_start)).is_ok() {
+        let mut tail = Vec::new();
+        let _ = f.read_to_end(&mut tail);
+        let tail = String::from_utf8_lossy(&tail);
+        let lines: Vec<&str> = tail.lines().collect();
+        let skip = usize::from(tail_start > 0);
+        for line in lines.iter().skip(skip).rev() {
+            if !line.contains("\"assistant\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("type").and_then(|x| x.as_str()) == Some("assistant") {
+                let text = extract_text_field(line);
+                if !text.is_empty() {
+                    out.last_assistant = Some(text);
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Best-effort extractor: pulls the first occurrence of `"text":"…"` (or
@@ -7688,6 +8058,10 @@ async fn pane_kill_session(
     enum KillTarget {
         Ssh(Arc<client::Handle<SshClient>>, String),
         Wsl(Option<String>, String),
+        /// macOS port: a persistent LOCAL pane (no distro) — kill via the
+        /// local tmux binary.
+        #[cfg(not(windows))]
+        LocalUnix(String),
         None,
     }
     let target = {
@@ -7698,6 +8072,8 @@ async fn pane_kill_session(
                 None => KillTarget::None,
             },
             Some(Session::Local(l)) => match &l.tmux_session {
+                #[cfg(not(windows))]
+                Some(name) if l.wsl_distro.is_none() => KillTarget::LocalUnix(name.clone()),
                 Some(name) => KillTarget::Wsl(l.wsl_distro.clone(), name.clone()),
                 None => KillTarget::None,
             },
@@ -7705,6 +8081,17 @@ async fn pane_kill_session(
         }
     };
     match target {
+        #[cfg(not(windows))]
+        KillTarget::LocalUnix(name) => {
+            // Pure argv — tmux receives the name verbatim (Rule #3).
+            match local_tmux_output(&["kill-session", "-t", &name]).await {
+                Ok((Some(0), _)) => {}
+                Ok((code, _)) => log_warn("PTY", &format!(
+                    "pane_kill_session(local): tmux kill-session exited {code:?}"
+                )),
+                Err(e) => log_warn("PTY", &format!("pane_kill_session(local): {e}")),
+            }
+        }
         KillTarget::Ssh(handle, name) => {
             let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
             match handle.channel_open_session().await {
@@ -7976,8 +8363,12 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
         "pty_sessions": pty_count,
         "rpc_server": {
             "pipe_name": rpc_server::pipe_name(),
-            "listener_pool_size": 8,
+            "listener_pool_size": rpc_server::listener_count(),
             "handlers_served": rpc_server::HANDLER_SEQ.load(Ordering::Relaxed),
+            // Some(...) means the local endpoint never came up: no detected
+            // ports, no CLI hooks, no tunnel RPC — while SSH panes still
+            // work, which is what makes it easy to misdiagnose.
+            "bind_error": rpc_server::bind_error(),
         },
         "bundled_linux_cli_sha256": bundled_cli_sha256,
         "recent_errors": recent_errors,
@@ -7987,6 +8378,17 @@ pub(crate) fn build_doctor_snapshot(state: &AppState) -> serde_json::Value {
 #[tauri::command]
 fn doctor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(build_doctor_snapshot(&state))
+}
+
+/// The OS the desktop app is running on, as `std::env::consts::OS`
+/// (`"windows"` / `"macos"` / `"linux"`). The frontend had NO platform
+/// awareness at all before the macOS port, so every local path was joined
+/// with `\` and every drag-drop position was divided by devicePixelRatio —
+/// both correct on Windows only. `app/src/platform.ts` resolves this once
+/// at boot and hands the answer to those call sites synchronously.
+#[tauri::command]
+fn host_platform() -> Result<String, String> {
+    Ok(std::env::consts::OS.to_string())
 }
 
 #[tauri::command]
@@ -8574,6 +8976,7 @@ pub fn run() {
             pty_write,
             pty_resize,
             doctor,
+            host_platform,
             notifications_list,
             notifications_clear,
             pane_status_get,
@@ -9513,6 +9916,102 @@ mod smart_connect_tests {
 }
 
 #[cfg(test)]
+mod tmux_list_parse_tests {
+    // Shared parser for every `tmux list-sessions -F` path (SSH, WSL and
+    // the macOS local server). Sample lines are exactly what tmux prints
+    // for TMUX_LIST_FORMAT.
+    use super::{parse_tmux_sessions, TMUX_LIST_FORMAT, TMUX_META_MARKER};
+
+    #[test]
+    fn format_has_five_pipe_separated_fields() {
+        assert_eq!(TMUX_LIST_FORMAT.split('|').count(), 5);
+        assert!(TMUX_LIST_FORMAT.starts_with("#{session_name}"));
+    }
+
+    #[test]
+    fn empty_and_no_server_output_parse_to_nothing() {
+        assert!(parse_tmux_sessions("").is_empty());
+        assert!(parse_tmux_sessions("\n").is_empty());
+        // Garbage lines with fewer than five fields are skipped, not errors.
+        assert!(parse_tmux_sessions("no server running on /tmp/tmux-501/default").is_empty());
+    }
+
+    #[test]
+    fn parses_lines_and_sorts_most_recent_first() {
+        let text = "winmux-a1b2|1700000000|0|1|1700000500\nmain|1700001000|1|3|1700002000\n";
+        let out = parse_tmux_sessions(text);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "main");
+        assert!(out[0].attached);
+        assert_eq!(out[0].windows, 3);
+        assert_eq!(out[0].last_attached, 1700002000);
+        assert_eq!(out[1].name, "winmux-a1b2");
+        assert!(!out[1].attached);
+        assert!(out[1].label.is_none());
+    }
+
+    #[test]
+    fn joins_session_meta_after_marker() {
+        let text = format!(
+            "main|1|0|1|2\nother|3|0|1|4\n{TMUX_META_MARKER}\n{{\"sessions\":{{\"main\":{{\"label\":\"Prod\",\"origin\":\"m1\"}}}}}}\n"
+        );
+        let out = parse_tmux_sessions(&text);
+        assert_eq!(out.len(), 2);
+        let main = out.iter().find(|s| s.name == "main").expect("main");
+        assert_eq!(main.label.as_deref(), Some("Prod"));
+        assert_eq!(main.origin.as_deref(), Some("m1"));
+        let other = out.iter().find(|s| s.name == "other").expect("other");
+        assert!(other.label.is_none());
+    }
+
+    #[test]
+    fn garbled_meta_degrades_to_no_metadata() {
+        let text = format!("main|1|0|1|2\n{TMUX_META_MARKER}\nnot json at all");
+        let out = parse_tmux_sessions(&text);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].label.is_none());
+    }
+}
+
+#[cfg(test)]
+mod claude_jsonl_peek_tests {
+    use super::peek_claude_jsonl;
+
+    fn write_tmp(name: &str, body: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("winmux-peek-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&p, body).expect("write tmp");
+        p
+    }
+
+    #[test]
+    fn reads_cwd_previews_and_sidechain_from_head_and_tail() {
+        let body = concat!(
+            "{\"type\":\"user\",\"cwd\":\"/Users/yossi/dev/foo\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello there\"}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"first answer\"}]}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"last answer\"}]}}\n",
+        );
+        let p = write_tmp("main", body);
+        let peek = peek_claude_jsonl(&p);
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(peek.cwd.as_deref(), Some("/Users/yossi/dev/foo"));
+        assert!(!peek.is_subagent);
+        assert_eq!(peek.first_user.as_deref(), Some("hello there"));
+        assert_eq!(peek.last_assistant.as_deref(), Some("last answer"));
+    }
+
+    #[test]
+    fn sidechain_flag_and_missing_file() {
+        let p = write_tmp("side", "{\"type\":\"user\",\"isSidechain\":true,\"cwd\":\"C:\\\\dev\\\\x\"}\n");
+        let peek = peek_claude_jsonl(&p);
+        let _ = std::fs::remove_file(&p);
+        assert!(peek.is_subagent);
+        assert_eq!(peek.cwd.as_deref(), Some("C:\\dev\\x"));
+        let none = peek_claude_jsonl(std::path::Path::new("/nonexistent/winmux/x.jsonl"));
+        assert!(none.cwd.is_none() && none.last_assistant.is_none());
+    }
+}
+
+#[cfg(test)]
 mod utf8_shell_tests {
     // A fresh ConPTY inherits the machine's OEM codepage (862 on a Hebrew
     // install), and Windows PowerShell 5.1 defaults $OutputEncoding to
@@ -9551,6 +10050,31 @@ mod utf8_shell_tests {
     #[test]
     fn posix_shell_is_left_alone() {
         assert!(utf8_shell_args(ShellKind::Posix).is_empty());
+    }
+
+    #[test]
+    fn unix_shell_paths_are_posix() {
+        // macOS port: what detect_local_shells / $SHELL hand back.
+        for sh in ["/bin/zsh", "/bin/bash", "/usr/local/bin/fish", "zsh"] {
+            assert!(matches!(super::detect_shell_kind(sh), ShellKind::Posix), "{sh}");
+        }
+        assert!(matches!(
+            super::detect_shell_kind("/usr/local/bin/pwsh"),
+            ShellKind::PowerShell
+        ));
+    }
+
+    #[test]
+    fn custom_command_splits_into_argv() {
+        let (p, a) = super::split_shell_command("  zsh   -l ");
+        assert_eq!(p, "zsh");
+        assert_eq!(a, vec!["-l"]);
+        let (p, a) = super::split_shell_command("/bin/bash");
+        assert_eq!(p, "/bin/bash");
+        assert!(a.is_empty());
+        let (p, a) = super::split_shell_command("");
+        assert_eq!(p, "");
+        assert!(a.is_empty());
     }
 
     #[test]

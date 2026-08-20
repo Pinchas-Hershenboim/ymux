@@ -13,6 +13,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./App.css";
 import App from "./App";
 import { PopoutTerminal } from "./components/PopoutTerminal";
+import { initPlatform } from "./platform";
 
 // Phase 8.E → unified logging: capture console.error / console.warn as a
 // safety net for un-swept or third-party output. Forwarded fire-and-forget
@@ -85,11 +86,23 @@ const popoutSid = winLabel.startsWith("popout-")
   ? winLabel.slice("popout-".length)
   : null;
 
-if (popoutSid) {
-  render(
-    () => <PopoutTerminal sessionId={popoutSid} />,
-    document.getElementById("root") as HTMLElement,
-  );
-} else {
-  render(() => <App />, document.getElementById("root") as HTMLElement);
-}
+// Resolve the host OS BEFORE the first render. PaneView / FileManagerPane
+// register their OS drag-drop listeners in onMount and hit-test with
+// platform-dependent scaling, and the local file-manager column joins paths
+// with a platform-dependent separator — none of which can wait on a promise
+// that resolves after mount. Popout windows take the same path (they drag-drop
+// too). initPlatform never rejects; a failed probe just keeps the default.
+//
+// An async IIFE rather than top-level await: Vite's default build target is
+// `es2020`, where esbuild refuses TLA outright.
+void (async () => {
+  await initPlatform();
+  if (popoutSid) {
+    render(
+      () => <PopoutTerminal sessionId={popoutSid} />,
+      document.getElementById("root") as HTMLElement,
+    );
+  } else {
+    render(() => <App />, document.getElementById("root") as HTMLElement);
+  }
+})();

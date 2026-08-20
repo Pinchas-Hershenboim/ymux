@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS port: App Nap coalesces timers to 1Hz once the window is
+	     occluded or the app looks idle, which throttles the whole WKWebView
+	     JS loop — the "UI stall: ~1000ms (expected ~100ms)" warnings from the
+	     Phase 48-D heartbeat. winmux must keep rendering live PTY output while
+	     the user works in another window, so App Nap is opted out entirely
+	     (same as iTerm2/Terminal.app). Tauri merges this file into the bundled
+	     Info.plist on macOS builds. -->
+	<key>NSAppSleepDisabled</key>
+	<true/>
+</dict>
+</plist>
