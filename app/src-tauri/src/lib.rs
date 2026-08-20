@@ -7198,6 +7198,47 @@ async fn list_zellij_sessions() -> Vec<TmuxSessionInfo> {
     }
 }
 
+/// Destroy a zellij session BY NAME, with no pane involved.
+///
+/// The picker lists every zellij session on the machine, including EXITED ones
+/// (they are resurrectable — that is the point of listing them). Two things
+/// put sessions there that no pane will ever reclaim automatically: closing a
+/// pane leaves its session running on purpose, and a reboot leaves everything
+/// EXITED. Without this the list was append-only — the user could resurrect a
+/// corpse but never bury one.
+///
+/// Zellij-only on purpose, not out of laziness: the delete affordance is shown
+/// only for `exited` rows, and `TmuxSessionInfo::exited` is documented as
+/// always false on tmux. There is no tmux case to handle.
+#[tauri::command]
+async fn zellij_delete_session(name: String) -> Result<KillSessionOutcome, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("no session name".into());
+    }
+    // Argv only (Rule #3) — the name goes into one slot and is never reparsed.
+    Ok(
+        match zellij_try(&zellij_args_delete_force(&name), "delete-session -f").await {
+            ZellijOutcome::Ok => KillSessionOutcome::new("killed", "zellij", Some(name)),
+            ZellijOutcome::Missing => {
+                KillSessionOutcome::new("multiplexer_missing", "zellij", Some(name))
+            }
+            ZellijOutcome::Failed { code, stderr } => {
+                let r = if stderr.contains("not found") {
+                    "already_gone"
+                } else {
+                    "failed"
+                };
+                log_debug(
+                    "PTY",
+                    &format!("zellij_delete_session: {r} (exit {code:?}): {stderr}"),
+                );
+                KillSessionOutcome::new(r, "zellij", Some(name)).with_detail(stderr)
+            }
+        },
+    )
+}
+
 #[tauri::command]
 async fn pane_list_tmux_sessions(
     state: State<'_, AppState>,
@@ -9050,6 +9091,7 @@ pub fn run() {
             pane_connect,
             pane_disconnect,
             pane_kill_session,
+            zellij_delete_session,
             pane_persistence_get,
             pane_persistence_list,
             pane_list_claude_sessions,

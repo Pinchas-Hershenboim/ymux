@@ -1091,5 +1091,7 @@
   "pf.checkGit.found": "“{name}” — репозиторий git, его worktrees теперь показаны",
   "pf.waitingForConnection": "ожидание подключения…",
   "pane.kill.failed": "Не удалось уничтожить сессию {name}",
-  "pane.kill.noMultiplexer": "Мультиплексор не установлен — сессия НЕ уничтожена"
+  "pane.kill.noMultiplexer": "Мультиплексор не установлен — сессия НЕ уничтожена",
+  "connect.tmuxPick.delete": "Удалить эту сессию",
+  "connect.tmuxPick.deleteConfirm": "Удалить сессию {name}? Её сохранённая копия тоже исчезнет — восстановить будет нельзя."
 }

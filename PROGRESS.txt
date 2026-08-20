@@ -3499,3 +3499,38 @@ NOT VERIFIED  Rule #14. Nothing here has run live. The whole checklist is in
      confirm `zellij list-sessions -n` does not list it AT ALL; rename
      zellij.exe and confirm the failure toast + hint kept; reboot and confirm
      resurrection still works.
+
+================================================================================
+2026-08-20  Zellij lockdown, part 3: the session picker was append-only
+================================================================================
+WHY  Parts 1-2 left two decisions that both assume the user can get rid of a
+     session: closing a pane deliberately leaves its zellij session running
+     (Yossi's call, symmetric with SSH/WSL where X is a detach), and session
+     restore deliberately does NOT filter EXITED rows (that is the reboot-
+     resurrection path). Both are right, and both accumulate sessions the
+     picker showed with a "resurrect" badge and NO way to act on. The list
+     could raise the dead but never bury one.
+
+WHAT zellij_delete_session(name) — same verb, same classifier as the pane
+       path, no pane involved. Rejects an empty name. Registered in
+       invoke_handler.
+     PaneView picker: a trash button under the existing <Show when={s.exited}>,
+       so it appears only for a row that is already dead.
+     i18n en/he/ar/ru + .nc-resume-del styling (quiet until row hover).
+
+THE HAZARD, named because it is one line away  The row's own onClick ATTACHES.
+     Without e.stopPropagation() a delete would attach AND destroy in the same
+     click. stopPropagation plus a confirm() are both there; the mis-click case
+     (clicking the row body, not the button) is its own checklist item.
+
+     The list refreshes by re-invoking pane_list_tmux_sessions rather than
+     splicing the local array — the picker should show what is actually on the
+     machine, including when the delete did NOT take.
+
+ZELLIJ-ONLY ON PURPOSE  The button is gated on `exited`, and TmuxSessionInfo::
+     exited is documented as always false on tmux. There is no tmux case.
+
+CHECKS  26 zellij tests, tsc --noEmit clean, vite build clean.
+NOT VERIFIED  Live: delete an EXITED row and confirm it is gone from
+     `zellij list-sessions -n`; and click the row BODY to confirm that still
+     attaches and destroys nothing.

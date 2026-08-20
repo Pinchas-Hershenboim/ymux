@@ -1091,5 +1091,7 @@
   "pf.checkGit.found": "“{name}” مستودع git — فروع العمل معروضة الآن",
   "pf.waitingForConnection": "بانتظار الاتصال…",
   "pane.kill.failed": "تعذّر حذف الجلسة ‎{name}‎",
-  "pane.kill.noMultiplexer": "المُضاعِف غير مثبَّت — لم يتم حذف الجلسة"
+  "pane.kill.noMultiplexer": "المُضاعِف غير مثبَّت — لم يتم حذف الجلسة",
+  "connect.tmuxPick.delete": "حذف هذه الجلسة",
+  "connect.tmuxPick.deleteConfirm": "حذف الجلسة ‎{name}‎؟ ستُحذف نسختها المحفوظة أيضًا — لن يمكن استعادتها."
 }

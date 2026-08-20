@@ -3,7 +3,7 @@ import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { Connection, LayoutNode, TmuxSessionInfo, RtlProfileKind } from "./types";
+import type { Connection, KillSessionOutcome, LayoutNode, TmuxSessionInfo, RtlProfileKind } from "./types";
 import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps, profileFor } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
@@ -32,6 +32,7 @@ import {
   IconClock,
   IconFolder,
   IconInfo,
+  IconTrash,
 } from "./icons";
 
 interface ClaudeSessionInfo {
@@ -1615,6 +1616,40 @@ export function PaneView(p: Props) {
                                 looked identical to live ones. */}
                             <Show when={s.exited}>
                               <span class="nc-resume-badge">{t("connect.newConn.sessionExited")}</span>
+                              {/* 2026-08-20: the list was append-only. Closing
+                                  a pane deliberately leaves its session
+                                  running, and a reboot leaves everything
+                                  EXITED, so corpses accumulated with no way to
+                                  bury one — only to resurrect it.
+
+                                  stopPropagation is MANDATORY: the row's own
+                                  onClick attaches, so without it a delete
+                                  would attach AND destroy. The confirm is the
+                                  second guard. */}
+                              <button
+                                class="nc-resume-del"
+                                title={t("connect.tmuxPick.delete")}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (!confirm(t("connect.tmuxPick.deleteConfirm", { name: s.name }))) return;
+                                  try {
+                                    await invoke<KillSessionOutcome>("zellij_delete_session", { name: s.name });
+                                  } catch (err) {
+                                    log.warn("zellij_delete_session failed", err);
+                                  }
+                                  // Re-ask the machine rather than splicing the
+                                  // local array: the picker should show what is
+                                  // actually there, including when the delete
+                                  // did not take.
+                                  try {
+                                    setTmuxPick(await invoke<TmuxSessionInfo[]>(
+                                      "pane_list_tmux_sessions", { workspaceId: p.workspaceId },
+                                    ));
+                                  } catch { /* leave the list as it was */ }
+                                }}
+                              >
+                                <IconTrash size={13} />
+                              </button>
                             </Show>
                             <span class="nc-resume-age">{fmtSessionAge(s.last_attached || s.created)}</span>
                           </div>

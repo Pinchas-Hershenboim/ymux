@@ -1091,5 +1091,7 @@
   "pf.checkGit.found": "“{name}” is a git repository — its worktrees are listed now",
   "pf.waitingForConnection": "waiting for the connection…",
   "pane.kill.failed": "Could not destroy session {name}",
-  "pane.kill.noMultiplexer": "The multiplexer is not installed — the session was NOT destroyed"
+  "pane.kill.noMultiplexer": "The multiplexer is not installed — the session was NOT destroyed",
+  "connect.tmuxPick.delete": "Delete this session",
+  "connect.tmuxPick.deleteConfirm": "Delete session {name}? Its saved copy goes too — it cannot be resurrected."
 }
