@@ -2704,6 +2704,12 @@ function App() {
           log.warn(`UI stall: ${Math.round(gap)}ms (expected ~${HEARTBEAT_MS}ms)`);
         }
       }, HEARTBEAT_MS);
+      // Re-baseline on show, else the first visible tick reports the whole
+      // hidden stretch as one giant stall. (Lost in the zellij merge and
+      // restored 2026-08-20 — the merge kept the heartbeat and dropped this.)
+      document.addEventListener("visibilitychange", () => {
+        lastTick = performance.now();
+      });
       try {
         const obs = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
