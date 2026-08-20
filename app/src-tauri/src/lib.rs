@@ -1430,6 +1430,14 @@ enum ShellKind {
 
 fn detect_shell_kind(cmd: &str) -> ShellKind {
     let lower = cmd.to_ascii_lowercase();
+    // Normalize separators before taking the stem, the same way
+    // `path_basename` does. `Path::file_stem` only honours the HOST's
+    // separator, so on a unix host `c:\windows\system32\powershell.exe`
+    // is one long stem and classifies as Posix — which would hand a
+    // PowerShell the wrong startup args. Nothing feeds it a Windows path
+    // on macOS today, but the classification should not depend on which
+    // machine is asking.
+    let lower = lower.replace('\\', "/");
     let stem = std::path::Path::new(&lower)
         .file_stem()
         .and_then(|s| s.to_str())
