@@ -3763,3 +3763,73 @@ BUILD NOTE, worth remembering  the first rebuild FAILED with `failed to remove
   retry. Also: `npm run tauri build | tail` reports TAIL's exit code, so the
   task notification said "exit code 0" on a failed build. Check the output text,
   not the status.
+
+================================================================================
+2026-08-20  Right-aligned Hebrew in Claude — normalise on the way IN
+================================================================================
+GOAL  Local Claude panes showed correct letters but pinned to the LEFT. Yossi
+     wanted them on the right, and remembered it had worked once.
+
+WHAT THE HISTORY SAID, and it was worth reading before writing code. His own
+     words on 2026-08-18 23:08: "BIDI מציג אותיות ישרות מיושר לימין" — so the
+     target state existed. But the git archaeology found it was reachable only
+     by ACCIDENT: before bc12388 the renderer was frozen at construct while
+     flushPending read the live mode, so a pane built as auto_per_line (DOM +
+     per-row dir) and then switched to bidi_reorder got BOTH our reorder AND
+     dir="rtl" — two reversals that cancelled. bc12388 closed that hole and the
+     result became unreproducible.
+
+THE MEASUREMENT THAT KILLED MY FIRST DESIGN  I had planned
+     reorderRtlForDisplay(visualToLogical(x)) in flushPending. Probed it against
+     four simulated Claude lines before writing any of it:
+         claude    [םלוע םולש                     ]
+         relayout  [םלוע םולש                     ]   right-placed=false
+     reorder(unreorder(V)) === V on every case. **reorderRtlForDisplay reorders
+     runs IN PLACE and does no padding — it can never move a line to the right
+     edge.** The approved plan's Route B would have been a no-op. Deleted.
+
+THE ACTUAL RULE, measured, three rows:
+       buffer   render          letters  placement
+       visual   dir="rtl"       wrong    RIGHT
+       visual   bidi-override   RIGHT    left      <- what shipped before
+       LOGICAL  dir="rtl"       RIGHT    RIGHT     <- this. And what REMOTE has
+                                                     always done.
+     Placement comes from the browser under dir="rtl", and the browser only gets
+     the letters right if it is handed LOGICAL text. So: convert on the way in,
+     then stop treating the pane as special.
+
+WHAT  copyBidi.ts — visualToLogicalStream(), the ANSI-aware sibling of
+       visualToLogical. The clipboard one is escape-BLIND on purpose (a
+       selection has no escapes); hand it a PTY chunk and it permutes a CSI
+       sequence into garbage. The new one walks escapes exactly the way
+       reorderRtlForDisplay does. ANSI_RE is now exported from bidi.ts so there
+       is ONE definition of "what an escape looks like".
+     terminalInstance.ts —
+       - normaliseIncomingToLogical getter (bidiOwnedByTui && auto_per_line;
+         the other two modes are WebGL, which has no dir and so nothing to gain)
+       - flushPending writes visualToLogicalStream(merged) for those panes
+       - applyRowDirections stops forcing dir="ltr" + bidi-override for them —
+         that pairing is what pinned Hebrew left, since right placement can only
+         come from dir="rtl"
+       - bufferIsVisualOrder subtracts the normalised case FIRST, or the
+         clipboard would flip already-logical text and re-break the bug fixed
+         this morning. That invariant said "the two never stack"; it now has to.
+
+LEFT ALONE DELIBERATELY  isCurrentLineRtl still bails on bidiOwnedByTui. The
+     obvious reading after this change is that it should not — wrong. Normalising
+     changes what OUR buffer holds, not what CLAUDE thinks it holds; Claude still
+     edits in visual columns, so mirroring arrows would still fight it. Comment
+     expanded rather than the code changed.
+
+THE ESCAPE HATCH, since there is no new setting: rtl_mode="off" gives WebGL
+     verbatim = correct letters, left aligned = exactly today's behaviour. If the
+     caret turns out unusable, that is the fallback — not a revert.
+
+TESTS  6 new (15 total in copyBidi.test.ts): escapes byte-for-byte, an OSC
+     sequence not permuted, no-RTL identity, runs split by escapes, a mid-line
+     fragment stays lossless, and stream==clipboard when there are no escapes.
+     All six JS suites green (140 total), tsc + vite clean.
+
+NOT VERIFIED  Rule #14. The three that matter: Hebrew from Claude correct AND
+     right; the CARET while typing Hebrew (the known-risky one); and Claude's
+     box-drawing rows not flipping — 770013b is the regression to watch.

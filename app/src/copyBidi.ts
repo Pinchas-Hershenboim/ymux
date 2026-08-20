@@ -34,6 +34,7 @@
 // @ts-ignore - bidi-js has no type defs
 import bidiFactory from "bidi-js";
 import { strongCounts } from "./textDirection.ts";
+import { ANSI_RE } from "./bidi.ts";
 
 const bidi: any = bidiFactory();
 
@@ -141,8 +142,44 @@ function repairSurrogates(arr: string[]): string[] {
  */
 export function visualToLogical(text: string): string {
   if (!text || !RTL_RE.test(text)) return text;
-  return text
+  return unreorderTextSegment(text);
+}
+
+/** Line-by-line, keeping the separators so structure survives. */
+function unreorderTextSegment(seg: string): string {
+  if (!RTL_RE.test(seg)) return seg;
+  return seg
     .split(LINE_SPLIT)
     .map((part) => (LINE_SPLIT.test(part) ? part : unreorderLine(part)))
     .join("");
+}
+
+/**
+ * The same conversion, for a chunk of a live PTY STREAM rather than a clipboard
+ * string — i.e. text with ANSI escapes in it.
+ *
+ * `visualToLogical` above is escape-BLIND on purpose: a clipboard selection
+ * never contains escapes, so there is nothing to protect. Hand it a PTY chunk
+ * and it happily permutes the bytes of a CSI sequence into garbage. This walks
+ * the escapes the way `reorderRtlForDisplay` does — pushing each one through
+ * untouched and converting only the text between them.
+ *
+ * KNOWN LIMIT, inherited and unchanged: a text run is the span between two
+ * escapes, not always a whole visual line, so a heavily-coloured line is split
+ * into fragments that each resolve their own base direction. bidi.ts documents
+ * the same limit for the forward pass. A caller that feeds this arbitrary chunk
+ * boundaries (a rAF flush, say) adds a second source of the same fragmentation.
+ */
+export function visualToLogicalStream(chunk: string): string {
+  if (!chunk || !RTL_RE.test(chunk)) return chunk;
+  const out: string[] = [];
+  let last = 0;
+  for (const m of chunk.matchAll(ANSI_RE)) {
+    const idx = m.index!;
+    if (idx > last) out.push(unreorderTextSegment(chunk.slice(last, idx)));
+    out.push(m[0]);
+    last = idx + m[0].length;
+  }
+  if (last < chunk.length) out.push(unreorderTextSegment(chunk.slice(last)));
+  return out.join("");
 }

@@ -8,7 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { visualToLogical } from "./copyBidi.ts";
+import { visualToLogical, visualToLogicalStream } from "./copyBidi.ts";
 import { reorderRtlForDisplay } from "./bidi.ts";
 
 /** The shapes bidi.test.ts already cares about, plus the ones that bite. */
@@ -36,7 +36,8 @@ test("un-reverses what the display reorder produced", () => {
 test("text with no RTL is returned untouched", () => {
   // The overwhelmingly common case — every copy in an English session goes
   // through here, so identity has to be exact, not merely equivalent.
-  for (const s of ["", "hello world", "PS C:\Users\me> git status", "1234"]) {
+  const shellPrompt = String.raw`PS C:\Users\me> git status`;
+  for (const s of ["", "hello world", shellPrompt, "1234"]) {
     assert.equal(visualToLogical(s), s);
   }
 });
@@ -102,4 +103,63 @@ test("KNOWN AMBIGUITY: adjacent digits and Latin at an RTL edge", () => {
     out === a || out === b,
     `expected one of the two readings, got ${JSON.stringify(out)}`,
   );
+});
+
+// ── The stream variant ───────────────────────────────────────────────────
+//
+// Same conversion, but for PTY chunks, which carry ANSI escapes. The plain
+// `visualToLogical` is escape-blind by design (a clipboard selection has no
+// escapes); handing it a stream chunk would permute the bytes of a CSI
+// sequence. These pin that the stream variant does not.
+
+const CSI = "\x1b[31m";
+const RESET = "\x1b[0m";
+const OSC = "\x1b]0;title\x07";
+const CRLF = "\r\n";
+
+test("stream: escapes pass through byte-for-byte", () => {
+  const logical = "מה קורה אחי?";
+  const visual = reorderRtlForDisplay(logical);
+  const out = visualToLogicalStream(CSI + visual + RESET);
+  assert.equal(out, CSI + logical + RESET);
+});
+
+test("stream: an OSC sequence is not reordered into garbage", () => {
+  // The failure this exists to prevent: `OSC 0 ; title BEL` treated as text and
+  // permuted, which would corrupt the title and could emit a stray BEL.
+  const out = visualToLogicalStream(OSC + reorderRtlForDisplay("שלום"));
+  assert.ok(out.startsWith(OSC), `OSC mangled: ${JSON.stringify(out)}`);
+  assert.equal(out, OSC + "שלום");
+});
+
+test("stream: a chunk with no RTL is returned identical", () => {
+  const s = CSI + String.raw`PS C:\Users\me> git status` + RESET + CRLF;
+  assert.equal(visualToLogicalStream(s), s);
+});
+
+test("stream: escapes between text runs still split the runs", () => {
+  // Documented limit, pinned so it is a decision and not a surprise: each run
+  // between escapes resolves its own base direction.
+  const a = reorderRtlForDisplay("שלום");
+  const b = reorderRtlForDisplay("עולם");
+  const out = visualToLogicalStream(a + CSI + b);
+  assert.equal(out, "שלום" + CSI + "עולם");
+});
+
+test("stream: a mid-line fragment is handled, not thrown", () => {
+  // `merged` is a TIME boundary (one rAF), never a content boundary, so
+  // fragments are guaranteed to arrive. This does not assert correctness of the
+  // split — only that it is total and lossless in length.
+  const visual = reorderRtlForDisplay("שרת רץ על port 4200 — האם זה עובד?");
+  for (let cut = 1; cut < visual.length; cut += 7) {
+    const head = visual.slice(0, cut);
+    const tail = visual.slice(cut);
+    const out = visualToLogicalStream(head) + visualToLogicalStream(tail);
+    assert.equal([...out].length, [...visual].length, `length changed at cut ${cut}`);
+  }
+});
+
+test("stream and clipboard agree when there are no escapes", () => {
+  const visual = reorderRtlForDisplay("יש 42 קבצים בתיקייה");
+  assert.equal(visualToLogicalStream(visual), visualToLogical(visual));
 });

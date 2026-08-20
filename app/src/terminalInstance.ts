@@ -7,7 +7,7 @@ import type {
   ClipboardSelectionType,
 } from "@xterm/addon-clipboard";
 
-import { visualToLogical } from "./copyBidi";
+import { visualToLogical, visualToLogicalStream } from "./copyBidi";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { reorderRtlForDisplay } from "./bidi";
@@ -616,8 +616,48 @@ export class TerminalInstance {
     this.applyRowDirections(true);
   }
 
+  /**
+   * Is a self-reordering TUI (Claude Code on Windows) holding this pane, AND is
+   * the profile switch that handles it turned on?
+   *
+   * 2026-08-20: what "handles it" MEANS changed. It used to mean "render the
+   * bytes verbatim with `unicode-bidi: bidi-override`", which fixes the letters
+   * and forbids right alignment in the same stroke — `dir` has to be "ltr" for
+   * an override to make sense, and right alignment can only come from
+   * `dir="rtl"`. It now means "normalise the stream to logical on the way IN",
+   * after which the pane is indistinguishable from a remote one and the browser
+   * does the bidi. Same switch, same signal, different strategy — see
+   * `normaliseIncomingToLogical`.
+   */
   private get bidiOwnedByTui(): boolean {
     return foldTuiOwnsBidi(this.tuiExplicit, this.tuiOwnsBidi) && this.rtl.tuiOwnsBidi;
+  }
+
+  /**
+   * Convert this pane's incoming bytes from visual to logical order?
+   *
+   * The whole point of the 2026-08-20 change. Measured truth table, from
+   * Yossi's screen:
+   *
+   *   buffer   | render          | letters | placement
+   *   ---------|-----------------|---------|----------
+   *   visual   | dir="rtl"       | wrong   | RIGHT
+   *   visual   | bidi-override   | RIGHT   | left      <- what shipped before
+   *   LOGICAL  | dir="rtl"       | RIGHT   | RIGHT     <- this, and what remote
+   *                                                       has always done
+   *
+   * `reorderRtlForDisplay` cannot substitute for this: it reorders runs IN
+   * PLACE and does no padding, so it can never move a line to the right edge.
+   * Measured — `reorder(unreorder(v)) === v` on every sample. Placement comes
+   * from the browser under `dir="rtl"`, and the browser only gets that right if
+   * we hand it logical text.
+   *
+   * Only in `auto_per_line`, because that is the mode with the DOM renderer;
+   * the other two run WebGL, which has no `dir` and therefore no placement to
+   * gain.
+   */
+  private get normaliseIncomingToLogical(): boolean {
+    return this.bidiOwnedByTui && this.rtlModeRendered === "auto_per_line";
   }
 
   /**
@@ -643,6 +683,12 @@ export class TerminalInstance {
    *     branch is gated `&& !bidiOwnedByTui`, so the two never stack.
    */
   private get bufferIsVisualOrder(): boolean {
+    // 2026-08-20, second revision: if we normalised on the way in, the buffer
+    // is LOGICAL and the clipboard must not flip it again. That case has to be
+    // subtracted first — it is precisely the case where the source is visual,
+    // so testing `sourceIsVisual` alone would now be wrong in exactly the
+    // situation the normalisation exists for.
+    if (this.normaliseIncomingToLogical) return false;
     const sourceIsVisual = foldTuiOwnsBidi(this.tuiExplicit, this.tuiOwnsBidi);
     const weReordered =
       this.rtlModeRendered === "bidi_reorder" && !this.bidiOwnedByTui;
@@ -1319,7 +1365,13 @@ export class TerminalInstance {
     // `this.tuiOwnsBidi` instead — and because the OSC title propagates over
     // SSH, that fired on remote panes and broke a path that was working. See
     // the note on `directionPolicy` above.
-    const dirs = auto && !this.bidiOwnedByTui
+    // 2026-08-20: `normaliseIncomingToLogical` panes take the NORMAL path. The
+    // buffer they hold is logical, because flushPending converted it on the way
+    // in — so they need exactly what a remote pane needs: a real per-row `dir`
+    // and the browser's own bidi. Forcing "ltr" here is what pinned Hebrew to
+    // the left edge, since right placement can only come from dir="rtl".
+    const suppress = this.bidiOwnedByTui && !this.normaliseIncomingToLogical;
+    const dirs = auto && !suppress
       ? detectRowDirections(texts, this.rtl.directionPolicy === "tui_dominance")
       : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
 
@@ -1334,7 +1386,10 @@ export class TerminalInstance {
     // character strong in `direction`, so the bytes are painted in the order
     // they arrived — which is exactly what a pre-reordered stream needs, and
     // exactly what the WebGL renderer gives for free in rtl_mode="off".
-    const override = this.bidiOwnedByTui;
+    // …and for the same reason, a normalised pane must NOT get the override:
+    // its bytes are logical now, so painting them verbatim would show them
+    // reversed. The override is only right while the buffer is still visual.
+    const override = suppress;
     for (let i = 0; i < children.length; i++) {
       const el = children[i];
       this.dirCache.set(el, texts[i]);
@@ -1459,7 +1514,15 @@ export class TerminalInstance {
   private isCurrentLineRtl(): boolean {
     try {
       // Claude visual-order RTL: the TUI does its own line editing over
-      // visual-order text — winmux must not second-guess its arrows.
+      // visual-order text — ymux must not second-guess its arrows.
+      //
+      // 2026-08-20: STILL CORRECT after `normaliseIncomingToLogical`, and the
+      // reason is worth spelling out because the obvious reading is now wrong.
+      // Normalising changes what OUR buffer holds; it does not change what
+      // CLAUDE thinks it holds. Claude still edits its line in visual order and
+      // still moves its own cursor in those columns, so mirroring the arrows we
+      // send it would fight it, exactly as before. This bails on the signal,
+      // not on the buffer.
       if (this.bidiOwnedByTui) return false;
       const buf = this.term.buffer.active;
       const line = buf.getLine(buf.baseY + buf.cursorY);
@@ -1716,7 +1779,20 @@ export class TerminalInstance {
     // Keyed on the RENDERED mode, not the raw setting. They are kept equal by
     // `applyRenderer`; reading the setting directly here is what let the two
     // halves of the pipeline disagree and produce a pane with no bidi at all.
-    if (this.rtlModeRendered === "bidi_reorder" && !this.bidiOwnedByTui) {
+    if (this.normaliseIncomingToLogical) {
+      // Visual -> logical on the way in, so everything downstream — the row
+      // direction pass, the browser's bidi, selection, copy — sees the same
+      // logical text a remote pane has always delivered.
+      //
+      // The STREAM variant, not the clipboard one: `merged` is dense with CSI
+      // and OSC, and the clipboard variant is escape-blind by design.
+      //
+      // KNOWN LIMIT, inherited: `merged` is a rAF boundary, not a line
+      // boundary, so a slow repaint can hand us a mid-line fragment that
+      // resolves its own base direction. Same class of limit `bidi.ts` already
+      // documents for the forward pass.
+      this.term.write(visualToLogicalStream(merged));
+    } else if (this.rtlModeRendered === "bidi_reorder" && !this.bidiOwnedByTui) {
       this.term.write(reorderRtlForDisplay(merged));
     } else {
       this.term.write(merged);
