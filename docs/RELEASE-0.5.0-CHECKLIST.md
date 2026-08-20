@@ -210,13 +210,13 @@ with the WSL block and were re-added as their own section.
 
 | # | Test | Pass condition | Status |
 |---|---|---|---|
-| 8.1 | **Open a `workspaces.json` that still contains `"type":"wsl"`** | file loads, **every** workspace survives, saves still work. This is the data-loss case | 🔴 |
+| 8.1 | **Open a `workspaces.json` that still contains `"type":"wsl"`** | file loads, **every** workspace survives, saves still work. This is the data-loss case | 🟠 **unit-tested, not live** — `a_workspaces_json_containing_wsl_still_DESERIALISES` passes, but the real `workspaces.json` here has **no** WSL entries, so the live path was never exercised |
 | 8.2 | A migrated WSL workspace | appears as **local**, opens, and its panes work | 🔴 |
 | 8.3 | Open a pre-migration `wsl` workspace in the edit modal | shows as **local** — what `load_from_disk` turns it into — rather than falling through to an error | 🔴 |
 | 8.4 | Create-workspace modal | no "WSL (tmux)" option anywhere | 🔴 |
 | 8.5 | Sidebar | no `W` badge on any row | 🔴 |
 | 8.6 | Local-setup wizard end to end | no WSL group; finalize creates a **native Windows** workspace, and the name/folder inputs are still there and still work | 🔴 |
-| 8.7 | Restart after migrating | migration is not re-run, nothing duplicated | 🔴 |
+| 8.7 | Restart after migrating | migration is not re-run, nothing duplicated | 🟠 **unit-tested** — `migration_is_idempotent` |
 
 ## 9. ymux-tools: statuslines, Ticker, skills registry — 6 commits
 
@@ -266,7 +266,7 @@ instead of printing raw RPC payload.
 |---|---|---|---|
 | 11.1 | **4 panes on one workspace, single full network drop** | all four retry and reattach. Before the fix three were abandoned without a single attempt. No JS test runner in this repo — this needs a real build and a real drop | 🔴 FOLLOWUPS P1 |
 | 11.2 | Two ymux builds sharing `%APPDATA%\ymux` | the three-way merge (`0711d18`) means the older build no longer strips `parent_id` / `is_project_root` on save. Was P1, now P2 — confirm | 🔴 |
-| 11.3 | `workspaces.json` with a UTF-8 BOM | loads; persistence not disabled | 🟠 |
+| 11.3 | `workspaces.json` with a UTF-8 BOM | loads; persistence not disabled | 🟠 **unit-tested** — `a_utf8_bom_does_not_brick_the_workspaces_file` |
 | 11.4 | 3–4 panes opened at once against a stale-CLI server | **exactly one** SFTP stream in `debug.log`, one `bootstrap: COMPLETE — upload verified`, no `.tmp` left in `~/.ymux/bin`, skew banner visible | 🔴 FOLLOWUPS P1 |
 | 11.5 | Insights usage failing | no IPC flood (`38ef9a4`) | 🟠 |
 
@@ -326,10 +326,10 @@ main. Measured on CI: **warm 9m24s → 7m06s**; cold unchanged (15m37s → 16m05
 
 | # | Test | Pass condition | Status |
 |---|---|---|---|
-| 15.1 | Local release build via `build-release.ps1` | both bundles produced | 🟢 **verified** — 6m25s, `ymux_0.5.0_x64_en-US.msi` + `ymux_0.5.0_x64-setup.exe` |
-| 15.2 | Rule #13 — current `dist/assets/index-<hash>.js` appears inside `app.exe` | not yet checked | 🔴 |
-| 15.3 | Developer-path scrub — `grep -aoc $env:USERNAME app.exe` is 0 | not yet checked | 🔴 |
-| 15.4 | Rule #14 — launch the built exe, UI comes up | not yet checked | 🔴 |
+| 15.1 | Local release build via `build-release.ps1` | both bundles produced | ✅ **PASS** — 2m55s warm, MSI 22.2 MB + NSIS 16.0 MB |
+| 15.2 | Rule #13 — current `dist/assets/index-<hash>.js` appears inside `app.exe` | `index-D858gDu7.js` present | ✅ **PASS** — in the build **and** in the copy extracted from the NSIS installer |
+| 15.3 | Developer-path scrub — `grep -aoc $env:USERNAME app.exe` is 0 | 0 occurrences | ✅ **PASS** — build and NSIS payload both clean |
+| 15.4 | Rule #14 — launch the built exe, UI comes up | UI comes up | ✅ **PASS** — window `ssh runner@…:22 — ymux`, Responding, 34 MB, **0 ERROR / 0 WARN** across 330 boot log lines; loaded 5 workspaces (3 root / 2 nested / 1 repo) and completed an SSH connect |
 
 ---
 
