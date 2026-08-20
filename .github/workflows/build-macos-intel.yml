@@ -3,36 +3,112 @@
 # The binary's deployment target is 13.0 via tauri.macos.conf.json
 # (minimumSystemVersion) + MACOSX_DEPLOYMENT_TARGET, so building on the
 # macOS 15 image still produces a Ventura-compatible app.
+#
+# Phase 82: this is no longer a build-only job on a side branch. macOS is
+# a supported target on `main`, and this workflow is the ONLY place the
+# `cfg(target_os = "macos")` / `cfg(not(windows))` arms are compiled at
+# all — ci-windows.yml never sees them. So it runs the same gates
+# ci-windows does (cargo test, tsc, frontend build) BEFORE bundling, and
+# asserts the frontend is embedded afterwards (CLAUDE.md Rule #13).
+#
+# Ordering note, same shape as ci-windows: the mac host CLI must be staged
+# into src-tauri/resources/ymux-cli before any cargo step, because
+# tauri.macos.conf.json lists it as a bundle resource and it is gitignored.
 name: build-macos-intel
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
-    branches: [macos-build]
+    branches: [main]
+
+# A new push to the same branch makes the previous run pointless.
+concurrency:
+  group: build-macos-intel-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
 
+      # Keyed on the lockfile: dependency builds dominate the runtime and
+      # only change when Cargo.lock does.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
       - name: Install frontend deps
         working-directory: app
         run: npm ci
 
+      # The mac counterpart of Windows' `npm run build:linux-cli` (which is
+      # a PowerShell script and cannot run here). Without this the bundle
+      # ships no host CLI, and `resolve_ymux_cli` returns None — which is
+      # what made hooks and the MCP server unusable on macOS.
+      - name: Stage the mac host CLI
+        working-directory: app/src-tauri
+        run: |
+          cargo build --release --target x86_64-apple-darwin -p ymux
+          cp target/x86_64-apple-darwin/release/ymux resources/ymux-cli
+          chmod +x resources/ymux-cli
+          ls -l resources/ymux-cli
+
+      - name: cargo test
+        working-directory: app/src-tauri
+        run: cargo test --workspace
+
+      # typescript is not currently a project dependency (BACKLOG P2), so
+      # install it here rather than silently skipping the type check.
+      - name: Type-check
+        working-directory: app
+        run: |
+          npm i --no-save typescript@5
+          npx tsc --noEmit -p tsconfig.json
+
+      # esbuild strips types without checking them, so this is a bundling
+      # check, not a type check — it catches bad imports and dead assets.
+      - name: Frontend build
+        working-directory: app
+        run: npm run build:frontend
+
       - name: Build (.app bundle)
         working-directory: app
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: npm run tauri build -- --target x86_64-apple-darwin
+
+      # Rule #13's mac half. A binary linked without the Tauri CLI embeds
+      # no frontend and loads devUrl at startup — every window is
+      # ERR_CONNECTION_REFUSED on a machine with no dev server, and the
+      # Rust log gives no hint. That shipped twice on Windows before
+      # build-windows.yml started asserting; the mac side had no equivalent.
+      - name: Assert the frontend is embedded
+        working-directory: app
+        run: |
+          BIN="src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ymux.app/Contents/MacOS/ymux"
+          test -f "$BIN" || { echo "::error::ymux.app binary was not produced"; exit 1; }
+          ASSET=$(ls dist/assets/*.js | head -1 | xargs basename)
+          test -n "$ASSET" || { echo "::error::no built JS asset in dist/assets to check against"; exit 1; }
+          if LC_ALL=C grep -qa "$ASSET" "$BIN"; then
+            echo "OK: production build — '$ASSET' is embedded"
+          else
+            echo "::error::DEV-MODE BINARY: '$ASSET' is not embedded. It would load devUrl at startup and show ERR_CONNECTION_REFUSED on any machine without a dev server."
+            exit 1
+          fi
 
       # Tauri's bundle_dmg.sh drives Finder via AppleScript, which fails on
       # headless runners — build the dmg directly with hdiutil instead.
