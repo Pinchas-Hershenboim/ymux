@@ -1,14 +1,14 @@
 {
     "x86_64-linux":  {
                          "path":  "ymux-linux-x64",
-                         "sha256":  "d3d936d00b35ed452fdb47df85af4e558cb22d73a14b1e98031b875960aff906",
-                         "size":  2548688,
-                         "built_at":  "2026-08-19T10:40:09Z"
+                         "sha256":  "4dbbc9ca9fd180ef4e87986d343959b4bc6c62cfe233f81efd02ae41584758e8",
+                         "size":  2548816,
+                         "built_at":  "2026-08-20T14:16:05Z"
                      },
     "tmux-conf":  {
                       "path":  "ymux-tmux.conf",
                       "sha256":  "c38eb4d75c0aa25d18cddeff2786eeee3eba2f58718cb14f89a45cbf03faa9c0",
                       "size":  5525,
-                      "built_at":  "2026-08-19T10:40:09Z"
+                      "built_at":  "2026-08-20T14:16:05Z"
                   }
 }
