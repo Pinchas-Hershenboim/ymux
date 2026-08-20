@@ -1,7 +1,7 @@
 # YMUX 0.5.0 — what shipped since the last cut, and how to verify it
 
 Baseline: `v0.4.5-beta.1` = `bcaa330` (2026-07-31). Updated 2026-08-20 after the Zellij merge.
-Head at time of writing: `f98e079`.
+Head: `156de73` — 52 commits ahead of `origin/main`, 0 behind.
 **189 commits** — 151 at first writing plus the 38-commit Zellij chain.
 
 This is the pre-release test plan. Nothing here has been run against a
