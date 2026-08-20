@@ -275,14 +275,38 @@ fn dpapi_protect(secret: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// No at-rest wrapper exists off Windows, so there is nothing to write.
+///
+/// This used to return `noprotect:<secret>`, and `save_workspace_secret`
+/// wrote that verbatim into `provisioning-secrets.json` — i.e. the user's
+/// SSH password in plaintext, at default permissions, in the config dir.
+/// The premise in the old comment ("non-Windows builds are just the
+/// cross-compile for ymux-linux-x64, provisioning runs UI-side on
+/// Windows") stopped being true when the desktop shipped for macOS.
+///
+/// Rule #2 sanctions exactly this: DPAPI when persistence is possible,
+/// "otherwise keep in memory only". Deliberately NOT a Keychain
+/// integration — see the note on `save_workspace_secret`: nothing in the
+/// tree ever reads this store back, so wiring one up would be building a
+/// feature nobody asked for around a value nobody consumes.
 #[cfg(not(target_os = "windows"))]
-fn dpapi_protect(secret: &str) -> Result<String, String> {
-    // On non-Windows builds (cross-compile for resources/ymux-linux-x64)
-    // the secret store is unused — provisioning runs UI-side on Windows.
-    Ok(format!("noprotect:{secret}"))
+fn dpapi_protect(_secret: &str) -> Result<String, String> {
+    Err("no at-rest secret store on this platform (Rule #2: memory only)".into())
 }
 
+/// Persist the initial password, wrapped, keyed by workspace.
+///
+/// NOTE: write-only. Nothing in the tree reads this file back — there is
+/// no `dpapi_unprotect` and no loader — so today it is groundwork for a
+/// "remember this password" feature that does not exist yet. The caller
+/// already treats failure as non-fatal (it logs and continues), which is
+/// what makes the unix `Err` above safe: provisioning is unaffected.
+/// FOLLOWUPS P2 tracks giving it a reader or deleting it outright.
 fn save_workspace_secret(workspace_id: &str, password: &str) -> Result<(), String> {
+    // Wrap first: on a platform with no at-rest store this bails before we
+    // touch the file at all, so nothing half-writes and no empty
+    // provisioning-secrets.json appears in a macOS config dir.
+    let wrapped = dpapi_protect(password)?;
     let path = secrets_path()?;
     let mut file: SecretsFile = if path.exists() {
         let t = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -290,7 +314,6 @@ fn save_workspace_secret(workspace_id: &str, password: &str) -> Result<(), Strin
     } else {
         SecretsFile::default()
     };
-    let wrapped = dpapi_protect(password)?;
     file.entries.insert(workspace_id.to_string(), wrapped);
     let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| format!("write {path:?}: {e}"))?;
@@ -648,7 +671,15 @@ async fn run_provisioning(
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
-        format!("{home}\\.ssh\\ymux-{}-{}", input.workspace_id, input.new_user)
+        // Host separator, not a literal backslash: the old
+        // `format!("{home}\\.ssh\\ymux-…")` produced
+        // `/Users/yossi\.ssh\ymux-…` on macOS — one bogus file name
+        // in $HOME instead of a key under ~/.ssh.
+        std::path::Path::new(&home)
+            .join(".ssh")
+            .join(format!("ymux-{}-{}", input.workspace_id, input.new_user))
+            .to_string_lossy()
+            .into_owned()
     });
 
     // Phase 14.A.2 outcome tracking. Three milestones must all hit OK

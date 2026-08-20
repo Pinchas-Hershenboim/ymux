@@ -149,10 +149,11 @@ async fn handle_tool_call(params: Value) -> Result<Value, String> {
     rpc_call(rpc_method, rpc_params).await
 }
 
-// ─── Named-pipe RPC client (Windows-only for v1) ────────────────────────────
-// Mirrors the CLI's pipe path. Stateless per call: open pipe, write request,
-// read one line back, close. The MCP server runs locally next to the user's
-// agent; remote-agent use would target the CLI through the SSH tunnel.
+// ─── Local RPC client ───────────────────────────────────────────────────────
+// Mirrors the CLI's transport: a named pipe on Windows, a Unix-domain socket
+// elsewhere. Stateless per call: open, write request, read one line back,
+// close. The MCP server runs locally next to the user's agent; remote-agent
+// use would target the CLI through the SSH tunnel.
 
 #[cfg(windows)]
 fn default_pipe_name() -> String {
@@ -161,6 +162,54 @@ fn default_pipe_name() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(whoami::username);
     format!(r"\\.\pipe\ymux-{}", user)
+}
+
+/// `dirs::config_dir() / "ymux"`, without taking the `dirs` dependency —
+/// see the same pair in the CLI. Mirrors `ymux_core::config_dir`'s path
+/// resolution (not its migration).
+#[cfg(not(windows))]
+fn ymux_config_dir() -> Option<std::path::PathBuf> {
+    if let Some(custom) = std::env::var_os("YMUX_CONFIG_DIR")
+        .or_else(|| std::env::var_os("WINMUX_CONFIG_DIR"))
+        .filter(|v| !v.is_empty())
+    {
+        return Some(std::path::PathBuf::from(custom));
+    }
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    #[cfg(target_os = "macos")]
+    {
+        Some(home.join("Library").join("Application Support").join("ymux"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            Some(x) => Some(std::path::PathBuf::from(x).join("ymux")),
+            None => Some(home.join(".config").join("ymux")),
+        }
+    }
+}
+
+/// Unix-domain socket paths to try, in order — the client half of
+/// `ymux_core::pipe_names()` plus the pre-rename name. The app binds every
+/// one, so the first that connects is a live endpoint. The second exists
+/// because macOS caps `sockaddr_un.sun_path` at 104 bytes.
+#[cfg(not(windows))]
+fn default_socket_paths() -> Vec<String> {
+    let user = whoami::username();
+    let tmp = std::env::temp_dir();
+    let mut v = vec![tmp
+        .join(format!("ymux-{user}.sock"))
+        .to_string_lossy()
+        .into_owned()];
+    if let Some(cfg) = ymux_config_dir() {
+        v.push(cfg.join("rpc.sock").to_string_lossy().into_owned());
+    }
+    v.push(
+        tmp.join(format!("winmux-{user}.sock"))
+            .to_string_lossy()
+            .into_owned(),
+    );
+    v
 }
 
 async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
@@ -181,10 +230,29 @@ async fn rpc_call(method: &str, params: Value) -> Result<Value, String> {
             })?;
         rpc_via(pipe, method, params).await
     }
+    // Unix: same candidate walk the CLI does. This used to hard-error, which
+    // made the MCP tool unusable on macOS even though the app was listening.
     #[cfg(not(windows))]
     {
-        let _ = (method, params);
-        Err("ymux-mcp: only Windows transport is implemented (named pipe)".into())
+        let explicit = std::env::var("YMUX_PIPE_PATH")
+            .or_else(|_| std::env::var("WINMUX_PIPE_PATH"))
+            .ok()
+            .filter(|s| !s.is_empty());
+        let names = match &explicit {
+            Some(p) => vec![p.clone()],
+            None => default_socket_paths(),
+        };
+        let mut errors: Vec<String> = Vec::new();
+        for name in &names {
+            match tokio::net::UnixStream::connect(name).await {
+                Ok(sock) => return rpc_via(sock, method, params).await,
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        Err(format!(
+            "connect to the local ymux socket failed ({}) — is the ymux app running?",
+            errors.join("; ")
+        ))
     }
 }
 

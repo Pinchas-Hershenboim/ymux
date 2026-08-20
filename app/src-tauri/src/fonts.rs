@@ -415,7 +415,7 @@ fn extract_fonts(archive: &[u8], filter: &ZipFilter) -> Result<Vec<(String, Vec<
 /// those very names back — so deriving it from the file name instead would
 /// list the font as "JetBrainsMono-Regular" and the ✅ next to
 /// "JetBrains Mono" would never light up.
-fn full_font_name(data: &[u8]) -> Option<String> {
+pub(crate) fn full_font_name(data: &[u8]) -> Option<String> {
     let be16 = |off: usize| -> Option<u16> {
         Some(u16::from_be_bytes(data.get(off..off + 2)?.try_into().ok()?))
     };
@@ -482,10 +482,32 @@ fn full_font_name(data: &[u8]) -> Option<String> {
 
 // ─── install ───────────────────────────────────────────────────────────────
 
+#[cfg(target_os = "windows")]
 fn user_font_dir() -> Result<PathBuf, String> {
     let base = dirs::data_local_dir()
         .ok_or_else(|| "cannot locate %LOCALAPPDATA%".to_string())?;
     Ok(base.join("Microsoft").join("Windows").join("Fonts"))
+}
+
+/// macOS: `~/Library/Fonts`. The per-user font directory CoreText scans on
+/// its own — which is why `register_font` below is a no-op here rather than
+/// an error.
+///
+/// This used to be the Windows arm unconditionally, so a mac install wrote
+/// the faces into `~/Library/Application Support/Microsoft/Windows/Fonts`
+/// — a directory nothing reads — and then failed at the registration step,
+/// leaving the orphans behind.
+#[cfg(target_os = "macos")]
+fn user_font_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "cannot locate $HOME".to_string())?;
+    Ok(home.join("Library").join("Fonts"))
+}
+
+/// Linux/other unix: the XDG per-user font dir, picked up by fontconfig.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn user_font_dir() -> Result<PathBuf, String> {
+    let base = dirs::data_dir().ok_or_else(|| "cannot locate $XDG_DATA_HOME".to_string())?;
+    Ok(base.join("fonts"))
 }
 
 /// Write each face into the per-user font directory and register it.
@@ -560,9 +582,15 @@ fn register_font(face: &str, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// No-op off Windows: registration IS the Windows-specific half. Dropping a
+/// face into `~/Library/Fonts` (CoreText) or `$XDG_DATA_HOME/fonts`
+/// (fontconfig) is all it takes for the system to find it.
+///
+/// Returning `Err` here used to abort `install_faces` *after* it had already
+/// written the file, so the install both failed and littered.
 #[cfg(not(target_os = "windows"))]
 fn register_font(_face: &str, _path: &Path) -> Result<(), String> {
-    Err("per-user font install is Windows-only".to_string())
+    Ok(())
 }
 
 /// Make the new font usable without a reboot: load it into this session and

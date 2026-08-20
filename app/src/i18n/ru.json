@@ -1031,6 +1031,7 @@
   "notif.time.hour": "{n} ч назад",
   "notif.time.day": "{n} дн назад",
   "settings.persistBrowser.label": "Сохранять сессии браузера",
+  "settings.windowsOnly": "(только Windows)",
   "settings.persistBrowser.hint": "Сохранять cookie и входы в браузерах рабочих пространств между перезапусками. При отключении общий профиль браузера очищается при следующем запуске.",
   "fm.action.copy": "Копировать",
   "fm.action.cut": "Вырезать",

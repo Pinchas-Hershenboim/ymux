@@ -306,6 +306,33 @@ pub(crate) struct PermsResult {
     pub error: Option<String>,
 }
 
+/// Unix: sshd and russh-keys reject a private key that any group or other
+/// user can read, so the check is the mode bits — the direct equivalent of
+/// what the `icacls` parse below approximates on Windows.
+///
+/// This whole function used to be the `icacls` path unconditionally, so on
+/// macOS the spawn failed and EVERY key in the wizard was reported as
+/// having bad permissions, with "icacls spawn: No such file or directory"
+/// as the explanation.
+#[cfg(not(target_os = "windows"))]
+fn check_perms_inner(p: &Path) -> (bool, Option<String>) {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = match std::fs::metadata(p) {
+        Ok(m) => m,
+        Err(e) => return (false, Some(format!("stat {}: {e}", p.display()))),
+    };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 == 0 {
+        (true, None)
+    } else {
+        (
+            false,
+            Some(format!("mode {mode:04o} — group/other can read it; want 0600")),
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn check_perms_inner(p: &Path) -> (bool, Option<String>) {
     // We rely on `icacls <path>` and look for entries other than the
     // current user / SYSTEM / Administrators. Anything else means the
@@ -372,6 +399,26 @@ pub(crate) fn check_key_permissions(path: String) -> PermsResult {
     PermsResult { ok, error: err }
 }
 
+/// Unix counterpart of the icacls dance below: `chmod 0600`, which is all
+/// "only the owner may read it" means here. Previously this command ran
+/// `icacls` on every platform, so the wizard's "Fix permissions" button
+/// hard-errored on macOS.
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub(crate) fn fix_key_permissions(path: String) -> Result<PermsResult, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("file not found: {path}"));
+    }
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod 0600 {path}: {e}"))?;
+    log_info("WIZARD", &format!("connect_wizard: chmod 0600 {path}"));
+    let (ok, err) = check_perms_inner(&p);
+    Ok(PermsResult { ok, error: err })
+}
+
+#[cfg(target_os = "windows")]
 #[tauri::command]
 pub(crate) fn fix_key_permissions(path: String) -> Result<PermsResult, String> {
     let p = PathBuf::from(&path);

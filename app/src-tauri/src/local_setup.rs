@@ -376,6 +376,17 @@ pub(crate) fn classify_wsl_install(code: u32, output: &str) -> Result<(), Provis
 /// Reboot the machine to finish a WSL feature enable. Only ever called
 /// from an explicit user confirmation in the reboot card — never
 /// automatically, since other apps may hold unsaved work.
+/// Non-Windows: there is no WSL feature to finish enabling, so nothing
+/// should ever reach here. It was reachable — the command was registered
+/// unconditionally, so a mis-wired frontend would have tried to spawn
+/// `shutdown.exe` on a Mac. Refuse rather than attempt a reboot.
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub(crate) async fn restart_windows() -> Result<(), String> {
+    Err("restart_windows is Windows-only (it finishes a WSL feature enable)".into())
+}
+
+#[cfg(target_os = "windows")]
 #[tauri::command]
 pub(crate) async fn restart_windows() -> Result<(), String> {
     log_warn("SETUP", "user confirmed restart to finish the WSL install");

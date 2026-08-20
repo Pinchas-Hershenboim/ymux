@@ -8584,6 +8584,13 @@ pub fn run() {
     // --user-data-dir, which reintroduces the 0x8007139F "user data folder in
     // use" crash (WebView2 allows one environment per process). Must be set
     // before any webview is created, hence here at the top of run().
+    //
+    // Windows-only by construction: WKWebView (macOS) and WebKitGTK ignore
+    // WEBVIEW2_USER_DATA_FOLDER entirely. Running this block there created a
+    // `webview2` directory nothing would ever read and made the toggle a
+    // silent no-op — worse than an honest one, because "clear on restart"
+    // appeared to work. The UI disables the toggle off Windows to match.
+    #[cfg(target_os = "windows")]
     if let Ok(base) = config_dir() {
         let profile = base.join("webview2");
         // Toggle off → wipe the profile on this launch (clear-on-restart), then
@@ -8596,6 +8603,11 @@ pub fn run() {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &profile);
         log_debug("APP", &format!("webview2 profile folder: {}", profile.display()));
     }
+    #[cfg(not(target_os = "windows"))]
+    log_debug(
+        "APP",
+        "browser session persistence is WebView2-only — the setting has no effect on this platform",
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

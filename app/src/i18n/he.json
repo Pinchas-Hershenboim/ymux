@@ -1031,6 +1031,7 @@
   "notif.time.hour": "לפני {n} שע׳",
   "notif.time.day": "לפני {n} ימים",
   "settings.persistBrowser.label": "שמור סשנים של הדפדפן",
+  "settings.windowsOnly": "(Windows בלבד)",
   "settings.persistBrowser.hint": "שמור עוגיות והתחברויות בדפדפני סביבות העבודה בין הפעלות. כשכבוי — פרופיל הדפדפן המשותף מתנקה בהפעלה הבאה.",
   "fm.action.copy": "העתק",
   "fm.action.cut": "גזור",

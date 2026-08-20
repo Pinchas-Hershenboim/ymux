@@ -574,6 +574,22 @@ pub(crate) async fn download_and_install_update(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // The whole install path below is NSIS-shaped: it picks the
+    // `-setup.exe` asset, names the temp file `.exe`, and runs it. Off
+    // Windows that used to *still happen* — download a Windows installer,
+    // `Command::new(dest).spawn()` it, and then exit the app 800 ms later
+    // regardless of whether the spawn had failed. So the visible effect of
+    // "Install update" on macOS was: ymux quits, nothing is installed.
+    //
+    // Refuse before touching the network instead. A real self-update here
+    // means mounting the .dmg and swapping a running .app — a feature, not
+    // a platform gap, and it is tracked in FOLLOWUPS rather than faked.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (&app, &state);
+        return Err("in-app update is Windows-only for now — download the latest .dmg from the releases page".into());
+    }
+
     // Step 1: re-fetch the manifest (we don't trust the cached one
     // from the last check — the version might have moved on, and
     // we'd rather error than install something stale).
@@ -901,6 +917,14 @@ pub(crate) async fn updater_install_version(
     version: String,
     backup_settings: bool,
 ) -> Result<(), String> {
+    // Same NSIS assumption as `download_and_install_update` — and the same
+    // "quits without installing" outcome off Windows. Refuse up front.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (&app, &version, backup_settings);
+        return Err("installing a specific version is Windows-only for now — download that release's .dmg from the releases page".into());
+    }
+
     // Resolve the release (prefer cache; fall back to a fresh fetch).
     let list = match cached_versions() {
         Some(c) => c,
