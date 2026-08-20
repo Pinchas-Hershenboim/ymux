@@ -125,19 +125,28 @@ The 3 commits in the earlier plan became **18**. This was not polish — the mod
 changed. Every fix below was measured on a real build, and several are
 corrections of a fix from earlier the same day.
 
-**What the measurements settled** (`0b40012`, same build, same session):
+**Correction (2026-08-20, verified live).** The first version of this section
+said local should default to `bidi_reorder`. That came from `0b40012`/`4426ad4`
+and was **superseded later on the same branch**. The shipped defaults, read from
+`settings.rs::default_local_rtl` and confirmed against a real migration run:
 
-| pane class | correct mode | what `off` did |
+| pane class | `rtl_mode` | `tui_owns_bidi` |
 |---|---|---|
-| remote (SSH → Linux) | `auto_per_line` | reversed |
-| local (Windows ConPTY) | `bidi_reorder` | reversed |
+| remote (SSH → Linux) | `auto_per_line` | `false` |
+| local (Windows ConPTY) | `auto_per_line` | **`true`** |
 
-So the setting is now **split per pane class**, and `4426ad4` gives each profile
-its own measured default rather than inheriting the old shared value.
+Both classes use `auto_per_line`; the difference is the **switch**, not the mode.
+The code says why: a local *shell* is logical order and renders correctly under
+`auto_per_line`, while Claude Code output is pre-reordered and must not be
+bidi'd again — only the second case needs the switch, and it is driven **per
+pane** by the connect wizard and the Claude hooks. `rtl_mode: "off"` briefly
+shipped as the local default and "fixed Claude by breaking the shell" — a
+profile-wide hammer for a per-pane problem. Pinned by
+`local_owns_bidi_by_default_and_remote_does_not`.
 
 | # | Test | Pass condition | Status |
 |---|---|---|---|
-| 5.1 | Hebrew in a **local Windows** pane, all three RTL modes | each mode is separately testable on an **open** pane — xterm swaps renderers live (`bc12388`). Default is `bidi_reorder` | 🔴 |
+| 5.1 | Hebrew in a **local Windows** pane, all three RTL modes | each mode separately testable on an **open** pane — xterm swaps renderers live (`bc12388`). Default is `auto_per_line` **with `tui_owns_bidi` on** | 🔴 |
 | 5.2 | Hebrew in a **remote SSH/Linux** pane, all three modes | default is `auto_per_line`; remote was never broken and must stay that way | 🔴 |
 | 5.3 | Ordinary shell output with **one** Hebrew word (`ls`, a Hebrew filename, a note on a long path) | does **not** flip. The dominance vote is TUI-rows-only (`341f931`) — it reached ordinary output once already | 🔴 |
 | 5.4 | A TUI status bar with three Hebrew letters | does not flip (`bc9665c`) | 🔴 |
@@ -146,7 +155,7 @@ its own measured default rather than inheriting the old shared value.
 | 5.7 | Fire a Claude hook, then **detach and reattach** | the RTL signal survives; a reattach must not clear it (`eaab4bf`) | 🔴 |
 | 5.8 | Change any unrelated setting, then reopen Settings | `terminal.rtl` **survives** — `settings_save` replaced the whole document from a stale client copy (`2a7463c`) | 🔴 |
 | 5.9 | Toggle one RTL field | the other pane class's switch is **not** disabled — a partial profile write was wiping it (`05d89f2`) | 🔴 |
-| 5.10 | **Migration**: settings written by 0.4.5 | each profile gets its measured mode, not the old shared one (`4426ad4`) | 🔴 |
+| 5.10 | **Migration**: settings written by 0.4.5 | flat `rtl_mode` seeds both profiles; local gets `tui_owns_bidi: true`, remote `false` | ✅ **PASS** — verified live 2026-08-20 on a real `settings.json`; log line `seeded terminal.rtl {local,remote} from the pre-split flat RTL fields` |
 
 > The two settings bugs (5.8, 5.9) are why RTL "kept regressing" — a correct fix
 > was being silently discarded on save. Test them **before** re-reporting any
