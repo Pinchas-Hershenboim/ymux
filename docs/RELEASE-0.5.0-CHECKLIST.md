@@ -10,6 +10,24 @@ behaviour (Rule #14). Work top to bottom: area 1 gates everything else,
 because every other test on an upgraded machine runs through the migrated
 config dir.
 
+> ## ⏸ ON HOLD — 2026-08-20
+>
+> An active session on `claude/zellijj-commands-469a3e` (builds on
+> `claude/zellinj-tmux-windows-3a5afe`, **35 commits** ahead of main, last
+> commit today 14:40, uncommitted work in the tree) **replaces WSL with
+> Zellij**. Yossi's call: wait for it, merge everything, then test once.
+>
+> **Do not start testing yet.** Two areas below are already wrong:
+> * **Area 5 (RTL)** — 3 commits here become **~18** on that branch. Frozen.
+> * **Area 8 (WSL Smart Install)** — **all 8 checks are dead.** WSL is removed
+>   from the UI entirely: no "WSL (tmux)" option, no `W` sidebar badge, and the
+>   whole eight-step WSL group is gone from the local-setup wizard.
+>
+> Two areas will need to be **written** once the branch lands: Zellij persistent
+> sessions, and the WSL → local workspace migration.
+>
+> Everything else (areas 1–4, 6–7, 9–15) stands, but holds until the merge.
+
 **Legend** — Status: `⛔ blocker` · `🔴 untested, has a written repro` ·
 `🟠 untested, no repro written` · `🟢 verified live`
 
@@ -126,10 +144,14 @@ pane classes — the settings are split per class (local Windows vs Linux).
 | 5.4 | A TUI with a status bar containing a few Hebrew letters | status bar does **not** flip | 🟠 |
 | 5.5 | Settings → RTL | the per-pane-class split is visible and each side takes effect | 🟠 |
 
-> ⚠️ 22 further RTL commits sit unmerged on `claude/zellinj-tmux-windows-3a5afe`
-> (bidi-override, pane-class direction rule, TUI-row dominance vote). **Excluded
-> from 0.5.0 by decision.** If RTL testing surfaces bugs here, check that branch
-> before writing new fixes — it may already be solved there.
+> ⏸ **FROZEN — do not test.** ~15 further RTL commits sit on
+> `claude/zellijj-commands-469a3e`, and they change the model, not just the
+> behaviour: RTL settings split **per pane class** (local Windows vs Linux),
+> `bidi-override` replaces `dir`, the dominance vote is restricted to TUI rows,
+> the direction rule follows the pane class rather than what runs inside it, and
+> two settings-write bugs were silently wiping `terminal.rtl`. Zellij also
+> normalises the stream, which changes what "local" should default to. The five
+> checks below will be rewritten against the merged result.
 
 ---
 
@@ -165,7 +187,7 @@ field with a real availability probe · `fca8b54` flag not-installed + read HKCU
 
 ---
 
-## 8. WSL Smart Install — 8 commits
+## 8. ~~WSL Smart Install~~ — SUPERSEDED, do not test ⏸
 
 `65d6fdc` real install path: preflight, UAC consent, reboot · `f3907fc` **install Claude
 Code inside WSL — the chain never did** · `adfb237` capability layer + tmux session
@@ -186,9 +208,17 @@ exists to make this repeatable.
 | 8.4 | WSL workspace, close and reopen | tmux session restored (`adfb237`) | 🟠 |
 | 8.5 | Env vars inside a WSL setup script | survive (`9bd44bc` — argv used to eat them) | 🟠 |
 
-> ⚠️ The unmerged `zellinj` branch **removes WSL from the UI entirely** and migrates
-> WSL workspaces to local. Excluded from 0.5.0 — so WSL still ships here and must
-> still work.
+> ⏸ **All 8 checks above are dead.** `137c789` on the pending branch removes WSL
+> from the UI entirely — the "WSL (tmux)" option, the `W` sidebar badge, and the
+> whole eight-step WSL group in the local-setup wizard (chain constant, checkbox,
+> status summary, 51-line UI block) are gone. `finalize_wsl_workspace` was
+> **converted**, not deleted: it becomes `finalize_local_workspace` and creates a
+> native Windows workspace with no WSL chain. An existing pre-migration `wsl`
+> workspace opened in the edit modal now shows as **local**.
+>
+> Kept here only so the eight fixes are on record — four of them were "it silently
+> lied about succeeding" bugs, and that failure mode is worth remembering if the
+> local-setup wizard inherits any of that code.
 
 ---
 
@@ -307,13 +337,27 @@ main. Measured on CI: **warm 9m24s → 7m06s**; cold unchanged (15m37s → 16m05
 
 ---
 
-## What is deliberately NOT in 0.5.0
+## Still to merge — this is what we are waiting for
 
-| Branch | Commits | Contents |
+| Branch | Commits | State |
 |---|---|---|
-| `claude/zellinj-tmux-windows-3a5afe` | 22 | Zellij persistent sessions for native Windows panes · **WSL removed from the UI** + migration to local · 9 further RTL fixes |
-| `browser-dev-mode-tickets` | 13 | Phase 54 browser dev-mode — **superseded**, the work landed in main via the `browser-tickets-v2` rewrite. Zombie branch |
-| `design-pass-01` | 5 | Design tokens, welcome screen, command palette — **superseded**, all present in main. Zombie branch |
+| `claude/zellijj-commands-469a3e` | **35** ahead of main | **ACTIVE.** Builds on `zellinj`. Last commit 2026-08-20 14:40; `copyBidi.ts` + its test still uncommitted. Merges into 0.5.0 once it lands |
+
+What it brings, and what it will need in this plan:
+
+| Area | Commits | Needs |
+|---|---|---|
+| **Zellij** — persistent sessions for native Windows panes, install from the new-workspace wizard, one command surface for every verb, kill-vs-bury in the picker, frame off, config found beside the running exe | 8 | a **new area**, written from scratch |
+| **WSL → local migration** — existing WSL workspaces converted before the path was removed; `finalize_local_workspace` replaces the WSL chain | 2 | a **new area**; also replaces area 8 |
+| **RTL** — per-pane-class settings, `bidi-override` over `dir`, TUI-row dominance vote, direction follows pane class, two settings-write bugs wiping `terminal.rtl` | ~15 | area 5 **rewritten** |
+| **SSH** — the tmux kill forced its own exit code to 0 | 1 | folds into area 11 |
+
+## Zombie branches — superseded, safe to delete
+
+| Branch | Commits | Why |
+|---|---|---|
+| `browser-dev-mode-tickets` | 13 | Phase 54 browser dev-mode. The work landed in main via the `browser-tickets-v2` rewrite |
+| `design-pass-01` | 5 | Design tokens, welcome screen, command palette — all present in main |
 
 ---
 
@@ -322,7 +366,9 @@ main. Measured on CI: **warm 9m24s → 7m06s**; cold unchanged (15m37s → 16m05
 | | Count |
 |---|---|
 | Release-shape blockers | 5 |
-| Feature areas | 15 |
+| Feature areas written | 15 (2 frozen, 2 more to write) |
 | Individual checks | 80 (5 release-shape + 75 feature) |
+| — of those, currently valid | 67 (area 5 frozen, area 8 dead) |
 | Verified live so far | 1 |
 | Open FOLLOWUPS carried in | 38 (2× P0, 8× P1) |
+| **Status** | **⏸ on hold — waiting for `zellijj-commands-469a3e`** |
