@@ -3573,8 +3573,15 @@ Phase 80 onward was missing on Mac; 14 macOS fixes never reached main.
         {home}\.ssh\ymux-… backslash join; WebView2 toggle now disabled
         off Windows instead of silently doing nothing.
 
-RESULT: ci-windows green on 82.A+82.E (run 32376684962). Mac build and the
-82.D run pending at time of writing.
+RESULT: ci-windows green on 82.A+82.E (run 32376684962). The FIRST mac run
+(32376684988) failed on one test — utf8_shell_tests::shell_kinds_route_to_
+the_right_args — which had only ever been compiled on Windows, where it
+passed vacuously. Real finding, not a test artifact: detect_shell_kind took
+the stem with Path::file_stem, which honours only the host separator, so a
+Windows shell path classifies as Posix off Windows and gets no UTF-8
+preamble. Fixed by normalizing separators first, the idiom path_basename
+already uses. 273 of 274 passed otherwise — the merge itself compiled clean
+on macOS first try.
 STATUS: compiles-and-tests-on-CI. NOT run live on a Mac — rule 14. The
 Keychain refusal, chmod perms and hooks-over-socket have no CI test that
 exercises them and need a real Mac before release.
