@@ -3526,3 +3526,56 @@ FOLLOWUPS: the P1 is closed. What remains is a P3 for the surfaces still never
 exercised -- the Settings font-size slider (the whole reason for the px ->
 --w-fs-* sweep), drag-reorder, the menus/rename/colour picker, 11 of the 13
 presets, and prefers-reduced-motion.
+
+════════════════════════════════════════════════════════════════════════
+2026-08-20 | Phase 82 | session=mac-features-compatibility
+Unify the macOS port into main; retire macos-build.
+
+WHY: macos-build was 65 commits behind main / 14 ahead. Everything from
+Phase 80 onward was missing on Mac; 14 macOS fixes never reached main.
+
+82.A  merge (65b74d5) — 8 conflicted files, 16 hunks.
+      rpc_server: kept BOTH shapes — bind every pipe_names() candidate
+      (macOS sun_path 104-byte cap) AND the legacy name; BIND_ERROR /
+      listener_count retained, unix listener_count is now the real count.
+      PaneView: main's folderAnchor() + branch's isAbsolutePath(), and
+      main's <Show> wrapper around the branch's widened Browse gate.
+      ymux-core write_line: take main (log_writer supersedes); Info.plist
+      survives. peek_claude_jsonl is one-sided, kept.
+      Rename fallout found by reading, each a real defect:
+        - TMUX_META_MARKER was <<<WINMUX_META>>>, script emits YMUX → the
+          session-meta join would have silently dropped.
+        - DeployWinmuxCliToWsl (3 sites) never matched the frontend's
+          DeployYmuxCliToWsl → chain check missed it, no finalize.
+        - use_winmux_tmux_config / winmux_types:: → do not compile.
+        - local tmux.conf written to ~/.winmux while the attach script
+          hardcodes $HOME/.ymux/tmux.conf → folds the legacy copy once.
+
+82.E  CI (f2b7374) — build-macos-intel.yml now on push/PR to main (it was
+      push to macos-build only, i.e. zero coverage after unifying), runs
+      cargo test + tsc + frontend build, asserts the embedded frontend
+      (Rule #13's missing mac half), and stages resources/ymux-cli.
+
+82.D  parity (70a43db) — the holes the merge cannot close:
+      - CLI + MCP Unix-socket transport. Hooks/statusline/MCP did not work
+        on macOS AT ALL; the server had been listening the whole time.
+      - SSH passwords were plaintext at rest on macOS. Now Err (Rule #2
+        "memory only"). NOT Keychain — the store is write-only, nothing
+        reads it back; that is now a P2 to resolve first.
+      - icacls ran unconditionally → every SSH key reported bad perms and
+        "Fix permissions" hard-errored. Unix arms: mode bits / chmod 0600.
+      - "Install update" downloaded a Windows .exe, spawned it, and quit
+        the app 800ms later regardless. Both install commands now refuse.
+      - Font install wrote to ~/Library/Application Support/Microsoft/
+        Windows/Fonts then failed at registration, leaving orphans. Now
+        ~/Library/Fonts; enumeration reuses fonts::full_font_name.
+      - restart_windows was registered on every OS (shutdown.exe);
+        {home}\.ssh\ymux-… backslash join; WebView2 toggle now disabled
+        off Windows instead of silently doing nothing.
+
+RESULT: ci-windows green on 82.A+82.E (run 32376684962). Mac build and the
+82.D run pending at time of writing.
+STATUS: compiles-and-tests-on-CI. NOT run live on a Mac — rule 14. The
+Keychain refusal, chmod perms and hooks-over-socket have no CI test that
+exercises them and need a real Mac before release.
+════════════════════════════════════════════════════════════════════════
