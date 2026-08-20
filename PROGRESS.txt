@@ -3586,3 +3586,30 @@ STATUS: compiles-and-tests-on-CI. NOT run live on a Mac — rule 14. The
 Keychain refusal, chmod perms and hooks-over-socket have no CI test that
 exercises them and need a real Mac before release.
 ════════════════════════════════════════════════════════════════════════
+
+2026-08-20 | Phase 82 | CLOSE-OUT
+Both workflows green: ci-windows 32380608662 (4m55s), build-macos-intel
+32380608651 (24m36s — cargo test 274, tsc, .app, embedded-asset assert,
+dmg c5622c46…). PR #12 merged to main as 7382de9.
+
+macos-build DELETED. Proven contained first: `git rev-list --count
+origin/main..origin/macos-build` = 0 and `git branch -r --merged
+origin/main` listed it. Tip was 5e0ff6dc6aee627e436851777bc2645f1bcef354
+— recorded here so the fork is recoverable by SHA if anything is ever
+found missing.
+
+Two CI-only findings worth remembering, both caught because the mac job
+had never compiled these arms before:
+  1. detect_shell_kind used Path::file_stem, which honours only the host
+     separator — a Windows shell path classified as Posix off Windows and
+     got no UTF-8 preamble. The test had passed vacuously on Windows for
+     as long as it existed.
+  2. The bundle's executable is Contents/MacOS/app, not /ymux —
+     mainBinaryName is unset. New P3.
+
+STILL NOT VERIFIED LIVE (rule 14). Nothing in CI exercises the 82.D
+paths at runtime. Before any release with these: run the .dmg on a real
+Mac and check (a) a local pane spawns zsh, (b) `ymux` on PATH reaches the
+app over the Unix socket — this is the hooks/statusline path and the one
+most likely to be wrong, (c) the connect wizard stops flagging every key
+as badly permissioned, (d) Settings shows real installed fonts.
