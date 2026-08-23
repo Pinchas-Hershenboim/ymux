@@ -4944,6 +4944,98 @@ staging post. Consequences applied rather than just recorded:
 No code or CI change. The workflow already warns rather than fails in the
 ad-hoc path, which is exactly the behaviour this decision wants.
 
+
+
+================================================================================
+2026-08-23 | Phase 83 — the Go server enters the CI pipeline
+================================================================================
+Files: .github/workflows/ci-windows.yml, .gitattributes, CLAUDE.md,
+docs/ymux-server/README.md, docs/DECISIONS.md, FOLLOWUPS.md
+
+Yossi: "the SERVER should also go through BUILD if we changed something in
+its code — no reason it's not in the CI pipe." Two holes, the second worse
+than the first.
+
+1. The server WAS compiled in CI, for the wrong platform. `go test ./...`
+   runs on windows-latest, i.e. GOOS=windows. What ships is
+   resources/ymux-server-linux-{x64,arm64}. A linux-only break — a syscall
+   arm, a //go:build tag, a dep without windows/linux parity — was
+   invisible until a human cross-compiled at release time.
+
+2. Those two binaries are COMMITTED BLOBS baked by hand
+   (docs/ymux-server/README.md § Build; the manual step is even minuted at
+   docs/DECISIONS.md:298). src/addons.rs `include_bytes!`s them, so nothing
+   in the desktop build ever reads the Go source. Change a handler, skip the
+   rebake, and every job is green while every remote gets the OLD server.
+   Nothing anywhere said so.
+
+Added to ci-windows.yml:
+  - `go vet ./...`
+  - cross-build linux/amd64 + linux/arm64 with the release flags from
+    README § Build (-trimpath -ldflags="-s -w", CGO_ENABLED=0). Built with
+    `-o <dir>/ ./...` as well as ./cmd, so packages main does not import are
+    compiled for linux too. ~30s, CGO-free.
+  - upload both as the `ymux-server-linux` artifact, which makes a rebake
+    "download and commit" instead of "install Go locally" (Rule #17).
+  - THE GATE: fail if `server/**.{go,mod,sum}` (minus _test.go) changed
+    between the base commit and HEAD while
+    resources/ymux-server-linux-{x64,arm64} did not. Two-dot diff against a
+    shallow-fetched base — the checkout is depth-1, and on a PR the checked
+    out ref is already base-merged so two-dot IS the PR diff.
+  - `sdk-gen/ci-check.mjs` (the SDK/OpenAPI drift-guard). Closes the root
+    cause of the FOLLOWUPS P2 from 2026-08-18, where ~670 lines of stale
+    generated output rode into the rename commit because nothing checked.
+
+DELIBERATELY NOT a byte-compare of the committed blob against the fresh
+cross-build. Go output is reproducible only for a fixed toolchain patch
+version, and setup-go resolves `go 1.26` to whatever 1.26.x is current, so
+that check would go red on a Go point release for a reason unrelated to the
+change. The source-drift gate is exact and has no such failure mode.
+
+Also, found while reading .gitattributes: `* text=auto eol=lf` covers the
+whole tree and the three extensionless shipped binaries (ymux-cli,
+ymux-linux-x64, ymux-server-linux-*) match no `binary` rule. They survive
+today only because git sniffs a NUL in the ELF header. Named them
+explicitly — a heuristic is not what should stand between us and a
+corrupted 12MB blob.
+
+Current state: the committed blobs are NOT stale. Both are from 90626bb
+(2026-08-19, the rename) and `git log 90626bb..HEAD -- app/src-tauri/server/`
+is empty. So this is a gate, not a fix.
+
+VERIFIED ON CI (PR #14, ci-windows run 32640896350, SUCCESS). Every new
+step green on the first try, including the two that could only be settled
+by running them: `go vet ./...` is clean on the current tree (it had not
+run since the rename), and sdk-gen/ci-check.mjs is green on a fresh Windows
+checkout — it shells `go run ./cmd/ymux-server openapi` and diffs generated
+output, and the .gitattributes LF normalisation held. The cross-build
+produced the `ymux-server-linux` artifact (10,524,795 bytes zipped, both
+arches). The drift gate reported "no shipping Go source changed" on this
+PR's own diff, which is correct.
+
+Rule #14 still applies to the SERVER ITSELF: nothing here ran the produced
+binary. What is verified is that it compiles for linux/amd64 and
+linux/arm64 and that the gate fires on the right inputs.
+
+--- merge note, same day ---
+origin/main moved 70 commits under this branch while CI was running (the
+Zellij/RTL/0.5.0 line plus `perf(build)`, which touches ci-windows.yml
+itself). Exactly the CLAUDE.md warning. Merged rather than rebased; three
+files needed hands:
+  - ci-windows.yml AUTO-merged cleanly and was checked by diffing the
+    result against origin/main: main's CARGO_INCREMENTAL/
+    CARGO_PROFILE_DEV_DEBUG, the .ps1 parse-check step, `shared-key:
+    windows-dev`, and the Type-check simplification are all intact, with
+    the Go block layered on top. Verify this way, not by reading the file
+    — a bad auto-merge here looks fine in isolation.
+  - CLAUDE.md: both CI bullet lists kept (mine for ci-windows, main's for
+    build-windows + the new warm-rust-cache.yml).
+  - PROGRESS.txt: append-only, both sides kept, main's first.
+Note for whoever rebakes next: main's build:linux-cli now stages by sha256
+rather than mtime, because re-copying a byte-identical file into resources/
+was forcing a full rebuild of the app lib. The server blobs are staged by
+hand, so that optimisation does not cover them — but it is the same class
+of problem and the same directory.
 -------------------------------------------------------------------------------
 2026-08-23 (session close) | worktree + branches removed
 -------------------------------------------------------------------------------
