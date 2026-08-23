@@ -3613,3 +3613,39 @@ Mac and check (a) a local pane spawns zsh, (b) `ymux` on PATH reaches the
 app over the Unix socket — this is the hooks/statusline path and the one
 most likely to be wrong, (c) the connect wizard stops flagging every key
 as badly permissioned, (d) Settings shows real installed fonts.
+
+===============================================================================
+2026-08-23 | fix(ci): the mac build's ad-hoc path could never bundle
+Files: .github/workflows/build-macos-intel.yml
+===============================================================================
+
+Run 32421631034 (claude/macos-universal-signing, workflow_dispatch) failed
+in BOTH matrix legs at "Build (.app bundle)":
+
+    Signing with identity ""
+    error: The specified item could not be found in the keychain.
+    failed to bundle project failed codesign application
+
+So the per-arch signing branch has never produced a bundle without the
+Developer ID secrets — i.e. the ad-hoc fallback it was written to provide
+was broken on arrival. `main` is NOT affected: its copy of the workflow
+predates the signing block (last dispatch on main, 32408062153, green).
+
+Cause: the step's comment claimed tauri "falls back to the config's '-'
+when APPLE_SIGNING_IDENTITY is empty". It does not. tauri-cli reads the
+variable with env::var_os, so SET-BUT-EMPTY is Some("") and it wins over
+"signingIdentity": "-" in tauri.macos.conf.json. A YAML `env:` entry
+defines the variable even when the `... || ''` expression yields empty —
+which is exactly the ad-hoc case — so tauri tried to codesign with an
+identity literally named "", and codesign went looking for it in the
+keychain. The log shows the mode step resolving correctly (HAVE_IDENTITY
+empty -> adhoc, cert import skipped) and the empty var reaching the build
+anyway, which is what makes the cause unambiguous.
+
+Fix: the ad-hoc path now `unset`s the variable in the step's shell instead
+of blanking it, and echoes which path it took. Blank-vs-unset is the whole
+bug, so the step says out loud which one it is.
+
+NOT VERIFIED YET — dispatched, see the result recorded below/next session.
+The arm64 leg in particular has never gotten past this step, so anything
+macos-14/aarch64-specific after bundling is still unproven.

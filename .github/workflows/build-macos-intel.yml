@@ -209,13 +209,27 @@ jobs:
           echo "--- identities available ---"
           security find-identity -v -p codesigning "$KEYCHAIN"
 
-      # Tauri signs the bundle itself when APPLE_SIGNING_IDENTITY is set,
-      # and falls back to the config's "-" (ad-hoc) when it is empty.
+      # Tauri signs the bundle itself when APPLE_SIGNING_IDENTITY is set.
+      # It reads it with env::var_os, so a variable that is SET BUT EMPTY is
+      # still Some("") and overrides tauri.macos.conf.json's signingIdentity
+      # "-" — codesign then looks for an identity named "" and the whole
+      # bundle step dies with "The specified item could not be found in the
+      # keychain". A YAML `env:` entry defines the variable even when the
+      # expression evaluates to '', which is exactly the ad-hoc case, so the
+      # ad-hoc path has to UNSET it rather than blank it.
       - name: Build (.app bundle)
         working-directory: app
         env:
           APPLE_SIGNING_IDENTITY: ${{ steps.mode.outputs.signing == 'developer-id' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-        run: npm run tauri build -- --target ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            unset APPLE_SIGNING_IDENTITY
+            echo "ad-hoc: APPLE_SIGNING_IDENTITY unset, tauri will use signingIdentity \"-\" from tauri.macos.conf.json"
+          else
+            echo "developer-id: signing with the identity from secrets"
+          fi
+          npm run tauri build -- --target ${{ matrix.target }}
 
       # Rule #13's mac half. A binary linked without the Tauri CLI embeds
       # no frontend and loads devUrl at startup — every window is
