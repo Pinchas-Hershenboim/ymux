@@ -25,6 +25,15 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-23 — Mac builds are ad-hoc signed: pay Apple, or ship the xattr workaround forever?
+- **Context:** The two-arch mac matrix is green (run 32639916194) and produces a `.dmg` per architecture, but with no Developer ID secrets on the repo every build takes the ad-hoc path: `codesign -dvvv` reports `Signature=adhoc` / `TeamIdentifier=not set`, and `spctl` **rejects** both bundles. The dmgs build and run locally; a user who *downloads* one gets a Gatekeeper block. This is not a bug left behind — the workflow's signed path is written and waiting on five secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID` + `APPLE_PASSWORD`, `APPLE_TEAM_ID`), and those need an Apple Developer Program membership.
+- **Options:**
+  - **A — Join the program (~$99/yr) and set the secrets.** Downloads open cleanly. Also unlocks notarisation, which is the part that actually clears Gatekeeper — signing alone is not enough for a downloaded app.
+  - **B — Stay ad-hoc, document the workaround.** Zero cost; every mac user must run an `xattr` command before first launch, and the README carries that note. Acceptable for a beta with a handful of testers, corrosive for a public release.
+  - **C — No mac distribution at all; contributors build from source.** Cheapest, and the honest option if macOS is not really a shipping target.
+- **Status:** OPEN, Yossi's call — it is a spend decision, not a code decision. Nothing is blocked meanwhile: the workflow already warns rather than fails in the ad-hoc path, and errors only if a *Developer ID* build somehow fails Gatekeeper.
+- **Note if A is chosen:** the signed path has **never executed**. notarytool, stapling, and the `spctl rejected a Developer ID signed build` error branch all run for the first time on whichever build follows the secrets landing — budget a failed run or two, and do not schedule it against a release cut.
+
 ### 2026-08-18 — Project folders v4: a project folder IS a workspace (SUPERSEDES v2 and v1)
 - **What changed and why.** v2 and v3 were both rejected on sight for the same reason, which took four rounds to hear correctly. Yossi: *"it pins the whole workspace to a folder inside it, instead of opening a **sub-workspace** of that folder — and then it would let you open panes in that environment, directly on that folder."* The `ProjectFolder` entity is gone. What it modelled — a directory on a host you keep coming back to — is a workspace with a `cwd`; the only field genuinely missing from the schema was a parent.
 - **Decided (Yossi's calls, 2026-08-18):**
@@ -186,6 +195,14 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 ---
 
 ## Decided
+
+### 2026-08-23 — The mac build's ad-hoc path was broken from birth; hardened-runtime verification is deferred to a contributor
+- **Context:** The last mac run before this session, 32421631034 on `claude/macos-universal-signing`, failed **both** matrix legs at the bundle step with `Signing with identity ""` → `The specified item could not be found in the keychain`. `main` was never affected — its copy of the workflow predates the signing block.
+- **Cause — a wrong assumption, stated in a comment.** The step read "tauri falls back to the config's `-` when `APPLE_SIGNING_IDENTITY` is empty". It does not: tauri-cli reads the variable with `env::var_os`, so **set-but-empty is `Some("")`** and overrides `"signingIdentity": "-"` in `tauri.macos.conf.json`. A YAML `env:` entry defines the variable even when its `... || ''` expression yields empty — exactly the secretless case — so tauri codesigned with an identity literally named `""`. Blank and unset are not the same thing, and the whole failure lived in that gap.
+- **Decision:** the ad-hoc path `unset`s the variable in the step's shell rather than blanking it, and echoes which path it took, since blank-vs-unset is the entire bug. `0ca021e`; verified green in 32639916194 (arm64 8m37s, x64 18m12s — the first time the matrix has ever completed).
+- **What that green run newly proves.** Everything downstream of bundling ran on arm64 for the first time: 274 tests, the Rule #13 embedded-frontend assert, and `lipo` on both the `.app` main executable **and** the bundled `ymux-cli` → arm64 only. The anti-Rosetta claim behind the arch split is now checked on the shipped bundle instead of asserted.
+- **DEFERRED (Yossi, 2026-08-23):** the branch also flips `"hardenedRuntime": true` and adds a new `Entitlements.plist`, where mac bundles previously had neither. Under hardened runtime a missing entitlement fails at **launch**, not at build — typically a blank window with nothing in the Rust log — so CI structurally cannot catch it. No Mac was available; a contributor will verify later. Full check-list, the artifact download command, and the entitlement each symptom maps to are in FOLLOWUPS (P1, 2026-08-23). Rule #14: green here means "compiles and bundles", nothing more.
+- **Merge status:** `claude/macos-universal-signing` is 4 commits ahead of `main` and **not merged**. Until it is, both this entry's followups live only on the branch.
 
 ### 2026-08-20 — Phase 82 — the macOS port is unified into `main`; `macos-build` is retired
 - **Context:** `macos-build` was a long-lived fork carrying the macOS port. By 2026-08-20 it was **65 commits behind `main` and 14 ahead** — two months of features (Phase 80 tunnel, project folders, session autoname, the sidebar pass, RTL, the YMUX rename) simply did not exist on Mac, while 14 real macOS fixes had never reached main. The drift was not an accident of this cycle; it is what a platform fork does every cycle.
