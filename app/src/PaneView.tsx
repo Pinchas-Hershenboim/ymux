@@ -13,6 +13,8 @@ import { createLogger } from "./logger";
 
 const log = createLogger("PANE");
 import { TechText } from "./TechText";
+import { AgentLight } from "./AgentLight";
+import type { TrafficLight } from "./paneAgentState";
 import {
   paneDragStore,
   startPaneDrag,
@@ -104,6 +106,12 @@ interface Props {
   // Phase 84.A: this workspace renders its panes as a tab strip. The pane
   // only needs it to drop chrome that tabs already provide (maximize).
   tabsMode?: boolean;
+  // Phase 84.B: the Claude traffic light, already resolved by LayoutView
+  // (which has every input in scope). null = paint nothing.
+  agentLight?: TrafficLight | null;
+  agentWaitingOnPermission?: boolean;
+  agentStateSince?: number | null;
+  agentNowMs?: number;
   // Phase 26: pane is waiting on a blocking agent permission request
   // (a pending blocking feed item bound to this pane_id). Drives the
   // cmux-style pulsing notification ring around the pane.
@@ -1261,6 +1269,17 @@ export function PaneView(p: Props) {
         <Show when={p.statusText}>
           <span class="pane-status-text">{p.statusText}</span>
         </Show>
+        {/* Phase 84.B: the traffic light sits immediately before the
+            ticker, giving the header a fixed order — title, statusText,
+            light, ticker, badges, buttons. A stable slot matters: the
+            ticker's width changes every second as digits roll over, and
+            a light that slid with it would be unreadable at a glance. */}
+        <AgentLight
+          light={p.agentLight ?? null}
+          waitingOnPermission={p.agentWaitingOnPermission ?? false}
+          stateSince={p.agentStateSince ?? null}
+          nowMs={p.agentNowMs ?? 0}
+        />
         <Show when={agentRunLabel()}>
           <span class="pane-agent-run">{agentRunLabel()}</span>
         </Show>

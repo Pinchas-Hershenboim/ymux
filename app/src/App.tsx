@@ -10,6 +10,8 @@ import { NotificationCenter, NotifHeaderActions, type NotifItem } from "./Notifi
 import { WelcomeScreen } from "./WelcomeScreen";
 import { LayoutView } from "./LayoutView";
 import { PaneTabs } from "./PaneTabs";
+import { trafficLight, type PaneAgentState, type TrafficLight } from "./paneAgentState";
+import type { PaneAgentSnapshot } from "./bindings/PaneAgentSnapshot";
 import { setPaneSwapHandler } from "./paneDrag";
 import {
   allPaneSessions,
@@ -303,7 +305,18 @@ function App() {
   // backend emits pane:agent-run only on turn start/end; the label ticks
   // locally off `pulseTick` (see agentRunLabel). startedAt=null → no live turn.
   const [agentRuns, setAgentRuns] = createSignal<
-    Record<string, { startedAt: number | null; avgMs: number | null }>
+    Record<
+      string,
+      {
+        startedAt: number | null;
+        avgMs: number | null;
+        // Phase 84.B: the effective agent state behind the traffic light,
+        // plus when it last changed and the backend's per-pane sequence.
+        state: PaneAgentState;
+        stateSince: number | null;
+        seq: number;
+      }
+    >
   >({});
   // cmux-A A1: pane_ids that received an OSC 9/99/777 notification and
   // haven't been focused since. Drives the amber pulse ring on the pane
@@ -1034,6 +1047,36 @@ function App() {
 
   // Phase 26: pane_ids with a pending blocking feed item — these get
   // the notification ring. Recomputed reactively as feedItems changes.
+  // Phase 84.B: the traffic light for every pane in the active workspace.
+  // Computed here rather than inside PaneTabs so the strip and the pane
+  // header go through the same trafficLight() with the same inputs — two
+  // call sites deriving a colour independently is how they drift.
+  const paneAgentLights = (): Record<string, TrafficLight | null> => {
+    const runs = agentRuns();
+    const waiting = waitingPaneIds();
+    const connected = connectedPanes();
+    const now = agentClockMs();
+    const out: Record<string, TrafficLight | null> = {};
+    const layout = activeWs()?.layout;
+    for (const pid of layout ? collectPanes(layout) : []) {
+      const run = runs[pid];
+      out[pid] = trafficLight({
+        state: run?.state ?? "unknown",
+        stateSince: run?.stateSince ?? null,
+        waitingOnPermission: waiting.has(pid),
+        connected: connected.has(pid),
+        nowMs: now,
+      });
+    }
+    return out;
+  };
+  const paneAgentStateSince = (): Record<string, number | null> => {
+    const runs = agentRuns();
+    const out: Record<string, number | null> = {};
+    for (const [pid, r] of Object.entries(runs)) out[pid] = r.stateSince;
+    return out;
+  };
+
   const waitingPaneIds = (): Set<string> => {
     const s = new Set<string>();
     for (const it of feedItems()) {
@@ -2904,6 +2947,31 @@ function App() {
       if (p0) setActivePaneId(p0);
     }
 
+    // Phase 84.B: seed the traffic lights from the backend's live state.
+    // Without this every webview reload (F5, devtools, an HMR round in
+    // dev) blanks every light until the next hook fires — and for an agent
+    // sitting idle waiting on the user, that could be never. The backend
+    // keeps this in memory only, so an app restart legitimately starts
+    // empty; it is a reload we are covering, which is far more common.
+    try {
+      const snaps = await invoke<Record<string, PaneAgentSnapshot>>(
+        "pane_agent_states",
+      );
+      const seeded: ReturnType<typeof agentRuns> = {};
+      for (const [pid, s2] of Object.entries(snaps)) {
+        seeded[pid] = {
+          startedAt: s2.started_at,
+          avgMs: s2.avg_ms,
+          state: s2.state as PaneAgentState,
+          stateSince: s2.state_since,
+          seq: s2.seq,
+        };
+      }
+      setAgentRuns(seeded);
+    } catch (e) {
+      log.warn("pane_agent_states failed", e);
+    }
+
     const unlistens: UnlistenFn[] = [];
     unlistens.push(
       await listen<PtyDataEvent>("pty:data", (e) => {
@@ -3255,15 +3323,33 @@ function App() {
         started_at: number | null;
         avg_ms: number | null;
         running: boolean;
+        state?: PaneAgentState;
+        state_since?: number | null;
+        seq?: number;
       }>("pane:agent-run", (e) => {
+        const pid = e.payload.pane_id;
+        const prev = agentRuns()[pid];
+        const seq = e.payload.seq ?? 0;
+        // Phase 84.B: hooks are separate processes racing over a socket,
+        // so events can arrive out of order. Drop anything not newer than
+        // what we hold. Cheap, and a partial answer to the stale-hook
+        // thread in docs/DECISIONS.md — a floor, not the fix.
+        if (prev && e.payload.seq != null && seq <= prev.seq) return;
         const next = { ...agentRuns() };
-        if (!e.payload.running && e.payload.avg_ms == null) {
-          // session-end / full clear
-          delete next[e.payload.pane_id];
+        // The clear signal is `state: "unknown"` (session-end), NOT the
+        // old `!running && avg_ms == null`. That test also matches a
+        // perfectly normal `stop` on a pane whose turns have all been
+        // shorter than the ticker's 2s minimum, which would delete the
+        // entry and take the yellow light down with it.
+        if (e.payload.state === "unknown") {
+          delete next[pid];
         } else {
-          next[e.payload.pane_id] = {
+          next[pid] = {
             startedAt: e.payload.running ? e.payload.started_at : null,
             avgMs: e.payload.avg_ms,
+            state: e.payload.state ?? "unknown",
+            stateSince: e.payload.state_since ?? null,
+            seq,
           };
         }
         setAgentRuns(next);
@@ -3840,6 +3926,9 @@ function App() {
                     workspaceColor={ws().color ?? undefined}
                     workspaceEmoji={ws().emoji ?? undefined}
                     workspaceConnection={ws().connection ?? undefined}
+                    agentLights={paneAgentLights()}
+                    agentStateSince={paneAgentStateSince()}
+                    agentNowMs={agentClockMs()}
                     onSelect={focusPane}
                     onClose={(pid) => void closeTab(pid)}
                     onNew={() => void newTab()}

@@ -3,6 +3,8 @@ import { IconClose } from "./icons";
 import { t } from "./i18n";
 import { paneDragStore, startPaneDrag } from "./paneDrag";
 import { TechText } from "./TechText";
+import { AgentLight } from "./AgentLight";
+import type { TrafficLight } from "./paneAgentState";
 import {
   describeConnection,
   effectiveIdentity,
@@ -25,6 +27,12 @@ interface Props {
   workspaceColor?: string;
   workspaceEmoji?: string;
   workspaceConnection?: Connection;
+  // Phase 84.B: the Claude traffic light per pane, resolved by App from
+  // the same trafficLight() the pane header uses — so a tab and the pane
+  // it selects can never disagree about what colour the agent is.
+  agentLights: Record<string, TrafficLight | null>;
+  agentStateSince: Record<string, number | null>;
+  agentNowMs: number;
   onSelect: (paneId: string) => void;
   onClose: (paneId: string) => void;
   onNew: () => void;
@@ -97,7 +105,19 @@ export function PaneTabs(p: Props) {
                 }}
                 title={label(pane)}
               >
-                <span class={`pane-tab-dot pane-tab-dot-${dotState(id)}`} />
+                {/* The traffic light comes first — it is the thing the
+                    user is scanning the strip for. The connection dot
+                    follows and is suppressed while a light is showing,
+                    so a tab never carries two competing status marks. */}
+                <AgentLight
+                  light={p.agentLights[id] ?? null}
+                  waitingOnPermission={p.waitingPaneIds.has(id)}
+                  stateSince={p.agentStateSince[id] ?? null}
+                  nowMs={p.agentNowMs}
+                />
+                <Show when={!p.agentLights[id]}>
+                  <span class={`pane-tab-dot pane-tab-dot-${dotState(id)}`} />
+                </Show>
                 <Show when={ident().emoji}>
                   <span class="pane-tab-emoji">{ident().emoji}</span>
                 </Show>
