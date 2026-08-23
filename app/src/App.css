@@ -4265,6 +4265,22 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   background: var(--w-border);
   color: var(--w-text-dim);
 }
+/* 2026-08-24: a session we KNOW belongs to another folder or workspace.
+   Amber, not red — attaching is allowed and sometimes exactly right; this is a
+   caution, not a block. `.nc-resume-proj` is flex:1, so the session name
+   absorbs the squeeze; max-width stops a long workspace name from eating the
+   age column, and the full path lives in the title attribute. */
+.nc-resume-foreign {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(224, 175, 104, 0.18);
+  color: var(--w-warn, #e0af68);
+}
 .nc-resume-proj { flex: 1; color: var(--w-text-dim); font-size: var(--w-fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 2026-08-20: bury an EXITED session from the picker. Deliberately quiet

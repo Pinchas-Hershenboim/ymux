@@ -6741,6 +6741,95 @@ tree, or ship it warn-only for one cycle and flip it to blocking after.
 Also worth stating plainly: this branch has now merged origin/main FOUR times
 in one session and is racing a tree that four other sessions are pushing to.
 Every extra hour open is another merge. It is green and reviewable now.
+2026-08-24 — TMUX picker: mark the sessions that belong to another folder
+Branch: yos/tmux-folder-files-display-785d6f
+
+TASK (Yossi, Hebrew): now that tmux sessions are mounted to a folder and the
+connect picker has a "This folder / Whole server" toggle, show IN THE WHOLE-
+SERVER view what we already know belongs to a DIFFERENT folder, to prevent
+messes.
+
+WHY IT WAS MISSING, NOT AN OVERSIGHT: the 2026-08-23 change computed `owned`
+as `o.workspace_id == workspace_id` and THREW THE workspace_id AWAY when it did
+not match. The information was already on the machine, one comparison away —
+"Whole server" was a flat list in which a free session and a session already
+mounted on another project looked identical.
+
+WHAT LANDED
+  - TmuxSessionInfo gained ONE field: `foreign: Option<ForeignScope>`, where
+    ForeignScope = { kind: workspace|folder, label?, path? }. Facts, not a
+    sentence: every picker string is i18n'd in four languages, so the backend
+    supplies the data and PaneView composes the words. `kind` is what picks
+    between "belongs to workspace X" and "runs in folder Y".
+  - `annotate_session_scope` was SPLIT: it now loads session-owners.json and
+    delegates to `annotate_scope_with`, a disk-free core holding every rule.
+    That is the first time any of the 2026-08-23 scope logic became unit-
+    testable — the old one did file I/O inline, which is why it had no tests.
+  - New `last_path_segment`, sibling of `path_is_within`: both separators,
+    because one picker list mixes POSIX paths off a Linux host with Windows
+    paths out of a zellij-era ownership row.
+  - `pane_list_tmux_sessions` now also collects workspace_id -> name off the
+    workspaces lock IT ALREADY TAKES. No new lock, no second round trip.
+  - PaneView: a folder badge on the row, left of the transient state flags
+    (attached / resurrect) because this is a property of the session, not of
+    right now. Tooltip carries the sentence plus the full path.
+  - i18n: 3 keys x 4 languages. Hebrew/Arabic wrap {name} in U+200E, mirroring
+    what connect.tmuxPick.deleteConfirm already does, so an LTR path inside RTL
+    prose does not scramble the sentence.
+  - App.css: .nc-resume-foreign — amber, not red. Attaching is ALLOWED and
+    sometimes exactly right; this marks, it does not block.
+
+TWO RULES, BOTH ASSERTED IN TESTS
+  (1) `foreign` is NEVER Some while `owned || in_cwd`. The picker's "This
+      folder" view is exactly the complement of this field, so the badge cannot
+      appear there by construction and the frontend needs no scope conditional.
+      This also settles the two-workspaces-on-one-folder case: both belong
+      there, and warning about it would be a lie.
+  (2) An unknown cwd with no ownership row is NEVER foreign. Straight from the
+      2026-08-23 decision: `cwd: None` means we do not know, never "somewhere
+      else". Every zellij session and every five-field tmux lands here. This is
+      the regression that matters most and it has its own test.
+
+DECIDED BY YOSSI, ASKED BEFORE BUILDING
+  - Badge only. Not a confirm-on-click, not a re-sort of the list.
+  - A session we cannot place shows NOTHING, not a muted "unknown folder" chip.
+
+TESTS (lib.rs, mod tmux_list_parse_tests, run on CI): basename_stops_at_either_
+separator, a_foreign_badge_is_impossible_inside_the_workspace_view, a_claim_by_
+another_workspace_names_that_workspace, a_claim_survives_on_windows_where_there_
+is_no_cwd_at_all, a_claim_by_a_deleted_workspace_still_warns, an_unclaimed_
+session_outside_the_root_is_flagged_by_folder, an_unknown_cwd_is_never_evidence_
+of_elsewhere, no_root_means_no_folder_verdict. Fixtures build sessions through
+the REAL parser, so a format change breaks these too rather than leaving them
+asserting a shape tmux no longer emits.
+
+NOT TOUCHED ON PURPOSE: `pane_probe_tmux_sessions` still does not annotate, and
+session restore still calls with projectPath: null. Both must see everything —
+a pane whose session lives outside the folder has to come back on the next boot.
+
+Files: app/src-tauri/src/lib.rs, app/src/PaneView.tsx, app/src/types.ts,
+       app/src/App.css, app/src/i18n/{en,he,ar,ru}.json,
+       docs/vault/{backend-core,frontend-shell,frontend-lib}.md,
+       docs/vault/.vault-lock.json
+
+VAULT: backend-core gained a "Which folder a session belongs to" section — that
+region had NO prose at all, not even for the 2026-08-23 work. frontend-shell
+gained the scope toggle + badge. frontend-lib now says out loud that
+TmuxSessionInfo is a HAND-WRITTEN mirror (it lives in lib.rs, not ymux-types, so
+ts-rs never sees it and nothing regenerates it).
+Stamped ONLY the three files this change covers, by hand, NOT with --write.
+`--write` re-stamps all 16 pages, and five of them are stale from the P0 in
+FOLLOWUPS (the 17:16 merge-window accident) — certifying prose nobody wrote is
+exactly the lie Rule #18 exists to stop. backend-core's own pre-existing drift
+turned out to be 11 mechanical lines whose only real content was Phase 82.E's
+`.devtools(false)`, so that got a real sentence under Invariants before stamping.
+Still red, unchanged by this branch: backend-claude, backend-panes, build-glue,
+frontend-panes, server-go, and frontend-shell for App.tsx (a one-line prop).
+
+STATUS: not built, not run. `git fetch` failed this session (no route to
+github.com), so this has NOT been rebased on current origin/main — fetch before
+pushing, per Rule #15. CI is the verification step (Rule #17) and even green CI
+is "compiles, untested" (Rule #14); the smoke list is in FOLLOWUPS P1.
 
 [2026-08-23] Phase 88: CI speedup — parallel jobs, PR-lean mac build, paths-ignore
 - Task: every PR ran ~6 min serial ci-windows + 7-10 min full mac release (bundle+dmg+signing). Cut PR wall-clock to ~4 min.

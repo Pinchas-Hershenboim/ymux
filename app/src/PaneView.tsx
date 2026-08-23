@@ -1828,10 +1828,34 @@ export function PaneView(p: Props) {
                       const tip = s.claude_title && s.claude_title !== friendly
                         ? `${s.name} — ${s.claude_title}`
                         : s.name;
+                      // 2026-08-24: the mess-guard. "Whole server" lists every
+                      // session on the host, and nothing used to separate one
+                      // that is free to take from one already mounted on
+                      // another project. The verdict is the backend's
+                      // (annotate_scope_with) and it is never set for a session
+                      // in this workspace's scope, so no scope check here.
+                      const foreign = s.foreign;
+                      const foreignName = foreign?.label
+                        ?? t("connect.tmuxPick.foreign.unknown");
+                      const foreignTip = foreign
+                        ? t(
+                            foreign.kind === "workspace"
+                              ? "connect.tmuxPick.foreign.tipWorkspace"
+                              : "connect.tmuxPick.foreign.tipFolder",
+                            { name: foreignName },
+                          ) + (foreign.path ? `\n${foreign.path}` : "")
+                        : "";
                       return (
                         <div class="nc-resume-row" onClick={() => pickTmuxSession(s.name)} title={tip}>
                           <div class="nc-resume-head">
                             <span class="nc-resume-proj"><IconTerminal size={14} /> {friendly ?? s.name}</span>
+                            {/* Left of the transient state flags: this is a
+                                property of the session, not of right now. */}
+                            <Show when={foreign}>
+                              <span class="nc-resume-badge nc-resume-foreign" title={foreignTip}>
+                                <IconFolder size={11} /> {foreignName}
+                              </span>
+                            </Show>
                             <span class="nc-resume-badge">{s.windows}w</span>
                             <Show when={s.attached}>
                               <span class="nc-resume-badge">{t("connect.newConn.tmuxAttached")}</span>

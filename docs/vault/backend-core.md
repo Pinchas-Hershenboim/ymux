@@ -171,6 +171,39 @@ call site asserted a sanitizer named `sanitize_session_name` **that has never ex
 this tree**, and the test guarding it only ever fed it `ymux-p_1a2b_0` — a name that
 could not fail.
 
+## Which folder a session belongs to
+
+`pane_list_tmux_sessions` **annotates and never filters** — the picker's
+*This folder / Whole server* toggle is a client-side view of one response, so a
+session outside the scope stays one click away instead of vanishing. The verdicts are
+stamped by `annotate_session_scope`, which loads `session-owners.json` and delegates to
+`annotate_scope_with` — the disk-free core where every rule actually lives, and the one
+the tests drive.
+
+Two independent signals feed it, and it needs both:
+
+- **`#{session_path}`** — the sixth field of `TMUX_LIST_FORMAT`, giving `in_cwd` via
+  `path_is_within`, which insists on a separator boundary so `/srv/app2` is not "inside"
+  `/srv/app`.
+- **`session-owners.json`** (`%APPDATA%\ymux`, host → session name → `SessionOwner`),
+  giving `owned`. This half exists because `zellij list-sessions` reports **no directory
+  at all**, so on Windows ownership is the only workspace signal there is.
+
+`foreign: Option<ForeignScope>` (2026-08-24) is the third verdict and the "Whole server"
+view's mess-guard: a row nobody can place is free to attach, a row we *can* place already
+belongs to someone. It is `Some` when another workspace claimed the session
+(`ForeignKind::Workspace`, labelled with that workspace's name from `workspaces.json`) or
+when a known `cwd` sits outside the caller's folder (`ForeignKind::Folder`). Two rules
+govern it, both asserted in `tmux_list_parse_tests`:
+
+- **Never `Some` while `owned || in_cwd`.** The workspace view is exactly the complement
+  of this field, so the badge cannot appear there and the frontend needs no scope check.
+- **An unknown `cwd` with no ownership row is never foreign.** `cwd: None` means we do
+  not know, never "somewhere else" — silence beats a fabricated warning.
+
+`project_path` is optional and **`None` means unscoped, which is load-bearing**: session
+restore and `pane_probe_tmux_sessions` share these paths and must see everything.
+
 ## Invariants
 
 - **Rule #7** — every config write is tmp + fsync + rename. No exceptions in this file.
@@ -178,7 +211,8 @@ could not fail.
 - **Rule #4** — no `unwrap`/`expect` outside tests and the `run()` boot path. The
   `state.workspaces.lock().unwrap()` calls are the known exception and predate the rule.
 - **Rule #1** — PTY bytes are never logged. `log_debug` lines carry byte counts and
-  pane ids only.
+  pane ids only. It is also why every terminal-bearing window is built `.devtools(false)`
+  — see Gotchas.
 - `persist` gates on `LoadState::Loaded`. Anything that writes workspaces must go
   through it.
 
