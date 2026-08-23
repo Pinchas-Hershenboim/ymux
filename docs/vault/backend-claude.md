@@ -4,13 +4,14 @@ covers:
   - app/src-tauri/src/claude_log.rs
   - app/src-tauri/src/claude_summary.rs
   - app/src-tauri/src/claude_usage.rs
+  - app/src-tauri/src/claude_usage_local.rs
   - app/src-tauri/src/insights_local.rs
 ---
 
 # Claude integration + local Insights
 
-Four modules, ~2,100 lines. Three of them read or drive the `claude` CLI **on the machine
-that hosts the transcripts** — usually the remote, not the desktop. The fourth is the
+Five modules, ~2,650 lines. Three of them read or drive the `claude` CLI **on the machine
+that hosts the transcripts** — usually the remote, not the desktop. The other two are the
 local-machine half of the Insights panel.
 
 ## `claude_summary.rs` (375) — session auto-summary
@@ -70,6 +71,30 @@ never chooses.
   Docker is not running it returns an **empty container list rather than an error**; the
   panel already renders a friendly "no docker" state.
 - Log tag: `[INSIGHTS-LOCAL]`.
+
+Two paths are answered without touching `sysinfo`. `/analytics` returns the literal
+marker `{"unavailable":"local"}` — the Analytics tab rolls up the 7-day metric history
+the remote daemon keeps in SQLite, and a local workspace has no daemon and no store, so
+there is nothing to aggregate. A marker rather than an error string is what lets the
+panel explain itself instead of surfacing a raw "unsupported path". `/claude-usage`
+delegates to `claude_usage_local::route`.
+
+## `claude_usage_local.rs` (550) — the local half of `/claude-usage`
+
+A deliberate mirror of `server/internal/insights/claudeusage.go`: same scan, same JSON
+field names, same clamping, so `insights_fetch` can route remote-vs-local and the
+frontend never branches. **Two implementations of one aggregation is real duplication,
+and it is the cheaper option** — `~/.claude/projects` is routinely 240 MB across 170
+transcripts, so the alternative (SFTP-mirror the remote tree and parse it once, here)
+would pull hundreds of megabytes over the wire every time the tab opens.
+
+Same rule as the Go side: **it counts tokens and does not price them.** The price table
+is `app/src/claudePricing.ts`, in one place. Cache writes stay split 5-minute vs 1-hour
+because a 1-hour write costs 2x base input against a 5-minute write's 1.25x, and
+collapsing them understates a long session.
+
+Rule #1 is why the parser reads only `message.model`, `message.usage`, the timestamp, the
+session id and the cwd — never message *content* — and logs nothing but counts.
 
 ## Related, elsewhere
 

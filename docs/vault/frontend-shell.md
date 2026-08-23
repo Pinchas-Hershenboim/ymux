@@ -29,7 +29,7 @@ covers:
 **SolidJS**, not React. Signals and `createEffect`, no virtual DOM, no hooks rules.
 `index.tsx` (108 lines) mounts `<App/>`; everything else hangs off it.
 
-## `App.tsx` (4,721) — one component, ~50 signals
+## `App.tsx` (4,722) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -122,6 +122,11 @@ greyscale, 8px, and red-green deficiency.
 
 Every side panel (Notifications, Monitor, Files, Diff, Tickets) shares one lifecycle:
 docked drawer → floating window → fullscreen overlay. Four small files implement it:
+
+Panels get their workspace context as props from here rather than reading it themselves —
+`<InsightsWindow>` for instance is handed `workspaceId`, `workspaceName`, and
+`local={activeWs()?.connection?.type === "local"}`, because App owns `file()` and a panel
+that re-derived the active workspace would be a second source of truth.
 
 - **`panels.ts` (26)** — the state vocabulary. A per-panel `Surface`; `closed` means
   not shown. `App.tsx` drives it.

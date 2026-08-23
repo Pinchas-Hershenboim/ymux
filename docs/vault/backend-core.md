@@ -7,7 +7,7 @@ covers:
 
 # Backend core — `lib.rs`
 
-**12,475 lines, and about 1,700 of them are `#[cfg(test)]` at the bottom.** It is the
+**12,809 lines, and about 1,700 of them are `#[cfg(test)]` at the bottom.** It is the
 "everything else" module: app state, the workspace data model and its persistence, the
 PTY and SSH spawn paths, the multiplexer (zellij / tmux) plumbing, and ~70 Tauri
 commands. `main.rs` is 6 lines — the Windows-subsystem flag and `app_lib::run()`. Never
@@ -17,7 +17,7 @@ put logic there.
 
 | Lines | What |
 |---|---|
-| 1–40 | `mod` declarations for the 33 sibling modules; `use ymux_tunnel as tunnel` |
+| 1–40 | `mod` declarations for the 34 sibling modules; `use ymux_tunnel as tunnel` |
 | 40–280 | `AppState`, `AgentRunState`, `FeedItem`/`FeedStore`, `NotificationItem`, `LoadState` |
 | 305–830 | `WorkspacesFile`, config paths, `machine_id`, `save_to_disk`/`load_from_disk`, migrations |
 | 1190–1570 | Pure layout-tree walkers (`close_pane_in`, `set_split_ratio_in`, …) |
@@ -167,11 +167,8 @@ restore and `pane_probe_tmux_sessions` share these paths and must see everything
 - **Rule #4** — no `unwrap`/`expect` outside tests and the `run()` boot path. The
   `state.workspaces.lock().unwrap()` calls are the known exception and predate the rule.
 - **Rule #1** — PTY bytes are never logged. `log_debug` lines carry byte counts and
-  pane ids only. The same rule is why the main window and every popout pane are built
-  with **`.devtools(false)`**: the `devtools` Cargo feature (Phase 82.E) flips the
-  runtime default to `true` for *every* webview, and these render live PTY output. Only
-  the workspace Browser child webview opts in, and only on macOS. A new
-  `WebviewWindowBuilder` in this file must repeat the opt-out.
+  pane ids only. It is also why every terminal-bearing window is built `.devtools(false)`
+  — see Gotchas.
 - `persist` gates on `LoadState::Loaded`. Anything that writes workspaces must go
   through it.
 
@@ -181,6 +178,14 @@ restore and `pane_probe_tmux_sessions` share these paths and must see everything
   then calls `ymux_core::flush_log()` from inside the hook — log writes are queued, and
   a panic on its way to an abort loses them otherwise. This exists because a Hebrew-title
   crash (Phase 23.I) was a `STATUS_STACK_BUFFER_OVERRUN` with no Rust trace at all.
+- **`.devtools(false)` on the main window and on every popout is mandatory, not
+  cosmetic.** Phase 82.E turned on tauri's `devtools` feature so the workspace Browser
+  child webview can be inspected (see `build-glue.md` and `backend-panes.md`), and
+  `tauri-runtime-wry` reads that setting as `devtools.unwrap_or(true)` — the feature
+  flips the default to *inspectable* for **every** webview in the process. These two
+  windows render live PTY output, so an inspector on them is a Rule #1 leak. The opt-outs
+  in `run()` and in `popout_pane` are the only thing standing between the feature and
+  that. Do not "clean them up".
 - `WEBVIEW2_USER_DATA_FOLDER` is set at the very top of `run()`, before any webview
   exists, to **one app-wide** profile dir. Per-workspace profiles reintroduce
   `0x8007139F` — WebView2 allows one environment per process. Windows-only by

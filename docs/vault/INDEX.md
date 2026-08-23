@@ -5,7 +5,7 @@ vault: index
 # The vault
 
 Hand-written explanations of this codebase, meant to be read **instead of** the
-source. The tree is ~90k lines; this directory is ~3k. If you are about to open a
+source. The tree is ~99k lines; this directory is ~3k. If you are about to open a
 `.rs` or `.tsx` file to find out what something does, read the vault file that
 covers it first.
 
@@ -34,9 +34,9 @@ did. Details in `docs/CONTRIBUTING.md` § Updating the vault.
 | Read this | When you want |
 |---|---|
 | [frontend-shell.md](frontend-shell.md) | `App.tsx` and its ~50 signals, the backend event subscriptions, sidebar, layout tree, `PaneView`, the drawer/float/fullscreen panel chrome |
-| [frontend-panes.md](frontend-panes.md) | Browser, File Manager, Insights, Ports, Diff, tickets, notifications, the feed, transfers, add-ons |
+| [frontend-panes.md](frontend-panes.md) | Browser, File Manager, the Monitor and its Analytics / Claude-cost tabs, Ports, Diff, tickets, notifications, the feed, transfers, add-ons |
 | [frontend-flows.md](frontend-flows.md) | the setup wizard mode tree, the create/edit modals, SSH form sharing, SettingsModal |
-| [frontend-lib.md](frontend-lib.md) | the xterm.js wrapper, the four RTL modules, ts-rs type mirrors, logger, i18n, shortcuts |
+| [frontend-lib.md](frontend-lib.md) | the xterm.js wrapper, the four RTL modules, ts-rs type mirrors, logger, i18n, shortcuts, the Claude price table |
 
 **Everything else**
 
@@ -48,7 +48,7 @@ did. Details in `docs/CONTRIBUTING.md` § Updating the vault.
 
 ## Coverage
 
-96% of the tracked `.rs` / `.ts` / `.tsx` / `.go` / `.mjs` lines are covered by a vault
+95% of the tracked `.rs` / `.ts` / `.tsx` / `.go` / `.mjs` lines are covered by a vault
 file. The remainder is, by design: generated SDK output, generated ts-rs bindings, test
 files, and a two-line vite shim. `node scripts/vault-check.mjs` prints the current
 number.
