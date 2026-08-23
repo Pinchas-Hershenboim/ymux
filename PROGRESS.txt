@@ -5464,3 +5464,46 @@ BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
 STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
+
+================================================================================
+2026-08-23 | FOLLOWUPS triage — close what the tree already fixed
+Files: FOLLOWUPS.md (only; no code touched)
+
+Read all 74 open entries and checked each candidate against the actual tree
+rather than against its own text. Six were stale. 74 -> 67 open (P1 17 -> 16).
+
+Closed as already fixed, with the proof written into the entry:
+  P1 hooks.rs `is_ymux_entry` skip path — Phase 84.B added
+    `ymux_entry_is_runnable`; "already present" now means present AND
+    runnable. Still not verified live (checklist 13b.8).
+  P3 Node 20 in build-macos-intel.yml — all four workflows are on
+    checkout/setup-node/upload-artifact @v7 + cache@v6, node 24 (PR #19).
+  P3 the duplicated tmux.conf entry at ":33 and :38" — one copy survives.
+
+Closed as filed in the right place instead:
+  P2 manifest hooks.claude-code 1.1.0 vs spec 1.5.0 — this entry asked to be
+    moved to the release checklist and it already had been (blocker 0.4b),
+    with RELEASING.md 4.5 carrying the generic three-file bump. Confirmed in
+    tree: hooks/claude-code.json and BUNDLED_CLAUDE_VERSION are both 1.5.0,
+    manifest deliberately still 1.1.0 until the cut.
+
+Deleted as strict duplicates, superseded in place by a later entry that
+carries everything they said:
+  the THREE-worktrees entry (superseded by the TWO-worktrees one),
+  the one-empty-directory entry (superseded by the two-directory one),
+  the FOUR-UNTRACKED-ARTIFACTS entry (its own [x] DONE sits right below it).
+
+Corrected on the surviving worktree entry: `git worktree list` reports SEVEN,
+not two. Also noted there that worktrees-branches-cleanup-7f7849 holds
+`claude/valte-diff-validation-237bbd` — a second directory-name/branch
+mismatch beside the one already recorded.
+
+Two real, contained P2s were identified and deliberately NOT taken this
+session (Yossi's call, scope was cleanup only):
+  claude_usage.rs — the backoff path logs on every rejection; 15,477 identical
+    lines in one 1.6MB log. `inflight` right below it has the same shape.
+  ymux-core config_dir — `cargo test` writes into the real
+    %APPDATA%\ymux\debug.log; only one test sets YMUX_CONFIG_DIR.
+
+STATUS: documentation only, nothing to build. The 10 "NOT VERIFIED LIVE"
+entries are untouched — they need a real run, not a code reading.
