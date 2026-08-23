@@ -6098,4 +6098,23 @@ likely to be wrong are Ctrl+B inside vs outside a terminal (tmux prefix must
 still reach the PTY), copy with and without a terminal selection, and D/E/W in
 tabs mode vs split mode.
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
-
+[2026-08-23 21:31] Phase 84.G — top-center overlay lanes (session ticker vs. toasts)
+  Report: the Claude-usage pill sits top-center and every app message was
+  rendering underneath it — enabling sound or hitting an error showed nothing.
+  Cause: .claude-usage-pill is position:fixed top:8px left:50% z-index:9000;
+  .summary-toast is top:12px left:50% z-index:230 — same pixels, pill wins by
+  39x. That toast is the app's ONLY global message surface (~20
+  flashSummaryToast call sites, every ad-hoc error included). .connecting-pill
+  (top:14px z:9000) lost the same way: equal z, earlier in the DOM.
+  Fix (app/src/App.css, CSS only):
+    - .summary-toast   z 230 -> 9200
+    - .reconnect-toast z 231 -> 9201
+    - .connecting-pill z 9000 -> 9100
+    - new lane block: .app:has(.claude-usage-pill) pushes summary-toast +
+      connecting-pill to top:44px and reconnect-toast to top:88px, so pill and
+      message are both readable. :has() and not a fixed offset because the pill
+      only mounts for a live workspace with usage data.
+  Files: app/src/App.css (+44/-4). No vault page covers App.css (checked
+  .vault-lock.json); Rule #19 sweep of origin/main...HEAD lists only
+  PROGRESS.txt + App.css, neither covered.
+  Status: compiles-only reasoning; NOT run live (Rule #17 - no local builds).
