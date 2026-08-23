@@ -16,6 +16,7 @@ mod fonts;
 // beta.3-lh-insights: native local Insights (sysinfo + bollard) for the
 // Monitor panel on Local workspaces. Commands mirror the remote daemon's
 // JSON shape so `insights_fetch` can route local vs. SSH transparently.
+mod claude_usage_local;
 mod insights_local;
 mod local_setup;
 mod local_wizard;

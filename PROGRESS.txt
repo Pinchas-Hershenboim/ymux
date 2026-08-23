@@ -5122,6 +5122,78 @@ of problem and the same directory.
 
 
 ================================================================================
+2026-08-23 | Phase 84.C - Monitor > Analytics tab (historical metrics)
+================================================================================
+Task: Yossi asked for a screen like the dev-pipeline dashboard's /efficiency
+page inside the Monitor card (the ניטור window, InsightsWindow.tsx). Ported the
+SHAPE of that page, not its data: stat tiles + a hand-rolled SVG sparkline +
+inline-bar rollup tables, no chart library, no build step of its own.
+
+THE DATA WAS ALREADY THERE AND NOBODY READ IT. The insights daemon's sampler
+writes samples / disk_samples / docker_samples to SQLite on every 5s tick and
+sweeps to a 7-day window (internal/insights/store.go). `/history` was the only
+reader and the FRONTEND NEVER CALLED IT ONCE. disk_samples and docker_samples
+had no reader at all.
+
+Why a new endpoint instead of /history:
+  * /history is raw rows with LIMIT 2000 and ORDER BY ts ASC. At the 5s sample
+    interval that is 2.8 hours. Ask it for 7 days and it silently answers with
+    the OLDEST 2.8 hours of the range. Nobody would have noticed - the chart
+    renders fine, it is just answering a different question.
+  * Every desktop fetch is one curl over the workspace SSH session with
+    --max-time 6 (addons.rs insights_fetch). Five series = five round trips.
+    So the whole screen has to come back in ONE response.
+
+Files:
+  NEW app/src-tauri/server/internal/insights/analytics.go      (~370)
+      GET /analytics?since=&until=&points= - totals + bucketed series +
+      by_period / by_disk / by_container, all aggregated in SQL. Buckets by
+      hour under 48h and by day above it. Every param CLAMPED, never rejected
+      (the desktop drew the range picker; it should not have to render a
+      validation error for its own widget). Timestamps go out as unix seconds
+      so the desktop formats them in the VIEWER's timezone, not the server's -
+      the reason there is no strftime() anywhere in this file.
+  NEW app/src-tauri/server/internal/insights/analytics_test.go (~230)
+      Seeded store with predictable ramps. The load-bearing one is
+      TestAnalyticsLongWindowCoversTheEnd: 4320 rows (> the /history cap), and
+      it asserts the LAST bucket lands at the window end. That is the bug this
+      endpoint exists to prevent, and it is invisible by eye.
+  MOD internal/insights/service.go     - route registered on legacy + /api/v2.
+  MOD app/src-tauri/src/insights_local.rs - /analytics returns
+      {"unavailable":"local"}. A local workspace samples on demand and stores
+      NOTHING, so there is no history to roll up; the panel says so instead of
+      leaking a raw "unsupported path" string.
+  NEW app/src/InsightsAnalytics.tsx    (~600) - the tab.
+  NEW app/src/insightsFmt.ts           - fmtBytes/fmtBps/fmtPct/fmtSpan,
+      lifted OUT of InsightsWindow so the new tab can share them without
+      importing back into its own parent (that would be a cycle).
+  MOD app/src/InsightsWindow.tsx       - 6th tab, IconHistory, lazy-mounted.
+  MOD app/src/App.css                  - .ins-an-* block.
+  MOD app/src/i18n/{en,he,ar,ru}.json  - +50 keys each, all four at 1168.
+  MOD docs/ymux-server/API.md          - documents /analytics and says plainly
+      when NOT to use /history.
+
+Design rules kept from the source page, on purpose:
+  * NO POLL. Loads on tab open and on Refresh. Metrics owns the live view.
+  * Aggregation server-side, one round trip. Never pull rows and sum here.
+  * One colour for every bar (--w-accent), because a bar means MAGNITUDE.
+    Amber is reserved for the two things that are actually a problem: a disk
+    past 85%, and a container whose uptime over the window is under 95%.
+  * Every number gets --w-font-mono + direction:ltr, or columns of digits
+    jitter row to row and RTL flips them.
+  * The sparkline has a <details> "as a table" twin. A bare sparkline is
+    unreadable to a screen reader.
+
+Two things worth knowing for next time:
+  * The stroke needs vector-effect: non-scaling-stroke. preserveAspectRatio
+    ="none" is what makes the chart responsive with no resize listener, and it
+    stretches the line into a wedge without it.
+  * Narrow-mode column dropping uses createNarrow (ResizeObserver on the
+    panel), NOT a media query. This panel is routinely a 440px drawer on a
+    2560px monitor - a viewport query would measure the wrong box.
+
+Status: NOT VERIFIED LIVE (Rule 14). Not compiled either - Rule 17, builds run
+on CI. Needs the server-blob rebake (see below) and then a real remote.
 2026-08-23 — TMUX organization: workspace-scoped session lists + attach-only
 ================================================================================
 Branch: claude/tmux-workspace-scope
@@ -5237,8 +5309,116 @@ Two rules earned:
      back to another directory. Verify the working directory INSIDE the
      command that mutates git state, not before it.
 
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 84.D - "Copy for Claude" on the Analytics tab
+--------------------------------------------------------------------------------
+Yossi's follow-up, and the right question: if everything is already stored, is
+there a simple place to hand it to Claude and ask what happened? There is now -
+one button, top-right of the Analytics tab.
+
+  NEW app/src/insightsReport.ts       - PURE, DOM-free. Owns the /analytics wire
+      types (moved out of the .tsx, which now imports them) and flattens a
+      report into fixed-width plain text: header + totals + the full bucketed
+      series + the three rollups.
+  NEW app/src/insightsReport.test.ts  - 12 node:test cases, ALL RUN AND PASSING
+      locally (a sub-second pure-function test, not a build - Rule 17 is about
+      cargo/vite/tsc occupying the machine and faking the matrix).
+  NEW app/src/clipboardText.ts        - copyText(): navigator.clipboard with the
+      execCommand fallback older WebView2 needs.
+  MOD InsightsAnalytics.tsx / InsightsWindow.tsx / App.css / i18n x4 (+5 keys
+      each, all four now at 1173).
+
+THE TESTS EARNED THEIR KEEP IMMEDIATELY. First run, 3 failures, and one was a
+real defect rather than a wrong expectation: the report was calling the UI's
+`fmtPct`, which rounds away the decimal above 10% so live columns stop jittering
+between refreshes. Correct on screen; in a report meant to be REASONED about,
+"23%" instead of "23.4%" is precision thrown away for nothing. The report now
+has its own one-decimal `pct()` and the comment says why it is not shared.
+
+Deliberate choices:
+  * WYSIWYG. The button copies the range you are looking at and does not
+    quietly fetch a different one.
+  * Absolute `YYYY-MM-DD HH:MM` stamps, hand-rolled rather than Intl - the
+    string is machine-read as much as human-read, so it must not change shape
+    with the UI language. The header says out loud that they are the LOCAL time
+    of the DESKTOP, not the server; without that line every spike gets misdated.
+  * The whole series ships (120 rows ~ a few KB). The shape over time IS the
+    question; summarising it here would be answering it for the reader.
+  * The report states what is NOT in it - no command output, no file contents,
+    no credentials - so nobody has to guess whether pasting it leaks a terminal.
+    Rule 1 holds by construction: this path only ever sees machine metrics.
+
+Status: report formatting VERIFIED by unit test. The button itself is NOT
+verified live - clipboard-write inside WebView2 for this panel is exactly the
+kind of thing that only a real run settles. Rolled into the FOLLOWUPS P1.
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 84.E - Claude usage + cost analysis (the thing Yossi
+                          actually asked for)
+--------------------------------------------------------------------------------
+Yossi asked whether the Claude usage/cost/API analysis had been added. Checked
+the code rather than guessing. IT HAD NOT, AND IT DID NOT EXIST:
+
+  * Monitor > Claude ran `claude -p /usage` and showed SUBSCRIPTION QUOTA
+    PERCENTAGES only. No cost, no tokens, no call counts - and NO HISTORY at
+    all (5-min cache, one point in time; yesterday's number was simply gone).
+  * The closest thing to data was a free-text line, "Last 24h - 3466 requests -
+    10 sessions". A string, not a dataset.
+  * Phase 84.C (Analytics) had answered "what did the MACHINE do". The question
+    was "what did CLAUDE cost".
+
+Same story as the metrics DB, one layer over: THE DATA WAS ALREADY ON DISK AND
+NOBODY READ IT. claude_log.rs (Phase 24.A, dormant since 24.D removed its UI)
+already SFTP-mirrors ~/.claude/projects/**/*.jsonl - and its parser reads
+text/tool_name/timestamp and THROWS THE usage BLOCK AWAY. Verified against a
+real transcript on this machine, not from memory: every assistant line carries
+message.model plus message.usage with input/output/cache_read, the
+cache_creation 5m-vs-1h SPLIT, service_tier and speed, alongside sessionId,
+cwd, gitBranch and isSidechain.
+
+Files:
+  NEW server/internal/insights/claudeusage.go (+ _test.go, 9 tests)
+      GET /claude-usage - walks the transcripts, rolls up by hour / model+speed
+      / project / session, splits main-loop vs subagent. The mtime prune is the
+      whole trick: a transcript mtime is its LAST append, so a file older than
+      the window cannot hold an in-window line and is never opened. That is what
+      makes 240 MB affordable inside a 6s curl.
+  NEW src/claude_usage_local.rs (+ 4 tests) - the local mirror, same JSON shape,
+      same clamping. Two implementations of one aggregation is real duplication
+      and it is the CHEAPER option: the alternative is SFTP-pulling hundreds of
+      MB to the desktop every time the tab opens.
+  NEW app/src/claudePricing.ts (+ 16 tests) - THE ONLY PLACE PRICES LIVE. Both
+      backends count tokens and deliberately do not price them.
+  NEW app/src/InsightsClaudeCost.tsx - the panel, under the quota bars.
+  NEW app/src/insightsCommands.ts - "copy investigation commands" for BOTH tabs.
+  MOD insightsReport.ts - a second pasteable report, for usage.
+  MOD App.tsx - passes `local` down so the command block names the right paths.
+
+DECISIONS THAT MATTER, and why:
+  * COST IS AN ESTIMATE AND THE UI SAYS SO THREE TIMES. Claude Code on a
+    subscription is NOT billed per token. Every figure is API-list-price applied
+    to real token counts: right for comparing projects/models/sessions, WRONG
+    for predicting a charge. Getting this framing wrong would make the whole
+    feature a lie, so the disclaimer LEADS the panel rather than trailing it.
+  * Prices came from the claude-api skill, not from memory - that skill exists
+    precisely because a training-prior price is a plausible wrong number.
+  * The 5m/1h cache-write split is carried end to end. A 1h write costs 2x base
+    input against a 5m write 1.25x; collapsing them understates any long
+    session, and an agentic workload is mostly cache writes.
+  * Sonnet 5 intro pricing is time-bounded IN THE TABLE (until 2026-08-31), and
+    cost is computed from WHEN the tokens were spent. Pricing a week-old call at
+    today's rate would overstate it by 50%.
+  * An unknown model costs 0 and is FLAGGED as unpriced. A wrong dollar figure
+    is worse than an honest blank.
+  * Only by_model knows its model; day/project/session rows can mix several, so
+    they use a token-weighted BLENDED rate and are marked "~". Exact with one
+    model in the window, honest approximation with several.
+  * Local days are rolled up client-side from hourly server buckets - the only
+    way a day boundary lands where the reader clock says it does.
+
+Status: 28 frontend tests + 9 Go tests + 4 Rust tests, all written; the
+frontend ones run and pass here. NOT VERIFIED LIVE (Rule 14).
 2026-08-23 | Phase 82.E | macOS: site JS dead in the in-app Browser - DIAGNOSTIC
-================================================================================
 Symptom (Yossi): on macOS the workspace Browser renders a page but the site's
 own JavaScript does not run. Windows is fine. No logs, no Web Inspector, and
 Rule #17 means no local mac build - so the diagnosis had to ship in the binary.
@@ -5410,7 +5590,6 @@ STATUS: compiles-untested until CI. This does NOT replace the 82.E beacons -
 devtools is the live console when you are sitting in front of the machine; the
 beacons are what work when you are not, which is the actual situation with the
 Mac.
-=======
 
 2026-08-23 | Phase 84 | panes as tabs (84.A) + Claude traffic light (84.B)
 branch claude/pane-tabs-status-indicator-57b38c | PR #18
@@ -5718,6 +5897,26 @@ touched. GitHub could not compute the merge ref, so no `pull_request` workflow
 ever triggered. Exactly the CLAUDE.md "git fetch before every merge" scenario;
 noticed here only because the PR's check list was empty.
 
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 84.C/D/E - renumbered from 84/84.A/84.B (collision)
+--------------------------------------------------------------------------------
+The Monitor work in this branch was written as Phase 84 / 84.A / 84.B. While it
+sat in PR #22, the pane-tabs branch merged to main having taken exactly those
+three numbers for entirely different work (tab strip + Claude traffic light,
+PR #18). CLAUDE.md: "Phase numbering: stable in commit history. No reuse."
+
+Theirs was already on main, ours was not, so ours moved:
+  Phase 84    Monitor > Analytics tab          -> 84.C
+  Phase 84.A  "Copy for Claude"                -> 84.D
+  Phase 84.B  Claude usage + cost              -> 84.E
+
+Commit subjects on the branch were rewritten to match (unmerged, unshared
+branch, force-with-lease). Yossi's call to continue the number rather than jump
+to 85. Worth knowing when reading the log: 84.C-E are NOT follow-ups to 84/84.A/
+84.B - they are a separate feature that lost a race for the number.
+
+The entries above this note still say what they always said; only the phase
+labels moved. Nothing about the pane-tabs entries was touched.
 Conflicts resolved:
   ci-windows.yml  keep the vault gate step, take main's SHA-pinned
                   dtolnay/rust-toolchain block that replaced `@stable`
