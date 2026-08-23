@@ -6154,3 +6154,6 @@ the old entries for everyone. Added an end-to-end dry-run test
 (`bootstrap_rerun_replaces_entries_on_the_old_binary`) that builds a
 settings.json on an existing old binary and asserts all three events come
 back as would_register.
+Yossi pulled the manifest bump into scope: manifest.json hooks.claude-code
+1.1.0 -> 1.6.0. Both raw URLs (yyhezkel/winmux and /ymux) return 200, so
+the old URL in the manifest is left alone. FOLLOWUPS P2 closed.
