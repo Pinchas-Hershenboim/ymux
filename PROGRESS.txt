@@ -5237,3 +5237,29 @@ Two rules earned:
      back to another directory. Verify the working directory INSIDE the
      command that mutates git state, not before it.
 
+
+--- CI result, same day ---
+PR #17. BOTH gates green on the first run:
+  ci-windows   32648007254  success  6m15s
+  build-macos  32648007253  success  7m35s  (x64 + arm64)
+cargo test: 335 passed / 0 failed (+4 ignored) across the workspace; all 8
+new tests present and passing by name —
+  tmux_list_parse_tests::{format_has_six_pipe_separated_fields,
+    list_script_is_built_from_the_format_const, sixth_field_is_the_session_cwd,
+    five_field_lines_still_parse_with_unknown_cwd,
+    empty_sixth_field_reads_as_unknown_not_root, folder_scope_stops_at_a_separator}
+  smart_connect_tests::{session_name_precedence_is_explicit_then_title_then_pane_id,
+    pane_fallback_name_matches_the_legacy_auto_name}
+build-macos matters more than usual here: it is the ONLY job that compiles
+the `cfg(not(windows))` arms, and this change added two of them (the
+cfg-split of the ungated `list_zellij_sessions()` calls). It is green, which
+means they compile — NOT that a Mac was ever asked for a tmux session.
+
+Per Rule #14 this is "compiles, untested". Nothing in either half has run
+live: not the scope toggle, not the ownership file, and not the attach-only
+guard. Smoke list is FOLLOWUPS P1 (2026-08-23).
+
+Also seen on ci-windows, unchanged by this branch: the annotation
+"remote-manifest sha256 changed — the staged CLI binary differs from the
+committed one". No CLI source was touched here; it is the known rebake
+churn CLAUDE.md calls cosmetic, and the run is green.
