@@ -2308,11 +2308,15 @@ pub(crate) fn emit_agent_run_event(
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct PaneAgentSnapshot {
     pub(crate) state: String,
-    // ts-rs maps u128 to bigint; these are epoch-ms and fit in f64 fine,
-    // but keeping them as the same shape the event uses avoids two
-    // parallel representations of the same value on the frontend.
+    // ts-rs maps u128 to `bigint`, but the Tauri event carries these same
+    // values as plain JSON numbers and the frontend compares the two. Pin
+    // them to `number` — epoch-ms is nowhere near f64's integer limit.
+    // Same idiom `FeedItem::created_ms` already uses.
+    #[ts(type = "number | null")]
     pub(crate) state_since: Option<u128>,
+    #[ts(type = "number | null")]
     pub(crate) started_at: Option<u128>,
+    #[ts(type = "number | null")]
     pub(crate) avg_ms: Option<u128>,
     pub(crate) seq: u32,
 }
