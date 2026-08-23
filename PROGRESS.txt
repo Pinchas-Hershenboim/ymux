@@ -4889,3 +4889,39 @@ the .app on a real Mac.
 
   Recovery, if any of this turns out wrong: archive/pre-merge-main
   (ce50f0f) and archive/pre-merge-release (d2a4f3a) are pushed tags.
+
+===============================================================================
+2026-08-23 | MERGED TO MAIN: the mac signing fix + the two-arch matrix
+Files: merge 47dfab0 (main 1cfbb1e -> 47dfab0, fast-forward)
+===============================================================================
+
+`main` moved 69 commits DURING this session -- the 0.5.0 alignment
+(7a44526) landed from another session about an hour before the merge,
+closing the deferred-macOS-merge P1. The re-fetch before merging is the
+only reason that work was not overwritten; this is the exact scenario
+CLAUDE.md warns about, and it was live today, not hypothetical.
+
+Merge conflicts: exactly three, all append-at-the-same-anchor in
+FOLLOWUPS.md / PROGRESS.txt / docs/DECISIONS.md. Resolved by keeping BOTH
+sides, verified entry-by-entry afterwards rather than trusting the merge.
+No code or CI file conflicted -- build-macos-intel.yml, Entitlements.plist,
+tauri.macos.conf.json and README.md all byte-identical to e447d3a, the
+tree that went green as 32639916194, so that result carried over intact.
+
+CI on main after the merge, both green:
+  ci-windows   32644824849
+  build-macos  32644824851  arm64 8m50s / x64 15m41s
+This is the first time the two-arch matrix has run against 0.5.0 code
+(zellij + RTL + the whole release line), not just against the pre-merge
+tree it was developed on.
+
+  ymux_arm64_macos13.dmg  09d73ceaa19565c1eaec7875e304cb15edcb47205c1549f10e1cea539fc7b9c7
+  ymux_x64_macos13.dmg    529869aa190b560027d7394cc4dd92e092568469626c6e448af89b251451d8ec
+
+STILL OPEN, and neither is a code problem:
+  - FOLLOWUPS P1 -- hardened runtime has never been LAUNCHED. Deferred to
+    a contributor with a Mac; the entry carries the artifact download and
+    maps each symptom to the entitlement it would implicate.
+  - DECISIONS Open -- ad-hoc vs an Apple Developer membership. Both dmgs
+    above are ad-hoc signed and spctl rejects them: they run locally, they
+    are not distributable. Yossi's spend decision.
