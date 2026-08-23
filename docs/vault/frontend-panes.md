@@ -81,8 +81,9 @@ filters `pty:data`. Its `anyModalOpen` is hardcoded `false`: ymux's modals all l
 The 🐞 button toggles Dev Mode (ticket capture); the terminal-icon button next to it calls
 `workspace_browser_open_devtools` and opens the Web Inspector on the loaded page — on
 macOS that saves a trip through Safari → Develop, and on Windows it is the *only* way in,
-since F12 is not wired up for a child webview. Only that webview is inspectable; see
-`backend-panes.md`.
+since F12 is not wired up for a child webview. **Only this webview is inspectable**: see
+`backend-panes.md` for the child-vs-shell split, the two `.devtools(false)` calls in
+`backend-core.md`, and the Cargo feature they guard in `build-glue.md`.
 
 **Popping out reloads the page, and that cannot be fixed here** — a child Webview cannot
 be re-parented, so `browser_popout_open` destroys and respawns. `backend-panes.md` has

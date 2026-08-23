@@ -13,7 +13,7 @@ covers:
 The local-machine half of the app: what it detects on this box, what it installs here,
 what it remembers, and how it learns there is a new version. ~7,500 lines.
 
-## `settings.rs` (2,833) — `%APPDATA%\ymux\settings.json`
+## `settings.rs` (2,885) — `%APPDATA%\ymux\settings.json`
 
 Theme, fonts, terminal, hooks, notifications, updates, Claude, logs. Same discipline as
 `workspaces.json`: **atomic write + load-poison gate**. Every mutation emits

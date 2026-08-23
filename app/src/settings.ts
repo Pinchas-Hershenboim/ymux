@@ -416,6 +416,13 @@ export interface FontCatalogItem {
   homepage: string;
   license: string;
   download_bytes: number;
+  /**
+   * At least one face of this entry is present in the per-user font
+   * directory. Derived from the directory on every call, not from a
+   * record of past installs, so a font installed by an older build is
+   * still removable.
+   */
+  installed: boolean;
 }
 
 export interface FontInstallResult {
@@ -429,6 +436,19 @@ export interface FontInstallResult {
   guided: boolean;
   guided_path: string | null;
   fallback_reason: string | null;
+}
+
+export interface FontUninstallResult {
+  /** File names removed from the per-user font directory. */
+  removed: string[];
+  /** Registry values dropped. Windows only; empty elsewhere. */
+  unregistered: string[];
+  /**
+   * Faces found but not removed, each with its reason. The everyday case
+   * is a font file held open by a running app, which is why a partial
+   * uninstall is a reported outcome rather than a thrown error.
+   */
+  failed: string[];
 }
 
 export interface UpdateInfo {
@@ -468,6 +488,9 @@ export const fontCatalog = (): Promise<FontCatalogItem[]> =>
 
 export const fontInstall = (id: string): Promise<FontInstallResult> =>
   invoke<FontInstallResult>("font_install", { id });
+
+export const fontUninstall = (id: string): Promise<FontUninstallResult> =>
+  invoke<FontUninstallResult>("font_uninstall", { id });
 
 export const checkForUpdates = (): Promise<UpdateInfo> =>
   invoke<UpdateInfo>("check_for_updates_now");

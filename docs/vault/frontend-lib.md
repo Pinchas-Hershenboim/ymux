@@ -4,6 +4,11 @@ covers:
   - app/src/terminalInstance.ts
   - app/src/types.ts
   - app/src/settings.ts
+  - app/src/claudePricing.ts
+  - app/src/insightsFmt.ts
+  - app/src/insightsReport.ts
+  - app/src/insightsCommands.ts
+  - app/src/clipboardText.ts
   - app/src/textDirection.ts
   - app/src/bidi.ts
   - app/src/copyBidi.ts
@@ -14,11 +19,6 @@ covers:
   - app/src/stt.ts
   - app/src/platform.ts
   - app/src/download.ts
-  - app/src/clipboardText.ts
-  - app/src/claudePricing.ts
-  - app/src/insightsFmt.ts
-  - app/src/insightsReport.ts
-  - app/src/insightsCommands.ts
   - app/src/fontProbe.ts
   - app/src/i18n/index.ts
 ---
@@ -110,8 +110,16 @@ nullable key, not `T?` — so helpers such as `effectiveIdentity` widen their pa
 `describeConnection`, `isLocalConn`, `isRemoteEffective`, `collectPanes`, `findPane`)
 are what components use to reason about a pane.
 
-**`settings.ts` (728)** — the typed settings mirror plus load/save and the CSS-variable
-apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it.
+**Not everything here is generated.** `TmuxSessionInfo` and `ForeignScope` are
+**hand-written mirrors** of structs that live in `lib.rs` rather than `ymux-types`, so
+ts-rs never sees them and nothing regenerates them for you. A field added on the Rust
+side is silently missing here until someone types it — update both in the same commit.
+
+**`settings.ts` (751)** — the typed settings mirror plus load/save and the CSS-variable
+apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it. Also
+carries the font-catalog bindings: `fontCatalog` (each item now reporting whether it is
+`installed`, read from the font directory on every call rather than from any record of
+past installs), `fontInstall`, and `fontUninstall`.
 
 ## Small modules
 

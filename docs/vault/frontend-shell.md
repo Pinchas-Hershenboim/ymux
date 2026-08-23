@@ -123,6 +123,20 @@ editing, the persistence toggle, and the right-click menu. `paneCaps()` /
 `profileFor()` / `effectiveIdentity()` from `types.ts` decide what a pane can offer
 based on its effective connection.
 
+**The tmux picker's scope toggle owns no data.** *This folder* vs *Whole server* is a
+client-side filter over one response — `inWorkspaceScope = s => s.owned || s.in_cwd`,
+against rows the backend already annotated (`backend-core.md` § Which folder a session
+belongs to). No second round trip, and a count line keeps the hidden ones visible as a
+number so a scoped list never reads as an empty server. `pickScopeDefault` opens on
+*Whole server* when the folder view would be empty.
+
+Each row carries a `📁` badge when `s.foreign` is set — the session belongs to another
+workspace or another directory. The verdict is entirely the backend's and is **never**
+set inside the workspace's own scope, so the badge needs no view conditional here; this
+file only picks the wording (`foreign.kind` chooses between the workspace and folder
+sentences) and appends the full path to the tooltip. It marks, it does not block:
+clicking still attaches.
+
 ## Tabs and the agent traffic light
 
 **`PaneTabs.tsx` (155)** — the tab strip shown when a workspace has `tabs_mode`. **Owns
