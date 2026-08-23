@@ -4784,3 +4784,49 @@ as badly permissioned, (d) Settings shows real installed fonts.
 
   NOT VERIFIED LIVE (rule 14). Nothing here has run on either platform.
   The checklist is the new FOLLOWUPS P1.
+
+
+2026-08-23 (cont.)  main aligned, then the branch and worktree sweep
+  Worktree worktrees-branches-cleanup-7f7849, on main directly.
+
+  CI: first round RED on both jobs, and both at the SAME tsc gate -- so
+  the cfg(target_os = "macos") arms had still never been compiled. Three
+  errors, all one family: the release line renamed something, main was
+  written against the old name, and the auto-merge kept whichever side
+  owned the surrounding line.
+    - buildSteps lost `const r = inspect();` (3 dangling uses of `r`)
+    - LOCAL_UNIX_CAPS set tmuxPersistence, renamed to sessionPersistence
+      when zellij made it not-tmux-only
+    - a PaneView comment named the same dead field
+  Rather than pay another round on the same family, checked it up front:
+  all four ts-rs bindings match their Rust structs field for field, every
+  ConnCaps literal carries the full set, every mac-only helper lib.rs now
+  calls exists with a compatible signature. Second round GREEN on both,
+  and the mac job got all the way through cargo test -> .app -> .dmg.
+
+  main fast-forwarded ce50f0f -> 9ba3a97. Both lines verified present:
+  `git merge-base --is-ancestor v0.5.0-beta.1 main` and the same for
+  ce50f0f (Phase 82) both return 0. PR #15 auto-closed as merged.
+
+  Deleted: 12 remote branches and 6 local ones, every one re-checked for
+  containment against the NEW main immediately before the delete rather
+  than against the morning snapshot. browser-dev-mode-tickets (13 commits)
+  and design-pass-01 (5) went without archiving on Yossi's explicit call --
+  local-only, never pushed. Remote is 16 branches -> 4.
+
+  STOPPED SHORT DELIBERATELY. Re-checking before deleting is what caught
+  it: three worktrees had another session committing into them WHILE this
+  ran (15:36, 15:56, 16:09 the same afternoon). One of them,
+  mac-build-broken-b59d67, was on the approved delete list that morning as
+  "contained, zero unique commits" and had three unique commits by the
+  time its turn came. Deleting on the plan's snapshot would have destroyed
+  live work. Left alone, with the branches they hold, as FOLLOWUPS P2 --
+  they were never Yossi's to decide on, because two of them did not exist
+  when he decided.
+
+  Also note: the worktree DIRECTORY optimize-build-process-18f637 now
+  holds claude/server-build-ci-pipeline-c0384e. The folder name is not the
+  branch name any more; do not infer one from the other.
+
+  Recovery, if any of this turns out wrong: archive/pre-merge-main
+  (ce50f0f) and archive/pre-merge-release (d2a4f3a) are pushed tags.
