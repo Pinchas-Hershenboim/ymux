@@ -28,7 +28,7 @@ covers:
 The non-component half of `app/src/`. Two things dominate: the terminal wrapper, and
 **RTL** — four separate modules exist because Hebrew broke in four different places.
 
-## `terminalInstance.ts` (1,867) — the xterm.js wrapper
+## `terminalInstance.ts` (1,935) — the xterm.js wrapper
 
 `class TerminalInstance` owns one xterm `Terminal`, its `FitAddon`, the optional
 `WebglAddon`, and the DOM container. Module-scope globals cache font family/size, theme,
@@ -56,8 +56,44 @@ Things it does that are easy to get wrong:
 ### RTL profiles — read this before touching direction
 
 `RtlProfileSettings` mirrors `RtlProfile` in `settings.rs`: `rtlMode`
-(`auto_per_line | bidi_reorder | off`), `autoDirection`, `mirrorArrowsRtl`,
-`tuiOwnsBidi`, and `directionPolicy`.
+(`auto_per_line | force_rtl | bidi_reorder | off`), `autoDirection`,
+`mirrorArrowsRtl`, `tuiOwnsBidi`, and `directionPolicy`.
+
+Two of those modes paint rows with a `dir` attribute and therefore need the DOM
+renderer; the other two run WebGL. `usesRowDir(mode)` is the single predicate
+for that question, and it is a **type guard** narrowing `RtlMode` to `RowDirMode`.
+It exists because the same question was asked in six places — the renderer choice
+in the constructor, `applyRenderer`, `staleRenderer`, the mouse capture, the dir
+observer and the row pass — and `applyRenderer`'s own comment records the cost of
+letting them disagree: the pane lands in a combination that is none of the modes
+and does **no bidi at all**. Yossi reported Hebrew broken "in all 3 options"; two
+of the three were that hole, so only one mode was ever really under test.
+
+**`force_rtl` (2026-08-23)** is the mode with no heuristics. Every row gets
+`dir="rtl"`, full stop: no dominance vote, no block grouping, no `stripPaneFrame`,
+and `autoDirection` / `directionPolicy` / the `suppress` signal are all inert.
+That inertness is a **contract**, not an oversight, and `textDirection.test.ts`
+pins it across every combination of the three knobs. It was added for remote
+panes on Yossi's ask — "RTL מלא, ולא שורה שורה" — where the stream is logical and
+a shell reads best unconditionally right-to-left. Latin runs inside a row still
+come out correct, because the browser resolves them as LTR runs inside an RTL
+paragraph. The **known cost**: a POSITIONAL row — tmux's status line, a zellij
+frame, vim, htop — is full-width, so UAX #9 rule L2 reverses the order of its runs
+and the layout renders mirrored. `RTL_DOMINANCE` and `stripPaneFrame` exist to
+prevent exactly that in `auto_per_line`; `force_rtl` trades it away deliberately.
+It is opt-in, neither profile default moved, and switching back is one click.
+
+Two traps around `force_rtl`, both of which produce reversed letters if missed:
+
+- **`normaliseIncomingToLogical` stays pinned to `auto_per_line`.** It asks a
+  different question from `usesRowDir`: not "does this mode paint a `dir`" but
+  "is the incoming BUFFER visual order". Visual order is a local/ConPTY condition;
+  `force_rtl` targets remote panes, whose stream is logical already, and
+  normalising a logical stream reverses it.
+- **`unicode-bidi: bidi-override` is gated on the mode, not on `suppress` alone.**
+  The override paints bytes verbatim, which is right only while the buffer is
+  still visual. Pairing it with `dir="rtl"` on a logical buffer reverses every
+  Hebrew word, so `applyRowDirections` reads `suppress && mode === "auto_per_line"`.
 
 `directionPolicy` is the field to understand:
 
@@ -78,12 +114,18 @@ stopped being scalar globals.
 
 ## The four RTL modules
 
-**`textDirection.ts` (379)** — per-line direction. xterm's DOM renderer with `dir="auto"`
+**`textDirection.ts` (427)** — per-line direction. xterm's DOM renderer with `dir="auto"`
 uses "first strong directional character wins", which mis-renders a mixed line that
 happens to *start* with Latin: `2. /opt/wa/.shared.env - הערה` laid out LTR because the
 first strong char is Latin, though the line is mostly Hebrew. Yossi's rule instead: a
 line containing **any** Hebrew/Arabic is RTL. `RTL_DOMINANCE` is the `tui_dominance`
 refinement on top.
+
+`rowDirections(mode, texts, {auto, suppress, dominance})` is the whole-pane
+decision, and the one place `force_rtl` and `auto_per_line` diverge. It was
+lifted out of `TerminalInstance.applyRowDirections` so it could be tested at
+all — the method is bound to the DOM and never ran under `node --test`, and in
+these modules the tests *are* the specification.
 
 **`bidi.ts` (71)** — the `bidi_reorder` path (bidi-js, no type defs). Exports the escape
 matcher so the visual→logical pass protects escapes **exactly** the way this file does —

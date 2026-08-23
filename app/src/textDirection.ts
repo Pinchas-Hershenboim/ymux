@@ -324,6 +324,54 @@ export function detectRowDirections(
   return result as ("ltr" | "rtl")[];
 }
 
+// -- The whole-pane direction decision (all DOM-renderer modes) ---------------
+
+/**
+ * Modes that render on xterm's DOM renderer and therefore carry a real `dir`
+ * attribute per row. WebGL paints to a canvas and has no per-cell DOM for the
+ * browser's bidi engine to hook into, so `bidi_reorder` / `off` are excluded.
+ *
+ * Kept here rather than in terminalInstance.ts so the row-direction decision
+ * and the renderer gate that enables it read from one place. Six separate
+ * `=== "auto_per_line"` gates is what let a pane land in a combination that
+ * was none of the modes — see the note on `applyRenderer`.
+ */
+export type RowDirMode = "auto_per_line" | "force_rtl";
+
+/**
+ * Decide the `dir` of every visible row.
+ *
+ * Extracted from `TerminalInstance.applyRowDirections` on 2026-08-23 so the
+ * decision is testable: the method itself is bound to the DOM and never ran
+ * under `node --test`, and in these modules the tests are the specification
+ * (see `docs/vault/INDEX.md`).
+ *
+ * `force_rtl` is deliberately the FIRST branch and reads none of `o`. The mode
+ * exists precisely because Yossi wanted the per-line decision gone on remote
+ * panes — "RTL מלא, ולא שורה שורה" — so the dominance vote, the block-aware
+ * table grouping, `stripPaneFrame` and the `auto_direction` escape hatch are
+ * all bypassed rather than tuned. That every knob in `o` is inert here is a
+ * contract, and textDirection.test.ts pins it.
+ *
+ * KNOWN CONSEQUENCE, and it is the point rather than a bug: a POSITIONAL row —
+ * a tmux status line, a zellij frame, vim, htop — is full-width, so UAX #9
+ * rule L2 reverses the sequence of runs inside it and the layout renders
+ * mirrored. `RTL_DOMINANCE` and `stripPaneFrame` exist to avoid exactly that
+ * in `auto_per_line`; `force_rtl` accepts it in exchange for a shell that is
+ * unconditionally right-to-left. It is opt-in and reverts with one click.
+ */
+export function rowDirections(
+  mode: RowDirMode,
+  texts: string[],
+  o: { auto: boolean; suppress: boolean; dominance: boolean },
+): ("ltr" | "rtl")[] {
+  if (mode === "force_rtl") return texts.map(() => "rtl");
+  // `suppress` = a self-bidi TUI already emitted visual order; `auto` off is
+  // the classic-terminal escape hatch. Both mean "no bidi from us".
+  if (!o.auto || o.suppress) return texts.map(() => "ltr");
+  return detectRowDirections(texts, o.dominance);
+}
+
 // -- TUI-owned BiDi (Claude Code visual-order output) -------------------------
 //
 // Claude Code (>= 2.1.74, verified live on 2.1.210) writes RTL text to the

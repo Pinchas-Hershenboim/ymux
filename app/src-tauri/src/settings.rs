@@ -379,8 +379,19 @@ pub(crate) struct Font {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct RtlProfile {
-    /// "auto_per_line" (DOM renderer + per-row dir), "bidi_reorder"
-    /// (WebGL + our logical→visual reorder), or "off" (WebGL, raw).
+    /// "auto_per_line" (DOM renderer + per-row dir), "force_rtl" (DOM
+    /// renderer, every row dir="rtl" with no detection at all),
+    /// "bidi_reorder" (WebGL + our logical→visual reorder), or "off"
+    /// (WebGL, raw).
+    ///
+    /// A `String` and not an enum on purpose (the sidebar_mode pattern), so
+    /// adding a mode costs nothing here and an unknown value read from an
+    /// older/newer settings.json degrades to whatever the frontend does with
+    /// it rather than failing the whole deserialise.
+    ///
+    /// 2026-08-23: `force_rtl` was added for REMOTE panes — "RTL מלא, ולא
+    /// שורה שורה". It is opt-in: `default_rtl_mode` is unchanged, and
+    /// neither profile default moves.
     #[serde(default = "default_rtl_mode")]
     pub rtl_mode: String,
     #[serde(default = "default_true")]
@@ -537,8 +548,9 @@ impl Default for RtlProfiles {
 pub(crate) struct TerminalSettings {
     /// Phase 15.A: how to handle Hebrew / Arabic in the terminal.
     /// One of "auto_per_line" (default, Termius-style — DOM renderer
-    /// + dir="auto" on every row), "bidi_reorder" (legacy v1, WebGL +
-    /// bidi-js logical→visual reorder), or "off" (WebGL, no reorder).
+    /// + dir="auto" on every row), "force_rtl" (DOM renderer, every row
+    /// forced RTL), "bidi_reorder" (legacy v1, WebGL + bidi-js
+    /// logical→visual reorder), or "off" (WebGL, no reorder).
     /// New panes pick up the renderer immediately; live mode swaps
     /// affect the reorder pipeline on currently-open panes.
     #[serde(default = "default_rtl_mode")]

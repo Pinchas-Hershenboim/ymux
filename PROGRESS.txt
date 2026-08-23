@@ -6128,3 +6128,64 @@ Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
+
+[2026-08-23] RTL: added `force_rtl` — a fourth rtl_mode that forces dir="rtl"
+on EVERY row with no per-line detection, for remote panes. Yossi's ask:
+"בא נוסיף אפשרות של RTL מלא - ולא שורה שורה - במרוחק".
+
+What it is: same DOM renderer as `auto_per_line`, but `rowDirections()` returns
+"rtl" for every row and reads none of `auto_direction` / `direction_policy` /
+`suppress`. The dominance vote, block/table grouping and stripPaneFrame are all
+bypassed, not tuned. The grid stays LTR (`rowsHost` keeps dir="ltr",
+`.terminal-container { direction: ltr }` untouched) — only each row's paragraph
+direction moves, so mouse/selection/caret column math is unaffected.
+
+Opt-in: appears in the radio list for both profiles, but RTL_FIELD_DEFAULTS and
+default_rtl_mode are unchanged (both profiles still `auto_per_line`), so the
+local/remote separation invariant holds and nothing reaches a local pane unless
+picked by hand.
+
+Refactors this needed:
+ - Six separate `=== "auto_per_line"` gates collapsed into one type guard,
+   `usesRowDir(m): m is RowDirMode`. That scatter is what previously let a pane
+   land in a combination that was none of the modes and did no bidi at all.
+ - The row-direction decision lifted out of the DOM-bound
+   `TerminalInstance.applyRowDirections` into a pure `rowDirections()` in
+   textDirection.ts, so it is testable under `node --test`.
+
+Two traps found and closed, both of which reverse letters:
+ - `normaliseIncomingToLogical` stays pinned to `auto_per_line`. It asks whether
+   the incoming BUFFER is visual order (a local/ConPTY condition), NOT whether
+   the mode paints a dir. A remote stream is logical; normalising reverses it.
+ - `unicode-bidi: bidi-override` is now gated `suppress && mode ===
+   "auto_per_line"`. On `suppress` alone, force_rtl would pair bidi-override
+   with dir="rtl" over a logical buffer = every Hebrew word reversed.
+
+Fixed in passing: installRtlMouseCapture ran once in finishConstruction, so a
+pane built on WebGL (`off`/`bidi_reorder`) and switched LIVE to a row-dir mode
+got dir="rtl" rows with no coordinate mirroring — clicks and drag-select landed
+on the mirrored column until the pane was reopened. Now idempotent
+(`rtlMouseInstalled`) and re-run from applyRenderer.
+
+Known + accepted cost: positional rows (tmux status line, zellij frame, vim,
+htop, Claude Code) are full-width, so UAX #9 rule L2 reverses their run order
+and the layout renders mirrored. Documented in docs/RTL-TEST.md as the deal
+being struck, not as a bug.
+
+Files: app/src/textDirection.ts (+48, rowDirections/RowDirMode),
+app/src/terminalInstance.ts (RtlMode +force_rtl, usesRowDir, 6 gates, override
+gate, isCurrentLineRtl, mouse-capture idempotency),
+app/src/textDirection.test.ts (+78, 6 new cases), app/src/settings.ts (unions),
+app/src-tauri/src/settings.rs (doc only), app/src/bindings/{RtlProfile,
+TerminalSettings}.ts, app/src/SettingsModal.tsx (+1 radio),
+app/src/i18n/{en,he,ar,ru}.json (+2 keys each).
+Docs: docs/DECISIONS.md (Decided entry), docs/RTL-TEST.md (force_rtl section +
+matrix), docs/vault/{frontend-lib,frontend-flows,backend-wizards}.md,
+docs/vault/.vault-lock.json re-stamped.
+Vault: green — `node scripts/vault-check.mjs` reports up to date.
+Tests: node --test textDirection.test.ts = 75 pass / 0 fail (69 pre-existing +
+6 new). mouseRtl.test.ts 11 pass. bidi/copyBidi tests need node_modules, which
+this worktree does not have — unrelated to this change.
+Status: NOT VERIFIED LIVE (Rule #14). Needs a real SSH pane: switch the remote
+profile to Full RTL and check Hebrew, pure-Latin `ls`, drag-select, copy,
+arrows, and that a local pane open alongside is untouched.

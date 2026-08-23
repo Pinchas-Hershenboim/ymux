@@ -5,8 +5,9 @@ export type TerminalSettings = {
 /**
  * Phase 15.A: how to handle Hebrew / Arabic in the terminal.
  * One of "auto_per_line" (default, Termius-style — DOM renderer
- * + dir="auto" on every row), "bidi_reorder" (legacy v1, WebGL +
- * bidi-js logical→visual reorder), or "off" (WebGL, no reorder).
+ * + dir="auto" on every row), "force_rtl" (DOM renderer, every row
+ * forced RTL), "bidi_reorder" (legacy v1, WebGL + bidi-js
+ * logical→visual reorder), or "off" (WebGL, no reorder).
  * New panes pick up the renderer immediately; live mode swaps
  * affect the reorder pipeline on currently-open panes.
  */

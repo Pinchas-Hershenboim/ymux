@@ -63,7 +63,7 @@ export interface FontSettings {
 
 export interface TerminalSettings {
   /** Phase 15.A: how to render Hebrew / Arabic. */
-  rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
+  rtl_mode?: "auto_per_line" | "force_rtl" | "bidi_reorder" | "off";
   /** Phase tmux-conf: when true (default), ymux launches tmux with
    *  `-f ~/.ymux/tmux.conf` for sane scrollback / mouse behaviour.
    *  Set false to fall back to the user's own ~/.tmux.conf. */
@@ -90,7 +90,7 @@ export interface TerminalSettings {
 
 /** One class of pane's RTL knobs. Mirrors `RtlProfile` in settings.rs. */
 export interface RtlProfileFields {
-  rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
+  rtl_mode?: "auto_per_line" | "force_rtl" | "bidi_reorder" | "off";
   auto_direction?: boolean;
   mirror_arrows_rtl?: boolean;
   tui_owns_bidi?: boolean;

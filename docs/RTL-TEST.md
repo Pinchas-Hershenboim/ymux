@@ -14,8 +14,8 @@ Only affects the `auto_per_line` RTL mode (the default). Gated by
 
 ## Unit tests
 
-`app/src/textDirection.test.ts` — 47 cases (`node:test`), of which 10 cover
-`nextTuiOwnsBidi`. Run:
+`app/src/textDirection.test.ts` — 75 cases (`node:test`), of which 10 cover
+`nextTuiOwnsBidi` and 6 cover `rowDirections` / `force_rtl`. Run:
 
 ```
 cd app && node --experimental-strip-types --test src/textDirection.test.ts
@@ -146,3 +146,52 @@ only way to check the matrix without live workspaces.
 `detectDirection()` rule, so the caret/arrow behaviour matches the visual
 direction on mixed lines. Candidate fix for the parked caret item — **verify
 live** before marking it resolved.
+
+## `force_rtl` — full RTL (2026-08-23)
+
+A fourth `rtl_mode`, alongside `auto_per_line` / `bidi_reorder` / `off`. It uses
+the same DOM renderer as `auto_per_line` but makes **no per-line decision at
+all**: every visible row gets `dir="rtl"`. Added for **remote** panes on Yossi's
+ask — "RTL מלא, ולא שורה שורה". Opt-in; neither profile default moved.
+
+Everything in the matrix above is bypassed in this mode — the dominance vote,
+the block/table grouping, `stripPaneFrame`, and the `auto_direction`,
+`direction_policy` and `tui_owns_bidi` knobs. `rowDirections()` reads none of
+them, and the unit tests assert that across every combination.
+
+**Settings → Terminal → RTL → profile `remote` → "Full RTL (remote panes)".**
+The switch is live — no new pane, no rebuild.
+
+| What you run | Expected | Why |
+|---|---|---|
+| `echo "שלום עולם"` | right-aligned, letters in order | logical stream + `dir="rtl"` |
+| `ls -la` (pure Latin) | right-aligned, **letters not reversed** | one LTR run inside an RTL paragraph |
+| `2. /opt/wa/.shared.env - הערה` | RTL, path still readable | UAX #9 resolves the Latin run |
+| drag-select a Hebrew row | selection tracks the pointer | `mouseRtl` mirrors `clientX` off the row's live `dir` |
+| copy that selection | logical order | DOM child order is unchanged by `dir` |
+| Left/Right arrows at a prompt | mirrored | `isCurrentLineRtl()` returns true unconditionally here |
+| `htop`, `vim`, tmux status bar | **mirrored layout** | see below |
+
+### The known cost — not a bug
+
+A **positional** row is one where a TUI already chose the column of every glyph:
+tmux's status line, a zellij frame, `vim`, `htop`, Claude Code. Those rows are
+full-width, so UAX #9 rule L2 reverses the *order of runs* inside them and the
+layout comes out mirrored. `RTL_DOMINANCE` and `stripPaneFrame` exist precisely
+to avoid that in `auto_per_line`; `force_rtl` trades it away on purpose in
+exchange for a shell that is unconditionally right-to-left. Switch back to
+`auto_per_line` for TUI work — one click, takes effect immediately.
+
+### Two traps if you change this code
+
+Both produce *reversed letters*, which looks like the same bug from a
+screenshot:
+
+1. **`normaliseIncomingToLogical` must stay pinned to `auto_per_line`.** It asks
+   whether the incoming buffer is VISUAL order (a local/ConPTY condition), not
+   whether the mode paints a `dir`. A remote stream is logical already, and
+   normalising it reverses it.
+2. **`unicode-bidi: bidi-override` is gated on the mode, not on `suppress`.**
+   The override paints bytes verbatim, which is right only while the buffer is
+   still visual. Paired with `dir="rtl"` over a logical buffer it reverses every
+   Hebrew word.

@@ -542,6 +542,8 @@
   "settings.terminal.rtl.hint": "How to display lines that contain right-to-left text. Switching the mode affects newly-opened panes immediately; existing panes update the write pipeline live but keep their original renderer.",
   "settings.terminal.rtl.auto.label": "Per-line auto (Termius-style)",
   "settings.terminal.rtl.auto.desc": "DOM renderer; each line gets dir=\"auto\" and the browser picks direction by the first strong character. Best default for SSH prompts that occasionally print Hebrew.",
+  "settings.terminal.rtl.force.label": "Full RTL (remote panes)",
+  "settings.terminal.rtl.force.desc": "DOM renderer; EVERY line is forced dir=\"rtl\" with no detection — no dominance vote, no table grouping. A shell that is unconditionally right-to-left. Latin words inside a line still read correctly. Built for remote (SSH/WSL) panes: full-screen TUIs such as tmux, vim or htop WILL look mirrored, because their layout is positional.",
   "settings.terminal.rtl.bidi.label": "Full BiDi reorder (legacy)",
   "settings.terminal.rtl.bidi.desc": "WebGL renderer + bidi-js logical→visual reorder. Faster paint, but rewrites the byte stream — editable lines may surprise.",
   "settings.terminal.rtl.off.label": "Off",
