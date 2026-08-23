@@ -109,12 +109,10 @@ greyscale, 8px, and red-green deficiency.
 Every side panel (Notifications, Monitor, Files, Diff, Tickets) shares one lifecycle:
 docked drawer → floating window → fullscreen overlay. Four small files implement it:
 
-One prop worth knowing about because it looks redundant and is not: `App.tsx` passes
-the Monitor a `local` flag (`activeWs()?.connection?.type === "local"`). Fetching
-already routes local-vs-remote transparently through `insights_fetch`, so the panel
-does not need it to GET data — it needs it to TELL THE TRUTH, because the
-copy-the-commands blocks name paths that differ between a local box and a remote one,
-and the Analytics tab has no history to show on a local workspace at all.
+Panels get their workspace context as props from here rather than reading it themselves —
+`<InsightsWindow>` for instance is handed `workspaceId`, `workspaceName`, and
+`local={activeWs()?.connection?.type === "local"}`, because App owns `file()` and a panel
+that re-derived the active workspace would be a second source of truth.
 
 - **`panels.ts` (26)** — the state vocabulary. A per-panel `Surface`; `closed` means
   not shown. `App.tsx` drives it.

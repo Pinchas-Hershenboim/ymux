@@ -6127,62 +6127,6 @@ thing that exercises cache@v6 and the rust-toolchain SHA on the release
 path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
-2026-08-23 | Both P0s closed; FOLLOWUPS split into open list + archive
-Files: FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md (new), CLAUDE.md, PROGRESS.txt
-
-MID-SESSION INCIDENT, worth more than the change itself: another session's
-worktree sweep deleted this session's worktree out from under it while it was
-running. The directory emptied, git status went silent, and origin/main had
-moved 41 commits. Nothing was lost ONLY because the previous phase had been
-committed immediately (a514e58) - the commit survived in the shared object
-store on yos/folow-ufp-review-fbbfda and was recovered by creating a fresh
-worktree at .claude/worktrees/followups-archive-pass and merging origin/main.
-This is the second recorded instance of the same hazard. Commit per phase.
-
-The merge had two conflicts, both in append-only files:
-  FOLLOWUPS.md - the other session had closed the SAME Node 20 entry, with a
-    fuller note (it did the work), and added an open entry beside it. Took
-    theirs outright rather than keeping the weaker note.
-  PROGRESS.txt - not a choice between versions, two sessions appending at
-    once. Kept both, theirs first.
-
-P0 #1 (tauri.conf.json - must be cut as 0.5.0): closed as a DUPLICATE, not as
-work done. Verified in tree: version 0.5.0, identifier com.ymux.app,
-productName ymux. The requirement lives as blockers 0.1 + 0.2 in
-docs/RELEASE-0.5.0-CHECKLIST.md, carrying both the never-cut-as-0.4.6 rule and
-the release-note ordering. The residual risk is human and belongs in the
-checklist, which is read at cut time; FOLLOWUPS is not.
-
-P0 #2 (tmux sessions vanish server-side): MOVED, NOT SOLVED, and the entry now
-says so in its first six words. Still no mechanism, still no fix. It leaves
-FOLLOWUPS because that file lists defects with known causes; this is an open
-investigation and it already lives in full under docs/DECISIONS.md section
-Open, which IS scanned at session start. Next step is unchanged and is data,
-not code: journalctl for the OOM killer, and id/TMUX_TMPDIR/ls of the tmux
-socket dir, both on the server.
-
-THE ARCHIVE. FOLLOWUPS.md had accumulated 28 closed entries among 72 open ones,
-some closed weeks ago, plus a "## Done" section that was not where closed items
-actually went - one OPEN entry was misfiled under it and has been moved back.
-Split by a script, not by hand, and verified programmatically: 100 entries
-before, 72 open + 28 archived after, zero lost, zero in both files, zero
-open entries in the archive, zero closed entries left in the live list.
-Continuation lines were the trap - one entry carries a 4-row ASCII table and
-another has a blank line INSIDE it (a session name containing a newline), so
-blocks are cut at entry boundaries rather than at blank lines. Both stayed
-attached to their open entries.
-
-CLAUDE.md updated in the same commit: FOLLOWUPS holds open items only, closed
-ones move to the archive WITH a closing note (not deleted, not left as [x]),
-the archive is not read at session start so nothing actionable may be parked
-there, and it is now step 2 in the past-work lookup order. Also recorded the
-rule that produced two rotten entries this session: cite an entry by its text,
-never by FOLLOWUPS.md:NN, because the numbers shift on every add or archive.
-
-STATUS: documentation only, no code touched, nothing to build. Open counts
-after the pass: P0 0, P1 18, P2 29, P3 25.
-
-================================================================================
 2026-08-23 | Phase 84.F - a pane title could inject a command into its own shell
 Files: app/src-tauri/src/lib.rs, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
 Closes FOLLOWUPS P1 of 2026-08-20 ("A PANE TITLE CAN BREAK ITS OWN SESSION NAME")
@@ -6448,8 +6392,76 @@ real has been checked on main since PR #18. Phase 84.F/G/H still have not
 compiled; that is what the next CI run is for.
 =======
 ================================================================================
+=======
+[2026-08-23 ~17:40] vault: re-sync after the four-PR merge train (#20/#21/#22/#23)
+  Task: main's ci-windows was red — the vault gate fired on 7 pages. PR #20 landed
+        the gate and stamped its lock on its own branch; #22 (Phase 84.C-E Monitor
+        Analytics + Claude usage/cost) and #23 (Phase 82.E macOS browser JS probe)
+        then landed 1.8k lines of covered code under it. Nothing after step 5 of
+        ci-windows had run since, so main was UNTYPE-CHECKED, not just undocumented.
+  Files: docs/vault/{INDEX,server-go,backend-claude,backend-core,backend-panes,
+         build-glue,frontend-panes,frontend-shell,frontend-lib}.md + .vault-lock.json
+  Result: prose written for /analytics + /claude-usage (both halves), claude_usage_local.rs,
+          the Phase 82.E beacon probe + devtools opt-in/opt-out pair, and the four pure
+          Monitor support modules. Coverage 93% -> 95% (226 files). vault-check clean.
+          Docs only — no code touched.
+
+2026-08-23 | Both P0s closed; FOLLOWUPS split into open list + archive
+Files: FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md (new), CLAUDE.md, PROGRESS.txt
+
+MID-SESSION INCIDENT, worth more than the change itself: another session's
+worktree sweep deleted this session's worktree out from under it while it was
+running. The directory emptied, git status went silent, and origin/main had
+moved 41 commits. Nothing was lost ONLY because the previous phase had been
+committed immediately (a514e58) - the commit survived in the shared object
+store on yos/folow-ufp-review-fbbfda and was recovered by creating a fresh
+worktree at .claude/worktrees/followups-archive-pass and merging origin/main.
+This is the second recorded instance of the same hazard. Commit per phase.
+
+The merge had two conflicts, both in append-only files:
+  FOLLOWUPS.md - the other session had closed the SAME Node 20 entry, with a
+    fuller note (it did the work), and added an open entry beside it. Took
+    theirs outright rather than keeping the weaker note.
+  PROGRESS.txt - not a choice between versions, two sessions appending at
+    once. Kept both, theirs first.
+
+P0 #1 (tauri.conf.json - must be cut as 0.5.0): closed as a DUPLICATE, not as
+work done. Verified in tree: version 0.5.0, identifier com.ymux.app,
+productName ymux. The requirement lives as blockers 0.1 + 0.2 in
+docs/RELEASE-0.5.0-CHECKLIST.md, carrying both the never-cut-as-0.4.6 rule and
+the release-note ordering. The residual risk is human and belongs in the
+checklist, which is read at cut time; FOLLOWUPS is not.
+
+P0 #2 (tmux sessions vanish server-side): MOVED, NOT SOLVED, and the entry now
+says so in its first six words. Still no mechanism, still no fix. It leaves
+FOLLOWUPS because that file lists defects with known causes; this is an open
+investigation and it already lives in full under docs/DECISIONS.md section
+Open, which IS scanned at session start. Next step is unchanged and is data,
+not code: journalctl for the OOM killer, and id/TMUX_TMPDIR/ls of the tmux
+socket dir, both on the server.
+
+THE ARCHIVE. FOLLOWUPS.md had accumulated 28 closed entries among 72 open ones,
+some closed weeks ago, plus a "## Done" section that was not where closed items
+actually went - one OPEN entry was misfiled under it and has been moved back.
+Split by a script, not by hand, and verified programmatically: 100 entries
+before, 72 open + 28 archived after, zero lost, zero in both files, zero
+open entries in the archive, zero closed entries left in the live list.
+Continuation lines were the trap - one entry carries a 4-row ASCII table and
+another has a blank line INSIDE it (a session name containing a newline), so
+blocks are cut at entry boundaries rather than at blank lines. Both stayed
+attached to their open entries.
+
+CLAUDE.md updated in the same commit: FOLLOWUPS holds open items only, closed
+ones move to the archive WITH a closing note (not deleted, not left as [x]),
+the archive is not read at session start so nothing actionable may be parked
+there, and it is now step 2 in the past-work lookup order. Also recorded the
+rule that produced two rotten entries this session: cite an entry by its text,
+never by FOLLOWUPS.md:NN, because the numbers shift on every add or archive.
+
+STATUS: documentation only, no code touched, nothing to build. Open counts
+after the pass: P0 0, P1 18, P2 29, P3 25.
+
 2026-08-23 — Phase 84.F: the tab strip's CSS came back from the dead
-================================================================================
 Task: Yossi reported the pane tabs render as a vertical "card" stacked on the
 left instead of a horizontal strip, and that clicking a tab does nothing.
 
@@ -6479,10 +6491,6 @@ vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
 Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
-
-
-
-================================================================================
 2026-08-23 | Merge of origin/main, and a PHASE NUMBER COLLISION to be aware of
 Files: FOLLOWUPS.md, PROGRESS.txt, app/src/App.css (auto-merged)
 
@@ -6549,3 +6557,50 @@ three live checks, none of which CI can do:
         instead of silently winning.
   84.L  install a catalog font, remove it, confirm the picker flips back to
         the warning row and that the files and HKCU values are really gone.
+=======
+[2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
+
+
+
+
+
+================================================================================
+2026-08-23 | Second vault collision: another session fixed the same nine vaults
+Files: docs/vault/*.md, docs/vault/.vault-lock.json, PROGRESS.txt
+
+origin/main moved 6 commits while this branch was green, including PR #26
+(yos/vaults-update-before-push). A SECOND session had independently fixed the
+same red gate and written prose for the same nine vaults. Nine conflicts.
+
+RESOLUTION RULE, applied consistently: their prose landed on main first and
+describes the SAME four PRs mine did, so it is canonical for the overlap -
+taken wholesale. Mine was re-added only where it is about code that exists
+ONLY on this branch, which theirs could not have described: the workspaces
+schema gate, the session-name whitelist, font uninstall, and the settings.ts
+font bindings. Verified by grepping origin/main's vaults for schema_gate,
+session_name_char_is_safe, font_uninstall, entry_owns_file, FontInstalledList
+and fontUninstall - zero hits, as expected.
+
+Three merge artifacts that the conflict markers did NOT show, each found by
+looking rather than by trusting the merge:
+  1. A DUPLICATE SECTION in backend-core.md - my "## The two .devtools(false)
+     calls" said the same thing as their Gotchas bullet, which is better
+     placed and names run() and popout_pane. Mine deleted.
+  2. A DUPLICATE SECTION in frontend-lib.md - my "## The Insights pure
+     modules" vs their "## Monitor support modules". Theirs has accurate line
+     counts and says more (the subscription-vs-API-cost warning, the no-URL
+     rationale in insightsCommands). Mine deleted, 26 lines.
+  3. DUPLICATED covers: ENTRIES in frontend-lib.md - the auto-merge accepted
+     both sides' additions of the same five files. git said nothing; the vault
+     script would not have either, since a file listed twice still hashes the
+     same. Deduped by frontmatter pass across all 16 vaults.
+
+Also worth knowing for next time: `vault-check.mjs` enumerates with
+`git ls-files docs/vault/*.md`, which during an UNRESOLVED merge lists each
+conflicted file once per stage - so it fails with "duplicate vault name" until
+the resolution is `git add`ed. That error means "finish the merge", not
+"the frontmatter is broken".
+
+Both halves of the gate verified locally after resolution: hash check clean,
+and `--diff-base origin/main` reports every touched-and-covered file has an
+updated vault entry. Coverage 96%, 226 files.

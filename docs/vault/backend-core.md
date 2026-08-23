@@ -7,7 +7,7 @@ covers:
 
 # Backend core — `lib.rs`
 
-**13,272 lines, and about 1,900 of them are `#[cfg(test)]` at the bottom.** It is the
+**12,809 lines, and about 1,700 of them are `#[cfg(test)]` at the bottom.** It is the
 "everything else" module: app state, the workspace data model and its persistence, the
 PTY and SSH spawn paths, the multiplexer (zellij / tmux) plumbing, and ~70 Tauri
 commands. `main.rs` is 6 lines — the Windows-subsystem flag and `app_lib::run()`. Never
@@ -171,16 +171,6 @@ call site asserted a sanitizer named `sanitize_session_name` **that has never ex
 this tree**, and the test guarding it only ever fed it `ymux-p_1a2b_0` — a name that
 could not fail.
 
-## The two `.devtools(false)` calls
-
-On the main-window builder and the popout-pane builder. **They are load-bearing and they
-guard something that is configured in a different file.** Phase 82.E added the `devtools`
-Cargo feature so Safari can attach to the workspace Browser webview on macOS;
-`tauri-runtime-wry` reads the setting as `devtools.unwrap_or(true)`, so turning that
-feature on makes **every** webview inspectable by default — including `main`, which
-renders live PTY output (Rule #1). Deleting either call silently makes the user's
-terminal inspectable, and nothing would fail. See `build-glue.md`.
-
 ## Invariants
 
 - **Rule #7** — every config write is tmp + fsync + rename. No exceptions in this file.
@@ -198,6 +188,14 @@ terminal inspectable, and nothing would fail. See `build-glue.md`.
   then calls `ymux_core::flush_log()` from inside the hook — log writes are queued, and
   a panic on its way to an abort loses them otherwise. This exists because a Hebrew-title
   crash (Phase 23.I) was a `STATUS_STACK_BUFFER_OVERRUN` with no Rust trace at all.
+- **`.devtools(false)` on the main window and on every popout is mandatory, not
+  cosmetic.** Phase 82.E turned on tauri's `devtools` feature so the workspace Browser
+  child webview can be inspected (see `build-glue.md` and `backend-panes.md`), and
+  `tauri-runtime-wry` reads that setting as `devtools.unwrap_or(true)` — the feature
+  flips the default to *inspectable* for **every** webview in the process. These two
+  windows render live PTY output, so an inspector on them is a Rule #1 leak. The opt-outs
+  in `run()` and in `popout_pane` are the only thing standing between the feature and
+  that. Do not "clean them up".
 - `WEBVIEW2_USER_DATA_FOLDER` is set at the very top of `run()`, before any webview
   exists, to **one app-wide** profile dir. Per-workspace profiles reintroduce
   `0x8007139F` — WebView2 allows one environment per process. Windows-only by

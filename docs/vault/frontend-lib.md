@@ -116,32 +116,6 @@ carries the font-catalog bindings: `fontCatalog` (each item now reporting whethe
 `installed`, read from the font directory on every call rather than from any record of
 past installs), `fontInstall`, and `fontUninstall`.
 
-## The Insights pure modules
-
-All four are **DOM-free and framework-free on purpose** — no Solid, no i18n, no
-clipboard — which is what makes them testable as plain node tests. Callers pass in
-already-translated strings.
-
-- **`claudePricing.ts` (246)** — the one place token counts become dollars. Both the Go
-  server and the Rust local mirror deliberately count and do not price, so a rate change
-  is a one-file edit here instead of a server rebake plus a matching Rust edit. Carries
-  `PRICING_AS_OF` and per-model `intro` rates with an `until` timestamp; past that
-  moment the table falls back to the standard rate on its own. **Nothing re-checks the
-  rest of the table** — re-read it against published pricing (via the `claude-api`
-  skill, never from memory) whenever a model ships or a rate moves.
-- **`insightsReport.ts` (427)** — the wire shape of `GET /analytics`, plus the one thing
-  you can do with it outside the panel: flatten it to a plain-text report to paste into
-  Claude, an email or an incident ticket. The column alignment is exactly the kind of
-  thing that stays quietly wrong forever if nothing asserts it, so
-  `insightsReport.test.ts` does.
-- **`insightsFmt.ts` (33)** — `fmtBytes` / `fmtBps` / `fmtSpan`, lifted out of
-  `InsightsWindow.tsx` once a second panel needed them.
-- **`insightsCommands.ts` (122)** — the copy-the-commands blocks; takes whether the
-  workspace is local so it can name the right paths.
-- **`clipboardText.ts` (31)** — one clipboard write with a fallback. Note what is NOT
-  covered by any test: whether `navigator.clipboard.writeText` is actually granted
-  inside WebView2 for these panels.
-
 ## Small modules
 
 - **`logger.ts` (77)** — `createLogger(tag)`. Lines reach both devtools and the single
@@ -172,6 +146,45 @@ already-translated strings.
   records with MediaRecorder and POSTs through `stt_transcribe_local`.
 - **`download.ts` (55)**, **`fontProbe.ts` (121)** — OSC 8 / file-link downloads, and
   probing whether a font family is actually installed.
+- **`clipboardText.ts` (32)** — `copyText`. `navigator.clipboard.writeText` is the path
+  that works: Tauri 2 exposes the browser API and WebView2 grants clipboard **write** (it
+  denies **read**, which is why reading goes through the Rust `readClipboardText`
+  command). Older WebView2 builds don't grant even write, hence the off-screen
+  `<textarea>` + `execCommand` fallback. `FileManagerPane.copyPathOf` still carries its
+  own copy of the pair; folding it in is logged in BACKLOG, not done in passing.
+
+## Monitor support modules
+
+Four pure modules behind the Monitor's Analytics and Claude tabs
+(`frontend-panes.md`). They are **DOM-free and i18n-free on purpose** — callers pass
+already-translated strings in — which is what makes `insightsReport.test.ts` and
+`claudePricing.test.ts` runnable as plain node tests.
+
+- **`claudePricing.ts` (247)** — **the one place ymux knows what Claude costs.** Both
+  backends count tokens and refuse to price them, because token counts are facts and
+  prices are a table that goes stale; keeping the table here makes a price change a
+  one-file edit instead of a server rebake plus a matching edit in the Rust mirror.
+  `PRICING_AS_OF` records when it was last checked. Rates are **Anthropic first-party API
+  list prices** (Bedrock and Vertex are partner-priced and not modelled), and
+  `ModelPrice.promo`/`until` exists so a launch rate expires instead of silently
+  under-reporting forever. ⚠️ **Claude Code on a Pro/Max subscription is not billed per
+  token.** Everything here is the API-*equivalent* cost — right for "where is my quota
+  going, in money terms", wrong for "what will my card be charged". **The UI must never
+  label it a bill.**
+- **`insightsFmt.ts` (34)** — `fmtBytes` / `fmtBps` / `fmtPct` / `fmtSpan`, lifted out of
+  `InsightsWindow.tsx` so the Analytics tab can use them without importing its own parent
+  (that import would be a cycle).
+- **`insightsReport.ts` (428)** — the wire types for `/analytics` and `/claude-usage`,
+  plus the one thing you can do with them outside the panel: flatten the screen into a
+  plain-text report to paste into Claude, an email, or an incident ticket. Column
+  alignment is exactly the kind of thing that stays quietly wrong forever if nothing
+  asserts it, which is what the test is for.
+- **`insightsCommands.ts` (123)** — "Copy investigation commands". The report answers the
+  questions we thought to ask; this hands over the paths, the schema, and a few working
+  queries so an assistant with shell access can slice the data itself. **No URL in it on
+  purpose**: neither store is exposed over HTTP outside `127.0.0.1`, and nothing here
+  suggests changing that — these are local reads on a box the user already has a session
+  on. `local` picks desktop paths over remote ones.
 
 ## Invariants
 
@@ -182,6 +195,8 @@ already-translated strings.
   matched text.
 - Local and remote RTL behaviour are separated by profile and must stay that way.
 - `src/bindings/` is generated. Edit the Rust struct.
+- **Prices live in `claudePricing.ts` and nowhere else.** If you find yourself adding a
+  rate to Go or Rust, that is the bug.
 
 ## Read the source when
 

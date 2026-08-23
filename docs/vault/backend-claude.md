@@ -12,13 +12,7 @@ covers:
 
 Five modules, ~2,650 lines. Three of them read or drive the `claude` CLI **on the machine
 that hosts the transcripts** — usually the remote, not the desktop. The other two are the
-local-machine halves of the Insights panel.
-
-**Two of these answer the same question from opposite ends, and the distinction is the
-one to hold onto:** `claude_usage.rs` asks the `claude` CLI what QUOTA is left (a
-percentage, no history); `claude_usage_local.rs` counts TOKENS out of the transcripts on
-disk (a history, no quota). They are not alternatives and neither can answer the other's
-question.
+local-machine half of the Insights panel.
 
 ## `claude_summary.rs` (375) — session auto-summary
 
@@ -99,15 +93,29 @@ never chooses.
   panel already renders a friendly "no docker" state.
 - Log tag: `[INSIGHTS-LOCAL]`.
 
-`route_path` gained the two Phase 84.E endpoints, and they resolve very differently:
+Two paths are answered without touching `sysinfo`. `/analytics` returns the literal
+marker `{"unavailable":"local"}` — the Analytics tab rolls up the 7-day metric history
+the remote daemon keeps in SQLite, and a local workspace has no daemon and no store, so
+there is nothing to aggregate. A marker rather than an error string is what lets the
+panel explain itself instead of surfacing a raw "unsupported path". `/claude-usage`
+delegates to `claude_usage_local::route`.
 
-- `/claude-usage` → `claude_usage_local::route` — a real local implementation.
-- `/analytics` → the literal `{"unavailable":"local"}`. **Not an oversight and not an
-  error string.** Analytics rolls up the metric history the remote daemon keeps in
-  SQLite over 7 days; a local workspace has no daemon and no store, because
-  `insights_local` samples on demand and persists nothing. There is no history to
-  aggregate, so the answer is an explicit marker the panel can explain itself with,
-  rather than a raw "unsupported path" the user has to decode.
+## `claude_usage_local.rs` (550) — the local half of `/claude-usage`
+
+A deliberate mirror of `server/internal/insights/claudeusage.go`: same scan, same JSON
+field names, same clamping, so `insights_fetch` can route remote-vs-local and the
+frontend never branches. **Two implementations of one aggregation is real duplication,
+and it is the cheaper option** — `~/.claude/projects` is routinely 240 MB across 170
+transcripts, so the alternative (SFTP-mirror the remote tree and parse it once, here)
+would pull hundreds of megabytes over the wire every time the tab opens.
+
+Same rule as the Go side: **it counts tokens and does not price them.** The price table
+is `app/src/claudePricing.ts`, in one place. Cache writes stay split 5-minute vs 1-hour
+because a 1-hour write costs 2x base input against a 5-minute write's 1.25x, and
+collapsing them understates a long session.
+
+Rule #1 is why the parser reads only `message.model`, `message.usage`, the timestamp, the
+session id and the cwd — never message *content* — and logs nothing but counts.
 
 ## Related, elsewhere
 

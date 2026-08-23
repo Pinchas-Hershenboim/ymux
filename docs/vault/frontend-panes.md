@@ -43,7 +43,12 @@ fullscreen — so they get that chrome for free instead of hand-rolling a varian
 **`BrowserWindow.tsx` (792)** — the workspace-level Browser floating window. The actual
 page is a **native child Webview** the Rust side mounts
 (`workspace_browser.rs`); this component owns the toolbar, tabs, port+path entry,
-navigation, and the window geometry. At most one per workspace.
+navigation, and the window geometry. At most one per workspace. The 🐞 button toggles Dev
+Mode (ticket capture); the terminal-icon button next to it calls
+`workspace_browser_open_devtools` and opens the Web Inspector on the loaded page — on
+macOS that saves a trip through Safari → Develop, and on Windows it is the *only* way in,
+since F12 is not wired up for a child webview. Only that webview is inspectable; see
+`backend-panes.md`.
 
 The toolbar's **inspector button** calls `workspace_browser_open_devtools`. Only this
 webview is inspectable — see the two `.devtools(false)` calls in `backend-core.md` and
@@ -91,24 +96,35 @@ root feeds them all into a single list.
 **`InsightsWindow.tsx` (586)** — pull-based server monitor and the tab host. Fetches the
 live snapshot through the `insights_fetch` Tauri command, which curls `127.0.0.1:7879`
 over the workspace SSH session — **or serves it from `insights_local.rs` for a local
-workspace; the routing is transparent to this component.** No mock data: if the daemon
-is not installed or not running, the panel says so. Six tabs: metrics, analytics,
-mobile, logs, health, claude. It takes a `local` prop purely so the copy-the-commands
-blocks can name the right paths.
+workspace; the routing is transparent to this component.** No mock data: if the daemon is
+not installed or not running, the panel says so. Tabs: metrics, analytics, mobile, logs,
+health, claude. It threads one `local` prop down from `App.tsx`
+(`connection?.type === "local"`), used only by the copy-the-commands blocks so they can
+name the right paths.
 
-**`InsightsAnalytics.tsx` (622)** — the Analytics tab, on `GET /analytics`. The server
-aggregates in SQL and this only draws; see `server-go.md` for why that split is forced
-rather than chosen (one `curl --max-time 6` per fetch, so the whole screen must arrive
-in ONE response). A local workspace has no metric history at all, and the endpoint says
-so with `{"unavailable":"local"}` rather than an error — this panel renders the
-"needs the daemon" state from that marker.
+**`InsightsAnalytics.tsx` (623)** — the Analytics tab: what the server has *been* doing,
+as opposed to Metrics' what-it-is-doing-right-now. A thin view over the `/analytics`
+endpoint (`server-go.md`), which rolls up the three sampler tables the daemon was already
+writing and nobody read. Range picker is 1h / 6h / 24h / 7d. Three house rules it keeps on
+purpose, and the same three apply to the Claude cost panel below:
 
-**`InsightsClaudeCost.tsx` (458)** — sits under the quota bars on the Claude tab, and
-answers the other question: the bars say how much allowance is LEFT, this says where it
-WENT, in tokens and dollars. Tokens come from `/claude-usage`, which counts and never
-prices; the dollars are applied here from `claudePricing.ts`. **Both are unverified —
-the panel and the Analytics tab landed compiled-only** (Rule #17), and each has a
-FOLLOWUPS P1 listing what to look at first.
+- **No polling.** This is an analysis screen. It loads when the tab opens and when Refresh
+  is pressed; Metrics owns the live view. Each fetch is a curl over the workspace SSH
+  session, so a background poll here would be rude.
+- **All aggregation server-side, one round trip.** Never pull raw rows and sum them in the
+  client — a 7-day window is ~120k samples.
+- **Colour means status, not category.** Every bar is the accent colour, because a bar
+  encodes magnitude; red/amber are reserved for "this is a problem" (disk filling, a
+  container that keeps dying). Otherwise it turns into a rainbow where nothing stands out.
+
+**`InsightsClaudeCost.tsx` (459)** — sits under the quota bars in the Claude tab. The bars
+answer "how much allowance is left"; this answers "where did it go", from the token counts
+`/claude-usage` reads out of Claude Code's own transcripts. **The cost column is an
+estimate and the UI says so in three places**, because the failure mode is somebody
+reading it as a bill: Claude Code on a subscription is not billed per token, these are API
+list prices applied to real counts. Right for comparing projects, models and sessions
+against each other; wrong for predicting a charge. Prices come from `claudePricing.ts`
+(`frontend-lib.md`) — the server deliberately never prices anything.
 
 **`HygienePanel.tsx` (159)** — the Monitor's Cleanup tab. Surfaces the two server-side
 leaks Yossi hit (duplicate ymux port-watchers, orphaned claude sessions) from the
