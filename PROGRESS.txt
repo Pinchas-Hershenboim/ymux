@@ -5119,6 +5119,84 @@ rather than mtime, because re-copying a byte-identical file into resources/
 was forcing a full rebuild of the app lib. The server blobs are staged by
 hand, so that optimisation does not cover them — but it is the same class
 of problem and the same directory.
+
+
+================================================================================
+2026-08-23 — TMUX organization: workspace-scoped session lists + attach-only
+================================================================================
+Branch: claude/tmux-workspace-scope
+
+TASK (Yossi, Hebrew): now that folders can be opened under a workspace, put
+the TMUX side in order — show the TMUX sessions of the SPECIFIC workspace as
+distinct from the server's; and stop the connect wizard from opening tmux,
+sending commands and pressing ENTER when the pane is already MOUNTED to a
+session, which either restarts an old session or drops a command into the
+middle of a live one.
+
+PART A — SCOPE
+  - TMUX_LIST_FORMAT gained a 6th field, `#{session_path}`. TMUX_LIST_SCRIPT
+    was a const that hand-repeated the format string while its own doc claimed
+    "one const means the format string cannot drift again" — the two DID drift
+    the moment the field was added, so it is now `fn tmux_list_script()` built
+    from the const. `parse_tmux_sessions` reads `parts.get(5)`, so a five-field
+    line from an un-rebootstrapped remote still parses (cwd = None = UNKNOWN,
+    which is deliberately not the same as "elsewhere").
+  - NEW `%APPDATA%\ymux\session-owners.json`, modelled line-for-line on
+    tmux-labels.json (atomic .tmp+rename, Rule #7; corrupt file degrades to
+    "nothing owned"). Keyed host_key -> session_name -> {workspace_id, cwd, ts}.
+    Host first because a session name is only unique per multiplexer server.
+    Written on every persistent connect INCLUDING a picker attach; released on
+    kill (`killed`/`already_gone` only — `failed` keeps the claim because the
+    session is still alive).
+    It exists because zellij reports NO cwd, so on Windows ownership is the
+    only workspace signal there is.
+  - `pane_list_tmux_sessions` takes `project_path: Option<String>` — the same
+    parameter name `pane_list_claude_sessions` already uses — and ANNOTATES
+    each row with `owned` / `in_cwd` instead of filtering. `path_is_within`
+    compares on a separator boundary so `/srv/app2` is not "inside" `/srv/app`.
+  - Picker gained a This folder | Whole server toggle plus a count line.
+    It opens on "This folder" only when that view has something in it.
+
+PART B — ATTACH-ONLY
+  - `resolve_effective_session_name` / `session_name_for_pane` extracted from
+    pane_connect so the guard and the attach cannot check different names.
+  - NEW `pane_target_session_state(workspace_id, pane_id, tmux_session_name)`
+    -> {name, exists, attached, reachable}. `reachable` is not decoration:
+    "we could not ask" must never read as "nothing is running".
+  - `pane_connect` probes BEFORE spawning (the spawn is what creates the
+    session; 200ms later the question is useless) and, for a persistent pane
+    joining a live session, injects NOTHING — command and cd alike — emits
+    `pane-connect-notice`, and logs an `attach-only:` line.
+    The probe is gated on "would we inject anything at all?" so a plain
+    connect does not pay for a list round-trip on the critical path.
+  - The blind `sleep(1100ms)` for tmux is replaced by 900ms + a poll for the
+    session to APPEAR (the same fix zellij got on 2026-08-19), so a genuinely
+    new session's command lands inside tmux instead of racing the attach line.
+  - Wizard: stops hard-coding `ncType("tmux")`; probes on open; banner names
+    the session, command controls grey out, and "Start a new session instead"
+    picks a free `<name>-N` off the live list so the command can run for real.
+
+FOUND AND FIXED, NOT DRIVE-BY: `is_local -> list_zellij_sessions()` was
+ungated in BOTH `pane_list_tmux_sessions` and `pane_probe_tmux_sessions`.
+Both arms return unconditionally for a local workspace, so they shadowed the
+`cfg(not(windows))` macOS branches below them: a Mac asked zellij (not
+installed there), got [], and never reached its own tmux server. The new
+picker is built on that call, so on macOS it would have been silently empty.
+Now cfg-split. Pre-existing on main since 2026-08-19.
+
+ALSO: deleted 14 dead `tmux_picker.*` i18n keys x 4 languages (zero refs in
+app/src, left over from a picker UI removed long ago). New keys added to all
+four locales.
+
+TESTS ADDED (they run on CI, per Rule #17 — nothing was built locally):
+  format_has_six_pipe_separated_fields, list_script_is_built_from_the_format_const,
+  sixth_field_is_the_session_cwd, five_field_lines_still_parse_with_unknown_cwd,
+  empty_sixth_field_reads_as_unknown_not_root, folder_scope_stops_at_a_separator,
+  session_name_precedence_is_explicit_then_title_then_pane_id,
+  pane_fallback_name_matches_the_legacy_auto_name.
+
+STATUS: compiles-untested until CI is green, and Rule #14 (not "verified")
+until the FOLLOWUPS P1 smoke list runs on a real machine.
 -------------------------------------------------------------------------------
 2026-08-23 (session close) | worktree + branches removed
 -------------------------------------------------------------------------------
@@ -5159,7 +5237,6 @@ Two rules earned:
      back to another directory. Verify the working directory INSIDE the
      command that mutates git state, not before it.
 
-================================================================================
 2026-08-23 | Phase 82.E | macOS: site JS dead in the in-app Browser - DIAGNOSTIC
 ================================================================================
 Symptom (Yossi): on macOS the workspace Browser renders a page but the site's
@@ -5333,3 +5410,119 @@ STATUS: compiles-untested until CI. This does NOT replace the 82.E beacons -
 devtools is the live console when you are sitting in front of the machine; the
 beacons are what work when you are not, which is the actual situation with the
 Mac.
+=======
+
+--- CI result, same day ---
+PR #17. BOTH gates green on the first run:
+  ci-windows   32648007254  success  6m15s
+  build-macos  32648007253  success  7m35s  (x64 + arm64)
+cargo test: 335 passed / 0 failed (+4 ignored) across the workspace; all 8
+new tests present and passing by name —
+  tmux_list_parse_tests::{format_has_six_pipe_separated_fields,
+    list_script_is_built_from_the_format_const, sixth_field_is_the_session_cwd,
+    five_field_lines_still_parse_with_unknown_cwd,
+    empty_sixth_field_reads_as_unknown_not_root, folder_scope_stops_at_a_separator}
+  smart_connect_tests::{session_name_precedence_is_explicit_then_title_then_pane_id,
+    pane_fallback_name_matches_the_legacy_auto_name}
+build-macos matters more than usual here: it is the ONLY job that compiles
+the `cfg(not(windows))` arms, and this change added two of them (the
+cfg-split of the ungated `list_zellij_sessions()` calls). It is green, which
+means they compile — NOT that a Mac was ever asked for a tmux session.
+
+Per Rule #14 this is "compiles, untested". Nothing in either half has run
+live: not the scope toggle, not the ownership file, and not the attach-only
+guard. Smoke list is FOLLOWUPS P1 (2026-08-23).
+
+Also seen on ci-windows, unchanged by this branch: the annotation
+"remote-manifest sha256 changed — the staged CLI binary differs from the
+committed one". No CLI source was touched here; it is the known rebake
+churn CLAUDE.md calls cosmetic, and the run is green.
+
+================================================================================
+2026-08-23 | CI: off the deprecated node20 runtime, and three pins that were
+             never being watched
+================================================================================
+Trigger was the runner warning that checkout@v4 / setup-go@v5 / setup-node@v4
+are being force-migrated to Node 24. The warning was the smaller half of the
+problem: all four workflows also pinned `node-version: 20`, and **Node 20 hit
+EOL on 2026-04-30** — nearly four months of building the shipped frontend on a
+runtime that gets no security fixes.
+
+Files: .github/workflows/{ci-windows,build-windows,build-macos-intel,
+warm-rust-cache}.yml, .github/dependabot.yml (new), app/package.json,
+CLAUDE.md, BACKLOG.md.
+
+WHAT CHANGED
+  26 `uses:` lines, verified against each action's real action.yml rather than
+  guessed from the changelog — every target below reports `runs.using: node24`:
+    actions/checkout       @v4 -> @v7   (x4)
+    actions/setup-node     @v4 -> @v7   (x4)
+    actions/setup-go       @v5 -> @v7   (x1)
+    actions/upload-artifact@v4 -> @v7   (x6)
+    actions/cache          @v4 -> @v6   (x1)
+  node-version: 20 -> 24 (x4). Node 24 is Active LTS to 2026-10-20, then
+  maintenance to 2028-04-30. Chose 24 over 22 for the extra year at equal cost.
+  Compatibility floor in the tree is marked@18.0.4 (">= 20") and vite@6.4.2
+  ("^18 || ^20 || >=22") — 24 clears both. No native/node-gyp deps, so npm ci
+  needs no rebuild.
+  app/package.json gained `"engines": { "node": ">=22" }` so the requirement is
+  declared in the repo and not only in four YAML files. >=22 not >=24 on
+  purpose: do not break a dev still on 22 locally; CI is the one that pins 24.
+
+SHA-PINNED THE TWO THIRD-PARTY ACTIONS
+  Swatinem/rust-cache    @v2     -> @6323deb1... # v2.9.2 (already node24)
+  dtolnay/rust-toolchain @stable -> @4360b525... # stable branch @ 2026-08-05
+  `@stable` was a BRANCH pin: anyone with push access to it ran code in our CI
+  with the repo checked out. rust-toolchain is a composite action and never had
+  a Node runtime, so this is supply-chain hygiene, not deprecation work.
+
+  THE TRAP, verified against the GitHub API and worth not rediscovering:
+  that repo's ONLY tag, v1, points at 6c977a6c = master head — a different
+  commit from the stable branch head. On master `toolchain` is
+  `required: true` WITH NO DEFAULT, while on the stable branch it defaults to
+  `stable`. So a dependabot "upgrade" from our stable-branch SHA onto v1 would
+  fail every job on a missing required input. Mitigated two ways: an explicit
+  `toolchain: stable` at all four call sites (works on either branch), and a
+  comment in dependabot.yml telling the reviewer to check the branch. Pinning
+  the SHA does NOT freeze the Rust version — the stable branch still resolves
+  to current stable.
+
+  actions/* stay on floating majors on purpose. GitHub owns them; SHA-pinning
+  there buys noise, not safety.
+
+TWO HOLES FOUND IN PASSING, BOTH CLOSED
+  1. Not one workflow had a `permissions:` block, so GITHUB_TOKEN got the repo
+     default. Added `permissions: contents: read` to all four. Verified safe by
+     grep over .github/workflows for `gh release` / `gh api` / `git push` /
+     `git commit` / `softprops` / `packages:` / `id-token` — zero hits; release
+     publishing is manual per docs/RELEASING.md. upload-artifact authenticates
+     with ACTIONS_RUNTIME_TOKEN, not GITHUB_TOKEN, so artifacts still upload.
+     The Apple secrets in build-macos-intel are untouched (permissions only
+     governs GITHUB_TOKEN).
+  2. No .github/dependabot.yml existed — nothing was watching the pins, which
+     is exactly how the whole set drifted onto node20 together and surfaced as
+     a runner warning instead of a PR. Added, github-actions ecosystem only,
+     monthly, grouped into one PR. npm/cargo deliberately left off (would open
+     a wave of PRs against unreviewed trees); queued in BACKLOG.md.
+
+BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
+  checkout@v7 blocks fork-PR checkout for pull_request_target / workflow_run —
+    we only use push / pull_request / workflow_dispatch.
+  checkout@v6 persists credentials to a separate file — no step reads
+    .git/config by hand.
+  setup-node@v5 auto-caches when package.json has a `packageManager` field —
+    app/package.json has none (confirmed), and `cache: npm` is explicit anyway.
+  upload-artifact@v7 added an `archive` input, default 'true' = v4 behaviour;
+    name / path / if-no-files-found unchanged, so the ymux-server-linux-* glob
+    step is unaffected.
+  cache@v5+ and upload-artifact@v6+ need runner >= 2.327.1 — self-hosted only;
+    we are on GitHub-managed runners.
+  Went straight to the newest major rather than the first node24 one because
+  none of the above touches this repo and checkout@v7 is itself the fix for a
+  fork-PR checkout issue. Stopping halfway would just book a second bump.
+
+STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
+or tested on the dev box — CI is the verification step. Result recorded below
+once the runs land.
+
+=========================================================================

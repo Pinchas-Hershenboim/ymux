@@ -6516,3 +6516,20 @@ body.ymux-dragging .pane-conn {
 }
 /* Host prefix on a remote destination — "srv-01:/home/y/proj/…" */
 .ticket-modal-host { color: var(--w-accent, #58a6ff); font-weight: 600; }
+
+/* 2026-08-23: the connect wizard's attach-only state. The pane is joining a
+   multiplexer session that is already running, so nothing can be typed into
+   it — the command controls grey out and the banner explains why, with the
+   "new session beside it" escape hatch right next to the explanation. */
+.nc-attach-only {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--w-warning);
+  border-radius: 4px;
+}
+.nc-attach-only .nc-muted { padding: 0; flex: 1; min-width: 200px; }
+.nc-disabled { opacity: 0.55; }
