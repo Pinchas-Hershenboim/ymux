@@ -5465,7 +5465,6 @@ STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
 2026-08-23 — Phase 85 (+85.A/B/C/D): the vault + its CI freshness gate
-================================================================================
 
 TASK
 Yossi: add a "כספת" of MD files explaining the code so agents stop burning
@@ -5612,3 +5611,52 @@ branch — the one exception to Rule #15 here, taken deliberately, on a branch
 nobody else has based work on. Content was byte-identical before and after
 (`git diff vault-pre-renumber HEAD` empty); only messages changed. Anyone who
 fetched this branch before beb87da has the old subjects.
+
+--- CI result, same day ---
+PR #19. BOTH gates green on the first run, no retries:
+  ci-windows   32650843831  success  6m21s
+  build-macos  32650843834  success  12m17s  (x64 + arm64 both green)
+
+THE POINT OF THE CHANGE, confirmed: grep for `node20` / `Node.js 20` /
+`forced to run on Node` across both full logs returns NOTHING. The
+deprecation warning is gone, not suppressed.
+
+What the logs actually prove, beyond "it is green":
+  node: v24.19.0 on the Windows runner, v24.18.0 on both mac legs. npm ci
+    passed on both, so nothing in the dependency tree objected to 24.
+  setup-go@v7 resolved `go-version-file` to 1.26 as before; `go-version-file`
+    and `cache-dependency-path` are unchanged inputs in v7.
+  upload-artifact@v7 echoed `archive: true` in its input dump — the new input
+    defaults to the v4 behaviour exactly as predicted, and the step logged
+    "With the provided path, there will be 2 files uploaded". The stored
+    ymux-server-linux artifact is 10,524,795 bytes, i.e. both x64 and arm64
+    are in there. That was the one step with real regression risk (a rebake
+    depends on downloading it) and it is intact.
+  All four mac artifacts present: x64 dmg 25,066,023 / app 22,620,140,
+    arm64 dmg 24,002,539 / app 21,983,528.
+  cargo test: 335 passed / 0 failed in the main suite, plus 39/39/31/13/7/6/5
+    across the smaller ones. Zero failures anywhere.
+
+THE SHA PIN DOES NOT FREEZE RUST — now demonstrated rather than argued. All
+three runners installed rustc 1.98.0 (88d9e12ae, 2026-08-18) through the
+pinned `dtolnay/rust-toolchain@4360b525`, each updating from whatever was
+preinstalled (Windows from 1.97.1, mac x64 from 1.97.1, mac arm64 from
+1.96.0). The `stable` branch still resolves to current stable; pinning the
+SHA locks the action's code, nothing else.
+
+Side effect worth recording for FOLLOWUPS P2 (the CI-vs-local toolchain
+drift behind the remote-manifest sha mismatch): that gap is now WIDER, not
+narrower. Yossi's box is on 1.95.0, CI is on 1.98.0. Nothing here caused it
+— `@stable` floated the same way before — but the entry's premise is
+unchanged and a `rust-toolchain.toml` is still the fix.
+
+Unchanged by this branch, as expected: the `remote-manifest sha256 changed`
+notice fired twice again. No CLI source was touched here; CLAUDE.md Rule #12
+calls this churn cosmetic, and the run is green.
+
+Per Rule #14 this is "compiles, untested" for the two workflows that do NOT
+run on a PR. `build-windows` and `warm-rust-cache` still need a manual
+workflow_dispatch from main after the merge — build-windows is the only
+thing that exercises cache@v6 and the rust-toolchain SHA on the release
+path, and warm-rust-cache must run once or the windows-release cache stays
+cold (~813s vs ~420s on the next release build).
