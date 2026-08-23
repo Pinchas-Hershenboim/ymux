@@ -763,10 +763,17 @@ mod diag_title_tests {
         // otherwise forge extra lines in debug.log. Re-serializing kills
         // that: whitespace between tokens is dropped, and a newline
         // inside a string comes back escaped.
-        let hostile = "{\n\"p\":\"x\",\n\"m\":\"a\nb [ERROR] forged\"\n}";
-        let decoded = decode_diag(&b64(hostile)).expect("decodes");
+        // Raw string for the body so the two kinds of newline stay
+        // distinguishable: the ones added by format! are real LF bytes
+        // between tokens (legal JSON whitespace, and the forging vector),
+        // while the `\n` inside the value is a two-character JSON escape.
+        let hostile = format!("{{\n{}\n}}", r#""p":"x","m":"a\nb [ERROR] forged""#);
+        let decoded = decode_diag(&b64(&hostile)).expect("decodes");
         assert!(!decoded.contains('\n'), "must be one line: {decoded}");
-        assert!(decoded.contains("a\nb"), "newline stays escaped: {decoded}");
+        assert!(
+            decoded.contains(r"a\nb"),
+            "the escape must survive as an escape: {decoded}"
+        );
     }
 
     #[test]
