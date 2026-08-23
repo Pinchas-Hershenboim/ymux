@@ -157,12 +157,35 @@ OpenAI-compatible proxies all work with no per-server adapter.
 
 ## Shell chrome
 
-**`fonts.rs` (880)** — download a curated font, verify it, register it **per-user**:
+**`fonts.rs` (1,195)** — download a curated font, verify it, register it **per-user**:
 files land in `%LOCALAPPDATA%\Microsoft\Windows\Fonts` and register under HKCU, which
 needs no elevation on Windows 10 1809+. `settings::list_system_fonts` reads that same
 hive, so an install is visible in the picker immediately. Exists because flagging
 unavailable families with ⚠️ was only half an answer — the user still had to go find a
 `.ttf`.
+
+**`font_uninstall` is the mirror, and how it finds the files is the interesting part.**
+Which files belong to a catalog entry is derived from the CATALOG, not recorded at
+install time: a zip asset wrote everything matching its `ZipFilter::name_prefix`, a bare
+asset wrote exactly its `save_as`, so `entry_owns_file` re-derives the same set. A
+manifest written at install time was the obvious alternative and is wrong here — it
+could only know about installs made after it shipped, leaving every font already on a
+user's machine unremovable, which is the case the feature was filed for.
+
+Two orderings that look arbitrary and are not:
+
+- **Delete, then unregister.** The reverse leaves a font still on disk and still
+  loadable with no registry entry — present but invisible to the picker, which is worse
+  than either end of the operation. Only paths that actually went get unregistered.
+- **Match registry values by their DATA (the path), not by rebuilding the value name.**
+  `register_font` builds that name from the font's internal name table with a fallback
+  to the file stem; rebuilding it at uninstall would mean reproducing that decision from
+  a file that has just been deleted.
+
+A face held open by a running app is a **reported outcome** (`failed`), not an error —
+that is the everyday Windows case, and the rest of the family still comes out. Accepted
+and written down: a user's own hand-installed copy of the same family, in the same
+per-user directory, also matches.
 
 **`tray.rs` (91)** — tray icon, quick menu, taskbar badge. **Best-effort**: a failed
 build logs and carries on. `TRAY_ACTIVE` gates close-to-tray so a failed tray can never

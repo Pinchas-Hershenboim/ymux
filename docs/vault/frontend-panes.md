@@ -50,6 +50,12 @@ macOS that saves a trip through Safari → Develop, and on Windows it is the *on
 since F12 is not wired up for a child webview. Only that webview is inspectable; see
 `backend-panes.md`.
 
+The toolbar's **inspector button** calls `workspace_browser_open_devtools`. Only this
+webview is inspectable — see the two `.devtools(false)` calls in `backend-core.md` and
+the Cargo feature they guard in `build-glue.md`. On macOS it saves a trip through
+Safari → Develop; on Windows it is the only way in, since F12 is not wired for a child
+webview.
+
 **`browserDevMode.ts` (448)** — right-click an element in the workspace browser to
 capture it as a ticket. Kept out of `BrowserWindow.tsx` on purpose: with Dev Mode in its
 own module, the browser component gains one signal, one toolbar button, and one

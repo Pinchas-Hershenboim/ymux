@@ -5706,6 +5706,48 @@ BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
 STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
+2026-08-23 | FOLLOWUPS triage — close what the tree already fixed
+Files: FOLLOWUPS.md (only; no code touched)
+
+Read all 74 open entries and checked each candidate against the actual tree
+rather than against its own text. Six were stale. 74 -> 67 open (P1 17 -> 16).
+
+Closed as already fixed, with the proof written into the entry:
+  P1 hooks.rs `is_ymux_entry` skip path — Phase 84.B added
+    `ymux_entry_is_runnable`; "already present" now means present AND
+    runnable. Still not verified live (checklist 13b.8).
+  P3 Node 20 in build-macos-intel.yml — all four workflows are on
+    checkout/setup-node/upload-artifact @v7 + cache@v6, node 24 (PR #19).
+  P3 the duplicated tmux.conf entry at ":33 and :38" — one copy survives.
+
+Closed as filed in the right place instead:
+  P2 manifest hooks.claude-code 1.1.0 vs spec 1.5.0 — this entry asked to be
+    moved to the release checklist and it already had been (blocker 0.4b),
+    with RELEASING.md 4.5 carrying the generic three-file bump. Confirmed in
+    tree: hooks/claude-code.json and BUNDLED_CLAUDE_VERSION are both 1.5.0,
+    manifest deliberately still 1.1.0 until the cut.
+
+Deleted as strict duplicates, superseded in place by a later entry that
+carries everything they said:
+  the THREE-worktrees entry (superseded by the TWO-worktrees one),
+  the one-empty-directory entry (superseded by the two-directory one),
+  the FOUR-UNTRACKED-ARTIFACTS entry (its own [x] DONE sits right below it).
+
+Corrected on the surviving worktree entry: `git worktree list` reports SEVEN,
+not two. Also noted there that worktrees-branches-cleanup-7f7849 holds
+`claude/valte-diff-validation-237bbd` — a second directory-name/branch
+mismatch beside the one already recorded.
+
+Two real, contained P2s were identified and deliberately NOT taken this
+session (Yossi's call, scope was cleanup only):
+  claude_usage.rs — the backoff path logs on every rejection; 15,477 identical
+    lines in one 1.6MB log. `inflight` right below it has the same shape.
+  ymux-core config_dir — `cargo test` writes into the real
+    %APPDATA%\ymux\debug.log; only one test sets YMUX_CONFIG_DIR.
+
+STATUS: documentation only, nothing to build. The 10 "NOT VERIFIED LIVE"
+entries are untouched — they need a real run, not a code reading.
+=======
 2026-08-23 — Phase 85 (+85.A/B/C/D): the vault + its CI freshness gate
 
 TASK
@@ -5974,6 +6016,272 @@ thing that exercises cache@v6 and the rust-toolchain SHA on the release
 path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
+2026-08-23 | Phase 84.F - a pane title could inject a command into its own shell
+Files: app/src-tauri/src/lib.rs, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
+Closes FOLLOWUPS P1 of 2026-08-20 ("A PANE TITLE CAN BREAK ITS OWN SESSION NAME")
+
+The entry's own best evidence was a comment. `build_zellij_attach_command`
+carried "session names come from `sanitize_session_name`, which emits only
+[A-Za-z0-9_-], so there is nothing here to quote or escape". No function by
+that name has ever existed in this tree. What actually feeds that line is
+`sanitize_tmux_session_name_for_title`, which substituted `.`, `:` and
+whitespace and nothing else - so `;`, `&`, `|`, `$`, backtick, quotes, `>` and
+`^` survived a user's pane title into `format!("zellij attach -c {name}\r\n")`,
+which is typed VERBATIM into cmd.exe or PowerShell 900ms after pane spawn.
+A pane titled `work; calc` ran calc.
+
+Self-inflicted (own title, own shell), so never a privilege boundary - but the
+mundane half is the expensive one and is why this was P1: the session gets
+created under a different name than the one ymux tracks, which is a live
+candidate for "Kill session did nothing".
+
+FIXED AT THE SOURCE, not by quoting at the use site. There is no quoting that
+is correct in cmd.exe and PowerShell simultaneously - they disagree about `^`,
+`%`, backticks and single quotes - and this line must parse in both.
+  session_name_char_is_safe(c): ASCII alphanumeric, `_`, `-`, or any NON-ASCII
+    char that is neither control nor whitespace.
+  The non-ASCII clause is what keeps Phase 23.I's promise that a Hebrew title
+    becomes a session of the same name. Every metacharacter in all three
+    shells is ASCII, so Hebrew/Arabic/CJK need no special case and niqqud
+    (combining marks, NOT alphanumerics) survive rather than being punched out
+    of the middle of a word. Controls/separators are excluded first, which
+    also catches U+0085 / U+2028 / U+2029 - non-ASCII line breaks that an
+    is_ascii() test alone would wave straight past.
+  build_zellij_attach_command now returns Option and REFUSES a name it cannot
+    type. Refusing beats mangling: mangling attaches to a session that is not
+    the one picked, silently, while refusing leaves the pane in a plain
+    working shell - the failure mode this function already accepts for a
+    missing zellij. Only a picker-supplied name (a session made outside ymux
+    by hand) can reach the refusal.
+
+Audited the neighbours rather than assuming: the tmux/SSH attach script
+(build_tmux_attach_script) and `tmux kill-session` already use shell_quote,
+and zellij_args_delete_force was already argv-only. The Windows zellij line
+was the single hole. Two other comments repeating the `sanitize_session_name`
+claim were corrected.
+
+TESTS: six, five of them hostile input. Worth recording WHY the old one missed
+this - `zellij_attach_command_is_a_single_safe_line` fed the function
+`ymux-p_1a2b_0`, a name that could not fail, so it passed for the entire life
+of the hole. The new ones drive the real path (title -> sanitizer -> attach
+line) and assert the command stays ONE line; plus a Unicode test pinning the
+Phase 23.I promise, and a regression test for the parts of the old contract
+that were already right (dot/colon, run collapsing, trimming, None on an
+all-junk title, the 100-CHAR-not-byte cap).
+
+STATUS: per Rule #17 nothing was built or tested here - CI is the verification
+step. Rule #14 still applies after that: the live check is titling a pane
+`work; calc` on Windows, confirming no calc, and confirming Kill session still
+finds the session.
+
+================================================================================
+2026-08-23 | Phase 84.G - workspaces.json schema gate (the P1's option (b))
+Files: app/src-tauri/src/lib.rs, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md, BACKLOG.md
+Closes FOLLOWUPS P1 of 2026-08-18 ("TWO WINMUX BUILDS SHARE %APPDATA%...")
+
+workspaces.json has carried a `version` field since forever and NOTHING has
+ever read it - it was written as a literal 1 and ignored on load. It is
+load-bearing from here on.
+
+  WORKSPACES_SCHEMA_VERSION = 2, stamped on every write through
+    `serialize_with` rather than by assigning the field. The invariant is
+    "what we WRITE is always current", and serialization is the one place
+    that cannot be bypassed; an assignment would have to be repeated at every
+    construction site and would drift the first time one was added.
+  schema_gate(on_disk, last_written) extracted as a pure function - the same
+    reason resolve_effective_session_name was extracted - because the
+    interesting cases need two binaries sharing a config dir and no test can
+    arrange that. Three outcomes:
+      Refuse        on-disk newer than this build. Hard Err out of
+                    save_to_disk. Merging cannot help: we would have to
+                    understand keys we have never heard of.
+      WarnDowngrade on-disk older than what we last wrote - an old build got
+                    here first. Write ANYWAY. Refusing would leave the user
+                    unable to save for as long as that build is open, and the
+                    three-way merge is the actual repair.
+      Write         everything else.
+  schema_version_of is deliberately tolerant. Absent, empty, malformed,
+    version-less, string, negative and float all read as None = carry on. A
+    refusal hangs off this function, so a stray byte in the file must never
+    become "you cannot save". BOM stripped first - one already bricked this
+    file once.
+
+THE LIMIT, AND IT IS NOT SMALL: this does nothing about the 0.4.x builds
+already on disk. They never read the field and will write v1 back over a v2
+file, so the incident as REPORTED is not prevented in the backwards direction.
+What covers that case is workspaces_merge, which already re-reads and merges
+rather than dumping, and treats a field that vanished on the other side as an
+absence rather than a deletion. What the gate adds for that case is the LOG
+LINE - and that is exactly the half that was missing, because the entry's own
+words were "NOTHING appears in the log of the new build, because it did
+nothing". Option (a) from the entry, the pid lock, is the only mechanism that
+can stop an already-shipped binary; it is NOT done and went to BACKLOG rather
+than being left implied, together with the note that it should be solved with
+the tauri-plugin-single-instance P2 about two ymux.exe racing on log rotation,
+not twice.
+
+Deliberately NOT extended to settings.rs, which has the same atomic-write +
+load-poison shape: the loss mode there is smaller, and a lock would cover both.
+Recorded in the BACKLOG entry so the omission is a decision, not an oversight.
+
+TESTS: seven. The stamping across a carried 0/1/current, a legacy file with no
+version key still loading as v1, the tolerant reader across nine junk inputs,
+the gate in all three directions, and the case that a legacy file we have not
+written over yet is NOT a downgrade. An earlier draft of the gate test asserted
+`ours + 1 > ours` - arithmetic, not the code - which is why the decision was
+extracted into a function instead.
+
+STATUS: per Rule #17 nothing was built or tested here; CI is the verification
+step. Live check after that: run two builds against one config dir and confirm
+the older one now says REFUSING instead of silently winning.
+
+================================================================================
+2026-08-23 | Phase 84.H - fonts: the install finally has an uninstall
+Files: app/src-tauri/src/fonts.rs, app/src-tauri/src/lib.rs (command reg),
+       app/src/settings.ts, app/src/SettingsModal.tsx, app/src/App.css,
+       app/src/i18n/{en,he,ar,ru}.json, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
+Closes FOLLOWUPS P1 of 2026-08-03 ("Install has no matching UNINSTALL")
+
+font_uninstall(id) mirrors font_install(id). 27 MB and six files no longer
+need hand-deleting from %LOCALAPPDATA%\Microsoft\Windows\Fonts and HKCU.
+
+THE DESIGN DECISION THAT MATTERS: which files belong to an entry is derived
+from the CATALOG, not recorded at install time.
+  A zip asset wrote every entry matching its ZipFilter::name_prefix; a bare
+  asset wrote exactly its save_as. The same catalog data identifies them
+  again, so entry_owns_file() needs no history.
+  A manifest written at install time was the obvious alternative and is
+  WRONG here: it would only know about installs done after it shipped, and
+  every font already on a user's machine - exactly the ones this entry was
+  filed about - would stay unremovable forever.
+  Accepted cost, written down rather than hidden: a user's own hand-installed
+  copy of the same family, in the same per-user directory, also matches. It is
+  the family they just asked to remove, and the alternative cannot see the
+  past.
+
+Two orderings that are easy to get backwards, both chosen deliberately:
+  DELETE THEN UNREGISTER. The reverse leaves a font still on disk and still
+    loadable with no registry entry - present but invisible to the picker,
+    which is a worse state than either end of the operation. Only paths that
+    actually went are unregistered.
+  MATCH REGISTRY BY DATA, NOT BY NAME. register_font builds the value name
+    from the font's internal name table with a fallback to the file stem;
+    rebuilding it at uninstall would mean reproducing that decision from a
+    file that has just been deleted. The path is the thing we know.
+
+A face held open by a running app is a REPORTED outcome (`failed`), not an
+error - the rest of the family still comes out and the UI names what did not.
+That is the everyday Windows case, not an edge one.
+
+UI: font_catalog grew an `installed` flag (read from the directory per call),
+and a new "Installed by ymux" list sits under both font pickers with a Remove
+button per row, rendering nothing when nothing is installed. It is a LIST and
+not a button beside the picker for a concrete reason: FontMissingNotice only
+renders while a family is MISSING, so an installed font had nowhere to hang a
+control. window.confirm guards it - deleting files, and the way back is a
+multi-MB download. Noted for later: the codebase has been moving destructive
+WORKSPACE actions off window.confirm to a styled component; this could follow,
+but a font removal is not that weight. i18n in all four locales.
+
+TESTS: four. The interesting one is entry_prefixes_do_not_collide, which walks
+the whole catalog rather than today's pair - `FiraCode-` and
+`FiraCodeNerdFontMono-` share a stem, and a future entry could silently make
+one swallow the other. Also: an unknown id is refused BEFORE anything is
+deleted (the id selects files for deletion, so an unchecked one turns this
+into "delete arbitrary things from the font directory"), the JetBrains
+no-ligature sibling that the install filter excludes is not claimed by
+uninstall either, and every bare asset's save_as is really a font file.
+
+STATUS: per Rule #17 nothing was built or tested here; CI is the verification
+step, and CI could not even be reached this session - `git fetch` failed on a
+network timeout, so the branch is unpushed and NOTHING here has compiled.
+Rule #14 after that: install a font, remove it, confirm the picker flips back
+to the warning row and that the files and HKCU values are really gone.
+
+================================================================================
+2026-08-23 | CI: main is red, and the three fixes above are UNCOMPILED
+Files: FOLLOWUPS.md (new P0)
+
+Pushed yos/folow-ufp-review-fbbfda and dispatched ci-windows (run
+32656549376) to verify Phase 84.F/G/H per Rule #17. It failed in 24s on
+"Vault freshness gate" - the Phase 85 gate, which runs BEFORE cargo test,
+tsc, the frontend build and the entire Go half. Every one of them shows as
+skipped.
+
+NOT MINE, AND NOT A FLAKE. main is failing the same way: runs 32654312291
+(PR #20) and 32654357741 (PR #22), both dead in under a minute on the same
+step. The last green run on main is 32652717148, PR #18. The gate landed as
+Phase 85 while four PRs were in flight (#20 #21 #22 #23); they merged code
+without updating the prose that explains it and the lock went stale. Nine
+vaults flagged: backend-claude, backend-core, backend-panes, build-glue,
+frontend-flows, frontend-lib, frontend-panes, frontend-shell, server-go.
+
+Deliberately did NOT run `node scripts/vault-check.mjs --write` to go green.
+The script's own header says a bare re-stamp makes the gate theatre, and its
+error text asks for the prose to be fixed first and both committed together.
+`[vault-skip]` would not have helped either: it only skips the DIFF check,
+and the HASH check is the half that is failing - which is also why a
+workflow_dispatch (hash-check-only path) still fails.
+
+CONSEQUENCE, STATED PLAINLY: Phase 84.F, 84.G and 84.H have NOT compiled.
+Not "compiles, untested" - not compiled at all. Rule #17 makes CI the
+verification step and CI is unavailable. Filed as P0.
+
+================================================================================
+2026-08-23 | The vault gate: fixed the prose, then re-stamped. main unblocked.
+Files: docs/vault/{server-go,backend-claude,backend-core,backend-panes,
+       build-glue,frontend-flows,frontend-lib,frontend-panes,frontend-shell}.md
+       + docs/vault/.vault-lock.json
+
+Nine vaults were stale, from two sources: the four PRs that merged while the
+Phase 85 gate was in flight (#20 #21 #22 #23), and this session's own Phase
+84.F/G/H. Diffed each covered file against the last stamp (57fc95d) and wrote
+the prose from the diffs, then re-stamped. Deliberately in that order - the
+script's header says a bare --write makes the gate theatre, and it is right.
+
+What the code actually did, now written into the vaults:
+  server-go       /analytics and /claude-usage. Why they are separate endpoints
+                  rather than reads of /history: one `curl --max-time 6` per
+                  fetch, so the whole screen must return in ONE response, and
+                  /history's LIMIT 2000 at a 5s interval is 2.8 hours - a "last
+                  7 days" question served from it would answer with the OLDEST
+                  2.8 hours. insights package 1,229 -> 2,653 lines.
+  backend-claude  claude_usage_local.rs, the deliberate mirror of the Go file.
+                  The distinction worth holding: claude_usage.rs asks the CLI
+                  what QUOTA is left; claude_usage_local.rs counts TOKENS from
+                  transcripts. Neither answers the other's question. Also why
+                  /analytics returns {"unavailable":"local"} - no daemon, no
+                  store, no history to roll up.
+  backend-core    the schema gate and its limit; session names as a security
+                  boundary; and the two .devtools(false) calls.
+  backend-panes   the Phase 82.E macOS probe (a third of workspace_browser.rs
+                  now) and font uninstall.
+  build-glue      the `devtools` Cargo feature - tauri-runtime-wry reads it as
+                  unwrap_or(true), so it makes EVERY webview inspectable and
+                  the guard lives in another file.
+  frontend-*      the two new Insights panels, the pure report/pricing modules,
+                  the Monitor's `local` prop, and the font-removal list.
+
+FOUND ON THE WAY, AND IT IS THE PART WORTH REMEMBERING: eleven new source
+files were in NO vault's `covers:` list at all - claude_usage_local.rs (549),
+InsightsAnalytics.tsx (622), InsightsClaudeCost.tsx (458), insightsReport.ts
+(427), claudePricing.ts (246), insightsCommands.ts, insightsFmt.ts,
+clipboardText.ts and tests. The gate never said a word, because the hash check
+only compares files already claimed. A vault can therefore go on passing while
+the tree grows code it does not explain, and the only signal is the coverage
+NOTICE, which is not a failure. Added them all: coverage 93% -> 96%,
+217 -> 225 files. The gate's own blind spot is now a FOLLOWUPS entry.
+
+Re-stamp was `node scripts/vault-check.mjs --write` AFTER the prose. Local
+verify: "vault is up to date".
+
+STATUS: this unblocks CI for every branch, not just this one - the gate runs
+before cargo test, tsc, the frontend build and the whole Go half, so nothing
+real has been checked on main since PR #18. Phase 84.F/G/H still have not
+compiled; that is what the next CI run is for.
+=======
+================================================================================
+=======
 [2026-08-23 ~17:40] vault: re-sync after the four-PR merge train (#20/#21/#22/#23)
   Task: main's ci-windows was red — the vault gate fired on 7 pages. PR #20 landed
         the gate and stamped its lock on its own branch; #22 (Phase 84.C-E Monitor
@@ -5986,6 +6294,62 @@ cold (~813s vs ~420s on the next release build).
           the Phase 82.E beacon probe + devtools opt-in/opt-out pair, and the four pure
           Monitor support modules. Coverage 93% -> 95% (226 files). vault-check clean.
           Docs only — no code touched.
+
+2026-08-23 | Both P0s closed; FOLLOWUPS split into open list + archive
+Files: FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md (new), CLAUDE.md, PROGRESS.txt
+
+MID-SESSION INCIDENT, worth more than the change itself: another session's
+worktree sweep deleted this session's worktree out from under it while it was
+running. The directory emptied, git status went silent, and origin/main had
+moved 41 commits. Nothing was lost ONLY because the previous phase had been
+committed immediately (a514e58) - the commit survived in the shared object
+store on yos/folow-ufp-review-fbbfda and was recovered by creating a fresh
+worktree at .claude/worktrees/followups-archive-pass and merging origin/main.
+This is the second recorded instance of the same hazard. Commit per phase.
+
+The merge had two conflicts, both in append-only files:
+  FOLLOWUPS.md - the other session had closed the SAME Node 20 entry, with a
+    fuller note (it did the work), and added an open entry beside it. Took
+    theirs outright rather than keeping the weaker note.
+  PROGRESS.txt - not a choice between versions, two sessions appending at
+    once. Kept both, theirs first.
+
+P0 #1 (tauri.conf.json - must be cut as 0.5.0): closed as a DUPLICATE, not as
+work done. Verified in tree: version 0.5.0, identifier com.ymux.app,
+productName ymux. The requirement lives as blockers 0.1 + 0.2 in
+docs/RELEASE-0.5.0-CHECKLIST.md, carrying both the never-cut-as-0.4.6 rule and
+the release-note ordering. The residual risk is human and belongs in the
+checklist, which is read at cut time; FOLLOWUPS is not.
+
+P0 #2 (tmux sessions vanish server-side): MOVED, NOT SOLVED, and the entry now
+says so in its first six words. Still no mechanism, still no fix. It leaves
+FOLLOWUPS because that file lists defects with known causes; this is an open
+investigation and it already lives in full under docs/DECISIONS.md section
+Open, which IS scanned at session start. Next step is unchanged and is data,
+not code: journalctl for the OOM killer, and id/TMUX_TMPDIR/ls of the tmux
+socket dir, both on the server.
+
+THE ARCHIVE. FOLLOWUPS.md had accumulated 28 closed entries among 72 open ones,
+some closed weeks ago, plus a "## Done" section that was not where closed items
+actually went - one OPEN entry was misfiled under it and has been moved back.
+Split by a script, not by hand, and verified programmatically: 100 entries
+before, 72 open + 28 archived after, zero lost, zero in both files, zero
+open entries in the archive, zero closed entries left in the live list.
+Continuation lines were the trap - one entry carries a 4-row ASCII table and
+another has a blank line INSIDE it (a session name containing a newline), so
+blocks are cut at entry boundaries rather than at blank lines. Both stayed
+attached to their open entries.
+
+CLAUDE.md updated in the same commit: FOLLOWUPS holds open items only, closed
+ones move to the archive WITH a closing note (not deleted, not left as [x]),
+the archive is not read at session start so nothing actionable may be parked
+there, and it is now step 2 in the past-work lookup order. Also recorded the
+rule that produced two rotten entries this session: cite an entry by its text,
+never by FOLLOWUPS.md:NN, because the numbers shift on every add or archive.
+
+STATUS: documentation only, no code touched, nothing to build. Open counts
+after the pass: P0 0, P1 18, P2 29, P3 25.
+
 2026-08-23 — Phase 84.F: the tab strip's CSS came back from the dead
 Task: Yossi reported the pane tabs render as a vertical "card" stacked on the
 left instead of a horizontal strip, and that clicking a tab does nothing.
@@ -6016,6 +6380,125 @@ vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
 Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
+2026-08-23 | CI GREEN — run 32658655727, 7m36s. Everything above is compiled.
+Files: none (result record)
+
+The whole pipeline ran for the first time since PR #18:
+  Vault freshness gate  PASS (coverage 96%, 225 files)
+  cargo test            PASS - 373 tests in the app lib (369 passed, 4 ignored,
+                        those four being the network-touching live_install
+                        tests), plus 45 / 7 / 39 in the crates
+  Type-check            PASS
+  Frontend build        PASS
+  go vet, go test       PASS
+  go build linux amd64 + arm64   PASS
+  SDK drift-guard       PASS
+"Assert the embedded server binaries were rebaked" is skipped, correctly - no
+Go source changed in this branch.
+
+CI caught exactly one thing across the three Rust changes: FontUninstallResult
+needed `Debug` for `unwrap_err()` in the unknown-id test. Nothing else in
+84.J/K/L had a compile error. That single failure is also the argument for the
+vault fix having been worth doing first - without it, none of this would have
+been checked at all.
+
+Rule #14 STILL APPLIES. Green means compiled and unit-tested, not run. The
+three live checks, none of which CI can do:
+  84.J  title a pane `work; calc` on Windows, confirm no calc runs, and
+        confirm Kill session still finds the session.
+  84.K  run two builds against one config dir; the older must log REFUSING
+        instead of silently winning.
+  84.L  install a catalog font, remove it, confirm the picker flips back to
+        the warning row and that the files and HKCU values are really gone.
+=======
+[2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
+
+
+
+
+
+================================================================================
+2026-08-23 | Second vault collision: another session fixed the same nine vaults
+Files: docs/vault/*.md, docs/vault/.vault-lock.json, PROGRESS.txt
+
+origin/main moved 6 commits while this branch was green, including PR #26
+(yos/vaults-update-before-push). A SECOND session had independently fixed the
+same red gate and written prose for the same nine vaults. Nine conflicts.
+
+RESOLUTION RULE, applied consistently: their prose landed on main first and
+describes the SAME four PRs mine did, so it is canonical for the overlap -
+taken wholesale. Mine was re-added only where it is about code that exists
+ONLY on this branch, which theirs could not have described: the workspaces
+schema gate, the session-name whitelist, font uninstall, and the settings.ts
+font bindings. Verified by grepping origin/main's vaults for schema_gate,
+session_name_char_is_safe, font_uninstall, entry_owns_file, FontInstalledList
+and fontUninstall - zero hits, as expected.
+
+Three merge artifacts that the conflict markers did NOT show, each found by
+looking rather than by trusting the merge:
+  1. A DUPLICATE SECTION in backend-core.md - my "## The two .devtools(false)
+     calls" said the same thing as their Gotchas bullet, which is better
+     placed and names run() and popout_pane. Mine deleted.
+  2. A DUPLICATE SECTION in frontend-lib.md - my "## The Insights pure
+     modules" vs their "## Monitor support modules". Theirs has accurate line
+     counts and says more (the subscription-vs-API-cost warning, the no-URL
+     rationale in insightsCommands). Mine deleted, 26 lines.
+  3. DUPLICATED covers: ENTRIES in frontend-lib.md - the auto-merge accepted
+     both sides' additions of the same five files. git said nothing; the vault
+     script would not have either, since a file listed twice still hashes the
+     same. Deduped by frontmatter pass across all 16 vaults.
+
+Also worth knowing for next time: `vault-check.mjs` enumerates with
+`git ls-files docs/vault/*.md`, which during an UNRESOLVED merge lists each
+conflicted file once per stage - so it fails with "duplicate vault name" until
+the resolution is `git add`ed. That error means "finish the merge", not
+"the frontmatter is broken".
+
+Both halves of the gate verified locally after resolution: hash check clean,
+and `--diff-base origin/main` reports every touched-and-covered file has an
+updated vault entry. Coverage 96%, 226 files.
+
+================================================================================
+2026-08-23 | Evaluated a candidate vault-check.sh; kept ours, fixed 4 stale cites
+Files: docs/vault/backend-core.md, docs/vault/.vault-lock.json, FOLLOWUPS.md
+
+Yossi shared an Obsidian-style `vault-check.sh` (98 lines, zero deps) and asked
+whether it solves the vault drift problem. It does not, and the reasons are
+worth recording so nobody re-evaluates it later.
+
+What it checks: [[wikilink]] resolution, reachability from moc.md, that
+file:line cites point at existing files, and that the cited line is within the
+file. What it does NOT have: hashes, a lock file, a diff base, or any notion of
+"covers". So it has no way to answer "did the code move since this prose was
+written", which is the entire failure that turned main red today, and no way to
+answer "is there code no vault claims", which is the blind spot filed this
+afternoon. It would have printed "vault OK" through both.
+
+Format mismatch is total, not cosmetic: our vault has ZERO wikilinks and no
+moc.md, so check 1 passes vacuously and check 2 hard-fails on the first line
+("MISSING: moc.md — the vault has no root index").
+
+THE ONE GOOD IDEA IN IT is verifying file:line cites, which our gate genuinely
+does not do - so it was worth taking seriously. But its implementation cannot
+work here, and that is measurable rather than a matter of taste: it checks the
+line is IN RANGE, and lib.rs is 13,272 lines. Measured our six cites:
+  AppState       cited lib.rs:145   really 146
+  save_to_disk   cited lib.rs:514   really 838
+  pane_connect   cited lib.rs:7419  really 7949
+  emit_data      cited lib.rs:1960  really 2370
+  BIND_ERROR     rpc_server.rs:37   correct
+  dispatch       rpc_server.rs:646  correct
+Four of six were wrong, and all four are comfortably "in range" - the script
+would have passed every one. Fixed by hand here.
+
+Note why the hash gate does not cover this either: it fires when the file
+changes, which is exactly when someone re-reads the PROSE - and a line number
+inside that prose is the thing they do not re-derive. Filed as P3 with the fix
+that would work: an IDENTITY check (cite the symbol with the line, verify the
+symbol is on or near it) rather than a bounds check.
+
+Verdict: keep vault-check.mjs, do not adopt or fork the shell script.
+=======
 2026-08-23 | Phase 87: every keyboard shortcut is recordable, not typed
 Trigger: the voice (push-to-talk) hotkey in Settings -> AI was a FREE-TEXT box.
 The accelerator had to be typed by hand, and a typo produced a hotkey that
@@ -6098,6 +6581,44 @@ likely to be wrong are Ctrl+B inside vs outside a terminal (tmux prefix must
 still reach the PTY), copy with and without a terminal selection, and D/E/W in
 tabs mode vs split mode.
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
+2026-08-23 | Third merge of origin/main (Phase 87), and the "should the vault be
+             Obsidian-style?" question, measured
+Files: docs/vault/frontend-{flows,lib}.md, .vault-lock.json, PROGRESS, FOLLOWUPS
+
+MERGE. origin/main moved again (PR #28, Phase 87 recordable shortcuts). Two
+vault conflicts, and this time BOTH SIDES WERE RIGHT - my fonts prose and their
+Phase 87 shortcuts prose describe different additions to the same section, so
+both were kept rather than one chosen. The line counts in the headers were the
+only true conflict, and neither side's number was correct after the merge:
+recomputed from the merged tree (SettingsModal 1,868, settings.ts 751). That is
+the trap in a doc that carries line counts - a merge produces a file neither
+parent describes.
+
+THE OBSIDIAN QUESTION. Yossi asked whether the vault should be Obsidian-shaped,
+which would make the shared vault-check.sh the right tool rather than the wrong
+one. Measured rather than argued:
+
+  - 32 cross-vault references already exist in the prose (`backend-panes.md`,
+    `crates.md`, …). All 32 resolve today. They are PLAIN TEXT and nothing
+    checks them, so a renamed vault file breaks every one of them silently.
+    This is the one genuine Obsidian property we are missing, and we are
+    already using it informally - the links exist, they just are not typed.
+  - Every vault is reachable from INDEX.md. The moc.md check would pass; we
+    have the concept under a different name.
+  - 16 files, 130-220 lines each, 2,557 total.
+
+So the answer is not "yes, convert" and not "no, irrelevant". The reader here
+is an AGENT, not a human browsing: it reads whole files into a context window
+rather than clicking through a graph, so atomic notes plus dense linking - the
+thing Obsidian is FOR - buys navigation we do not use and costs round trips and
+repeated frontmatter. 130-220 line subsystem files are the right chunk for that
+consumer.
+
+What IS worth taking is the checkability, not the format: make those 32
+references machine-checkable so a rename cannot rot them, without splitting
+files or adopting wikilink syntax. Filed as P3 alongside the cite-rot entry,
+since it is the same class of problem - a pointer in prose that nothing
+verifies - and the same fix pass should do both.
 
 2026-08-23 | Phase 84.F (cont): the CSS harness, and the P0 someone else closed
 Two loose ends from 84.F, neither of them the fix itself (d201023 is already on
@@ -6146,3 +6667,77 @@ is not.
   .vault-lock.json); Rule #19 sweep of origin/main...HEAD lists only
   PROGRESS.txt + App.css, neither covered.
   Status: compiles-only reasoning; NOT run live (Rule #17 - no local builds).
+
+
+
+2026-08-23 | Merge of origin/main, and a PHASE NUMBER COLLISION to be aware of
+Files: FOLLOWUPS.md, PROGRESS.txt, app/src/App.css (auto-merged)
+
+CLAUDE.md says phase numbers are stable and never reused. One got reused, by
+two sessions working in parallel, and this records it rather than pretending
+otherwise:
+
+  d201023 on main  "Phase 84.F: restore the pane tab strip's CSS, deleted by
+                    a merge"          <- landed on main FIRST, keeps 84.F
+  ffc25d3 here     "fix(pty): a pane title could inject a command into its own
+                    shell"            <- its PROGRESS entry also said 84.F
+
+The other session's commit reached main first, so 84.F is theirs. This
+session's three are re-designated in the record as 84.J (pane title / session
+name), 84.K (workspaces schema gate) and 84.L (font uninstall). The commit
+SUBJECTS are unchanged and are the reliable way to find them - git history is
+not being rewritten for a numbering label, and Rule #15 would forbid it on a
+pushed branch anyway. Sub-numbers G and H were also used by this session and
+do not appear to collide, but they are folded into the same re-designation so
+the three stay contiguous.
+
+The lesson is the same one the worktree sweep taught earlier today: parallel
+sessions do not see each other's numbering, and PROGRESS.txt is append-only
+precisely because two of them will write at once. Check `git log --all
+--grep='Phase 84'` before claiming a sub-number.
+
+MERGE CONFLICTS, both in append-only files:
+  FOLLOWUPS.md - both sessions had independently filed the SAME P0 about the
+    red vault gate (a0a3598 on main vs the one filed here). Merged into one
+    entry, which was then closed, because this session fixed it.
+  PROGRESS.txt - two sessions appending at once, kept both.
+
+Vault re-checked after the merge: still up to date. Their App.css change is
+not in any vault's covers list.
+
+
+
+================================================================================
+2026-08-23 | Fourth merge of origin/main; the same P0 had now been filed 3x
+Files: PROGRESS.txt, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
+
+PR #27 (session-ticker positioning) landed. One conflict, PROGRESS.txt, which
+is append-only - two sessions appending at once, both kept, theirs first
+because it reached main first. App.css auto-merged. Vault untouched and still
+green on both halves (hash + --diff-base origin/main).
+
+The merge brought back a P0 that is the THIRD independent filing of the red
+vault gate - one from this session, one from the vaults-update session
+(a0a3598), one from the session-ticker session. All three describe the same
+incident; it was already fixed here hours earlier.
+
+Archived rather than deleted, because the third one carries the best account of
+the CAUSE that anyone wrote: PR #20 IS the vault (Phase 85, the commit that
+introduced .vault-lock.json) and it merged at 17:16:35 inside a NINETY-SECOND
+window with #23 (17:16:18), #21 (17:13:55) and #22 (17:17:28) - all three
+branched before the lock existed and landed covered code it had never hashed.
+A merge-order accident. No amount of reviewing any single PR would have caught
+it.
+
+THE META-COST IS THE REAL FINDING, and it is larger than the bug: three
+sessions independently spent effort discovering one red build, TWO of them
+wrote prose for the same nine vault pages, and reconciling those two versions
+then cost two further merges of hand-resolution (including a duplicated section
+in backend-core, a duplicated section in frontend-lib, and five duplicated
+covers: entries that git reported as a clean auto-merge). Prevention is cheap
+and belongs in the process, not the code: land a repo-wide gate on a quiet
+tree, or ship it warn-only for one cycle and flip it to blocking after.
+
+Also worth stating plainly: this branch has now merged origin/main FOUR times
+in one session and is racing a tree that four other sessions are pushing to.
+Every extra hour open is another merge. It is green and reviewable now.

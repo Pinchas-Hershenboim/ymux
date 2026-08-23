@@ -42,6 +42,27 @@ slow auto-refresh. **Never fast-poll this.**
 **Rule #1 applies hard here:** log the workspace id and the percentages, never the
 `/usage` body — it names the user's subagents, skills, and MCP servers.
 
+## `claude_usage_local.rs` (549) — token history, local half
+
+Phase 84.E. A deliberate mirror of `server/internal/insights/claudeusage.go`: same scan,
+same JSON field names, same clamping — the pattern `insights_local` already set for
+`/current`, with `insights_fetch` routing remote-vs-local so the frontend never branches.
+
+**Two implementations of one aggregation is real duplication, and it is the cheaper
+option.** `~/.claude/projects` runs to 240 MB across ~170 transcripts on a working box;
+the alternative — SFTP-mirroring the remote tree to the desktop and parsing it once, in
+Rust — would pull hundreds of megabytes over the wire every time the tab opens. The cost
+of the choice is the one that setup always has: **the two can drift apart silently**, so
+compare their output on the same window when you touch either.
+
+Counts tokens, does not price them — the table is `app/src/claudePricing.ts`, in one
+place, so a rate change is a one-file edit and not a server rebake plus a Rust edit.
+Cache writes are split 5-minute vs 1-hour because a 1-hour write costs 2x base input
+against a 5-minute write's 1.25x, and collapsing them understates a long session.
+
+**Rule #1 by construction:** it reads `message.model`, `message.usage`, the timestamp,
+the session id and the cwd. It never reads message content, and it logs only counts.
+
 ## `claude_log.rs` (600) — alive on purpose, unused on purpose
 
 Backend for the ClaudeLog pane, which Phase 24.D removed from the frontend ("three

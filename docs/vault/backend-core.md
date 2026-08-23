@@ -33,7 +33,7 @@ put logic there.
 
 ## Key types
 
-- **`AppState`** ([lib.rs:145](../../app/src-tauri/src/lib.rs)) — the single managed Tauri
+- **`AppState`** ([lib.rs:146](../../app/src-tauri/src/lib.rs)) — the single managed Tauri
   state, `Clone` because every field is an `Arc<Mutex<…>>` and the RPC server task needs
   its own handle. It **wraps** `ymux_core::CoreState` at `state.core`: `sessions`,
   `pane_sessions`, `forwards`, `port_watchers`, `detected_ports`, `port_watcher_tasks`,
@@ -66,7 +66,7 @@ put logic there.
 
 ## Persistence — the part to get right
 
-`%APPDATA%\ymux\workspaces.json`, via `save_to_disk` ([lib.rs:514](../../app/src-tauri/src/lib.rs)).
+`%APPDATA%\ymux\workspaces.json`, via `save_to_disk` ([lib.rs:838](../../app/src-tauri/src/lib.rs)).
 
 1. Serialize to pretty JSON.
 2. **Three-way merge before writing.** `LAST_KNOWN` (a `static Mutex<Option<String>>`)
@@ -75,9 +75,26 @@ put logic there.
    a stable build and a dev build share `%APPDATA%` unless someone sets
    `WINMUX_CONFIG_DIR`, and a plain dump is last-write-wins across the whole document —
    the older binary silently drops every field its structs don't know.
-3. Write `workspaces.<pid>.tmp`, `write_all`, **`sync_all`**, then `rename`. Rule #7.
-4. `remember_file_text` updates the merge base.
-5. Log line records `N workspaces: R root / N-R nested / P repo` — the tree *shape*,
+3. **The schema gate**, between reading the file and merging onto it.
+   `WORKSPACES_SCHEMA_VERSION` (currently 2) is stamped on every write through
+   `serialize_with`, not by assigning the field — the invariant is "what we WRITE is
+   current", and serialization is the one place that cannot be bypassed.
+   `schema_gate(on_disk, last_written)` is a pure function (extracted for the same
+   reason `resolve_effective_session_name` was: the cases that matter need two binaries
+   sharing a config dir, which no test can arrange) returning one of three things:
+   **Refuse** when the file on disk is NEWER than this build — a hard `Err`, because
+   merging would mean understanding keys we have never seen; **WarnDowngrade** when an
+   older build got there first — write anyway, since refusing would leave the user
+   unable to save for as long as that build is open, and the merge in step 2 is the
+   real repair; **Write** otherwise. `schema_version_of` is deliberately tolerant —
+   absent, empty, malformed and version-less all read as "carry on" — because a
+   refusal hangs off it and a stray byte must never lock a user out of saving.
+   **Know the limit:** this cannot stop an already-shipped 0.4.x build, which never
+   reads the field and will write v1 back over a v2 file. Step 2 is what covers that
+   case; the gate adds the log line that was missing when it cost hours in 2026-08.
+4. Write `workspaces.<pid>.tmp`, `write_all`, **`sync_all`**, then `rename`. Rule #7.
+5. `remember_file_text` updates the merge base.
+6. Log line records `N workspaces: R root / N-R nested / P repo` — the tree *shape*,
    not just a count, because two pinned folders once lost `parent_id` with nothing in
    the log to bracket when.
 
@@ -90,7 +107,7 @@ tmux labels, session owners.
 
 ## Spawning a shell
 
-`pane_connect` ([lib.rs:7419](../../app/src-tauri/src/lib.rs)) is the front door and takes
+`pane_connect` ([lib.rs:7949](../../app/src-tauri/src/lib.rs)) is the front door and takes
 a wide argument list because every connection mode funnels through it: `persistent`,
 `mode` (`default | tmux | plain | cmd | claude`), `cwd_override`, `cmd`, `claude_args`,
 `tmux_session_name`, plus the credential arguments.
@@ -109,7 +126,7 @@ a wide argument list because every connection mode funnels through it: `persiste
   best-effort bootstrap, `tcpip_forward(0)` for the reverse tunnel, env file via
   `ymux-tunnel`, shell channel with `set_env` for the `YMUX_*` vars, `request_pty`,
   `request_shell`, channel-pump task.
-- `emit_data` ([lib.rs:1960](../../app/src-tauri/src/lib.rs)) is UTF-8 **boundary-safe** —
+- `emit_data` ([lib.rs:2370](../../app/src-tauri/src/lib.rs)) is UTF-8 **boundary-safe** —
   it buffers a partial multibyte sequence rather than emitting a broken string. Do not
   "simplify" it.
 
@@ -126,6 +143,33 @@ tmux is the SSH-side equivalent: `TMUX_LIST_FORMAT` + the `<<<YMUX_META>>>` mark
 the listing output so `parse_tmux_sessions` can read it back unambiguously.
 `session-meta` labels cross the wire **hex-encoded** (`hex_utf8`) so Hebrew/RTL labels
 never meet shell quoting.
+
+**A session NAME is a security boundary, because one path types it into a shell.**
+`build_zellij_attach_command` produces a line that is typed verbatim into the user's
+cmd.exe or PowerShell 900ms after spawn, and a session name can come from a user's pane
+title. Until 2026-08-23 the sanitizer replaced only `.`, `:` and whitespace — tmux's own
+blockers — so `;`, `&`, `|`, `$`, backticks, quotes and `>` rode a title straight into
+that line, and a pane titled `work; calc` ran `calc`. Two things now hold:
+
+- `session_name_char_is_safe` is a **whitelist at the source**: ASCII alphanumerics,
+  `_`, `-`, and any non-ASCII character that is neither control nor separator. The
+  whitelist lives here rather than as quoting at each use site because **there is no
+  quoting that is correct in cmd.exe and PowerShell at once** — they disagree about
+  `^`, `%`, backticks and single quotes — and that line has to parse in both. The
+  non-ASCII clause is what preserves Phase 23.I's promise that a Hebrew or CJK title
+  becomes a session of the same name: every metacharacter in all three shells is ASCII.
+- `build_zellij_attach_command` returns `Option` and **refuses** a name it cannot type.
+  Only a picker-supplied name (a session made outside ymux by hand) can reach that.
+  Refusing beats mangling, which would silently attach to a session other than the one
+  chosen; the pane is left in a plain working shell, the same failure mode the function
+  already accepts when zellij is missing.
+
+The tmux/SSH side was already correct — `build_tmux_attach_script` and
+`tmux kill-session` use `shell_quote`, and the zellij verbs above are argv-only. The
+Windows zellij line was the single hole. Note the historical trap: the comment at that
+call site asserted a sanitizer named `sanitize_session_name` **that has never existed in
+this tree**, and the test guarding it only ever fed it `ymux-p_1a2b_0` — a name that
+could not fail.
 
 ## Invariants
 
