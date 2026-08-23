@@ -63,6 +63,16 @@ restricted networks.
 `LayoutNode` (`pane | split`), `PaneKind`, `SplitDirection`, `DiffSource`,
 `BrowserState`, `EnvVar`, `Workspace`, `WorkspaceGroup`.
 
+**`Workspace.tabs_mode: bool`** is worth reading the comment on. It renders the
+workspace's panes as a tab strip instead of a split grid — and it is a **flag, not a
+`LayoutNode::Tabs` variant**, deliberately. The `layout` tree is untouched by the mode:
+tabs are just `collect_panes(layout)` in DFS order, so flipping to tabs and back restores
+the exact splits with their ratios and nesting. A third `LayoutNode` variant would make
+every `match` non-exhaustive (~44 sites in the app crate alone), would be lossy in both
+directions, and an older ymux reading a `Tabs` node out of `workspaces.json` could not
+render it at all. It is also one of the keys excluded from the "grandfathered" list in
+the migration test — check that list before adding another.
+
 Deliberately **no business logic** — structs, enums, serde attrs, and the small helpers
 serde references by name (`default_true`, `is_true`, `is_terminal_kind`). ts-rs binding
 regeneration is isolated here, which is the point: the frontend's `src/bindings/` comes

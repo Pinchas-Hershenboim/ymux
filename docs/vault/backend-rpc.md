@@ -80,6 +80,15 @@ An agent hook arrives as one of the hook verbs and turns into a notification:
 3. `show_toast_with_sound` spawns a thread and uses `notify_rust`.
 4. `push_policy_audit` records policy decisions (see `ymux-policy` in `crates.md`).
 
+**`Notification` is a registered hook again**, reversing half of the v0.4.4 decision
+that dropped it as observability-only noise. It now has a different job: `dispatch`
+reads `payload.notification_type` and folds it into the per-pane agent state
+(`AgentRunState::apply_hook` in `lib.rs`), then emits `pane:agent-run`. `pre-tool-use`
+and `notification` are the two subkinds that carry no turn timing, so they fold and emit
+on their own path; the rest also move the timer and emit further down. If you add a hook
+subkind that should affect the traffic light, it goes through `apply_hook`, not through a
+second state machine here.
+
 `feed.push` with `blocking: true` parks the caller on a
 `tokio::sync::oneshot::Sender` held in `FeedStore.pending`, and `decide_feed` (shared
 with the Tauri `feed_decide` command, defined in `lib.rs`) is what wakes it. That is the

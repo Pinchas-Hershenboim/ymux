@@ -57,6 +57,19 @@ Registers agent hooks that point at the local `ymux` binary, so Claude Code (and
 gemini) pipe permission requests and lifecycle events back through the tunnel into the
 desktop UI.
 
+**`Notification` is registered again as of hooks v1.5.0.** v0.4.4 had dropped it as
+observability-only; it is back with a different job — the CLI filters on
+`notification_type` and pushes the type alone, and the desktop turns that into per-pane
+agent state (see `backend-rpc.md`). Bumping `manifest.json`'s
+`hooks.claude-code.version` is what tells existing installs to re-sync.
+
+`setup-hooks` also carries a **dead-hook check** (`ymux_entry_is_runnable`): a hook entry
+pointing at a binary that no longer exists is repaired rather than skipped forever. That
+is not hypothetical — a move left an entry pointing at the old absolute path, the hook
+then failed silently, and the desktop simply never heard from that agent again. The check
+is deliberately narrow: it repairs only entries it can prove are dead, because guessing
+wrong would rewrite a working hook on every single run.
+
 The hook spec used to be a hardcoded `&[(event, subcmd, matcher)]` slice. It now ships as
 JSON at the repo root — `hooks/claude-code.json`, `hooks/codex.json`,
 `hooks/gemini.json` — which the CLI fetches from raw.githubusercontent.com at install

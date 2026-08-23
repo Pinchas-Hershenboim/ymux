@@ -6,6 +6,9 @@ covers:
   - app/src/Sidebar.tsx
   - app/src/LayoutView.tsx
   - app/src/PaneView.tsx
+  - app/src/PaneTabs.tsx
+  - app/src/AgentLight.tsx
+  - app/src/paneAgentState.ts
   - app/src/Divider.tsx
   - app/src/PanelChrome.tsx
   - app/src/PanelFloat.tsx
@@ -26,7 +29,7 @@ covers:
 **SolidJS**, not React. Signals and `createEffect`, no virtual DOM, no hooks rules.
 `index.tsx` (108 lines) mounts `<App/>`; everything else hangs off it.
 
-## `App.tsx` (4,427) — one component, ~50 signals
+## `App.tsx` (4,721) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -44,8 +47,8 @@ than a module signal.
 **The event subscriptions are the map of the backend↔frontend contract.** Around
 lines 2778–3200, `App.tsx` registers `listen()` for: `pty:data`, `pty:exit`,
 `ssh-disconnected`, CLI alignment, the feed (`FeedItem` + resolved), notifications,
-`notes:changed`, `workspaces:changed`, `settings:changed`, hooks-outdated, and
-`update:available`. If you are hunting "who reacts to event X", it is almost always
+`notes:changed`, `workspaces:changed`, `settings:changed`, `pane:agent-run` (the
+per-pane Claude traffic light), hooks-outdated, and `update:available`. If you are hunting "who reacts to event X", it is almost always
 here.
 
 An `ErrorBoundary` wraps the tree — a thrown render error shows a recovery panel rather
@@ -58,25 +61,48 @@ Drag-reorder, collapse state, the per-workspace action row (🌐 Browser, 🗂 F
 notes, settings, add-ons), and forwarded-port rows. Reads `Workspace`,
 `WorkspaceGroup`, `WorktreeEntry`, `ForwardRow` from `types.ts`.
 
-## `LayoutView.tsx` (330) + `Divider.tsx` (72)
+## `LayoutView.tsx` (372) + `Divider.tsx` (72)
 
 Recursively renders `LayoutNode`: a `split` becomes two children plus a `Divider`, a
 `pane` becomes a `PaneView` (or `DiffPane` / `HelpPane` by `PaneKind`). `Divider` drives
 resize with `requestAnimationFrame` coalescing — `onDrag` during, `onCommit` at the end,
 so only the commit hits the backend.
 
-**Browser and File Manager are no longer pane kinds here.** Both moved to
+When the workspace has `tabs_mode` set, `PaneTabs` renders above `.layout-root` instead
+of the grid. **Browser and File Manager are no longer pane kinds here.** Both moved to
 workspace-level floating windows (sidebar 🌐 / 🗂). `BrowserPane.tsx` stays in the repo
 as reference for its in-pane Webview wiring; `FileManagerPane.tsx` is still live, but
 consumed by `FileManagerWindow.tsx`.
 
-## `PaneView.tsx` (2,167) — one terminal pane
+## `PaneView.tsx` (2,194) — one terminal pane
 
 Owns a `TerminalInstance` (see `frontend-lib.md`), the connect/disconnect UI, the
 session picker (tmux/zellij sessions, Claude sessions), pane title and annotation
 editing, the persistence toggle, and the right-click menu. `paneCaps()` /
 `profileFor()` / `effectiveIdentity()` from `types.ts` decide what a pane can offer
 based on its effective connection.
+
+## Tabs and the agent traffic light
+
+**`PaneTabs.tsx` (155)** — the tab strip shown when a workspace has `tabs_mode`. **Owns
+no state:** the tab list is the layout tree's leaves in DFS order, the active tab is
+`activePaneId`, and selecting a tab is focusing a pane. Reordering came free — each tab
+carries `data-pane-id`, which is what `paneDrag` already resolves drop targets against,
+so the existing drag store, ghost and `workspace_swap_panes` apply unchanged. The mode is
+a flag on `Workspace`, not a `LayoutNode` variant; `crates.md` has the reasoning.
+
+**`paneAgentState.ts` (102)** — **pure and Solid-free on purpose.** `trafficLight()` is
+the single verdict that both the pane header and the tab strip call, so the two cannot
+disagree about what colour a pane is. Unit-tested in `paneAgentState.test.ts`. It only
+decides how to *paint* a state; the transition table is owned by the backend
+(`PaneAgentState::apply_hook` in `lib.rs`, arriving as the `pane:agent-run` event) — see
+`backend-core.md`.
+
+**`AgentLight.tsx` (45)** — paints it. Green = Claude is working, yellow = it finished and
+it is your move, red = it is blocked on you, **nothing at all = unknown**, which is the
+honest answer for a plain shell pane, a disconnected pane, or state old enough to be
+untrustworthy. It uses **shape as well as hue** (disc / ring / triangle) so it survives
+greyscale, 8px, and red-green deficiency.
 
 ## Panel chrome — "one body, three surfaces"
 

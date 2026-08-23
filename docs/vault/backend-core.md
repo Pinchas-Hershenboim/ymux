@@ -49,6 +49,20 @@ put logic there.
 - **`LoadState`** — `Loaded | Failed`. A poison flag: if `load_from_disk` hit a real
   read/parse error, `persist` refuses to write, because saving in-memory state over a
   file we failed to understand destroys the user's workspaces.
+- **`PaneAgentState` / `AgentRunState` / `PaneAgentSnapshot`** — per-pane Claude state,
+  in `AppState.agent_runs`. `apply_hook(subkind, notification_type)` is the transition
+  table and it is the **single owner** of the state machine; the frontend only paints
+  what it is handed. `NEEDS_INPUT_NOTIFICATIONS` and `RESUMED_NOTIFICATIONS` list the
+  `notification_type` values that mean "blocked on the user" and "unblocked". A `stop`
+  arriving after a notification still wins, an unmapped notification changes nothing,
+  and a long turn does not keep resetting its own clock — all of that is pinned by unit
+  tests in the same file. Transitions reach the UI as the **`pane:agent-run`** event via
+  `emit_agent_run_event`, which carries `(started, avg, state, since, seq)`; `seq` bumps
+  only on an applied transition, so a no-op skips the emit. In-memory and
+  session-scoped — never persisted.
+- **`workspace_set_tabs_mode`** — flips `Workspace.tabs_mode` and emits
+  `workspaces:changed`. The layout tree is not touched; see `crates.md` for why this is
+  a flag and not a `LayoutNode` variant.
 
 ## Persistence — the part to get right
 
