@@ -5119,6 +5119,84 @@ rather than mtime, because re-copying a byte-identical file into resources/
 was forcing a full rebuild of the app lib. The server blobs are staged by
 hand, so that optimisation does not cover them — but it is the same class
 of problem and the same directory.
+
+
+================================================================================
+2026-08-23 — TMUX organization: workspace-scoped session lists + attach-only
+================================================================================
+Branch: claude/tmux-workspace-scope
+
+TASK (Yossi, Hebrew): now that folders can be opened under a workspace, put
+the TMUX side in order — show the TMUX sessions of the SPECIFIC workspace as
+distinct from the server's; and stop the connect wizard from opening tmux,
+sending commands and pressing ENTER when the pane is already MOUNTED to a
+session, which either restarts an old session or drops a command into the
+middle of a live one.
+
+PART A — SCOPE
+  - TMUX_LIST_FORMAT gained a 6th field, `#{session_path}`. TMUX_LIST_SCRIPT
+    was a const that hand-repeated the format string while its own doc claimed
+    "one const means the format string cannot drift again" — the two DID drift
+    the moment the field was added, so it is now `fn tmux_list_script()` built
+    from the const. `parse_tmux_sessions` reads `parts.get(5)`, so a five-field
+    line from an un-rebootstrapped remote still parses (cwd = None = UNKNOWN,
+    which is deliberately not the same as "elsewhere").
+  - NEW `%APPDATA%\ymux\session-owners.json`, modelled line-for-line on
+    tmux-labels.json (atomic .tmp+rename, Rule #7; corrupt file degrades to
+    "nothing owned"). Keyed host_key -> session_name -> {workspace_id, cwd, ts}.
+    Host first because a session name is only unique per multiplexer server.
+    Written on every persistent connect INCLUDING a picker attach; released on
+    kill (`killed`/`already_gone` only — `failed` keeps the claim because the
+    session is still alive).
+    It exists because zellij reports NO cwd, so on Windows ownership is the
+    only workspace signal there is.
+  - `pane_list_tmux_sessions` takes `project_path: Option<String>` — the same
+    parameter name `pane_list_claude_sessions` already uses — and ANNOTATES
+    each row with `owned` / `in_cwd` instead of filtering. `path_is_within`
+    compares on a separator boundary so `/srv/app2` is not "inside" `/srv/app`.
+  - Picker gained a This folder | Whole server toggle plus a count line.
+    It opens on "This folder" only when that view has something in it.
+
+PART B — ATTACH-ONLY
+  - `resolve_effective_session_name` / `session_name_for_pane` extracted from
+    pane_connect so the guard and the attach cannot check different names.
+  - NEW `pane_target_session_state(workspace_id, pane_id, tmux_session_name)`
+    -> {name, exists, attached, reachable}. `reachable` is not decoration:
+    "we could not ask" must never read as "nothing is running".
+  - `pane_connect` probes BEFORE spawning (the spawn is what creates the
+    session; 200ms later the question is useless) and, for a persistent pane
+    joining a live session, injects NOTHING — command and cd alike — emits
+    `pane-connect-notice`, and logs an `attach-only:` line.
+    The probe is gated on "would we inject anything at all?" so a plain
+    connect does not pay for a list round-trip on the critical path.
+  - The blind `sleep(1100ms)` for tmux is replaced by 900ms + a poll for the
+    session to APPEAR (the same fix zellij got on 2026-08-19), so a genuinely
+    new session's command lands inside tmux instead of racing the attach line.
+  - Wizard: stops hard-coding `ncType("tmux")`; probes on open; banner names
+    the session, command controls grey out, and "Start a new session instead"
+    picks a free `<name>-N` off the live list so the command can run for real.
+
+FOUND AND FIXED, NOT DRIVE-BY: `is_local -> list_zellij_sessions()` was
+ungated in BOTH `pane_list_tmux_sessions` and `pane_probe_tmux_sessions`.
+Both arms return unconditionally for a local workspace, so they shadowed the
+`cfg(not(windows))` macOS branches below them: a Mac asked zellij (not
+installed there), got [], and never reached its own tmux server. The new
+picker is built on that call, so on macOS it would have been silently empty.
+Now cfg-split. Pre-existing on main since 2026-08-19.
+
+ALSO: deleted 14 dead `tmux_picker.*` i18n keys x 4 languages (zero refs in
+app/src, left over from a picker UI removed long ago). New keys added to all
+four locales.
+
+TESTS ADDED (they run on CI, per Rule #17 — nothing was built locally):
+  format_has_six_pipe_separated_fields, list_script_is_built_from_the_format_const,
+  sixth_field_is_the_session_cwd, five_field_lines_still_parse_with_unknown_cwd,
+  empty_sixth_field_reads_as_unknown_not_root, folder_scope_stops_at_a_separator,
+  session_name_precedence_is_explicit_then_title_then_pane_id,
+  pane_fallback_name_matches_the_legacy_auto_name.
+
+STATUS: compiles-untested until CI is green, and Rule #14 (not "verified")
+until the FOLLOWUPS P1 smoke list runs on a real machine.
 -------------------------------------------------------------------------------
 2026-08-23 (session close) | worktree + branches removed
 -------------------------------------------------------------------------------
@@ -5159,3 +5237,29 @@ Two rules earned:
      back to another directory. Verify the working directory INSIDE the
      command that mutates git state, not before it.
 
+
+--- CI result, same day ---
+PR #17. BOTH gates green on the first run:
+  ci-windows   32648007254  success  6m15s
+  build-macos  32648007253  success  7m35s  (x64 + arm64)
+cargo test: 335 passed / 0 failed (+4 ignored) across the workspace; all 8
+new tests present and passing by name —
+  tmux_list_parse_tests::{format_has_six_pipe_separated_fields,
+    list_script_is_built_from_the_format_const, sixth_field_is_the_session_cwd,
+    five_field_lines_still_parse_with_unknown_cwd,
+    empty_sixth_field_reads_as_unknown_not_root, folder_scope_stops_at_a_separator}
+  smart_connect_tests::{session_name_precedence_is_explicit_then_title_then_pane_id,
+    pane_fallback_name_matches_the_legacy_auto_name}
+build-macos matters more than usual here: it is the ONLY job that compiles
+the `cfg(not(windows))` arms, and this change added two of them (the
+cfg-split of the ungated `list_zellij_sessions()` calls). It is green, which
+means they compile — NOT that a Mac was ever asked for a tmux session.
+
+Per Rule #14 this is "compiles, untested". Nothing in either half has run
+live: not the scope toggle, not the ownership file, and not the attach-only
+guard. Smoke list is FOLLOWUPS P1 (2026-08-23).
+
+Also seen on ci-windows, unchanged by this branch: the annotation
+"remote-manifest sha256 changed — the staged CLI binary differs from the
+committed one". No CLI source was touched here; it is the known rebake
+churn CLAUDE.md calls cosmetic, and the run is green.
