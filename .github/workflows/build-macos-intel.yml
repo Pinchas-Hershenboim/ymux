@@ -42,6 +42,14 @@
 # ci-windows does (cargo test, tsc, frontend build) BEFORE bundling, and
 # asserts the frontend is embedded afterwards (CLAUDE.md Rule #13).
 #
+# On pull_request it runs ONLY those gates: the .app bundle, dmg, signing
+# and notarisation steps are skipped (if: github.event_name !=
+# 'pull_request'), because a PR needs "the mac arms compile and pass
+# tests", not a distributable — the full release path still runs on every
+# push to main and on workflow_dispatch, so a bundle-stage break surfaces
+# one run after merge at the latest. Measured before the split: the intel
+# leg cost every PR ~7 min, ~3 of them bundling.
+#
 # Ordering note, same shape as ci-windows: the mac host CLI must be staged
 # into src-tauri/resources/ymux-cli before any cargo step, because
 # tauri.macos.conf.json lists it as a bundle resource and it is gitignored.
@@ -54,8 +62,26 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    # Bookkeeping-only changes prove nothing here. docs/** is NOT listed —
+    # ci-windows owns the vault gate, but keeping the two filters identical
+    # means a PR either triggers both workflows or neither. Safe because
+    # main has no required checks.
+    paths-ignore:
+      - 'PROGRESS*.txt'
+      - 'FOLLOWUPS.md'
+      - 'FOLLOWUPS-ARCHIVE.md'
+      - 'BACKLOG.md'
+      - 'README*.md'
+      - '.claude/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'PROGRESS*.txt'
+      - 'FOLLOWUPS.md'
+      - 'FOLLOWUPS-ARCHIVE.md'
+      - 'BACKLOG.md'
+      - 'README*.md'
+      - '.claude/**'
 
 # A new push to the same branch makes the previous run pointless.
 concurrency:
@@ -178,13 +204,14 @@ jobs:
         working-directory: app/src-tauri
         run: cargo test --workspace
 
-      # typescript is not currently a project dependency (BACKLOG P2), so
-      # install it here rather than silently skipping the type check.
+      # `npm ci` installs the pinned typescript from app/package.json
+      # devDependencies, so this checks the same minor developers use.
+      # (There used to be an `npm i --no-save typescript@5` here from when
+      # it wasn't a project dependency — ci-windows dropped its copy of
+      # that when typescript landed in devDependencies; this one lagged.)
       - name: Type-check
         working-directory: app
-        run: |
-          npm i --no-save typescript@5
-          npx tsc --noEmit -p tsconfig.json
+        run: npx tsc --noEmit -p tsconfig.json
 
       # esbuild strips types without checking them, so this is a bundling
       # check, not a type check — it catches bad imports and dead assets.
@@ -196,7 +223,7 @@ jobs:
       # the developer-id path; the ad-hoc path needs no identity at all
       # (tauri.macos.conf.json carries signingIdentity "-").
       - name: Import Developer ID certificate
-        if: steps.mode.outputs.signing == 'developer-id'
+        if: github.event_name != 'pull_request' && steps.mode.outputs.signing == 'developer-id'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -229,7 +256,10 @@ jobs:
       # keychain". A YAML `env:` entry defines the variable even when the
       # expression evaluates to '', which is exactly the ad-hoc case, so the
       # ad-hoc path has to UNSET it rather than blank it.
+      # PR runs stop here: everything below produces or validates the
+      # distributable, which only main/dispatch runs ship.
       - name: Build (.app bundle)
+        if: github.event_name != 'pull_request'
         working-directory: app
         env:
           APPLE_SIGNING_IDENTITY: ${{ steps.mode.outputs.signing == 'developer-id' && secrets.APPLE_SIGNING_IDENTITY || '' }}
@@ -249,6 +279,7 @@ jobs:
       # Rust log gives no hint. That shipped twice on Windows before
       # build-windows.yml started asserting; the mac side had no equivalent.
       - name: Assert the frontend is embedded
+        if: github.event_name != 'pull_request'
         working-directory: app
         run: |
           BUNDLE=src-tauri/target/${{ matrix.target }}/release/bundle/macos
@@ -277,6 +308,7 @@ jobs:
       # the CLI inside it, because they are built by separate commands and
       # a mismatch there is exactly what would send one of them to Rosetta.
       - name: Assert the .app is ${{ matrix.expect_arch }}
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           BIN=$(find "$BUNDLE_DIR" -type f -perm -111 -path '*.app/Contents/MacOS/*' | head -1)
@@ -312,7 +344,7 @@ jobs:
       # not enough for a downloaded app: without a stapled ticket the first
       # launch is still blocked.
       - name: Notarise and staple
-        if: steps.mode.outputs.signing == 'developer-id'
+        if: github.event_name != 'pull_request' && steps.mode.outputs.signing == 'developer-id'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -333,6 +365,7 @@ jobs:
           xcrun stapler validate "$APP"
 
       - name: Verify signature and Gatekeeper
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           APP=$(ls -d "$BUNDLE_DIR"/*.app | head -1)
@@ -410,6 +443,7 @@ jobs:
       # Tauri's bundle_dmg.sh drives Finder via AppleScript, which fails on
       # headless runners — build the dmg directly with hdiutil instead.
       - name: Create dmg
+        if: github.event_name != 'pull_request'
         working-directory: app/src-tauri/target/${{ matrix.target }}/release/bundle/macos
         env:
           DMG_NAME: ymux_${{ matrix.arch }}_macos13.dmg
@@ -428,7 +462,7 @@ jobs:
           shasum -a 256 "$DMG_NAME"
 
       - name: Sign and staple the dmg
-        if: steps.mode.outputs.signing == 'developer-id'
+        if: github.event_name != 'pull_request' && steps.mode.outputs.signing == 'developer-id'
         working-directory: app/src-tauri/target/${{ matrix.target }}/release/bundle/macos
         env:
           DMG_NAME: ymux_${{ matrix.arch }}_macos13.dmg
@@ -445,6 +479,7 @@ jobs:
           xcrun stapler staple "$DMG_NAME"
 
       - name: Upload dmg
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: ymux-macos-${{ matrix.arch }}-dmg
@@ -454,9 +489,11 @@ jobs:
       # tar first — upload-artifact's zip does not preserve the symlinks and
       # exec bits inside a .app bundle, and it would strip the signature.
       - name: Upload .app bundle (tarred)
+        if: github.event_name != 'pull_request'
         working-directory: app/src-tauri/target/${{ matrix.target }}/release/bundle/macos
         run: tar -czf ymux-app.tar.gz "$(ls -d *.app | head -1)"
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: ymux-macos-${{ matrix.arch }}-app
           path: app/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ymux-app.tar.gz
