@@ -100,6 +100,11 @@ interface Props {
   // maximized pane's header can show how many run in the background.
   maximizedPaneId: string | null;
   workspacePaneCount: number;
+  // Phase 84.A: this workspace renders its panes as a tab strip. Only
+  // forwarded to PaneView, which uses it to drop the (now meaningless)
+  // maximize button. SplitView spreads `{...s.all}` so it propagates
+  // through nested splits for free.
+  tabsMode: boolean;
   // Phase 24.D: onWorkspacesFileUpdate removed — its only consumers
   // were the (now-gone) ChatPane / ClaudeLogPane Match arms.
 }
@@ -167,6 +172,7 @@ function LeafPane(props: { all: Props; pane: Extract<LayoutNode, { kind: "pane" 
           isActive={isActive()}
           isMaximized={props.all.maximizedPaneId === props.pane.pane_id}
           backgroundPaneCount={Math.max(0, props.all.workspacePaneCount - 1)}
+          tabsMode={props.all.tabsMode}
           isWaiting={props.all.waitingPaneIds.has(props.pane.pane_id)}
           isNotified={
             props.all.panePulseEnabled &&

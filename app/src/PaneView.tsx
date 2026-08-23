@@ -101,6 +101,9 @@ interface Props {
   // focused (drives the "N in background" header badge).
   isMaximized?: boolean;
   backgroundPaneCount?: number;
+  // Phase 84.A: this workspace renders its panes as a tab strip. The pane
+  // only needs it to drop chrome that tabs already provide (maximize).
+  tabsMode?: boolean;
   // Phase 26: pane is waiting on a blocking agent permission request
   // (a pending blocking feed item bound to this pane_id). Drives the
   // cmux-style pulsing notification ring around the pane.
@@ -969,20 +972,25 @@ export function PaneView(p: Props) {
         }).catch((err) => log.error("pane_set_smart_bidi failed", err));
       },
     });
-    list.push({
-      id: "maximize",
-      title: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
-      label: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
-      icon: () => (p.isMaximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />),
-      active: p.isMaximized,
-      run: () => {
-        window.dispatchEvent(
-          new CustomEvent("ymux:pane-maximize", {
-            detail: { paneId: p.pane.pane_id },
-          }),
-        );
-      },
-    });
+    // Phase 84.A: in tabs mode this pane already fills the workspace, so
+    // the button is a no-op. Dropping it also gives the overflow fitter
+    // one less button to place.
+    if (!p.tabsMode) {
+      list.push({
+        id: "maximize",
+        title: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
+        label: p.isMaximized ? t("pane.tooltip.restore") : t("pane.tooltip.focus"),
+        icon: () => (p.isMaximized ? <IconMinimize size={14} /> : <IconMaximize size={14} />),
+        active: p.isMaximized,
+        run: () => {
+          window.dispatchEvent(
+            new CustomEvent("ymux:pane-maximize", {
+              detail: { paneId: p.pane.pane_id },
+            }),
+          );
+        },
+      });
+    }
     list.push({
       id: "split-h",
       title: t("pane.tooltip.split_right"),
