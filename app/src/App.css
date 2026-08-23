@@ -5729,6 +5729,89 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .ins-procs { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--w-text-dim, #9aa5ce); }
 .ins-proc b { color: var(--w-text, #e6edf3); }
 
+/* ── Monitor → Analytics tab ─────────────────────────────────────────────
+   A view over the daemon's stored metric history. Deliberately monochrome:
+   every bar is the accent colour because a bar means MAGNITUDE, and amber is
+   kept for the two things that are actually a problem (a disk filling up, a
+   container that keeps dying). Numbers are all `--w-font-mono` + `direction:
+   ltr` — without that, columns of digits jitter between rows and RTL flips
+   them. */
+.ins-an { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.ins-an-filters {
+  display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  flex-wrap: wrap;
+}
+.ins-an-seg { display: flex; gap: 2px; flex-wrap: wrap; }
+.ins-an-seg button {
+  background: transparent; border: 1px solid var(--w-border, #2a2e44);
+  color: var(--w-text-dim, #9aa5ce); border-radius: 5px; padding: 2px 9px;
+  font-size: 12px; cursor: pointer;
+}
+.ins-an-seg button.active {
+  background: var(--w-accent, #7aa2f7); color: #0b0d16;
+  border-color: var(--w-accent, #7aa2f7);
+}
+.ins-an-num { font-family: var(--w-font-mono, monospace); direction: ltr; }
+.ins-an-dim { color: var(--w-text-dim, #9aa5ce); }
+.ins-an-warn { border-color: var(--w-warning, #e0af68); }
+.ins-an-warn-text { color: var(--w-warning, #e0af68); }
+
+/* Sparkline. `preserveAspectRatio: none` + width:100% is the whole responsive
+   story — no resize listener, no charting library. The stroke needs
+   `vector-effect` or the non-uniform scale stretches it into a wedge. */
+.ins-an-chart { position: relative; direction: ltr; }
+.ins-an-chart svg {
+  display: block; width: 100%; height: 130px;
+  background: var(--w-surface, #1f2335);
+  border: 1px solid var(--w-border, #2a2e44); border-radius: 6px;
+}
+.ins-an-area { fill: color-mix(in srgb, var(--w-accent, #7aa2f7) 18%, transparent); stroke: none; }
+.ins-an-line {
+  fill: none; stroke: var(--w-accent, #7aa2f7); stroke-width: 1.6;
+  stroke-linejoin: round; vector-effect: non-scaling-stroke;
+}
+.ins-an-cursor { stroke: var(--w-text-dim, #9aa5ce); stroke-width: 1; opacity: .5; vector-effect: non-scaling-stroke; }
+.ins-an-dot { fill: var(--w-accent, #7aa2f7); }
+.ins-an-tip {
+  position: absolute; top: 4px; pointer-events: none; white-space: nowrap;
+  display: flex; flex-direction: column; gap: 1px; direction: ltr;
+  background: var(--w-bg, #1a1b26); border: 1px solid var(--w-border, #2a2e44);
+  border-radius: 5px; padding: 3px 7px; font-size: 11px;
+  font-family: var(--w-font-mono, monospace); color: var(--w-text-dim, #9aa5ce);
+}
+.ins-an-tip b { color: var(--w-text, #e6edf3); font-size: 12px; }
+.ins-an-axis {
+  display: flex; justify-content: space-between; gap: 8px; direction: ltr;
+  font-size: 11px; color: var(--w-text-dim, #9aa5ce);
+}
+
+.ins-an-details summary {
+  cursor: pointer; font-size: 11.5px; color: var(--w-text-dim, #9aa5ce);
+}
+/* Six columns of numbers will overflow a narrow drawer no matter what — let
+   the table scroll inside its own box instead of the whole panel. */
+.ins-an-scroll { overflow-x: auto; }
+.ins-an-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ins-an-table th {
+  text-align: start; font-weight: 600; font-size: 11px; padding: 4px 8px 4px 0;
+  color: var(--w-text-dim, #9aa5ce); border-bottom: 1px solid var(--w-border, #2a2e44);
+  white-space: nowrap;
+}
+.ins-an-table td {
+  padding: 4px 8px 4px 0; color: var(--w-text, #e6edf3); white-space: nowrap;
+  border-bottom: 1px solid color-mix(in srgb, var(--w-border, #2a2e44) 45%, transparent);
+}
+/* The bar lives inside the cell rather than as a second chart to keep in sync
+   with the numbers beside it. */
+.ins-an-barcell { width: 30%; min-width: 56px; padding-inline-end: 10px; }
+.ins-an-bar {
+  height: 8px; border-radius: 3px; background: var(--w-accent, #7aa2f7);
+  min-width: 2px;
+}
+.ins-an-bar.warn { background: var(--w-warning, #e0af68); }
+/* Panel-width driven (see createNarrow in InsightsAnalytics), not viewport. */
+.ins-an.narrow .ins-an-opt { display: none; }
+
 /* ── Phase GG: Markdown viewer (reuses .fm-window chrome) ────────────── */
 .md-window {
   /* Override .fm-window's File-Manager-sized minimums + float above it. */

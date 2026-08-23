@@ -49,10 +49,22 @@ Full schemas: the served `openapi.json` (REST) + `frames.schema.json` (WS).
 ## Desktop-internal surface (not in the SDK spec)
 
 Insights metrics, served at both legacy paths and `/api/v2/insights/*`:
-`current`, `history`, `hygiene[/kill]`, `docker[/…]`, `processes`, plus
-`/api/v2/logs/daemon`. Dynamic JSON (metric/docker/process maps) consumed by the
-desktop over SSH; intentionally kept on raw stdlib handlers and out of the
+`current`, `history`, `analytics`, `hygiene[/kill]`, `docker[/…]`, `processes`,
+plus `/api/v2/logs/daemon`. Dynamic JSON (metric/docker/process maps) consumed by
+the desktop over SSH; intentionally kept on raw stdlib handlers and out of the
 generated OpenAPI (PHASE-77-DESIGN §6).
+
+`GET analytics?since=&until=&points=` backs the desktop Monitor’s **Analytics**
+tab. It rolls the whole `samples` / `disk_samples` / `docker_samples` window up
+in SQL and returns the entire screen — `totals`, a bucketed `series`, and the
+`by_period` / `by_disk` / `by_container` tables — in **one** response, because
+every desktop fetch is a `curl` over the workspace SSH session (`--max-time 6`).
+Prefer it over `history` for anything wider than a couple of hours: `history`
+returns raw rows with `LIMIT 2000`, which at the 5s sample interval is the
+*oldest* 2.8 hours of whatever range you ask for. All three query params are
+clamped, never rejected (`since` to the 7-day retention window and to a 5-minute
+floor, `points` to 20…400). Timestamps come back as unix seconds so the desktop
+formats them in the viewer’s timezone, not the server’s.
 
 ## Pairing (desktop-facing)
 

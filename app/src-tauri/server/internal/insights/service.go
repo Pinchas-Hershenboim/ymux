@@ -52,6 +52,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux, auth func(http.HandlerFunc)
 	}{
 		{"/current", "/api/v2/insights/current", s.handleCurrent},
 		{"/history", "/api/v2/insights/history", s.handleHistory},
+		{"/analytics", "/api/v2/insights/analytics", s.handleAnalytics},
 		{"/docker", "/api/v2/insights/docker", s.handleDocker},
 		{"/docker/", "/api/v2/insights/docker/", s.handleDockerAction},
 		{"/processes", "/api/v2/insights/processes", s.handleProcesses},

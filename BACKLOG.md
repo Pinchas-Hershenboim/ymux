@@ -11,6 +11,8 @@ Format:
 
 ## Open
 
+- [ ] 2026-08-23 | manual                 | **P3** - FIVE byte-formatters, one job. `fmtBytes` now lives in `app/src/insightsFmt.ts` (extracted from InsightsWindow so the Analytics tab could share it), but `FileEditor.tsx:346` and `FileManagerPane.tsx:448` each carry a private `fmtSize`, and `SettingsModal.tsx:74` a private `formatBytes`. They are not identical - the rounding and the unit table differ - so "the same size" reads differently depending on which panel you are looking at. Collapse them onto `insightsFmt.fmtBytes` (and rename the module to something less Monitor-specific when doing it). Mechanical, touches four files, wants its own commit rather than riding along with a feature.
+
 - [x] 2026-08-03 | manual | **P2** — `typescript` is not a project dependency; there is no reproducible type-check — **DONE 2026-08-19.** `typescript@~5.6.2` is in `app/package.json` devDependencies and `npm run typecheck` now exists. `ci-windows.yml` had been papering over this with `npm i --no-save typescript@5`, which also meant CI type-checked against a different minor than developers ran locally; that line is gone.
 
   Found during the Phase 2 rebase verification. `app/node_modules` was

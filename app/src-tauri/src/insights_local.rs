@@ -645,6 +645,16 @@ pub async fn insights_local_docker_action(
     docker_action(&container_id, &action).await
 }
 
+/// `/analytics` — the Monitor's Analytics tab aggregates the metric history the
+/// remote daemon keeps in SQLite (7-day retention). A local workspace has no
+/// daemon and no store: `insights_local` samples on demand and persists
+/// nothing, so there is no history to roll up. Answer with an explicit marker
+/// rather than an error string, so the panel can explain itself instead of
+/// showing a raw "unsupported path" message.
+fn insights_local_analytics() -> Result<String, String> {
+    Ok(r#"{"unavailable":"local"}"#.to_string())
+}
+
 // ─── Internal router used by addons::insights_fetch ───────────────────
 
 /// Route a remote-shaped API path to its local implementation. Keeps the
@@ -658,6 +668,7 @@ pub async fn route_path(path: &str) -> Result<String, String> {
     };
     match base {
         "/current" => insights_local_current().await,
+        "/analytics" => insights_local_analytics(),
         "/docker" => insights_local_docker().await,
         "/hygiene" => insights_local_hygiene().await,
         "/processes" => {

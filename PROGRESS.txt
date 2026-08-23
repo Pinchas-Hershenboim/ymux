@@ -5036,3 +5036,78 @@ rather than mtime, because re-copying a byte-identical file into resources/
 was forcing a full rebuild of the app lib. The server blobs are staged by
 hand, so that optimisation does not cover them — but it is the same class
 of problem and the same directory.
+
+
+================================================================================
+2026-08-23 | Phase 84 - Monitor > Analytics tab (historical metrics)
+================================================================================
+Task: Yossi asked for a screen like the dev-pipeline dashboard's /efficiency
+page inside the Monitor card (the ניטור window, InsightsWindow.tsx). Ported the
+SHAPE of that page, not its data: stat tiles + a hand-rolled SVG sparkline +
+inline-bar rollup tables, no chart library, no build step of its own.
+
+THE DATA WAS ALREADY THERE AND NOBODY READ IT. The insights daemon's sampler
+writes samples / disk_samples / docker_samples to SQLite on every 5s tick and
+sweeps to a 7-day window (internal/insights/store.go). `/history` was the only
+reader and the FRONTEND NEVER CALLED IT ONCE. disk_samples and docker_samples
+had no reader at all.
+
+Why a new endpoint instead of /history:
+  * /history is raw rows with LIMIT 2000 and ORDER BY ts ASC. At the 5s sample
+    interval that is 2.8 hours. Ask it for 7 days and it silently answers with
+    the OLDEST 2.8 hours of the range. Nobody would have noticed - the chart
+    renders fine, it is just answering a different question.
+  * Every desktop fetch is one curl over the workspace SSH session with
+    --max-time 6 (addons.rs insights_fetch). Five series = five round trips.
+    So the whole screen has to come back in ONE response.
+
+Files:
+  NEW app/src-tauri/server/internal/insights/analytics.go      (~370)
+      GET /analytics?since=&until=&points= - totals + bucketed series +
+      by_period / by_disk / by_container, all aggregated in SQL. Buckets by
+      hour under 48h and by day above it. Every param CLAMPED, never rejected
+      (the desktop drew the range picker; it should not have to render a
+      validation error for its own widget). Timestamps go out as unix seconds
+      so the desktop formats them in the VIEWER's timezone, not the server's -
+      the reason there is no strftime() anywhere in this file.
+  NEW app/src-tauri/server/internal/insights/analytics_test.go (~230)
+      Seeded store with predictable ramps. The load-bearing one is
+      TestAnalyticsLongWindowCoversTheEnd: 4320 rows (> the /history cap), and
+      it asserts the LAST bucket lands at the window end. That is the bug this
+      endpoint exists to prevent, and it is invisible by eye.
+  MOD internal/insights/service.go     - route registered on legacy + /api/v2.
+  MOD app/src-tauri/src/insights_local.rs - /analytics returns
+      {"unavailable":"local"}. A local workspace samples on demand and stores
+      NOTHING, so there is no history to roll up; the panel says so instead of
+      leaking a raw "unsupported path" string.
+  NEW app/src/InsightsAnalytics.tsx    (~600) - the tab.
+  NEW app/src/insightsFmt.ts           - fmtBytes/fmtBps/fmtPct/fmtSpan,
+      lifted OUT of InsightsWindow so the new tab can share them without
+      importing back into its own parent (that would be a cycle).
+  MOD app/src/InsightsWindow.tsx       - 6th tab, IconHistory, lazy-mounted.
+  MOD app/src/App.css                  - .ins-an-* block.
+  MOD app/src/i18n/{en,he,ar,ru}.json  - +50 keys each, all four at 1168.
+  MOD docs/ymux-server/API.md          - documents /analytics and says plainly
+      when NOT to use /history.
+
+Design rules kept from the source page, on purpose:
+  * NO POLL. Loads on tab open and on Refresh. Metrics owns the live view.
+  * Aggregation server-side, one round trip. Never pull rows and sum here.
+  * One colour for every bar (--w-accent), because a bar means MAGNITUDE.
+    Amber is reserved for the two things that are actually a problem: a disk
+    past 85%, and a container whose uptime over the window is under 95%.
+  * Every number gets --w-font-mono + direction:ltr, or columns of digits
+    jitter row to row and RTL flips them.
+  * The sparkline has a <details> "as a table" twin. A bare sparkline is
+    unreadable to a screen reader.
+
+Two things worth knowing for next time:
+  * The stroke needs vector-effect: non-scaling-stroke. preserveAspectRatio
+    ="none" is what makes the chart responsive with no resize listener, and it
+    stretches the line into a wedge without it.
+  * Narrow-mode column dropping uses createNarrow (ResizeObserver on the
+    panel), NOT a media query. This panel is routinely a 440px drawer on a
+    2560px monitor - a viewport query would measure the wrong box.
+
+Status: NOT VERIFIED LIVE (Rule 14). Not compiled either - Rule 17, builds run
+on CI. Needs the server-blob rebake (see below) and then a real remote.
