@@ -6128,3 +6128,33 @@ Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
+
+================================================================================
+2026-08-23 — Phase 84.F (cont): the CSS harness, and the P0 someone else closed
+================================================================================
+Two loose ends from 84.F, neither of them the fix itself (d201023 is already on
+main).
+
+1) app/tabs-harness.html + app/src/tabsHarness.tsx — a vite-only page that
+   mounts the REAL <PaneTabs> against the REAL App.css. Rule #17 bans a cargo
+   build here and the bug was never in Rust, so this is how the fix was
+   actually proven. Measured off the live DOM, same markup, two states of
+   App.css:
+     before  .pane-tabs display:block, tabs at y=0/22/44/66, all x=0, w=1215
+     after   .pane-tabs display:flex,  tabs all y=3, x=4/142/268/405, w~117-136
+   Clicking was verified too: activePaneId p2 -> p4, and the active tab's
+   background went from transparent to rgb(28,34,48). The click was never
+   broken — there was simply no styling to show it had happened.
+   Not covered by any vault page (coverage is an explicit file list in each
+   page's frontmatter, not a glob), so it adds nothing to the gate.
+
+2) Closed the P0 filed earlier this session about main being red. It was real
+   — main had been failing the vault gate since 17:16 — but another session
+   fixed it while this one was writing it up: 8037102 re-synced all seven
+   pages and PR #26 merged it, plus CLAUDE.md Rule #19 now defines the sweep
+   against the full origin/main...HEAD diff. vault-check is green at 95%.
+
+Note for whoever reads this next: the 84.F fix and the P0 entry went STRAIGHT
+TO MAIN at Yossi's instruction (d201023, a0a3598), so this branch carries only
+the harness and the bookkeeping. Everything here is behind PR review; the CSS
+is not.
