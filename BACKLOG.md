@@ -124,6 +124,15 @@ load-poison shape as workspaces.json and got no schema gate, deliberately — th
 loss mode there is smaller. If a lock lands, it covers both and the question
 goes away.
 
+### `workspace_browser_resize` is dead code (2026-08-23)
+
+`app/src-tauri/src/workspace_browser.rs` still exports `workspace_browser_resize`, and it
+has zero call sites in `app/src/`. Every geometry change rides the `workspace_browser_show`
+fast path instead, which does the same `set_position` + `set_size` and then `.show()`.
+
+Left in place during Phase 85 rather than deleted mid-change. Either delete it and drop it
+from the `generate_handler!` list in `lib.rs`, or give it the one job show can't do —
+reposition WITHOUT un-hiding — which is the only reason it would earn its keep.
 
 ## Done
 

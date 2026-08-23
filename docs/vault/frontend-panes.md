@@ -2,6 +2,8 @@
 vault: frontend-panes
 covers:
   - app/src/BrowserWindow.tsx
+  - app/src/BrowserChrome.tsx
+  - app/src/components/PopoutBrowser.tsx
   - app/src/BrowserPane.tsx
   - app/src/browserDevMode.ts
   - app/src/FileManagerWindow.tsx
@@ -40,24 +42,76 @@ fullscreen — so they get that chrome for free instead of hand-rolling a varian
 
 ## Browser
 
-**`BrowserWindow.tsx` (792)** — the workspace-level Browser floating window. The actual
-page is a **native child Webview** the Rust side mounts
-(`workspace_browser.rs`); this component owns the toolbar, tabs, port+path entry,
-navigation, and the window geometry. At most one per workspace. The 🐞 button toggles Dev
-Mode (ticket capture); the terminal-icon button next to it calls
+The page itself is always a **native child Webview** the Rust side mounts
+(`workspace_browser.rs`), at most one per workspace. Everything in these three files is
+the HTML *around* it. Since Phase 85.C there are **two hosts** for that chrome, and the
+split is the thing to understand first:
+
+**`BrowserChrome.tsx` (801)** — the chrome, and the only place the native Webview
+lifecycle lives: tabs, the port+path bar, Go, Dev Mode, the Web Inspector button, the
+empty state, and the show/hide/navigate effects. Exactly two things differ between hosts
+and both are injected — `slotRect()` (where the Webview goes, relative to its host
+window) and `windowLabel` (which OS window to attach it to).
+
+It is a **factory plus a body component**, not one component, and that is deliberate:
+the state and effects must outlive the JSX. In the floating panel the host stays mounted
+while the window is closed and only the inner `<Show>` collapses, and the falling-edge
+close effect is what hides the Webview — put it inside the `<Show>` and it would unmount
+before it could ever fire. `makeWindowControls` in `floatingWindow.tsx` is the same
+shape. Hosts therefore call `createBrowserChrome(...)` unconditionally at their top
+level and render `<BrowserChromeBody api={...}/>` wherever it belongs.
+
+**`BrowserWindow.tsx` (216)** — the floating shell only: header drag, `ResizeHandles`,
+persisted geometry, the X, and the pop-out button. `windowLabel="main"`, `slotRect`
+derived from the drag geometry minus the chrome constants. Both header buttons are named
+in `closeGuardSelector` or a click on them would start a window drag.
+
+**`components/PopoutBrowser.tsx` (193)** — the same chrome in its own OS window, a
+sibling of `PopoutTerminal.tsx` and built the same way (`index.tsx` bails to it on the
+`browser-popout-<ws>` label before `<App>` mounts). Chrome here is tabs + port bar only —
+the OS window supplies the title bar, the X and the resize grips — so `slotRect` is the
+viewport minus 58px, tracked on a `resize` listener because there is no drag geometry to
+key off. It is a **separate JS context and cannot read App's signals**, so it self-serves
+the port list and forwards by invoking the same commands App does
+(`workspace_ensure_port_watcher`, `list_detected_ports`, `forward_port_start`) and
+filtering the app-wide `port-*` broadcasts by workspace id — exactly how PopoutTerminal
+filters `pty:data`. Its `anyModalOpen` is hardcoded `false`: ymux's modals all live in
+`main` and none of them covers this window.
+
+The 🐞 button toggles Dev Mode (ticket capture); the terminal-icon button next to it calls
 `workspace_browser_open_devtools` and opens the Web Inspector on the loaded page — on
 macOS that saves a trip through Safari → Develop, and on Windows it is the *only* way in,
-since F12 is not wired up for a child webview. Only that webview is inspectable; see
-`backend-panes.md`.
+since F12 is not wired up for a child webview. **Only this webview is inspectable**: see
+`backend-panes.md` for the child-vs-shell split, the two `.devtools(false)` calls in
+`backend-core.md`, and the Cargo feature they guard in `build-glue.md`.
 
-The toolbar's **inspector button** calls `workspace_browser_open_devtools`. Only this
-webview is inspectable — see the two `.devtools(false)` calls in `backend-core.md` and
-the Cargo feature they guard in `build-glue.md`. On macOS it saves a trip through
-Safari → Develop; on Windows it is the only way in, since F12 is not wired for a child
-webview.
+**Popping out reloads the page, and that cannot be fixed here** — a child Webview cannot
+be re-parented, so `browser_popout_open` destroys and respawns. `backend-panes.md` has
+the detail. `App.tsx` closes the panel BEFORE awaiting that command: do it after and the
+panel's hide races the popped-out window's own show on the same workspace id, and a slow
+hide blanks a window that will never call show again.
+
+**The `shownWsId` invariant.** The chrome must hide the Webview belonging to the
+workspace that is **actually on screen**, which is *not* the same as `p.workspace?.id`.
+One writer (the show effect's `.then`, after the invoke resolves), one reader
+(`hideShown`), and three callers: the workspace-switch effect (hide the **outgoing**
+workspace before forgetting which it was), the show effect's no-URL branch, and the
+falling-edge close effect. Phase 85.B: all three used to pass the *active* id, so opening
+the Browser in ws A and switching to ws B hid B — a no-op — and left A's native Webview
+painted over the slot region in every workspace until the app exited. X did the same
+thing, so there was no way to clear it. The close effect also no longer requires an
+active workspace; that guard was a second leak.
+
+**Chrome errors need their own strip.** `navError` renders only inside the empty state
+(`<Show when={!currentUrl()}>`), so it structurally cannot report a failure of an action
+taken **on a loaded page**. `chromeError` (Phase 85.A) is that channel, and it lives in
+the port-bar row rather than over the slot because the native child Webview paints over
+any HTML in the slot. The DevTools button spent a release cycle broken with `log.warn`
+as its only failure channel; anything in the chrome that can fail while a page is up
+reports here.
 
 **`browserDevMode.ts` (448)** — right-click an element in the workspace browser to
-capture it as a ticket. Kept out of `BrowserWindow.tsx` on purpose: with Dev Mode in its
+capture it as a ticket. Kept out of the chrome on purpose: with Dev Mode in its
 own module, the browser component gains one signal, one toolbar button, and one
 re-inject effect, and nothing about tabs or navigation changes.
 

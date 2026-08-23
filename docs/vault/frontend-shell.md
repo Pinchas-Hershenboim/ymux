@@ -27,9 +27,24 @@ covers:
 # Frontend shell — App, sidebar, layout, panes, panel chrome
 
 **SolidJS**, not React. Signals and `createEffect`, no virtual DOM, no hooks rules.
-`index.tsx` (108 lines) mounts `<App/>`; everything else hangs off it.
+`index.tsx` (121 lines) mounts `<App/>` — **unless the window label says otherwise**.
+It is the whole router, and there is no other one: no query params, no `location.search`
+anywhere in the tree. A built app's asset protocol serves a blank page for any suffixed
+path (`index.html?x`, `index.html#x`), so every pop-out URL is a clean `index.html` and
+the id rides the LABEL instead. Two prefixes bail before `<App>` mounts, so none of the
+workspace/settings bootstrap runs in those windows:
 
-## `App.tsx` (4,710) — one component, ~50 signals
+| label | renders | id |
+|---|---|---|
+| `popout-<sid>` | `<PopoutTerminal>` | terminal session |
+| `browser-popout-<ws>` | `<PopoutBrowser>` | workspace |
+
+The browser prefix deliberately does NOT start with `popout-`, so the two checks cannot
+collide — and neither can their capability globs, which are prefix-anchored too. The
+xterm CSS and `App.css` imports at the top are global on purpose: a popout that skipped
+them rendered unstyled, which read as a blank white window.
+
+## `App.tsx` (4,793) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),

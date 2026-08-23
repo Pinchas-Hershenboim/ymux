@@ -1799,6 +1799,48 @@ fn mutate<F: FnOnce(&mut Settings) -> Result<(), String>>(
     Ok(s)
 }
 
+/// Phase 85.C: record whether the workspace Browser is currently popped
+/// out into its own OS window, and where that window was.
+///
+/// `floating_windows` is **Rust-owned** — no UI writes it (see the carry
+/// in `settings_save`), so this is the only writer. Best-effort by
+/// design: failing to remember a window position must never fail the
+/// window operation itself.
+pub(crate) fn set_browser_popout(
+    state: &AppState,
+    app: &AppHandle,
+    popped_out: bool,
+    rect: Option<Rect>,
+    display: Option<i32>,
+) {
+    let res = mutate(state, app, |s| {
+        s.floating_windows.browser.mode = if popped_out {
+            FloatingWindowMode::PopOut
+        } else {
+            FloatingWindowMode::Float
+        };
+        if rect.is_some() {
+            s.floating_windows.browser.popout_rect = rect;
+        }
+        if display.is_some() {
+            s.floating_windows.browser.popout_display = display;
+        }
+        Ok(())
+    });
+    if let Err(e) = res {
+        log_warn("SETTINGS", &format!("set_browser_popout failed: {e}"));
+    }
+}
+
+/// The remembered Pop-out geometry for the workspace Browser, if any.
+pub(crate) fn browser_popout_geometry(state: &AppState) -> (Option<Rect>, Option<i32>) {
+    let s = state.settings.lock().unwrap();
+    (
+        s.floating_windows.browser.popout_rect,
+        s.floating_windows.browser.popout_display,
+    )
+}
+
 // ─── Tauri commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1836,6 +1878,16 @@ pub(crate) fn settings_save(
                 settings.terminal.rtl = Some(existing);
             }
         }
+        // Phase 85.C: `floating_windows` is Rust-owned — the only writer
+        // is `set_browser_popout`, driven by the window itself opening
+        // and closing. No UI surface edits it, so a value arriving from
+        // a client can only be a stale echo of a `settings_load`, never
+        // a decision. Always keep the stored one. Without this, popping
+        // the Browser out and then hitting Save anywhere in Settings
+        // would silently reset the mode to `float` and drop the
+        // remembered rect — the same shape of bug as the `terminal.rtl`
+        // wipe above, which cost most of a day.
+        settings.floating_windows = s.floating_windows.clone();
         *s = settings;
         Ok(())
     })

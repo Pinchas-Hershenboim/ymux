@@ -299,6 +299,35 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 
 ## Decided
 
+### 2026-08-23 — Phase 85.C: the Browser pops out with the FULL chrome, and its X just closes
+
+- **Context:** three Browser complaints from Yossi in one message — the DevTools button
+  did nothing, X left the native webview stuck over the panels, and there was no way to
+  make the Browser a real separate window. The first two were bugs (85.A / 85.B); this is
+  the third. It finally lands what `63.E` described and never shipped: the 63.A schema
+  (`FloatingWindowMode::PopOut`, `popout_rect`, `popout_display`) had been sitting in
+  `settings.json` since 2026-06 with zero readers. The 2026-06-18 Phase 63 entry was
+  closed in the 2026-07-15 cleanup as "covered by later work" — for 63.E specifically
+  that was not true, which is why this is a new entry rather than a reopened one.
+- **Decision 1 — full chrome, not a bare browser window.** The alternative was a
+  `WebviewUrl::External(url)` window: ~70 lines, no port picker, no tabs. Yossi chose the
+  full chrome, so the popout loads ymux's own `index.html`, routes on the
+  `browser-popout-<ws>` label, and hosts its own child webview. Cost: `BrowserWindow.tsx`
+  had to be split into an injectable chrome (`BrowserChrome.tsx`) plus two hosts.
+- **Decision 2 — closing the popped-out window closes the Browser.** It does NOT
+  re-attach into the floating panel, unlike the terminal pop-out (`popout:closed` →
+  re-attach). Simpler, and it matches what an OS window's X means everywhere else.
+- **Decision 3 — the mode persists.** Quit popped out, launch popped out, same monitor
+  and size. This is what makes the 63.A fields load-bearing at last, and it forced
+  `floating_windows` to become Rust-owned with a carry in `settings_save`.
+- **Accepted cost — popping out RELOADS the page.** A child Webview cannot be
+  re-parented; `add_child` binds it to its host window for life. So the pop-out destroys
+  the child under `main` and the new window spawns its own. Not fixable without giving up
+  the native-child architecture. The button tooltip says so in all four locales.
+- **Note for whoever revisits 63.B/C ("Pane" mode):** the same `slotRect()` +
+  `windowLabel` seam this phase introduced is what a docked Pane mode would use — it
+  would be a third host, not a third code path.
+
 ### 2026-08-23 — Phase 84: panes as tabs, and Notification comes back as pane state (not as a feed item)
 - **Context:** Users asked for two things that turned out to be mostly built already. "Open panes as tabs instead of splitting" is Phase 55-A's maximize plus a control surface — that feature has been swapping the split tree for a single leaf since it shipped, with the other panes' PTYs alive in the `terms` registry. "A traffic light on the tab" is a new rendering of the per-pane turn state machine that has run end-to-end since issue #4, currently painted as the `⏱ 3:10 · avg 40s` ticker.
 - **Decided — tabs are a `bool` on `Workspace`, not a `LayoutNode::Tabs` variant.** The variant was the obvious model and is the wrong one: it makes every `match` on `LayoutNode` non-exhaustive (~44 sites in the app crate alone), it is lossy in both directions — a tree collapsed into a tab list cannot get its ratios back — and an older ymux reading a `Tabs` node out of `workspaces.json` cannot render it, which is exactly what the 3-way reconcile in `workspaces_merge.rs` exists to survive. With the flag, tabs are just `collect_panes(layout)` in DFS order and the tree is never touched.

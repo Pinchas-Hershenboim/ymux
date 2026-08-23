@@ -6838,3 +6838,102 @@ is "compiles, untested" (Rule #14); the smoke list is in FOLLOWUPS P1.
 - Both workflows: paths-ignore for PROGRESS*/FOLLOWUPS*/BACKLOG/README*/.claude — docs/** deliberately still triggers (vault gate). Safe: no required checks on main (verified 404 on branch protection).
 - Files: .github/workflows/ci-windows.yml, .github/workflows/build-macos-intel.yml, CLAUDE.md (CI section), PROGRESS.txt. Vault: workflows not covered by lock; build-glue.md claims still true, no prose change needed; vault-check clean.
 - Result: compiles-not-applicable (YAML); verification = the PR's own CI runs. Trade-off logged: mac bundle-stage breaks now surface on the merge run instead of the PR.
+
+[2026-08-23] Phase 85.A + 85.B — Browser: DevTools button + the stuck-webview ghost
+  85.A  The DevTools button never worked in ANY shipped build. workspace_browser.rs
+        wrapped open_devtools() in #[cfg(any(debug_assertions, feature = "devtools"))],
+        which reads like tauri's own gate but resolves `feature = "devtools"` against
+        the `app` crate's feature set — and app/src-tauri/Cargo.toml has NO [features]
+        section. The `devtools` at Cargo.toml:52 is a feature of the tauri DEPENDENCY.
+        So in release (debug_assertions off) the #[cfg(not(...))] arm compiled and the
+        command returned Err("this build was compiled without devtools support") 100%
+        of the time. Right-click -> Inspect kept working the whole time (.devtools(true)
+        on the builder is not gated), which is why it read as a UI bug.
+        Fix: call open_devtools() unconditionally. tauri::Webview::open_devtools is
+        gated on the TAURI crate's feature, which is on, so it compiles in release and
+        breaks loudly at build time if anyone strips it. Did NOT add [features] to the
+        app crate (would mean threading --features through 3 workflows for zero gain).
+        Grepped the whole crate: those two were the only `feature = "..."` cfgs in
+        app/src-tauri/src/.
+        Also: the failure was invisible because the frontend catch was a bare log.warn.
+        Added a `chromeError` transient strip in the port bar (App.css .bw-chrome-err)
+        + i18n key browser.devtools.failed in en/he/ar/ru. It has to live in the port
+        bar row: the native child webview paints over the slot, so an overlay there
+        would never be seen. navError can't cover it either -- it only renders when NO
+        url is loaded.
+  85.B  X closed the frame but left the native webview painted over the panels in every
+        workspace. Root cause: all three hide paths passed p.workspace?.id -- the ACTIVE
+        workspace -- never the one whose webview was on screen. Open Browser in ws A,
+        switch to ws B: the switch effect hid B (no-op, B has no webview) and nobody
+        ever hid A. X then hid B too. Ghost survived until app exit.
+        Fix: `shownWsId` -- one writer (show effect's .then), one reader (hideShown()),
+        called from the workspace-switch effect (hides the OUTGOING ws before forgetting
+        it), the show effect's no-URL branch, and the falling-edge close effect. Dropped
+        the `&& id` guard on the close effect -- a close with p.workspace momentarily
+        undefined was a second leak.
+        Kept hide-not-close semantics (page state across X is deliberate, App.tsx:4365).
+        Left the modal broadcast-hide at App.tsx:534-551 alone -- that path is correct.
+  Files: app/src-tauri/src/workspace_browser.rs, app/src/BrowserWindow.tsx,
+         app/src/App.css, app/src/i18n/{en,he,ar,ru}.json,
+         docs/vault/{backend-panes,frontend-panes}.md + .vault-lock.json
+  Result: NOT verified. No local builds (Rule #17) -- pushed for CI. 85.A specifically
+          MUST be smoke-tested on a RELEASE build: the bug is invisible in a debug build,
+          where debug_assertions makes the broken cfg true.
+  Next: 85.C -- pop the Browser out into a real OS window, full ymux chrome.
+
+[2026-08-23] Phase 85.C - Browser pops out into a real OS window, with full ymux chrome
+  Decisions (Yossi): full chrome in the popped-out window (not a bare browser); its X
+  just CLOSES (no re-attach into the panel); the mode PERSISTS across restarts.
+  Reused the Phase 63.A schema that shipped and was never wired: settings.rs
+  FloatingWindowMode::PopOut + popout_rect + popout_display (63.E never landed;
+  DECISIONS.md:921 still listed it as open).
+  Rust
+    - workspace_browser_show gains window_label: Option<String> (default "main"); the
+      hardcoded get_window("main") is now the host lookup. Read on the SLOW path only.
+    - browser_popout_open: async (WebviewWindowBuilder DEADLOCKS from a sync command on
+      Windows), clean index.html URL (asset protocol serves blank for any suffix; the ws
+      id rides the LABEL browser-popout-<ws>), 3-attempt 0x8007139F retry, focus-if-exists.
+      .devtools(false) on the WINDOW -- it renders ymux UI, Rule #1, and the devtools
+      feature flips wry's default to true for every webview. The CHILD keeps .devtools(true).
+    - A child webview CANNOT be re-parented. So popping out = destroy + respawn: drop the
+      child under main, the popout's own frontend spawns a fresh one under itself. THE PAGE
+      RELOADS. Inherent to the shape; said so in the button tooltip + the vault.
+    - Destroyed handler (not CloseRequested): saves the rect in LOGICAL px (outer_position
+      /inner_size are PHYSICAL and the builder takes logical -- a straight round-trip would
+      rescale the window by the scale factor every cycle on HiDPI), drops the child webview,
+      clears the mode, emits browser-popout:closed.
+    - teardown_workspace_runtime closes the popout window too, or it outlives its workspace.
+    - settings.rs: set_browser_popout + browser_popout_geometry. floating_windows is now
+      Rust-owned and settings_save CARRIES it over from the stored copy -- same wipe shape
+      as the terminal.rtl bug (a save from any Settings screen would have reset the mode).
+    - capabilities/browser-popout.json: needed its own file, "popout-*" does NOT match
+      "browser-popout-*" (globs are prefix-anchored).
+  Frontend
+    - Extracted BrowserChrome.tsx (801) from BrowserWindow.tsx (792 -> 216). Split as a
+      FACTORY + body component, not one component: the effects must outlive the JSX --
+      the floating panel stays mounted while closed and its falling-edge effect is what
+      hides the webview, so inside the <Show> it would unmount before firing.
+      Injected seam = slotRect() + windowLabel. Nothing else differs between hosts.
+    - components/PopoutBrowser.tsx (193): separate JS context, so it self-serves ports via
+      workspace_ensure_port_watcher / list_detected_ports / forward_port_start + the
+      app-wide port-* broadcasts filtered by ws id (PopoutTerminal's pty:data pattern).
+      anyModalOpen is hardcoded false -- ymux modals live in main and cover nothing here.
+    - index.tsx: routes browser-popout-<ws> BEFORE popout-<sid>. No prefix collision.
+    - App.tsx: the modal broadcast-hide now SKIPS popped-out workspaces, or opening
+      Settings would blank a window on another monitor with nothing to re-show it.
+      popOutBrowser closes the panel BEFORE awaiting the command -- ordering matters, see
+      the comment: after the await, the panel's hide races the new window's show on the
+      same ws id and a slow hide blanks the new window permanently. Error path restores.
+      Boot restore: mode == "popout" -> reopen the window instead of the panel.
+    - i18n browser.popout.open / browser.popout.failed in en/he/ar/ru. CSS
+      .browser-window-popout + .popout-browser.
+  Files: app/src-tauri/src/{workspace_browser.rs,settings.rs,lib.rs},
+         app/src-tauri/capabilities/browser-popout.json,
+         app/src/{BrowserChrome.tsx,BrowserWindow.tsx,App.tsx,index.tsx,App.css},
+         app/src/components/PopoutBrowser.tsx, app/src/i18n/*.json,
+         docs/vault/{backend-core,backend-panes,backend-wizards,frontend-panes,
+                     frontend-shell}.md + .vault-lock.json
+  Result: NOT verified. No local builds (Rule #17) -- pushed for CI. Needs a live smoke on
+          a RELEASE build: pop out, drag to a 2nd monitor, resize, change ports, open a
+          modal in main (popout must NOT blank), close it, restart (must reopen popped
+          out, same monitor/size), delete the workspace while popped out.

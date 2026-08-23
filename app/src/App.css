@@ -5268,6 +5268,41 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Phase 85.C: pop out into a real OS window. Same chip as the close
+   button next to it, without the red hover — this one is not
+   destructive. Both are named in `closeGuardSelector` so a click here
+   doesn't start a header drag. */
+.browser-window-popout {
+  flex: 0 0 auto;
+  background: var(--w-surface, #161b22);
+  border: 1px solid var(--w-border, #21262d);
+  color: var(--w-text-dim, #7d8590);
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.browser-window-popout:hover {
+  color: var(--w-text, #e6edf3);
+  border-color: var(--w-text-dim, #7d8590);
+}
+/* Phase 85.C: the popped-out Browser window. The OS window supplies the
+   title bar, the X and the resize grips, so this is just the chrome
+   stack — no ymux header, no bottom strip, no side inset for resize
+   handles. Fills the viewport; the native child Webview is positioned
+   under it by PopoutBrowser's slotRect(). */
+.popout-browser {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--w-surface, #161b22);
+  overflow: hidden;
+}
 /* Phase 62 (item 3): close button — always visible (faint chip so it
    reads as a button even at rest), conventional red wash on hover. */
 .browser-window-x {
@@ -5424,6 +5459,25 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 /* Web Inspector. A plain action next to the Dev Mode toggle — it has no
    lit state to advertise, because the inspector is its own window. */
 .bw-devtools-btn { margin-inline-start: 2px; }
+/* Phase 85.A: transient failure strip for chrome actions taken while a
+   page is loaded. It has to live IN the port bar row — the slot below is
+   covered by the native child Webview, which paints over any HTML there,
+   so an overlay down there would simply never be seen. Shrinks rather
+   than pushing the controls out of the 32px row. */
+.bw-chrome-err {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: 6px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--w-error, #f7768e);
+}
 .bw-port-server {
   flex: 0 0 auto;
   font-size: 12px;
