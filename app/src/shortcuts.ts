@@ -15,7 +15,130 @@
 //     `End`, `PageUp`, `PageDown`, `Insert`)
 //   - Joined by `+` with optional whitespace.
 
-import { DEFAULT_SHORTCUTS, type ShortcutsSettings } from "./settings";
+export interface ShortcutsSettings {
+  copy: string;
+  paste: string;
+  select_all: string;
+  find: string;
+  new_workspace: string;
+  toggle_notes: string;
+  toggle_settings: string;
+  summarize_claude: string;
+  // Phase 87: everything below was hardcoded in App.tsx's keydown handler
+  // until now. Same accelerator vocabulary, same click-to-record picker.
+  command_palette: string;
+  toggle_sidebar: string;
+  toggle_sidebar_soft: string;
+  toggle_maximize: string;
+  focus_zoom: string;
+  reset_terminal: string;
+  distribute_evenly: string;
+  split_horizontal: string;
+  split_vertical: string;
+  close_pane: string;
+  split_or_move_left: string;
+  split_or_move_right: string;
+  split_or_move_up: string;
+  split_or_move_down: string;
+  quadrant_top_left: string;
+  quadrant_top_right: string;
+  quadrant_bottom_left: string;
+  quadrant_bottom_right: string;
+  tab_next: string;
+  tab_prev: string;
+  copy_on_select_with_ctrl_c: boolean;
+}
+
+export const DEFAULT_SHORTCUTS: ShortcutsSettings = {
+  copy: "Ctrl+Shift+C",
+  paste: "Ctrl+Shift+V",
+  select_all: "Ctrl+Shift+A",
+  find: "Ctrl+F",
+  new_workspace: "Ctrl+N",
+  toggle_notes: "Ctrl+Shift+N",
+  toggle_settings: "Ctrl+,",
+  summarize_claude: "Ctrl+Alt+B",
+  command_palette: "Ctrl+Shift+P",
+  toggle_sidebar: "Ctrl+Shift+B",
+  toggle_sidebar_soft: "Ctrl+B",
+  toggle_maximize: "Ctrl+Enter",
+  focus_zoom: "Ctrl+Shift+Z",
+  reset_terminal: "Ctrl+Alt+R",
+  distribute_evenly: "Ctrl+Alt+=",
+  split_horizontal: "Ctrl+Shift+D",
+  split_vertical: "Ctrl+Shift+E",
+  close_pane: "Ctrl+Shift+W",
+  split_or_move_left: "Ctrl+Alt+ArrowLeft",
+  split_or_move_right: "Ctrl+Alt+ArrowRight",
+  split_or_move_up: "Ctrl+Alt+ArrowUp",
+  split_or_move_down: "Ctrl+Alt+ArrowDown",
+  quadrant_top_left: "Ctrl+Alt+I",
+  quadrant_top_right: "Ctrl+Alt+O",
+  quadrant_bottom_left: "Ctrl+Alt+K",
+  quadrant_bottom_right: "Ctrl+Alt+L",
+  tab_next: "Ctrl+Tab",
+  tab_prev: "Ctrl+Shift+Tab",
+  copy_on_select_with_ctrl_c: true,
+};
+
+/** Every configurable accelerator, i.e. every ShortcutsSettings field
+ *  except the one boolean. */
+export type ShortcutActionId = Exclude<keyof ShortcutsSettings, "copy_on_select_with_ctrl_c">;
+
+/** Every accelerator field, in display order — i.e. DEFAULT_SHORTCUTS minus
+ *  the one boolean. Used by the parser, the conflict check and the UI so a
+ *  new binding only has to be added to the interface above. */
+export const SHORTCUT_ACTION_IDS = (Object.keys(DEFAULT_SHORTCUTS) as (keyof ShortcutsSettings)[])
+  .filter((k) => typeof DEFAULT_SHORTCUTS[k] === "string") as ShortcutActionId[];
+
+/** How the Settings tab groups the 28 rows. Labels come from
+ *  `settings.shortcuts.group.<key>`; each row's own label is
+ *  `settings.shortcuts.<id>`, derived mechanically so a new binding needs
+ *  no pair list. A unit test asserts this covers SHORTCUT_ACTION_IDS
+ *  exactly — that is the guard against a field existing in the schema but
+ *  never appearing in the UI, which is how `find` and `select_all` came to
+ *  be editable rows that dispatch nothing. */
+export const SHORTCUT_GROUPS: { key: string; ids: ShortcutActionId[] }[] = [
+  {
+    key: "general",
+    ids: [
+      "new_workspace",
+      "toggle_settings",
+      "toggle_notes",
+      "command_palette",
+      "toggle_sidebar",
+      "toggle_sidebar_soft",
+      "summarize_claude",
+    ],
+  },
+  { key: "clipboard", ids: ["copy", "paste", "select_all", "find"] },
+  {
+    key: "panes",
+    ids: [
+      "split_horizontal",
+      "split_vertical",
+      "close_pane",
+      "toggle_maximize",
+      "focus_zoom",
+      "reset_terminal",
+    ],
+  },
+  {
+    key: "layout",
+    ids: [
+      "split_or_move_left",
+      "split_or_move_right",
+      "split_or_move_up",
+      "split_or_move_down",
+      "quadrant_top_left",
+      "quadrant_top_right",
+      "quadrant_bottom_left",
+      "quadrant_bottom_right",
+      "distribute_evenly",
+    ],
+  },
+  { key: "tabs", ids: ["tab_next", "tab_prev"] },
+];
 
 export interface ParsedShortcut {
   ctrl: boolean;
@@ -101,6 +224,19 @@ export function parseShortcut(s: string | undefined | null): ParsedShortcut | nu
 // shortcuts (copy, the STT push-to-talk hotkey, …) fire on non-US
 // layouts, where `event.key` is the localized character — e.g. Hebrew
 // "צ" for the physical M key, which previously never matched "m".
+/** The slice of KeyboardEvent this module actually reads. A real
+ *  KeyboardEvent satisfies it structurally, so every call site is
+ *  unchanged — but a unit test can hand these functions a plain object
+ *  instead of standing up a DOM. */
+export interface KeyLike {
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  metaKey: boolean;
+  key: string;
+  code: string;
+}
+
 const CODE_PUNCT: Record<string, string> = {
   Equal: "=",
   Minus: "-",
@@ -114,7 +250,7 @@ const CODE_PUNCT: Record<string, string> = {
   BracketRight: "]",
   Backslash: "\\",
 };
-export function physicalKey(e: KeyboardEvent): string | null {
+export function physicalKey(e: KeyLike): string | null {
   const code = e.code;
   if (!code) return null;
   if (code.length === 4 && code.startsWith("Key")) return code[3].toLowerCase(); // KeyM → "m"
@@ -132,14 +268,14 @@ export function physicalKey(e: KeyboardEvent): string | null {
  *  `event.code`, so e.g. `keyEq(e, "p")` fires for the physical P key on
  *  a Hebrew layout (where `event.key` is "פ"). The caller checks
  *  modifiers. */
-export function keyEq(e: KeyboardEvent, key: string): boolean {
+export function keyEq(e: KeyLike, key: string): boolean {
   const k = key.toLowerCase();
   if (e.key.toLowerCase() === k) return true;
   const phys = physicalKey(e);
   return phys != null && phys.toLowerCase() === k;
 }
 
-export function matches(e: KeyboardEvent, accel: ParsedShortcut | null): boolean {
+export function matches(e: KeyLike, accel: ParsedShortcut | null): boolean {
   if (!accel) return false;
   if (e.ctrlKey !== accel.ctrl) return false;
   if (e.altKey !== accel.alt) return false;
@@ -151,34 +287,78 @@ export function matches(e: KeyboardEvent, accel: ParsedShortcut | null): boolean
   return keyEq(e, accel.key);
 }
 
+/** The parsed form of every configurable accelerator, keyed by action id. */
+export type ShortcutTable = Record<ShortcutActionId, ParsedShortcut | null>;
+
 /** Build a parsed-shortcut table from the current settings (with the
  *  defaults backfilled for any missing field). Returned at settings
- *  load and re-built on every settings:changed. */
+ *  load and re-built on every settings:changed.
+ *
+ *  Phase 87: iterates SHORTCUT_ACTION_IDS instead of hand-listing the
+ *  fields, so adding a binding to ShortcutsSettings is enough — the
+ *  boolean `copy_on_select_with_ctrl_c` is not an accelerator and is
+ *  filtered out there. Callers read it from `settings.shortcuts`. */
 export function buildShortcutTable(
   s: ShortcutsSettings | null | undefined,
-): Record<keyof ShortcutsSettings, ParsedShortcut | null> {
+): ShortcutTable {
   const merged: ShortcutsSettings = { ...DEFAULT_SHORTCUTS, ...(s ?? {}) };
-  return {
-    copy: parseShortcut(merged.copy),
-    paste: parseShortcut(merged.paste),
-    select_all: parseShortcut(merged.select_all),
-    find: parseShortcut(merged.find),
-    new_workspace: parseShortcut(merged.new_workspace),
-    toggle_notes: parseShortcut(merged.toggle_notes),
-    toggle_settings: parseShortcut(merged.toggle_settings),
-    summarize_claude: parseShortcut(merged.summarize_claude),
-    // copy_on_select_with_ctrl_c is a boolean toggle, not a parsed
-    // shortcut. Carried in the table for shape consistency — callers
-    // should check `settings.shortcuts.copy_on_select_with_ctrl_c`
-    // directly rather than via this table.
-    copy_on_select_with_ctrl_c: null,
-  };
+  const table = {} as ShortcutTable;
+  for (const id of SHORTCUT_ACTION_IDS) {
+    table[id] = parseShortcut(merged[id]);
+  }
+  return table;
+}
+
+/** Canonical spelling of an accelerator, for comparing two bindings:
+ *  "ctrl+shift+m" and "Shift+Ctrl+M" both canonicalise to
+ *  "Ctrl+Shift+M". Returns null for anything unparseable (which
+ *  therefore never counts as a conflict). */
+export function canonicalAccel(s: string | undefined | null): string | null {
+  const p = parseShortcut(s);
+  if (!p) return null;
+  const parts: string[] = [];
+  if (p.ctrl) parts.push("Ctrl");
+  if (p.alt) parts.push("Alt");
+  if (p.shift) parts.push("Shift");
+  if (p.meta) parts.push("Meta");
+  let label = p.key;
+  if (label.length === 1 && label.match(/[a-z]/i)) label = label.toUpperCase();
+  if (label === " ") label = "Space";
+  parts.push(label);
+  return parts.join("+");
+}
+
+/** Accelerators claimed by more than one action — the set is of canonical
+ *  strings, so a row is in conflict when canonicalAccel(its value) is a
+ *  member. `extra` carries bindings that live outside settings.shortcuts
+ *  (today: the STT push-to-talk hotkey, which is stored under
+ *  settings.stt) so those collide too — that is not hypothetical, the
+ *  Focus/Zoom binding had to be moved off Ctrl+Shift+M by hand because it
+ *  silently shadowed push-to-talk. */
+export function conflictingAccels(
+  s: ShortcutsSettings | null | undefined,
+  extra?: Record<string, string | undefined | null>,
+): Set<string> {
+  const merged: ShortcutsSettings = { ...DEFAULT_SHORTCUTS, ...(s ?? {}) };
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  const values = [
+    ...SHORTCUT_ACTION_IDS.map((id) => merged[id]),
+    ...Object.values(extra ?? {}),
+  ];
+  for (const v of values) {
+    const c = canonicalAccel(v);
+    if (!c) continue;
+    if (seen.has(c)) dupes.add(c);
+    else seen.add(c);
+  }
+  return dupes;
 }
 
 /** Format a KeyboardEvent as an accelerator string, used by the
  *  Settings UI's "click to record" picker. Returns null if the
  *  event has no non-modifier key (so the picker can keep listening). */
-export function formatEvent(e: KeyboardEvent): string | null {
+export function formatEvent(e: KeyLike): string | null {
   const parts: string[] = [];
   if (e.ctrlKey) parts.push("Ctrl");
   if (e.altKey) parts.push("Alt");

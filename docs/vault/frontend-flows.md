@@ -86,7 +86,7 @@ rather than duplicated:
   sitting unreachable.
 - **`NotesModal.tsx` (273)** — notes CRUD against `notes.rs`.
 
-## `SettingsModal.tsx` (1,715)
+## `SettingsModal.tsx` (1,774)
 
 The whole settings surface in tabs — theme, fonts, terminal, RTL profiles, hooks,
 notifications, logs, Claude, updates, shortcuts. Reads and writes through
@@ -96,6 +96,26 @@ modal.
 
 Two tabs are deliberately **separate components** so they do not bloat this file:
 `AddonsTab` and `YmuxToolsTab` (see `frontend-panes.md`).
+
+**The Shortcuts tab is 28 recordable rows in five labelled groups**, driven by
+`SHORTCUT_GROUPS` from `shortcuts.ts` — the group list is the UI's row order, and a
+unit test asserts it covers every action id exactly once, so a binding cannot exist in
+the schema with no row. `ShortcutRow` is the click-to-record picker: focus it, press
+the combination, `formatEvent` stores the canonical accelerator, Esc cancels. It
+**calls `stopPropagation`**, and that is not optional — `App.tsx` listens for keydown
+on `window` in the bubble phase, so without it the combination being *recorded* also
+fires the action it is bound to, which since Phase 87 means recording `Ctrl+Shift+W`
+closes the active pane. `preventDefault` alone does not stop propagation. Rows whose
+accelerator is claimed by another action are outlined in `--w-error`
+(`conflictingAccels`), and a read-only list at the bottom shows the bindings that
+cannot be rebound at all (`Ctrl+1..9`, `Escape`, the editor's and browser pane's own
+keys) so they stop being invisible.
+
+**Push-to-talk is edited in the AI tab, not the Shortcuts tab**, because it is stored
+at `settings.stt.push_to_talk_hotkey` rather than in `settings.shortcuts`. It uses the
+same `ShortcutRow` (it was a free-text box until Phase 87 — the accelerator had to be
+typed, and a typo produced a hotkey that silently never fired), and it is passed into
+`conflictingAccels` explicitly so a clash across the two schemas is still reported.
 
 **`VersionManager.tsx` (228)** is the Updates tab's list: every published release,
 install any of them (including a downgrade, with a warning), and pick a release channel.

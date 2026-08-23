@@ -13,6 +13,7 @@
     "build": "npm run build:linux-cli && npm run build:frontend",
     "build:frontend": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-strip-types --test \"src/*.test.ts\"",
     "serve": "vite preview",
     "tauri": "tauri"
   },
