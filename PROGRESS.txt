@@ -5245,3 +5245,36 @@ because StopFailure is not registered. FOLLOWUPS P2.
 
 STATUS: ci-windows GREEN on 84.A and on the 84.B backend (cargo test + tsc +
 vite + go). NOT VERIFIED LIVE -- Rule #14. Smoke steps in FOLLOWUPS P1.
+
+--- Phase 84 addendum: what CI actually caught, and one review catch ---
+
+CI earned its keep twice, both on things Rule #17 makes unverifiable locally:
+
+ 1. ts-rs maps u128 -> `bigint`, not `number`. app/src/bindings/
+    PaneAgentSnapshot.ts was hand-written (Rule #17 bans running the
+    generator), and the guess was wrong. CI regenerated the file, tsc read
+    the real one, three type errors. Fixed with #[ts(type = "number | null")]
+    -- the idiom FeedItem::created_ms already uses. It mattered beyond the
+    type error: the pane:agent-run event carries the same values as plain
+    JSON numbers and the frontend compares the two, so bigint on one side
+    would have been a silent runtime comparison bug.
+
+ 2. Caught reading the diff back, not by CI: the early return that keeps
+    notifications off the feed sat INSIDE `if let Some(pane) = resolved_pane`.
+    Reads naturally, wrong -- the guard is about whether there is per-pane
+    state to update, the return is about what a notification may BECOME. On
+    an unresolvable pane the code skipped both and fell through to the feed,
+    reinstating the v0.4.4 noise on the one path nobody would test. Hoisted
+    out, with a comment saying why it is outside so it doesn't get tidied
+    back in.
+
+Also noted: app/src/bidi.test.ts fails in this worktree with
+ERR_MODULE_NOT_FOUND for `bidi-js` -- a missing dep in this checkout's
+node_modules, pre-existing and unrelated to Phase 84 (which adds no deps).
+sessionRestore (15) and fmPaths (20) pass, as do the 8 new paneAgentState
+tests.
+
+FINAL CI: ci-windows GREEN on the final HEAD (cargo test incl. 14 new Rust
+tests, tsc, vite, go). build-macos-intel GREEN. PR #18 ready for review.
+STILL NOT VERIFIED LIVE -- Rule #14. Smoke matrix: FOLLOWUPS P1 and
+docs/RELEASE-0.5.0-CHECKLIST.md section 13b.
