@@ -481,6 +481,8 @@
   "browser.dev.captured": "تم التقاط العنصر",
   "browser.devtools.open": "افتح Web Inspector للصفحة (الوحدة الطرفية، الشبكة، الأخطاء)",
   "browser.devtools.failed": "فشل فتح Web Inspector: {msg}",
+  "browser.popout.open": "افتح في نافذة منفصلة (تُعاد الصفحة التحميل)",
+  "browser.popout.failed": "تعذّر فتح نافذة المتصفّح: {msg}",
   "tickets.modal.title": "تذكرة جديدة",
   "tickets.modal.url": "الصفحة",
   "tickets.modal.selector": "العنصر",

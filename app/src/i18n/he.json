@@ -481,6 +481,8 @@
   "browser.dev.captured": "האלמנט נלכד",
   "browser.devtools.open": "פתח Web Inspector על הדף (קונסולה, רשת, שגיאות)",
   "browser.devtools.failed": "פתיחת Web Inspector נכשלה: {msg}",
+  "browser.popout.open": "פתח בחלון נפרד (הדף ייטען מחדש)",
+  "browser.popout.failed": "לא ניתן לפתוח את חלון הדפדפן: {msg}",
   "tickets.modal.title": "כרטיס חדש",
   "tickets.modal.url": "עמוד",
   "tickets.modal.selector": "אלמנט",

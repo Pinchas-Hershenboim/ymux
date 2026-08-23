@@ -418,6 +418,62 @@ function App() {
   // (the native Webview is hidden on close, not destroyed — page state
   // survives across open/close cycles).
   const [showBrowserWindow, setShowBrowserWindow] = createSignal(false);
+  // Phase 85.C: workspaces whose Browser currently lives in its own OS
+  // window. Their native Webview is a child of THAT window, so nothing
+  // here may hide, show, or reposition it — see the modal broadcast
+  // below, which skips them.
+  const [poppedOutBrowsers, setPoppedOutBrowsers] = createSignal<Set<string>>(
+    new Set(),
+  );
+  // Pop the Browser out. The child Webview cannot be re-parented, so the
+  // Rust side destroys the one under `main` and the popped-out window
+  // spawns a fresh one under itself — the page reloads. Once it is out,
+  // this window's floating panel has nothing left to show, so it closes.
+  const popOutBrowser = async () => {
+    const ws = activeWs();
+    if (!ws) return;
+    // Order matters. Closing the panel FIRST makes its falling-edge
+    // effect fire `workspace_browser_hide` now, while the only Webview
+    // for this workspace is still the one hosted by `main`. Do it after
+    // the await instead and the hide races the popped-out window's own
+    // `workspace_browser_show` — same workspace id, same map entry — so
+    // a slow hide would land on the NEW child and blank a window that
+    // has no reason to ever call show again.
+    setPoppedOutBrowsers((prev) => new Set(prev).add(ws.id));
+    setShowBrowserWindow(false);
+    try {
+      await invoke("browser_popout_open", {
+        workspaceId: ws.id,
+        title: `${ws.name} — Browser`,
+      });
+    } catch (e) {
+      // Nothing was popped out — put the panel back exactly as it was.
+      setPoppedOutBrowsers((prev) => {
+        const n = new Set(prev);
+        n.delete(ws.id);
+        return n;
+      });
+      setShowBrowserWindow(true);
+      log.error("browser_popout_open failed", e);
+      flashSummaryToast("err", t("browser.popout.failed", { msg: String(e) }));
+    }
+  };
+
+  // Boot restore: the Browser was popped out when the app last exited,
+  // so bring the window back instead of the in-app panel. One-shot —
+  // `settings()` and `activeWs()` both arrive asynchronously, so this
+  // waits for the pair rather than racing them, and the guard keeps a
+  // later workspace switch from re-firing it.
+  let popoutRestored = false;
+  createEffect(() => {
+    if (popoutRestored) return;
+    const s = settings();
+    const ws = activeWs();
+    if (!s || !ws) return;
+    popoutRestored = true;
+    if (s.floating_windows?.browser?.mode !== "popout") return;
+    void popOutBrowser();
+  });
   // Phase 53 (rebased): workspace-level File Manager. Pure HTML — wraps
   // the existing FileManagerPane. Its open/drawer/float state now lives in
   // the unified `panels` registry (see panels.ts) under the "files" id.
@@ -544,7 +600,14 @@ function App() {
     // hiding any others that may exist is a cheap no-op on the
     // backend side (the command silently ignores workspaces with no
     // Webview spawned).
+    //
+    // Phase 85.C: EXCEPT a workspace that has been popped out. Its
+    // Webview is a child of a different OS window, on possibly a
+    // different monitor — no modal here is covering it, so hiding it
+    // would blank that window every time the user opened Settings, and
+    // nothing over there would ever show it again.
     for (const w of file().workspaces) {
+      if (poppedOutBrowsers().has(w.id)) continue;
       void invoke("workspace_browser_hide", {
         workspaceId: w.id,
       }).catch(() => {});
@@ -3081,6 +3144,25 @@ function App() {
         requestAnimationFrame(() => ti.fitAndResize(true));
       })
     );
+
+    // Phase 85.C: a popped-out Browser window closed (its X, or the
+    // workspace was deleted). Per Yossi's call the Browser does NOT
+    // re-attach into the floating panel — closing that window means
+    // closing the Browser. All we do is forget the workspace, so the
+    // modal broadcast-hide covers it again and a later re-open spawns
+    // the child under `main`. The Rust `Destroyed` handler already
+    // dropped the Webview and cleared the persisted mode.
+    unlistens.push(
+      await listen<string>("browser-popout:closed", (e) => {
+        const wsId = e.payload;
+        setPoppedOutBrowsers((prev) => {
+          if (!prev.has(wsId)) return prev;
+          const n = new Set(prev);
+          n.delete(wsId);
+          return n;
+        });
+      })
+    );
     // Initial feed load.
     try {
       const items = await invoke<FeedItem[]>("feed_list");
@@ -4368,6 +4450,7 @@ function App() {
         workspace={activeWs()}
         anyModalOpen={anyModalOpen}
         onClose={() => setShowBrowserWindow(false)}
+        onPopOut={() => void popOutBrowser()}
         detectedPorts={(() => {
           const id = file().active_workspace_id;
           return id

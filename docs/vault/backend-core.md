@@ -7,6 +7,23 @@ covers:
 
 # Backend core — `lib.rs`
 
+**Windows are built programmatically, not in `tauri.conf.json`** — its `windows` array is
+empty on purpose. `main` is built in `.setup()` with `.devtools(false)`; `popout_pane`
+builds `popout-<sid>` terminal windows and `workspace_browser::browser_popout_open`
+builds `browser-popout-<ws>`. All three share the same three non-negotiables: the
+builder call must be in an **`async`** command (on Windows `WebviewWindowBuilder`
+deadlocks from a synchronous one — the shell appears, the webview stays blank white), the
+URL must be a **clean `index.html`** with the id carried by the window LABEL (the built
+app's asset protocol serves a blank page for any suffixed path), and lifecycle is wired
+through `on_window_event` on `Destroyed`, never `CloseRequested`. Each label prefix needs
+its own file in `capabilities/`; the globs are prefix-anchored, so `browser-popout-*` is
+not covered by `popout-*`.
+
+`teardown_workspace_runtime` is the single place a workspace's runtime state dies: the
+Browser child Webview, its pop-out OS window (`close_popout_window` — otherwise the
+window outlives the workspace), the browser session dir, the bootstrap verdict, and the
+reverse-tunnel state.
+
 **12,809 lines, and about 1,700 of them are `#[cfg(test)]` at the bottom.** It is the
 "everything else" module: app state, the workspace data model and its persistence, the
 PTY and SSH spawn paths, the multiplexer (zellij / tmux) plumbing, and ~70 Tauri

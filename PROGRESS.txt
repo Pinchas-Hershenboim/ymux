@@ -6168,3 +6168,60 @@ confirm the strip lays out horizontally and the active tab is visibly active.
           MUST be smoke-tested on a RELEASE build: the bug is invisible in a debug build,
           where debug_assertions makes the broken cfg true.
   Next: 85.C -- pop the Browser out into a real OS window, full ymux chrome.
+
+[2026-08-23] Phase 85.C - Browser pops out into a real OS window, with full ymux chrome
+  Decisions (Yossi): full chrome in the popped-out window (not a bare browser); its X
+  just CLOSES (no re-attach into the panel); the mode PERSISTS across restarts.
+  Reused the Phase 63.A schema that shipped and was never wired: settings.rs
+  FloatingWindowMode::PopOut + popout_rect + popout_display (63.E never landed;
+  DECISIONS.md:921 still listed it as open).
+  Rust
+    - workspace_browser_show gains window_label: Option<String> (default "main"); the
+      hardcoded get_window("main") is now the host lookup. Read on the SLOW path only.
+    - browser_popout_open: async (WebviewWindowBuilder DEADLOCKS from a sync command on
+      Windows), clean index.html URL (asset protocol serves blank for any suffix; the ws
+      id rides the LABEL browser-popout-<ws>), 3-attempt 0x8007139F retry, focus-if-exists.
+      .devtools(false) on the WINDOW -- it renders ymux UI, Rule #1, and the devtools
+      feature flips wry's default to true for every webview. The CHILD keeps .devtools(true).
+    - A child webview CANNOT be re-parented. So popping out = destroy + respawn: drop the
+      child under main, the popout's own frontend spawns a fresh one under itself. THE PAGE
+      RELOADS. Inherent to the shape; said so in the button tooltip + the vault.
+    - Destroyed handler (not CloseRequested): saves the rect in LOGICAL px (outer_position
+      /inner_size are PHYSICAL and the builder takes logical -- a straight round-trip would
+      rescale the window by the scale factor every cycle on HiDPI), drops the child webview,
+      clears the mode, emits browser-popout:closed.
+    - teardown_workspace_runtime closes the popout window too, or it outlives its workspace.
+    - settings.rs: set_browser_popout + browser_popout_geometry. floating_windows is now
+      Rust-owned and settings_save CARRIES it over from the stored copy -- same wipe shape
+      as the terminal.rtl bug (a save from any Settings screen would have reset the mode).
+    - capabilities/browser-popout.json: needed its own file, "popout-*" does NOT match
+      "browser-popout-*" (globs are prefix-anchored).
+  Frontend
+    - Extracted BrowserChrome.tsx (801) from BrowserWindow.tsx (792 -> 216). Split as a
+      FACTORY + body component, not one component: the effects must outlive the JSX --
+      the floating panel stays mounted while closed and its falling-edge effect is what
+      hides the webview, so inside the <Show> it would unmount before firing.
+      Injected seam = slotRect() + windowLabel. Nothing else differs between hosts.
+    - components/PopoutBrowser.tsx (193): separate JS context, so it self-serves ports via
+      workspace_ensure_port_watcher / list_detected_ports / forward_port_start + the
+      app-wide port-* broadcasts filtered by ws id (PopoutTerminal's pty:data pattern).
+      anyModalOpen is hardcoded false -- ymux modals live in main and cover nothing here.
+    - index.tsx: routes browser-popout-<ws> BEFORE popout-<sid>. No prefix collision.
+    - App.tsx: the modal broadcast-hide now SKIPS popped-out workspaces, or opening
+      Settings would blank a window on another monitor with nothing to re-show it.
+      popOutBrowser closes the panel BEFORE awaiting the command -- ordering matters, see
+      the comment: after the await, the panel's hide races the new window's show on the
+      same ws id and a slow hide blanks the new window permanently. Error path restores.
+      Boot restore: mode == "popout" -> reopen the window instead of the panel.
+    - i18n browser.popout.open / browser.popout.failed in en/he/ar/ru. CSS
+      .browser-window-popout + .popout-browser.
+  Files: app/src-tauri/src/{workspace_browser.rs,settings.rs,lib.rs},
+         app/src-tauri/capabilities/browser-popout.json,
+         app/src/{BrowserChrome.tsx,BrowserWindow.tsx,App.tsx,index.tsx,App.css},
+         app/src/components/PopoutBrowser.tsx, app/src/i18n/*.json,
+         docs/vault/{backend-core,backend-panes,backend-wizards,frontend-panes,
+                     frontend-shell}.md + .vault-lock.json
+  Result: NOT verified. No local builds (Rule #17) -- pushed for CI. Needs a live smoke on
+          a RELEASE build: pop out, drag to a 2nd monitor, resize, change ports, open a
+          modal in main (popout must NOT blank), close it, restart (must reopen popped
+          out, same monitor/size), delete the workspace while popped out.
