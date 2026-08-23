@@ -1418,15 +1418,6 @@ async fn dispatch(
                     };
                     crate::emit_agent_run_event(app, pane, snap.0, snap.1, snap.2, snap.3, snap.4);
                 }
-                // A notification is a state signal ONLY. Returning here is
-                // load-bearing, not tidiness: fall through and it builds a
-                // FeedItem, lands in the FeedStore, emits feed:item-added
-                // and can reach a toast — which is exactly the noise
-                // v0.4.4 removed Notification to stop. Do not "simplify"
-                // this away.
-                if subkind == "notification" {
-                    return Ok(json!({ "request_id": req_id, "decision": "passive" }));
-                }
                 match subkind.as_str() {
                     "user-prompt-submit" => {
                         let (started, avg, st, since, seq) = {
@@ -1499,6 +1490,22 @@ async fn dispatch(
                     }
                     _ => {}
                 }
+            }
+
+            // A notification is a state signal ONLY, and this return is
+            // load-bearing rather than tidiness: fall through and it builds
+            // a FeedItem, lands in the FeedStore, emits feed:item-added and
+            // can reach a toast — exactly the noise v0.4.4 removed
+            // Notification to stop. Do not "simplify" this away.
+            //
+            // OUTSIDE the `if let Some(pane)` above, deliberately. Inside it,
+            // a notification whose pane could not be resolved — no live
+            // session for the id, no multiplexer name to recover it from —
+            // would skip the return and reinstate the noise on exactly the
+            // path nobody would think to test. There is nothing useful to do
+            // with an unattributable notification anyway.
+            if subkind == "notification" {
+                return Ok(json!({ "request_id": req_id, "decision": "passive" }));
             }
 
             let blocking = matches!(kind.as_str(), "permission_request");
