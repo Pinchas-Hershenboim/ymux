@@ -315,7 +315,7 @@ wire format and pure-walker invariants.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — high-level overview + ASCII diagram
-- [Modules](docs/MODULES.md) — what each Rust module + frontend file owns
+- [The vault](docs/vault/INDEX.md) — what each module/file does, CI-enforced against the code (replaces the old Modules page)
 - [Protocols](docs/PROTOCOLS.md) — JSON-RPC catalog, framing, HMAC handshake, agent-hook contract
 - [Config](docs/CONFIG.md) — `workspaces.json` / `settings.json` / `known_hosts.json` schemas; env vars
 - [CLI reference](docs/CLI.md) — every `ymux` subcommand with examples and exit codes

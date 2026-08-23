@@ -25,6 +25,66 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-23 - macOS: the site's JS is dead in the in-app Browser (diagnostic build)
+- **Symptom.** On macOS the workspace Browser loads a page and renders HTML/CSS,
+  but the site's own JavaScript never runs. Windows is fine, and
+  `workspace_browser.rs` has no `cfg(target_os)` arms at all - every line of it
+  was written against WebView2 and runs unchanged under WKWebView.
+- **Ruled out before writing any code.** Entitlements: `Entitlements.plist`
+  already carries `allow-jit` + `allow-unsigned-executable-memory` (they landed
+  in the same commit as `hardenedRuntime`, `048f1b2`), and the app's MAIN window
+  is itself a WKWebView that renders - so JavaScriptCore works in-process. CSP:
+  `tauri.conf.json` sets `"csp": null`, and Tauri's CSP does not apply to an
+  external URL regardless. `javascript_disabled` defaults to `false` in
+  tauri-runtime, so it is not a Tauri toggle.
+- **What shipped is a DIAGNOSTIC, not a fix.** Rule #17 means no local mac build,
+  so the probe is baked into the binary: `browser_diag.js` runs at document start
+  and reports through `document.title` -> `on_document_title_changed`, plus an
+  `on_page_load` line and a Rust-side `eval` probe that together separate three
+  hypotheses in one launch (engine dead / site scripts never executed - including
+  an ATS block on cross-origin `http://` script sources / a WebKit-vs-Chromium
+  SyntaxError that is not our bug at all).
+- **Why `document.title` and not the existing `ymux-ticket:` navigation bridge.**
+  Read out of wry 0.54.4: `fetch`/`<img>` cannot reach `on_navigation` (it is the
+  `decidePolicyForNavigationAction` delegate - frame navigations only); an iframe
+  beacon works on mac but is silently dead on Windows (`webview2/mod.rs` hooks
+  `NavigationStarting`, never `FrameNavigationStarting`), which would destroy the
+  Windows control run; and `location.href` is a main-frame navigation fired in
+  the exact window we are trying to measure. Title change is the one hook wry
+  implements symmetrically on both platforms.
+- **The probe is NOT cfg-gated to macOS, deliberately.** If it first executed on
+  the one machine we cannot debug, "no beacon in the log" would be ambiguous
+  between "the JS engine is dead" and "my probe is broken". Windows runs it first
+  as the control.
+- **DECIDED (Yossi, 2026-08-23) - DevTools stays, scoped to the Browser webview,
+  on BOTH platforms, with a button.** He asked for it directly: "so we can see
+  everything including errors." The `.devtools(cfg!(target_os = "macos"))` that
+  shipped first is now `.devtools(true)` - a Windows control run you cannot
+  inspect is worth much less than one you can - plus a
+  `workspace_browser_open_devtools` command and a terminal-icon button next to
+  the Dev Mode toggle in the Browser header. That is the only entry point that
+  exists on Windows (F12 is not wired up for a child webview) and it saves a
+  trip through Safari -> Develop -> machine -> webview on macOS.
+  - **The main window and popouts stay OUT, and this is the line to hold.**
+    Enabling the `devtools` feature makes tauri-runtime-wry read
+    `devtools.unwrap_or(true)`, so every webview is inspectable unless it says
+    otherwise. The two explicit `.devtools(false)` calls in lib.rs are what keep
+    ymux's own UI - which renders live PTY output - out of an inspector, and the
+    deliberate F12 / Ctrl+Shift+I blocker at `App.tsx:3184` stays. Anyone adding
+    a webview later inherits `true` by default: opt it out at the builder.
+  - Scope justification: the Browser child webview shows a tunneled third-party
+    service, not ymux's own surface, so an inspector attached there exposes
+    nothing of ours. On macOS `isInspectable` only means the app shows up in
+    Safari's Develop menu on the same machine, for a user who already enabled
+    that menu - it is not a remote surface.
+- **Also corrected on the way.** The comment at `workspace_browser.rs` claiming no
+  Tauri IPC is injected into the child webview is factually wrong for 2.10.3 -
+  `__TAURI_INTERNALS__` is prepended to every webview including external URLs.
+  What actually denies the tunneled page is the capability layer (`Origin::Remote`
+  vs the `Local` execution context every capability declares). Left as a comment
+  because `capabilities/default.json` is scoped to `windows: ["main"]` and this
+  webview lives in the `main` window - a `remote` context added there would expose
+  it.
 ### 2026-08-23 — TMUX organization: workspace scope, and "attach means attach"
 - **Context:** Two complaints, one root. (1) With project folders now being child workspaces with their own `cwd`, the tmux picker still listed every session on the host — `pane_list_claude_sessions` had been folder-scoped since v4 and the tmux list next to it in the same wizard never was. (2) Opening the connect wizard on a pane already mounted on a tmux session restarted it, or typed the chosen command into whatever it was running.
 - **The mechanism for (2), for the record:** `openNewConnModal` hard-set `ncType("tmux")`; `submitNewConn` sent `persistent:true` + `mode:"claude"`; `build_tmux_attach_script` runs `new-session -A -s <name>` — attach-OR-create — so the pane JOINED the live session at T+900ms, and the smart-connect injection typed `cd … && claude --resume …\r\n` into its foreground at T+1100ms. No `$TMUX` check existed anywhere in the codebase, and the only guard was a comment on `pickTmuxSession` saying it injects nothing.
@@ -241,6 +301,18 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 - **Decided — `PermissionRequest` stays unregistered.** It overlaps entirely with `Notification/permission_prompt` and with our own PreToolUse gate, and it is a *blocking* hook — registering it puts a second synchronous round-trip on the tool-call critical path for zero new information.
 - **Known lie, stated deliberately:** a turn that dies on an API error shows **yellow "your turn"**, because `StopFailure` is not registered. Logged in FOLLOWUPS; it is the largest remaining inaccuracy in v1.
 - **Not decided / deferred:** bumping `manifest.json`'s `hooks.claude-code.version` to 1.5.0. It is required for anyone to be told to re-sync, but doing it in the feature commit banners every current 0.4.5 user before a CLI exists that can honour it. It belongs in the release checklist.
+
+### 2026-08-23 — The vault: MD pages that explain the code, with a CI freshness gate
+- **Context (Yossi):** agents burn tokens re-reading source to answer "what does this do / where does X live". Wanted a "כספת" of MD files explaining the code, read instead of the code — and, crucially, a check that runs **before merging from a branch or a separate worktree** so the vault is never out of date. Note this is unrelated to the Secrets Vault thread still open above; same word, different thing.
+- **What was already there:** `docs/MODULES.md` was exactly this idea, written once and never checked. By 2026-08-23 it claimed `lib.rs (~1760 lines)` against a real 12,475, covered 11 of 153 frontend files, and mentioned none of the 8 crates or the Go server. So the missing half was never the writing — it was anything that notices when the writing stops being true.
+- **Options considered:** (A) diff-only gate, matching the existing server-rebake step — simple, but blind to drift that predates the PR and trips on every typo fix; (B) hash-only — catches everything but can be satisfied by re-stamping the lock without touching the prose; (C) both, with an explicit escape hatch.
+- **Decision (Yossi, 2026-08-23): C, full sweep in round one, enforced in `ci-windows.yml`.** `scripts/vault-check.mjs` hashes every file a page `covers:` against `docs/vault/.vault-lock.json` **and** requires the owning `.md` in the diff. `[vault-skip]` in the PR title skips the diff half with a `::notice::` — included deliberately, because unlike a server rebake a docs gate trips on every typo inside a covered file, and a gate people route around is worse than one they use.
+- **Outcome:** Phase 85 / 85.A / 85.B / 85.C / 85.D. 16 pages, 213 files, 89,874 of 93,998 tracked lines (96%). What is uncovered is generated SDK output, generated ts-rs bindings, test files, and a 2-line vite shim. `docs/MODULES.md` is now a pointer stub. CLAUDE.md Rule #18.
+- **Renumbered to 85 (2026-08-23).** PR #18 landed on main using Phase 84 / 84.A / 84.B for the tabs +
+  traffic-light work while this was in flight. Theirs landed first, so this branch was renumbered on
+  Yossi's explicit instruction — the one force-push it will ever take. Commits before `beb87da` in any
+  clone fetched earlier still say Phase 84; `git log --grep "the vault"` finds this work regardless.
+- **The honest limit:** the gate proves a page *changed*, not that it became *correct*. Nothing automated can prove the latter. The human check is the one in the plan's verification section — answer a real question ("where is the SSH auth chain") from `docs/vault/INDEX.md` alone, without opening a `.rs` file. If you cannot, the page is too thin.
 
 ### 2026-08-23 — Mac builds stay ad-hoc signed: no Apple Developer membership for now
 - **Context:** With no Developer ID secrets on the repo every mac build takes the ad-hoc path — `codesign -dvvv` reports `Signature=adhoc` / `TeamIdentifier=not set`, and `spctl` **rejects** both bundles. The dmgs run locally; a user who *downloads* one is blocked by Gatekeeper with "ymux is damaged and can't be opened", a message that is misleading but is what they will actually see. The workflow's signed path is written and waiting on five secrets, which require a paid membership (~$99/yr).

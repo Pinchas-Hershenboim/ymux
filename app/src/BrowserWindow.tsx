@@ -15,7 +15,15 @@ import {
   ResizeHandles,
   type Geometry,
 } from "./floatingWindow";
-import { IconGlobe, IconClose, IconRefresh, IconUnplug, IconWarning, IconBug } from "./icons";
+import {
+  IconGlobe,
+  IconClose,
+  IconRefresh,
+  IconUnplug,
+  IconWarning,
+  IconBug,
+  IconTerminal,
+} from "./icons";
 import { applyDevMode, loadDevMode, saveDevMode } from "./browserDevMode";
 import { createLogger } from "./logger";
 
@@ -541,6 +549,18 @@ export function BrowserWindow(p: Props) {
     void applyDevMode(ws.id, next);
   };
 
+  // Open the inspector on the page itself. Only this webview is
+  // inspectable — see `.devtools(...)` in workspace_browser.rs. On macOS
+  // this saves a trip through Safari → Develop; on Windows it is the only
+  // way in, since F12 is not wired up for a child webview.
+  const openDevtools = () => {
+    const wsId = p.workspace?.id;
+    if (!wsId) return;
+    invoke<void>("workspace_browser_open_devtools", { workspaceId: wsId }).catch(
+      (e: unknown) => log.warn(`open devtools failed: ${String(e)}`),
+    );
+  };
+
   // Resolve the chosen remote port to a local tunnel port (reusing an
   // existing forward when present, else opening one) and point the
   // Webview at it.
@@ -719,6 +739,16 @@ export function BrowserWindow(p: Props) {
             aria-pressed={devMode()}
           >
             <IconBug size={14} />
+          </button>
+          {/* Web Inspector on the loaded page — console, network, the
+              site's own errors. Enabled only for this webview. */}
+          <button
+            class="bw-port-btn bw-devtools-btn"
+            onClick={openDevtools}
+            title={t("browser.devtools.open")}
+            aria-label={t("browser.devtools.open")}
+          >
+            <IconTerminal size={14} />
           </button>
         </div>
         <div class="browser-window-slot">

@@ -5418,6 +5418,178 @@ DECISIONS THAT MATTER, and why:
 
 Status: 28 frontend tests + 9 Go tests + 4 Rust tests, all written; the
 frontend ones run and pass here. NOT VERIFIED LIVE (Rule 14).
+2026-08-23 | Phase 82.E | macOS: site JS dead in the in-app Browser - DIAGNOSTIC
+Symptom (Yossi): on macOS the workspace Browser renders a page but the site's
+own JavaScript does not run. Windows is fine. No logs, no Web Inspector, and
+Rule #17 means no local mac build - so the diagnosis had to ship in the binary.
+
+RULED OUT BY READING, BEFORE ANY CODE:
+  - Entitlements. Entitlements.plist already has allow-jit +
+    allow-unsigned-executable-memory (same commit as hardenedRuntime, 048f1b2),
+    and the MAIN window is itself a WKWebView that renders - JSC works.
+  - CSP. tauri.conf.json is "csp": null, and Tauri CSP does not touch an
+    external URL anyway.
+  - javascript_disabled. Defaults false in tauri-runtime-2.10.1.
+  - workspace_browser.rs has ZERO cfg(target_os) arms - the WebView2-shaped
+    creation lock, the 3x 0x8007139F retry, the shared user-data-dir, all of it
+    runs unchanged under WKWebView.
+
+WHAT SHIPPED (a probe, not a fix):
+  app/src-tauri/src/browser_diag.js  NEW, 9.1 KB, strict ES5, pure ASCII.
+    Document-start probe. Four beacons: boot (userAgent, readyState, globals
+    baseline), feat (feature + `new Function` syntax probes for the Safari-16
+    level), scripts (per <script src>: scheme/host/loopback/same-origin + a
+    header-only fetch, no-cors for cross-origin - that is what catches an ATS
+    block), report (globals delta, body length, first 3 errors, script resource
+    timings). ES5 is not a style choice: modern syntax here would be a parse
+    error on old WebKit, i.e. the probe would manufacture the evidence for its
+    own bug. Feature probes therefore go through new Function in try/catch.
+  app/src-tauri/src/workspace_browser.rs
+    - initialization_script(DIAG_SCRIPT), on_document_title_changed,
+      on_page_load (Started/Finished, zero JS involved), a Rust-side eval probe
+      300 ms after Finished, and an 8 s watchdog that logs when NOTHING arrives.
+    - handle_diag_title + decode_diag, beside the existing ticket bridge, which
+      is untouched. Beacons are re-serialized through serde_json (raw newlines
+      are legal JSON whitespace - a page could otherwise forge log lines),
+      truncated on a char boundary at 900 bytes, and capped at 24 per webview
+      because the PAGE controls document.title.
+    - 6 unit tests in diag_title_tests: ordinary titles inert, btoa-style
+      padded base64 round-trips through base64_decode, single-line
+      normalisation, non-JSON rejected, char-boundary truncation, budget
+      saturates at zero without wrapping.
+    - Corrected a wrong comment: Tauri 2.10.3 DOES inject __TAURI_INTERNALS__
+      into external-URL webviews. The capability layer (Origin::Remote vs a
+      Local execution context) is what denies the tunneled page, not the
+      absence of injection.
+  app/src-tauri/Cargo.toml, app/src-tauri/src/lib.rs
+    - tauri feature "devtools" added: the ONLY thing that makes wry call
+      setInspectable(true), i.e. the only way Safari can attach in release.
+      DANGER, and the reason the three edits are one unit: tauri-runtime-wry
+      reads it as devtools.unwrap_or(true), so the feature alone would make
+      EVERY webview inspectable - including main, which renders live PTY output
+      (Rule #1). Explicit .devtools(false) on the main and popout builders;
+      only the Browser child opts in, and only on macOS.
+  .github/workflows/build-macos-intel.yml
+    - The verify step's two `|| true` prints became assertions: hardened-runtime
+      flag present, all six entitlement keys == true, app-sandbox absent,
+      Info.plist merged (NSAppSleepDisabled). Closes the plumbing half of the
+      FOLLOWUPS P1 "hardened runtime has never been launched" gap - a build that
+      silently dropped Entitlements.plist used to go green.
+
+WHY document.title AND NOT THE EXISTING ymux-ticket: BRIDGE (read out of
+wry 0.54.4, not assumed):
+  - fetch/<img> cannot reach on_navigation: it is decidePolicyForNavigationAction,
+    frame navigations only. Subresources never touch it.
+  - an iframe beacon works on mac but is silently dead on Windows - webview2
+    hooks add_NavigationStarting, never FrameNavigationStarting. That would have
+    cost us the Windows control run.
+  - location.href is a main-frame navigation fired in the exact window we are
+    trying to measure.
+  - title change is symmetric: KVO on the `title` keypath on mac
+    (document_title_changed_observer.rs:41), add_DocumentTitleChanged on Windows
+    (webview2/mod.rs:623), exposed as WebviewBuilder::on_document_title_changed.
+  The probe restores the original title on the next task, and emits one beacon
+  per task turn because WebKit coalesces title notifications within one task.
+
+NOT cfg-gated to macOS, deliberately: a mac-only probe would first execute on
+the one machine we cannot debug, making "no beacon" ambiguous between "engine
+dead" and "probe broken". Windows is the control run.
+
+STATUS: compiles-untested until CI says otherwise; per Rule #14 the real
+verification is Windows first (capture the baseline), then the Mac. Verdict
+table and the exact user steps are in the plan file and docs/DECISIONS.md.
+
+Files: app/src-tauri/src/browser_diag.js (new), app/src-tauri/src/workspace_browser.rs,
+app/src-tauri/src/lib.rs, app/src-tauri/Cargo.toml,
+.github/workflows/build-macos-intel.yml, docs/DECISIONS.md, FOLLOWUPS.md
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.E | CI result - and the entitlement theory is now DEAD
+--------------------------------------------------------------------------------
+First dispatch (32648472423 / 32648474564) failed on all three legs at the same
+place: one of my own new tests, `beacon_is_normalized_to_a_single_line`, built
+its hostile payload with a real LF inside a JSON string value instead of a `
+`
+escape - an invalid document, so serde rejected it before decode_diag could
+demonstrate anything. Test-only bug; 333 (win) and 321 (mac, per arch) other
+tests passed, which was itself the first proof the new macOS-only arms compile.
+Fixed and re-run.
+
+Second dispatch: ci-windows 32648794352 SUCCESS, build-macos 32648796206 SUCCESS
+on both arm64 and x64.
+
+THE NEW CI ASSERTIONS FIRED AND PASSED ON A REAL BUNDLE. From the arm64 leg:
+
+    CodeDirectory v=20500 size=377645 flags=0x10002(adhoc,runtime) ...
+    OK: hardened runtime flag present
+    OK: com.apple.security.cs.allow-jit = true
+    OK: com.apple.security.cs.allow-unsigned-executable-memory = true
+    OK: com.apple.security.cs.disable-library-validation = true
+    OK: com.apple.security.network.client = true
+    OK: com.apple.security.network.server = true
+    OK: com.apple.security.files.user-selected.read-write = true
+    --- Info.plist merge --- true
+
+That is the hard version of what was only inferred this morning: the hardened
+runtime flag IS set, Entitlements.plist DID land, and all six keys ARE on the
+shipped .app. The JIT entitlement cannot be why the site's JS is dead - and the
+FOLLOWUPS P1 worry that "CI structurally cannot catch a dropped entitlement" is
+now false for the plumbing. What is still unproven is the LAUNCH half: nothing
+has run this bundle on a Mac.
+
+Artifacts on run 32648796206 (90-day expiry): ymux-macos-arm64-dmg (22MB),
+ymux-macos-x64-dmg (23MB), plus the tarred .app of each.
+
+NEXT (needs a human, both halves - Rule #14):
+  1. WINDOWS FIRST, as the control. Open a workspace Browser on the same
+     service, then Settings -> Logs and capture every BROWSERDIAG line. A
+     healthy baseline has p=boot / feat / scripts / report and a NON-ZERO `gd`.
+  2. THEN the Mac. Drag the .app to /Applications (NOT from the mounted dmg -
+     App Translocation), `xattr -dr com.apple.quarantine /Applications/ymux.app`,
+     open the same URL, wait ~10s, copy every BROWSERDIAG and page_load line.
+     Fallback path: ~/Library/Application Support/ymux/debug.log
+  3. Read the verdict table in docs/DECISIONS.md (Open, 2026-08-23).
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.F | DevTools on the Browser webview, both platforms
+--------------------------------------------------------------------------------
+Yossi: "so maybe add DEVTOOLS - so we can see everything including errors."
+
+It was already half there: 82.E enabled the tauri `devtools` feature (the only
+thing that makes wry call setInspectable(true)) but wired it to
+`.devtools(cfg!(target_os = "macos"))` with no UI, so on Windows there was no
+inspector at all and on macOS you had to walk Safari -> Develop -> machine ->
+webview. Both fixed.
+
+  workspace_browser.rs  .devtools(cfg!(target_os = "macos")) -> .devtools(true).
+                        A Windows control run you cannot inspect is worth much
+                        less than one you can, and the whole point of not
+                        cfg-gating the probe was to make Windows the baseline.
+                        New command `workspace_browser_open_devtools`: the
+                        command always exists, only its body is cfg'd, so the
+                        frontend needs no knowledge of the build shape.
+  lib.rs                registered in generate_handler!.
+  BrowserWindow.tsx     `openDevtools()` + a terminal-icon button beside the
+                        Dev Mode bug toggle. No lit state - the inspector is its
+                        own window, there is nothing to advertise.
+  App.css               .bw-devtools-btn (spacing only).
+  i18n en/he/ar/ru      "browser.devtools.open".
+
+SCOPE HELD DELIBERATELY: main window and popouts keep their explicit
+.devtools(false), and the F12 / Ctrl+Shift+I blocker at App.tsx:3184 stays.
+The feature makes tauri read devtools.unwrap_or(true), so every webview is
+inspectable unless it opts out - that is the trap, and those two calls are the
+whole guard. A new webview added later inherits `true`.
+
+Justification for the Browser being the exception: it renders a tunneled
+third-party service, not ymux's own surface. An inspector there exposes nothing
+of ours, and on macOS isInspectable only means the app appears in Safari's
+Develop menu on the same machine.
+
+STATUS: compiles-untested until CI. This does NOT replace the 82.E beacons -
+devtools is the live console when you are sitting in front of the machine; the
+beacons are what work when you are not, which is the actual situation with the
+Mac.
 
 2026-08-23 | Phase 84 | panes as tabs (84.A) + Claude traffic light (84.B)
 branch claude/pane-tabs-status-indicator-57b38c | PR #18
@@ -5645,6 +5817,85 @@ BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
 STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
+2026-08-23 — Phase 85 (+85.A/B/C/D): the vault + its CI freshness gate
+
+TASK
+Yossi: add a "כספת" of MD files explaining the code so agents stop burning
+tokens re-reading source — and make it MANDATORY to diff/verify the vault is
+up to date before merging from a branch or a separate worktree.
+
+WHAT WAS ALREADY THERE (and why it wasn't enough)
+docs/MODULES.md is the same idea, written once in 2025 and never checked. On
+2026-08-23 it claimed lib.rs (~1760 lines) / rpc_server.rs (~487) /
+remote_bootstrap.rs (~285) against real values of 12,475 / 2,559 / 83. It
+covered 11 of 153 frontend files, none of the 8 ymux-* crates, none of the Go
+server. The writing was fine; nothing existed to notice when it stopped being
+true. That is the whole problem this phase solves.
+
+FILES
+  NEW  scripts/vault-check.mjs                    (230 lines, zero deps)
+  NEW  docs/vault/INDEX.md + 15 area pages        (~3,000 lines of prose)
+  NEW  docs/vault/.vault-lock.json                (machine-owned, per-file sha256)
+  MOD  .github/workflows/ci-windows.yml           (+1 step, before the cargo work)
+  MOD  CLAUDE.md                                  (vault first under "Where to start"; Rule #18)
+  MOD  docs/CONTRIBUTING.md                       (reading order; § Updating the vault)
+  MOD  docs/MODULES.md                            (replaced by a pointer stub)
+  MOD  docs/DECISIONS.md                          (Decided entry)
+  MOD  README.md                                  (doc index)
+
+THE GATE — two checks, both must pass
+  1. HASH  sha256 every file a page `covers:` vs .vault-lock.json. Catches drift
+           however it arrived: an old commit, a merge, another worktree.
+  2. DIFF  (--diff-base <sha>) if a covered file moved in this change, the
+           owning .md must have moved too. The hash check alone can be satisfied
+           by running --write and changing nothing; this one cannot.
+  Escape:  [vault-skip] in the PR title or head commit → skips the DIFF half
+           only, with a ::notice:: in the log. Included on purpose: unlike the
+           server-rebake gate, a docs gate trips on every typo fix inside a
+           covered file, and a gate people route around is worse than one they
+           use. The PR title/commit message reach bash via `env:`, never `${{ }}`
+           inline — attacker-controlled text on a fork PR.
+  Local:   `node scripts/vault-check.mjs` is the pre-merge command. No deps, so
+           it runs on a fresh checkout, which is exactly when it matters.
+
+COVERAGE
+  88,558 of 92,568 tracked .rs/.ts/.tsx/.go/.mjs lines = 96%, 210 files, 16 pages.
+  Uncovered, by design: generated SDK (1,706), generated ts-rs bindings (1,063),
+  test files (1,239), app/src/vite-env.d.ts (2). A test edit must not trip the
+  gate, and where the tests ARE the spec (the four RTL modules) the vault says
+  to read them rather than paraphrase them.
+
+RESULT — verified locally, all four failure modes exercised
+  clean tree                       → exit 0, prints coverage
+  append a comment to lib.rs       → exit 1, names
+                                     "app/src-tauri/src/lib.rs (changed since the
+                                     vault file was written)" under backend-core.md
+  commit that + --diff-base HEAD~1 → exit 1 on BOTH checks, with the "update it,
+                                     run --write, commit both — or [vault-skip]"
+                                     message and `changed: app/src-tauri/src/lib.rs`
+  restore + --write                → exit 0
+
+NOT YET VERIFIED (Rule #14)
+The CI step itself has not run — the [vault-skip] branch and the base-sha
+handling are shell logic that has only been reasoned about, not executed. Push
+and read the ci-windows run before treating this as done.
+
+The gate proves a page CHANGED, not that it became CORRECT. Nothing automated
+can prove the latter. The acceptance test is human: answer a real question
+("where is the SSH auth chain", "what writes workspaces.json") from
+docs/vault/INDEX.md alone without opening a .rs file. If you cannot, the page
+is too thin — fix the page, not the gate.
+
+--------------------------------------------------------------------------------
+2026-08-23 (same session) — merge origin/main: THE GATE'S FIRST LIVE CATCH
+--------------------------------------------------------------------------------
+
+PR #20 came back CONFLICTING and with ZERO checks. Both had one cause: PR #19
+(node20 deprecation) landed on main mid-session, touching ci-windows.yml,
+CLAUDE.md, PROGRESS.txt and app/package.json — the same files this branch
+touched. GitHub could not compute the merge ref, so no `pull_request` workflow
+ever triggered. Exactly the CLAUDE.md "git fetch before every merge" scenario;
+noticed here only because the PR's check list was empty.
 
 --------------------------------------------------------------------------------
 2026-08-23 | Phase 84.C/D/E - renumbered from 84/84.A/84.B (collision)
@@ -5666,6 +5917,125 @@ to 85. Worth knowing when reading the log: 84.C-E are NOT follow-ups to 84/84.A/
 
 The entries above this note still say what they always said; only the phase
 labels moved. Nothing about the pane-tabs entries was touched.
+Conflicts resolved:
+  ci-windows.yml  keep the vault gate step, take main's SHA-pinned
+                  dtolnay/rust-toolchain block that replaced `@stable`
+  PROGRESS.txt    both entries kept, main's first
+  CLAUDE.md       auto-merged clean; Rule #18 + the "Where to start" line intact
+
+THEN — and this is the point — `node scripts/vault-check.mjs` on the merged tree
+came back RED:
+
+  ERROR: docs/vault/build-glue.md is stale — the code it explains moved:
+    ~ app/package.json (changed since the vault file was written)
+
+main had added `"engines": { "node": ">=22" }` and moved CI to node 24 /
+setup-node@v7. Nothing in this branch touched package.json; the drift arrived
+through the merge. That is precisely the case a diff-only gate cannot see and
+the reason the hash half exists — the FIRST thing it caught was real, and it
+caught it before the merge landed rather than months later like MODULES.md.
+
+build-glue.md now records the engines pin, the node-24 runners and the
+SHA-pinning of third-party actions. Re-stamped; gate green; 96% coverage
+unchanged.
+
+--------------------------------------------------------------------------------
+2026-08-23 (same session) — merge PR #18: the gate's second catch, 8 files
+--------------------------------------------------------------------------------
+
+CI-monitor flagged PR #20 as conflicting again. PR #18 (panes as tabs + the
+per-pane Claude traffic light) had landed on main — 14 commits, touching 8
+files this vault covers plus 3 new frontend files.
+
+Conflicts (docs only): docs/DECISIONS.md kept both Decided entries, theirs
+first. docs/MODULES.md kept the stub — but PR #18 had ADDED sections to the old
+MODULES.md describing PaneTabs.tsx and AgentLight.tsx/paneAgentState.ts, so
+that content was moved into the vault rather than dropped. That is the merge
+where the stub could have quietly eaten a colleague's documentation, and the
+conflict is what forced the question.
+
+The gate then named all eight drifted files, and each was updated for real —
+NOT re-stamped:
+
+  backend-core.md    PaneAgentState / PaneAgentSnapshot, apply_hook as the
+                     single owner of the transition table, the pane:agent-run
+                     event and its (started, avg, state, since, seq) payload,
+                     workspace_set_tabs_mode
+  backend-rpc.md     Notification is a registered hook again, reversing half of
+                     the v0.4.4 decision; pre-tool-use + notification fold and
+                     emit on their own path because they carry no turn timing
+  cli.md             Notification back at hooks v1.5.0; the dead-hook check
+                     (ymux_entry_is_runnable) and why it is deliberately narrow
+  crates.md          Workspace.tabs_mode, and why it is a flag and not a
+                     LayoutNode::Tabs variant (~44 non-exhaustive matches, lossy
+                     both ways, unreadable by an older ymux)
+  frontend-shell.md  new section for PaneTabs / paneAgentState / AgentLight;
+                     line counts refreshed; pane:agent-run added to the App.tsx
+                     event list; the three new files added to `covers:`
+
+Coverage 89,874 / 93,998 (96%), 213 files. Gate green.
+
+PHASE NUMBER COLLISION — RESOLVED. PR #18 also numbered itself Phase 84 / 84.A /
+84.B, which is what this branch used, and CLAUDE.md says phase numbers are
+stable and never reused. Theirs landed on main first, so this work was
+renumbered to Phase 85 / 85.A / 85.B / 85.C / 85.D on Yossi's explicit
+instruction. That required rewriting the commit subjects and force-pushing the
+branch — the one exception to Rule #15 here, taken deliberately, on a branch
+nobody else has based work on. Content was byte-identical before and after
+(`git diff vault-pre-renumber HEAD` empty); only messages changed. Anyone who
+fetched this branch before beb87da has the old subjects.
+
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.F | CI green after the merge - artifacts ready for the Mac
+--------------------------------------------------------------------------------
+ci-windows 32652194025 SUCCESS, build-macos 32652195528 SUCCESS on arm64 and x64,
+against the tree with origin/main's tmux workspace-scope (PR #17) and node20 CI
+bump (PR #19) merged in. The entitlement assertions fired again on the rebuilt
+bundle - flags=0x10002(adhoc,runtime) plus all six keys - so the node20 bump did
+not disturb them.
+
+An earlier dispatch (32651888559 / 32651889811) ran the same 82.F code before the
+merge: ci-windows SUCCESS, build-macos CANCELLED. The cancellation was this
+workflow's own `concurrency: cancel-in-progress` firing when the post-merge
+dispatch landed on the same ref - not a failure.
+
+ARTIFACTS on run 32652195528 (90-day expiry):
+  ymux-macos-arm64-dmg  22MB      ymux-macos-x64-dmg  23MB
+  ymux-macos-arm64-app  20MB      ymux-macos-x64-app  21MB
+
+The branch claude/ymux-js-macos-issue-98d625 is pushed and even with main. No PR
+opened - Yossi's call.
+
+STILL UNDONE, and it is the whole point (Rule #14): nobody has RUN this. Both
+halves need a human, in this order:
+  1. Windows, as the control. Open the Browser on a service, capture every
+     BROWSERDIAG line from Settings -> Logs. Healthy = p=boot/feat/scripts/report
+     with a non-zero `gd`. The new terminal-icon button next to Dev Mode should
+     open the inspector on the page.
+  2. The Mac. Drag the .app to /Applications (not from the mounted dmg - App
+     Translocation), xattr -dr com.apple.quarantine, same URL, wait ~10s, copy
+     every BROWSERDIAG and page_load line. Verdict table: docs/DECISIONS.md,
+     Open section, the 82.E entry.
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.F | merge: origin/main x14 (Phase 84 pane tabs + agent light)
+--------------------------------------------------------------------------------
+One conflict, FOLLOWUPS.md - the same shape as the previous two merges on this
+branch: two sessions appending to the head of the Open list. Both sets kept
+(82.E/F's 2, Phase 84's 5). Everything else auto-merged.
+
+Verified after the merge rather than assumed, because Phase 84 touched several of
+the same files: all four locales parse at 1125 keys and still carry
+browser.devtools.open; .devtools(true) on the Browser, both .devtools(false)
+guards, the open_devtools registration, initialization_script(DIAG_SCRIPT),
+browser_diag.js and the three mac CI assertions are all present.
+
+Checked specifically because it is the trap this branch introduced: the tree
+still has exactly THREE webview builders (lib.rs 10461 popout, lib.rs 10614 main,
+workspace_browser.rs 369 Browser) and each sets devtools explicitly. Phase 84's
+tab strip and traffic light are ordinary frontend inside the main window, so they
+inherited nothing. Any FOURTH webview would silently be inspectable.
 --- CI result, same day ---
 PR #19. BOTH gates green on the first run, no retries:
   ci-windows   32650843831  success  6m21s
