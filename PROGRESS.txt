@@ -6128,3 +6128,59 @@ path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
 
+
+================================================================================
+2026-08-23 | Both P0s closed; FOLLOWUPS split into open list + archive
+Files: FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md (new), CLAUDE.md, PROGRESS.txt
+
+MID-SESSION INCIDENT, worth more than the change itself: another session's
+worktree sweep deleted this session's worktree out from under it while it was
+running. The directory emptied, git status went silent, and origin/main had
+moved 41 commits. Nothing was lost ONLY because the previous phase had been
+committed immediately (a514e58) - the commit survived in the shared object
+store on yos/folow-ufp-review-fbbfda and was recovered by creating a fresh
+worktree at .claude/worktrees/followups-archive-pass and merging origin/main.
+This is the second recorded instance of the same hazard. Commit per phase.
+
+The merge had two conflicts, both in append-only files:
+  FOLLOWUPS.md - the other session had closed the SAME Node 20 entry, with a
+    fuller note (it did the work), and added an open entry beside it. Took
+    theirs outright rather than keeping the weaker note.
+  PROGRESS.txt - not a choice between versions, two sessions appending at
+    once. Kept both, theirs first.
+
+P0 #1 (tauri.conf.json - must be cut as 0.5.0): closed as a DUPLICATE, not as
+work done. Verified in tree: version 0.5.0, identifier com.ymux.app,
+productName ymux. The requirement lives as blockers 0.1 + 0.2 in
+docs/RELEASE-0.5.0-CHECKLIST.md, carrying both the never-cut-as-0.4.6 rule and
+the release-note ordering. The residual risk is human and belongs in the
+checklist, which is read at cut time; FOLLOWUPS is not.
+
+P0 #2 (tmux sessions vanish server-side): MOVED, NOT SOLVED, and the entry now
+says so in its first six words. Still no mechanism, still no fix. It leaves
+FOLLOWUPS because that file lists defects with known causes; this is an open
+investigation and it already lives in full under docs/DECISIONS.md section
+Open, which IS scanned at session start. Next step is unchanged and is data,
+not code: journalctl for the OOM killer, and id/TMUX_TMPDIR/ls of the tmux
+socket dir, both on the server.
+
+THE ARCHIVE. FOLLOWUPS.md had accumulated 28 closed entries among 72 open ones,
+some closed weeks ago, plus a "## Done" section that was not where closed items
+actually went - one OPEN entry was misfiled under it and has been moved back.
+Split by a script, not by hand, and verified programmatically: 100 entries
+before, 72 open + 28 archived after, zero lost, zero in both files, zero
+open entries in the archive, zero closed entries left in the live list.
+Continuation lines were the trap - one entry carries a 4-row ASCII table and
+another has a blank line INSIDE it (a session name containing a newline), so
+blocks are cut at entry boundaries rather than at blank lines. Both stayed
+attached to their open entries.
+
+CLAUDE.md updated in the same commit: FOLLOWUPS holds open items only, closed
+ones move to the archive WITH a closing note (not deleted, not left as [x]),
+the archive is not read at session start so nothing actionable may be parked
+there, and it is now step 2 in the past-work lookup order. Also recorded the
+rule that produced two rotten entries this session: cite an entry by its text,
+never by FOLLOWUPS.md:NN, because the numbers shift on every add or archive.
+
+STATUS: documentation only, no code touched, nothing to build. Open counts
+after the pass: P0 0, P1 18, P2 29, P3 25.
