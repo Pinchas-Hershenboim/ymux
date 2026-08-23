@@ -48,7 +48,9 @@ interface Props {
 
 export function CreateWorkspaceModal(p: Props) {
   const [name, setName] = createSignal("");
-  const [type, setType] = createSignal<"local" | "ssh" | "wsl">("local");
+  // 2026-08-19: WSL removed — native Windows panes get persistence from
+  // zellij, which was the only thing WSL was here for.
+  const [type, setType] = createSignal<"local" | "ssh">("local");
   const [shell, setShell] = createSignal("");
   const ssh = createSshFormState();
   // Phase 36 (#2.2): auto port-forward toggle (edit mode only).
@@ -200,9 +202,10 @@ export function CreateWorkspaceModal(p: Props) {
         setType("local");
         setShell(c.shell || "");
       } else if (c?.type === "wsl") {
-        // Phase 80: WSL workspaces expose no connection editing here —
-        // name/identity/extras only (distro changes = recreate).
-        setType("wsl");
+        // A workspace opened before load_from_disk's migration rewrote it
+        // (or one hand-edited back in). Show it as local — which is what it
+        // becomes — rather than falling through to a blank editor.
+        setType("local");
       } else if (c?.type === "ssh") {
         setType("ssh");
         ssh.setHost(c.host);
@@ -397,8 +400,6 @@ export function CreateWorkspaceModal(p: Props) {
             <select value={type()} disabled>
               <option value="local">{t("ws.create.field.type.local")}</option>
               <option value="ssh">{t("ws.create.field.type.ssh")}</option>
-              {/* Phase 80: WSL is a proper noun — no i18n needed. */}
-              <option value="wsl">WSL (tmux)</option>
             </select>
           </label>
 

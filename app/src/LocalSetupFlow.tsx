@@ -6,20 +6,20 @@ import { isWindows } from "./platform";
 import { IconClose, IconCheck, IconCircle } from "./icons";
 import type { ProvisioningError, StepProgress, RunHandle } from "./provisioningTypes";
 
-// Phase 80 (unified setup wizard): "local → new" — the smart local
-// (Windows) setup flow. Detects what's installed (git/node/Claude Code/
-// codex/gemini/WSL+tmux), offers to install what's missing (winget /
-// official installers / npm -g), installs ymux hooks for local Claude
-// Code, and optionally provisions a PERSISTENT local environment: tmux
-// inside WSL + the ymux Linux CLI, then creates a `wsl` workspace whose
-// panes survive app restarts (NOT Windows restarts — the copy says so).
+// Phase 80 (unified setup wizard): "local → new" — the smart local setup
+// flow. Detects what's installed (git/node/Claude Code/codex/gemini plus
+// the platform's multiplexer), offers to install what's missing (winget /
+// Homebrew / official installers / npm -g), installs ymux hooks for local
+// Claude Code, and finishes by creating a local workspace to land in.
 //
-// macOS port: same three screens, branched on `isWindows()`. On mac the
-// inspect's `winget` slot carries Homebrew, the hooks checkbox is hidden
-// (the winmux CLI isn't bundled for mac yet), and the WSL group becomes a
-// two-step local tmux chain (`MAC_CHAIN`) that ends in a plain local
-// workspace. No username / elevation / reboot UI — preflight never asks
-// for elevation there. The Windows path is untouched.
+// Persistence is per platform, and that is the whole branch. On Windows it
+// comes from zellij, which is an ordinary tool row — WSL left this wizard
+// on 2026-08-19, and `finalize_local_workspace` builds a native local
+// workspace instead. On macOS (Phase 82) it is a two-step Homebrew tmux
+// chain (`MAC_CHAIN`) shown as its own group; the inspect's `winget` slot
+// carries Homebrew there, the hooks checkbox is hidden (the CLI isn't
+// bundled for mac yet), and there is no username / elevation / reboot UI
+// because preflight never asks for elevation off Windows.
 //
 // Backend contract (src-tauri/src/local_setup.rs): commands
 // `local_setup_inspect` / `local_setup_start`, events
@@ -45,10 +45,14 @@ interface Props {
 // standalone script on both platforms.
 const TOOL_ROWS: {
   step: string;
-  tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini">;
+  tool: keyof Pick<LocalSetupInspect, "git" | "node" | "claude" | "codex" | "gemini" | "zellij">;
   needsWinget: boolean;
   needsNode: boolean;
 }[] = [
+  // 2026-08-19: session persistence for native Windows panes — the job WSL
+  // used to do. First in the list because it is the one that makes a local
+  // workspace survive closing the app.
+  { step: "InstallZellij", tool: "zellij", needsWinget: true, needsNode: false },
   { step: "InstallGit", tool: "git", needsWinget: true, needsNode: false },
   { step: "InstallNodejs", tool: "node", needsWinget: true, needsNode: false },
   { step: "InstallClaudeCode", tool: "claude", needsWinget: false, needsNode: false },
@@ -56,25 +60,9 @@ const TOOL_ROWS: {
   { step: "InstallGemini", tool: "gemini", needsWinget: false, needsNode: true },
 ];
 
-// The WSL persistence chain, in execution order. The flow sends only the
-// steps the inspect says are actually needed; the backend additionally
-// skips no-op steps, so this is belt-and-suspenders.
-const WSL_CHAIN = [
-  "InstallWsl",
-  "CreateWslUser",
-  "EnsureDistroReady",
-  "InstallTmuxInWsl",
-  "DeployYmuxCliToWsl",
-  "DeployTmuxConfToWsl",
-  // Before the hooks step, which registers ymux's hooks with Claude:
-  // installing hooks for an agent that is not there produced a green run
-  // and then `claude: command not found` in the first pane.
-  "InstallClaudeCodeInWsl",
-  "InstallHooksInWsl",
-] as const;
 
 // The macOS persistence chain: tmux via Homebrew + the winmux tmux.conf,
-// then a plain local workspace. Same skip rule as WSL_CHAIN — the flow
+// then a plain local workspace. Same skip rule the WSL chain used — the flow
 // only sends what the inspect says is missing.
 const MAC_CHAIN = ["InstallTmuxLocal", "DeployTmuxConfLocal"] as const;
 
@@ -101,9 +89,15 @@ export function LocalSetupFlow(p: Props) {
   const [checkedTools, setCheckedTools] = createSignal<Set<string>>(new Set());
   const [installLocalHooks, setInstallLocalHooks] = createSignal(true);
   // The WSL persistent-environment group (tmux-backed panes).
-  const [wslGroup, setWslGroup] = createSignal(true);
   const [wslUsername, setWslUsername] = createSignal("");
-  const [workspaceName, setWorkspaceName] = createSignal(mac ? "tmux" : "WSL");
+  // The persistence group. Windows gets persistence from the zellij tool
+  // row instead, so this is the macOS tmux chain only.
+  const [wslGroup, setWslGroup] = createSignal(true);
+  // 2026-08-19: the wizard finishes by creating a native local workspace
+  // (it used to create a WSL one). Zellij gives it the persistence that was
+  // the only reason to put a local pane inside a distro; on macOS that is
+  // what the tmux chain below is for.
+  const [workspaceName, setWorkspaceName] = createSignal(mac ? "tmux" : "Local");
   const [workspaceCwd, setWorkspaceCwd] = createSignal("");
 
   // Execute-step state (mirrors ProvisionNewServerFlow).
@@ -197,18 +191,6 @@ export function LocalSetupFlow(p: Props) {
         if (s === "DeployTmuxConfLocal" && r.mac?.tmux_conf_ok) continue;
         steps.push(s);
       }
-    } else if (wslGroup() && r) {
-      for (const s of WSL_CHAIN) {
-        if (s === "InstallWsl" && r.wsl.wsl_ready && r.wsl.distros.length > 0) continue;
-        if (s === "InstallTmuxInWsl" && r.wsl.tmux_installed === true) continue;
-        if (s === "DeployYmuxCliToWsl" && r.wsl.ymux_cli_state === "ok") continue;
-        if (s === "DeployTmuxConfToWsl" && r.wsl.tmux_conf_ok === true) continue;
-        // claude_inside is `command -v claude` inside the distro, not the
-        // presence of ~/.claude — that directory is created by the hooks
-        // step itself, so the old probe would have skipped this forever.
-        if (s === "InstallClaudeCodeInWsl" && r.wsl.claude_inside === true) continue;
-        steps.push(s);
-      }
     }
     return steps;
   };
@@ -242,7 +224,7 @@ export function LocalSetupFlow(p: Props) {
           distro: mac ? null : (inspect()?.wsl.default_distro ?? null),
           wsl_username: mac ? null : (wslUsername().trim() || null),
           workspace_name: workspaceName().trim() || null,
-          create_workspace: wslGroup(),
+          create_workspace: true,
           workspace_cwd: workspaceCwd().trim() || null,
         },
       });
@@ -278,20 +260,12 @@ export function LocalSetupFlow(p: Props) {
       ? `${t("localSetup.status.detected")}${ts.version ? ` · ${ts.version}` : ""}`
       : t("localSetup.status.missing");
 
-  const wslStatusSummary = createMemo(() => {
-    const r = inspect();
-    if (!r) return "";
-    if (mac) {
-      const m = r.mac;
-      if (!m || !m.tmux.present) return t("localSetup.mac.tmux.none");
-      const ver = m.tmux.version ? ` ${m.tmux.version}` : "";
-      return `tmux ✓${ver} · ${m.tmux_conf_ok ? "conf ✓" : "conf ✗"}`;
-    }
-    if (!r.wsl.wsl_ready || r.wsl.distros.length === 0) return t("localSetup.wsl.none");
-    const d = r.wsl.default_distro ?? r.wsl.distros[0];
-    const tmux = r.wsl.tmux_installed ? "tmux ✓" : "tmux ✗";
-    const cli = r.wsl.ymux_cli_state === "ok" ? "ymux ✓" : "ymux ✗";
-    return `${d} · ${tmux} · ${cli}`;
+  // mac only: on Windows there is no persistence group to summarise.
+  const macStatusSummary = createMemo(() => {
+    const m = inspect()?.mac;
+    if (!m || !m.tmux.present) return t("localSetup.mac.tmux.none");
+    const ver = m.tmux.version ? ` ${m.tmux.version}` : "";
+    return `tmux ✓${ver} · ${m.tmux_conf_ok ? "conf ✓" : "conf ✗"}`;
   });
 
   return (
@@ -376,61 +350,47 @@ export function LocalSetupFlow(p: Props) {
                 </Show>
               </div>
 
-              <h4 class="provisioning-h4">
-                {t(mac ? "localSetup.mac.tmux.title" : "localSetup.wsl.title")}
-              </h4>
+              {/* 2026-08-19: the wizard finishes by creating a workspace to
+                  land in. This block replaces the WSL group's name/cwd
+                  inputs — same job, native local target. */}
+              <h4 class="provisioning-h4">{t("localSetup.workspace.title")}</h4>
               <label class="provisioning-step-row">
+                <span style="min-width:7rem">{t("localSetup.workspace.name")}</span>
                 <input
-                  type="checkbox"
-                  checked={wslGroup()}
-                  disabled={mac && !r().winget.present && !r().mac?.tmux.present}
-                  onChange={() => setWslGroup(!wslGroup())}
+                  type="text"
+                  value={workspaceName()}
+                  onInput={(e) => setWorkspaceName(e.currentTarget.value)}
                 />
-                <span>
-                  {t(mac ? "localSetup.mac.tmux.group" : "localSetup.wsl.group")}
-                  <span class="provisioning-mode-hint"> — {wslStatusSummary()}</span>
-                </span>
               </label>
-              <p class="settings-hint">
-                {t(mac ? "localSetup.mac.persistence_scope" : "localSetup.persistence_scope")}
-              </p>
-              <Show when={wslGroup()}>
-                {/* Stated up front: without an elevated token the WSL
-                    feature enable cannot happen silently. */}
-                <Show when={preflight()?.needs_elevation}>
-                  <div class="prov-error-card">
-                    <div class="prov-error-title">
-                      {t("localSetup.preflight.admin.title")}
-                    </div>
-                    <p class="prov-error-body">{t("localSetup.preflight.admin.body")}</p>
-                  </div>
-                </Show>
-                <Show when={!mac && (!r().wsl.wsl_ready || r().wsl.distros.length === 0)}>
-                  <p class="settings-hint">{t("localSetup.hint.uac")}</p>
-                  <label>
-                    <span>{t("localSetup.field.wsl_username")}</span>
-                    <input
-                      value={wslUsername()}
-                      onInput={(e) => setWslUsername(e.currentTarget.value)}
-                      placeholder={t("localSetup.field.wsl_username.placeholder")}
-                    />
-                  </label>
-                </Show>
-                <label>
-                  <span>{t("provisioning.field.workspace_name")}</span>
+              <label class="provisioning-step-row">
+                <span style="min-width:7rem">{t("localSetup.workspace.cwd")}</span>
+                <input
+                  type="text"
+                  placeholder="C:\path\to\project"
+                  value={workspaceCwd()}
+                  onInput={(e) => setWorkspaceCwd(e.currentTarget.value)}
+                />
+              </label>
+              <p class="settings-hint">{t("localSetup.workspace.hint")}</p>
+
+              {/* Phase 82: macOS has no zellij, so tmux is what makes a
+                  local pane survive a restart. On Windows that job belongs
+                  to the zellij tool row, which is why this is mac-only. */}
+              <Show when={mac}>
+                <h4 class="provisioning-h4">{t("localSetup.mac.tmux.title")}</h4>
+                <label class="provisioning-step-row">
                   <input
-                    value={workspaceName()}
-                    onInput={(e) => setWorkspaceName(e.currentTarget.value)}
+                    type="checkbox"
+                    checked={wslGroup()}
+                    disabled={!r().winget.present && !r().mac?.tmux.present}
+                    onChange={() => setWslGroup(!wslGroup())}
                   />
+                  <span>
+                    {t("localSetup.mac.tmux.group")}
+                    <span class="provisioning-mode-hint"> — {macStatusSummary()}</span>
+                  </span>
                 </label>
-                <label>
-                  <span>{t("ws.create.cwd.label")}</span>
-                  <input
-                    value={workspaceCwd()}
-                    onInput={(e) => setWorkspaceCwd(e.currentTarget.value)}
-                    placeholder={t("ws.create.cwd.placeholder")}
-                  />
-                </label>
+                <p class="settings-hint">{t("localSetup.mac.persistence_scope")}</p>
               </Show>
 
               {/* The "this needs admin, continue?" gate. Replaces the
@@ -641,7 +601,9 @@ export function LocalSetupFlow(p: Props) {
                 })}
               </p>
             </Show>
-            <Show when={!result()!.wsl_chain_ok}>
+            {/* 2026-08-19: keyed on whether a workspace actually came back,
+                not on the (now removed) WSL chain. */}
+            <Show when={!result()!.workspace_id}>
               <p class="prov-error-hint">
                 {t(
                   mac

@@ -1,0 +1,80 @@
+# Keeps the release-profile Cargo cache alive ON MAIN, so that build-windows.yml
+# can restore it from any branch.
+#
+# Why this exists: GitHub scopes cache *reads* to the current branch plus the
+# repository's default branch. build-windows.yml only runs on workflow_dispatch
+# and v* tags, so it never writes a cache main can hand out, and a build
+# dispatched from a fresh branch compiles all ~740 lockfile packages from
+# scratch. Measured, same workflow, same week:
+#
+#   run 32187049792  "No cache found."            813s in "Build release bundles"
+#   run 32193464505  restored ~696 MB             420s in "Build release bundles"
+#
+# ~6.5 minutes, entirely cold-cache. This job pays that cost once when the
+# lockfile moves (and twice a week, to beat GitHub's 7-day eviction of unused
+# caches) instead of on every release build.
+#
+# It deliberately builds `-p app --lib` and nothing else: rust-cache prunes
+# workspace-member artifacts before saving, so only the dependency graph is
+# worth warming. No exe link, no bundlers.
+name: warm-rust-cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/src-tauri/Cargo.lock"
+      - "app/src-tauri/Cargo.toml"
+      - ".github/workflows/warm-rust-cache.yml"
+  schedule:
+    # Mondays and Thursdays 05:00 UTC -- gaps stay under the 7-day eviction.
+    - cron: "0 5 * * 1,4"
+  workflow_dispatch:
+
+concurrency:
+  group: warm-rust-cache
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # See ci-windows.yml: pwsh rewrites PSModulePath for everything it
+      # spawns and a Windows PowerShell 5.1 further down the chain then cannot
+      # autoload Get-FileHash.
+      PSModulePath: C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      # Same shared-key as build-windows.yml -- that is the whole point.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          shared-key: windows-release
+
+      - name: Install frontend deps
+        working-directory: app
+        run: npm ci
+
+      # tauri_build validates that every path in bundle.resources exists, so
+      # the CLI binaries have to be staged before any cargo step touches the
+      # app crate. shell: cmd for the PSModulePath reason above.
+      - name: Stage CLI resources
+        working-directory: app
+        shell: cmd
+        run: npm run build:linux-cli
+
+      - name: Warm release dependency graph
+        working-directory: app/src-tauri
+        run: cargo build --release -p app --lib

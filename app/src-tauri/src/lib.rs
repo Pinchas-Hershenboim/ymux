@@ -576,6 +576,55 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     Ok(())
 }
 
+/// 2026-08-19: rewrite every `Connection::Wsl` to `Connection::Local`.
+///
+/// WSL existed here only to give local panes tmux persistence; zellij gives
+/// native Windows panes the same thing, so the distro is dead weight. The
+/// workspace keeps its name, cwd, layout, panes and everything else — only
+/// the transport changes, and the panes come back as native Windows shells.
+///
+/// Walks pane connections too, not just the workspace's: a pane can carry
+/// its own `Connection` that overrides the workspace's (see `paneCaps` and
+/// `find_pane_connection`), so migrating only the workspace would leave a
+/// `wsl` pane inside a `local` workspace with nothing able to spawn it.
+///
+/// Returns how many connections were rewritten, so the caller persists.
+fn migrate_wsl_workspaces(file: &mut WorkspacesFile) -> usize {
+    fn migrate_layout(node: &mut LayoutNode) -> usize {
+        match node {
+            LayoutNode::Pane { connection, .. } => {
+                if matches!(connection, Some(Connection::Wsl { .. })) {
+                    *connection = Some(Connection::Local { shell: None });
+                    1
+                } else {
+                    0
+                }
+            }
+            LayoutNode::Split { first, second, .. } => {
+                migrate_layout(first) + migrate_layout(second)
+            }
+        }
+    }
+
+    let mut n = 0;
+    for ws in file.workspaces.iter_mut() {
+        if matches!(ws.connection, Some(Connection::Wsl { .. })) {
+            ws.connection = Some(Connection::Local { shell: None });
+            n += 1;
+        }
+        if let Some(layout) = ws.layout.as_mut() {
+            n += migrate_layout(layout);
+        }
+    }
+    if n > 0 {
+        log_info(
+            "WORKSPACE",
+            &format!("migrated {n} WSL connection(s) to local — WSL support was removed"),
+        );
+    }
+    n
+}
+
 fn load_from_disk() -> Result<WorkspacesFile, String> {
     let path = config_path()?;
     log_debug("WORKSPACE", &format!("load_from_disk: path={:?} exists={}", path, path.exists()));
@@ -611,6 +660,12 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
     ));
 
     let mut migrated = false;
+    // 2026-08-19: WSL workspaces become plain local ones. Runs FIRST so no
+    // later pass has to know about a connection kind that no longer has a
+    // spawn path behind it.
+    if migrate_wsl_workspaces(&mut file) > 0 {
+        migrated = true;
+    }
     // v2/v3 project folders become real workspaces before anything else
     // touches the tree, so the repair pass below sees the final shape.
     if migrate_legacy_project_folders(&mut file, &text) > 0 {
@@ -1963,11 +2018,83 @@ fn cleanup_session_maps(
 
 // ─── Local PTY spawn ─────────────────────────────────────────────────────────
 
-/// `tmux_name`: macOS/Linux only — when `Some`, the pane's local shell is
-/// wrapped in `tmux new-session -A -s <name>` ~900ms after spawn (the WSL
-/// twin of persistent SSH panes; see `spawn_wsl_pty`). Windows callers
-/// always pass `None` — a ConPTY local pane has no tmux, and the attach
-/// task below is compiled out on Windows.
+/// The two bundled files zellij needs, resolved together.
+///
+/// `config_dir` is exported as `ZELLIJ_CONFIG_DIR`, which is what makes
+/// `default_layout "ymux"` in the kdl resolve: zellij's layout dir defaults to
+/// a `layouts/` subdirectory of the config dir. Verified with
+/// `zellij setup --check` on 0.44.3 (2026-08-20) — it also leaves DATA DIR and
+/// PLUGIN DIR under `%APPDATA%\Zellij`, so this moves the layout lookup and
+/// nothing else.
+pub(crate) struct ZellijResources {
+    pub(crate) config_file: std::path::PathBuf,
+    pub(crate) config_dir: std::path::PathBuf,
+}
+
+/// Pick the first root that holds BOTH `ymux-zellij.kdl` and
+/// `layouts/ymux.kdl`.
+///
+/// **All-or-nothing on purpose.** The moment the config says
+/// `default_layout "ymux"`, it is a promise the layouts dir has to keep — and
+/// zellij is not loud about an unknown layout name. Accepting a directory with
+/// only the config would mean every new session starts with a `default_layout`
+/// that cannot resolve. Refusing both degrades to the state that is already
+/// supported and already logged: zellij uses the user's own config, the pane
+/// works, and the chrome comes back.
+///
+/// Split out of `resolve_zellij_config` so it can be tested without an
+/// `AppHandle` — it is the only branching logic here.
+pub(crate) fn pick_zellij_resources(roots: &[std::path::PathBuf]) -> Option<ZellijResources> {
+    for root in roots {
+        for dir in [root.join("resources"), root.clone()] {
+            let config_file = dir.join("ymux-zellij.kdl");
+            let layout = dir.join("layouts").join("ymux.kdl");
+            if config_file.is_file() && layout.is_file() {
+                return Some(ZellijResources {
+                    config_file,
+                    config_dir: dir,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the bundled zellij resources. Same shape as
+/// `local_setup::resolve_ymux_cli` — installed builds carry them under the
+/// Tauri resource dir, and a dev build finds them beside the binary.
+///
+/// `None` is a supported state, not a failure: without them zellij just uses
+/// its own defaults and the pane still works, only with the chrome and the
+/// keybinds back.
+fn resolve_zellij_config(app: &AppHandle) -> Option<ZellijResources> {
+    use tauri::Manager;
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(r) = app.path().resource_dir() {
+        roots.push(r);
+    }
+    // 2026-08-19: also look beside the RUNNING BINARY.
+    //
+    // INERT ON WINDOWS — tauri's `resource_dir()` already returns the exe's
+    // directory there, so this repeats the same two probes. Kept anyway: this
+    // file carries no `cfg(target_os)` gates and `build-macos-intel.yml`
+    // compiles it, and in a macOS bundle `resource_dir()` is
+    // `Contents/Resources` while the exe lives in `Contents/MacOS`. Deleting
+    // it would be a silent behaviour change on the one platform nobody here
+    // tests, to save four stat calls.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    pick_zellij_resources(&roots)
+}
+
+/// `persist_session`: when `Some`, the pane is PERSISTENT and its shell is
+/// wrapped in a multiplexer ~900ms after spawn. The backend is the
+/// platform's: `zellij attach -c <name>` on Windows, `tmux new-session -A -s
+/// <name>` everywhere else (the same shape the WSL and SSH paths use).
+/// `None` keeps the historical plain-shell behaviour.
 fn spawn_local_pty(
     state: &AppState,
     pane_id: String,
@@ -1976,7 +2103,10 @@ fn spawn_local_pty(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
-    tmux_name: Option<String>,
+    // 2026-08-19 / Phase 82: `Some(name)` makes this a persistent pane - the
+    // shell is spawned exactly as before and the attach line is typed into it
+    // afterwards. zellij on Windows, tmux elsewhere; see the doc comment.
+    persist_session: Option<String>,
 ) -> Result<String, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -2050,6 +2180,45 @@ fn spawn_local_pty(
     // pre-rename install reads the old spelling and would otherwise
     // env-gate itself out. Drop once 0.5.0 is the floor.
     cmd.env("WINMUX_PANE_ID", &pane_id);
+    // 2026-08-19: point zellij at ymux's own config; 2026-08-20: and at its
+    // config DIRECTORY, which is how the single-pane layout gets found.
+    //
+    // ENV VARS rather than `zellij --config <path>` in the line we type into
+    // the shell: the resource path contains spaces, that line has to parse in
+    // both cmd.exe and PowerShell, and Rule #3 says do not assemble shell
+    // strings. Both `--config` and `--config-dir` document their env var in
+    // `--help`, so these are the same knobs without any quoting — and there is
+    // no flag for the layout at all, since `zellij attach` takes no `--layout`.
+    //
+    // ZELLIJ_CONFIG_DIR moves the LAYOUT lookup to `<dir>\layouts` and nothing
+    // else: DATA DIR and PLUGIN DIR stay under %APPDATA%\Zellij (checked with
+    // `zellij setup --check`). It also becomes the base for `theme_dir`, which
+    // is harmless — we ship no themes and set none.
+    //
+    // Skipped silently when the resources are missing — zellij falls back to
+    // its own config and the pane works, just with the chrome and the keybinds.
+    match resolve_zellij_config(app) {
+        Some(z) => {
+            cmd.env("ZELLIJ_CONFIG_FILE", &z.config_file);
+            cmd.env("ZELLIJ_CONFIG_DIR", &z.config_dir);
+            // Program paths, not user content — safe under Rule #1, and the
+            // only way to tell "the lock does not work" apart from "the config
+            // was never found". One grep for `zellij config:` answers both
+            // halves, so the layout dir is named here too.
+            log_info(
+                "PTY",
+                &format!(
+                    "zellij config: {} (+ layouts/ymux.kdl)",
+                    z.config_file.display()
+                ),
+            );
+        }
+        None => log_warn(
+            "PTY",
+            "zellij config: ymux-zellij.kdl + layouts/ymux.kdl NOT FOUND — \
+             zellij keeps its own chrome, keybinds and mouse capture",
+        ),
+    }
     tracing::debug!("spawn_local_pty[{pane_id}]: injected hyperlink + YMUX_PANE_ID env vars");
     let mut child = pair
         .slave
@@ -2109,11 +2278,41 @@ fn spawn_local_pty(
             writer,
             master: pair.master,
             killer,
-            tmux_session: tmux_name.clone(),
+            // Native-local panes carry a multiplexer session name too - the
+            // field is named for tmux but holds the zellij name on Windows.
+            // This is what lights up `pane_persistence_list`, and with it the
+            // persistence badge / Detach / Kill-session UI.
+            tmux_session: persist_session.clone(),
             wsl_distro: None,
         }),
     );
 
+    #[cfg(windows)]
+    {
+        // Persistent mode: type the attach-or-create line into the shell 900ms
+        // after spawn — the same timing the WSL path uses, chosen to land after
+        // `schedule_setup_injection` fires at 500ms so the user's env exports and
+        // setup_command have settled first. Deliberately NOT spawning zellij as
+        // the pane process: `pick_default_shell` + `utf8_shell_args` set up
+        // `chcp 65001` for PowerShell, and losing that UTF-8 handling would put
+        // this session's Hebrew work straight back on the floor.
+        if let Some(name) = persist_session {
+            let sessions_clone = state.core.sessions.clone();
+            let id_clone = id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                let line = build_zellij_attach_command(&name);
+                let mut sessions = sessions_clone.lock().unwrap();
+                if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
+                    use std::io::Write as _;
+                    // Rule #1: a fixed control string built from a sanitized
+                    // session name — never PTY content.
+                    let _ = l.writer.write_all(line.as_bytes());
+                    let _ = l.writer.flush();
+                }
+            });
+        }
+    }
     // macOS port: persistent LOCAL panes — type the tmux attach-or-create
     // script into the shell 900ms after spawn, exactly like the WSL/SSH
     // paths (after env exports + setup_command at 500ms, before the
@@ -2126,7 +2325,7 @@ fn spawn_local_pty(
     // plain shell.
     #[cfg(not(windows))]
     {
-        if let Some(name) = tmux_name {
+        if let Some(name) = persist_session {
             // Only pass `-f ~/.ymux/tmux.conf` when the file actually exists
             // locally — otherwise tmux prints a "No such file" cause into the
             // pane on every attach. The local setup wizard writes it; until
@@ -2177,6 +2376,317 @@ fn spawn_local_pty(
 /// skips the YMUX_* env injection into tmux's global environment
 /// (WSL panes pass empty until the WSL RPC bridge hands them a real
 /// address). `fallback_msg` must not contain single quotes.
+/// 2026-08-19: the Zellij attach-or-create line typed into a native Windows
+/// shell, the local counterpart of `build_tmux_attach_script`.
+///
+/// Deliberately a SEPARATE function rather than an arm inside that one: it is
+/// pure POSIX (`command -v`, `exec`, `$HOME`, `\r\n` into a shell) and
+/// load-bearing for SSH and WSL both, and Phase 65 records what a careless
+/// edit there costs. None of it parses in cmd.exe or PowerShell anyway.
+///
+/// `zellij attach -c` is attach-or-create, the same semantics as tmux's
+/// `new-session -A -s`. There is no `exec` on Windows, so the shell stays as
+/// the parent process — when zellij exits the user lands back in a working
+/// shell rather than a closed pane, which is the nicer failure mode.
+///
+/// **No guard around the command on purpose.** If zellij is missing, cmd and
+/// PowerShell each print their own "not recognized" and leave a perfectly
+/// usable plain shell. Writing a cross-shell existence check would mean two
+/// dialects of quoting for a worse fallback than the one we get free.
+/// How ymux invokes zellij from Rust (listing / killing sessions), as opposed
+/// to the bare `zellij` word typed into the user's shell.
+///
+/// The winget MSI puts the binary at `%LOCALAPPDATA%\Zellij\zellij.exe` and
+/// adds that directory to the USER PATH — but a PATH edit only reaches
+/// processes started afterwards, so a ymux that was already running when
+/// zellij got installed would not find it by name. Prefer the canonical path
+/// when it exists and fall back to PATH, which also covers a scoop/cargo/
+/// hand-placed install.
+fn zellij_exe() -> String {
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let p = std::path::Path::new(&local).join("Zellij").join("zellij.exe");
+        if p.is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    "zellij".to_string()
+}
+
+/// Every zellij verb ymux sends, in one block.
+///
+/// Two kinds of caller, and the difference matters:
+///   - `build_zellij_attach_command` is TYPED INTO THE USER'S SHELL, so it is
+///     a string and has to be valid in both cmd.exe and PowerShell.
+///   - everything else runs as a child process through `zellij_run`, argv
+///     array only, never a shell (Rule #3).
+///
+/// The verbs, and why each one is here (checked against `zellij 0.44.3
+/// --help` on 2026-08-19 rather than from memory):
+///   - `attach -c <name>`      attach-or-create; also resurrects an EXITED
+///                             session, which is the reattach path after a
+///                             reboot.
+///   - `list-sessions -n`      `--no-formatting`, which upstream documents as
+///                             the parsing form. `-s` (bare names) drops the
+///                             age and the EXITED marker, so it is not used.
+///   - `delete-session -f <n>` destroy a session AND its serialized copy.
+///                             `-f` is "kill it first if it is running", so
+///                             one verb covers both the live and the
+///                             already-exited case. See below for why this
+///                             replaced a two-verb sequence.
+///
+/// Deliberately NOT sent:
+///   - `kill-session <name>`. It stops a running session but LEAVES the
+///     serialized copy, so the session reappears in the list marked EXITED
+///     and `attach` still resurrects it. ymux sent it until 2026-08-20,
+///     falling through to `delete-session` only when the kill FAILED — the
+///     idea being that a live session is never destroyed by one click, and a
+///     failure between the two verbs leaves something resurrectable rather
+///     than nothing. Sound design, unreachable in practice: the first click
+///     also removes the pane from `pane_sessions`, so a second one returns
+///     early having sent no verb at all, and the button is gated on
+///     `isConnected` / `isTmux()` — both false by then, so it is not even
+///     rendered. `zellij_args_delete` had one call site that nothing could
+///     reach. A safety valve nobody can operate is not a safety valve; it is
+///     a Kill button that does not kill. One forcing verb plus an honest
+///     outcome report (`KillSessionOutcome`) is the replacement.
+///   - `attach -b` (create detached). It returns 0 and creates nothing when
+///     invoked without a tty, so ymux would have no way to tell success from
+///     silence. Panes create their session by attaching instead.
+///   - `action rename-session`. ymux derives the session name from the pane
+///     id so a cold start can find it again; renaming would break exactly
+///     that lookup. Pane labels are stored app-side and never sent to zellij.
+///   - `kill-all-sessions` / `delete-all-sessions`. Nothing in the UI means
+///     "every session on this machine", including ones ymux did not create.
+fn zellij_args_list() -> Vec<String> {
+    vec!["list-sessions".into(), "-n".into()]
+}
+
+/// Destroy `name` and its serialized copy.
+///
+/// `-f` goes BEFORE the name, matching the 0.44.3 synopsis
+/// `delete-session [OPTIONS] <TARGET_SESSION>`. Swapping them would make clap
+/// read `-f` as the target session — a silent wrong-target destroy, which is
+/// the worst thing this path can do, so the order has its own test.
+fn zellij_args_delete_force(name: &str) -> Vec<String> {
+    vec!["delete-session".into(), "-f".into(), name.to_string()]
+}
+
+/// Type `chars` into a named session, as if the user had typed them.
+///
+/// `-s <name>` is a ROOT option, so it comes before the subcommand — the same
+/// targeting that made a rename attempt list the active sessions by name.
+/// This is how the connect wizard's command reaches the shell INSIDE zellij
+/// instead of the shell zellij was launched from; see `pane_connect`.
+///
+/// **PRECONDITION: exactly one pane per session.** No `--pane-id` is sent, so
+/// this lands in the FOCUSED pane — which is correct only because
+/// `resources/layouts/ymux.kdl` gives the session a single pane and the
+/// cleared keybinds make a split unreachable. If that lock is ever relaxed,
+/// this is where the wizard's command starts landing in the wrong shell.
+/// Adding `--pane-id` is not a free hedge: the id would have to be discovered
+/// with `list-panes --json` first, inside the already-tight attach window, and
+/// a STALE id is worse than none — it fails silently instead of landing.
+fn zellij_args_write_chars(session: &str, chars: &str) -> Vec<String> {
+    vec![
+        "-s".into(),
+        session.to_string(),
+        "action".into(),
+        "write-chars".into(),
+        chars.to_string(),
+    ]
+}
+
+/// What actually happened when a zellij verb ran.
+///
+/// The distinction that matters is `Failed` vs `Missing`. `zellij_run` used to
+/// return `false` for both, which is why a Kill on a machine with no zellij
+/// installed looked exactly like a successful one from the UI: every verb
+/// "failed", the log said nothing useful, and the frontend reported success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ZellijOutcome {
+    Ok,
+    /// Ran and exited non-zero. `code` is `None` if it died on a signal.
+    Failed { code: Option<i32>, stderr: String },
+    /// `zellij_exe()` did not resolve to anything runnable.
+    Missing,
+}
+
+/// How much of zellij's stderr is worth keeping. It is zellij's own
+/// diagnostic, never PTY content (Rule #1), but it does not need to be
+/// unbounded to be useful — the messages that matter are one line.
+const ZELLIJ_STDERR_CAP: usize = 200;
+
+/// Classify a spawn error. Split out because it is the only part of the
+/// missing-vs-failed distinction that a unit test can reach without a binary.
+fn zellij_spawn_error_outcome(kind: std::io::ErrorKind, msg: &str) -> ZellijOutcome {
+    if kind == std::io::ErrorKind::NotFound {
+        ZellijOutcome::Missing
+    } else {
+        ZellijOutcome::Failed {
+            code: None,
+            stderr: msg.to_string(),
+        }
+    }
+}
+
+/// Run one zellij verb to completion and report what happened.
+///
+/// `hidden_cmd` gives CREATE_NO_WINDOW + piped stdio so a GUI parent never
+/// flashes a console (local_setup.rs). A missing binary is not an error:
+/// zellij being absent is a supported state everywhere this is called — but it
+/// is now a distinguishable one.
+async fn zellij_try(args: &[String], what: &str) -> ZellijOutcome {
+    let mut c = local_setup::hidden_cmd(&zellij_exe());
+    for a in args {
+        c.arg(a);
+    }
+    match c.output().await {
+        Ok(out) if out.status.success() => ZellijOutcome::Ok,
+        Ok(out) => {
+            let mut stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if stderr.chars().count() > ZELLIJ_STDERR_CAP {
+                stderr = stderr.chars().take(ZELLIJ_STDERR_CAP).collect();
+            }
+            log_debug(
+                "PTY",
+                &format!(
+                    "zellij {what}: exited {:?}: {stderr}",
+                    out.status.code()
+                ),
+            );
+            ZellijOutcome::Failed {
+                code: out.status.code(),
+                stderr,
+            }
+        }
+        Err(e) => {
+            let o = zellij_spawn_error_outcome(e.kind(), &e.to_string());
+            match &o {
+                ZellijOutcome::Missing => log_warn(
+                    "PTY",
+                    &format!("zellij {what}: zellij is not installed ({e})"),
+                ),
+                _ => log_warn("PTY", &format!("zellij {what}: spawn failed: {e}")),
+            }
+            o
+        }
+    }
+}
+
+/// Thin bool wrapper, kept so callers that only care whether the verb landed
+/// stay byte-identical — notably the smart-connect `write-chars` injection,
+/// which is a path worth not disturbing.
+async fn zellij_run(args: &[String], what: &str) -> bool {
+    matches!(zellij_try(args, what).await, ZellijOutcome::Ok)
+}
+
+/// Note for anyone tempted to add a flag here: **there is nowhere to put one.**
+/// `zellij attach` has no `--layout`, and the root `-l` conflicts with
+/// `attach`. Every setting reaches the session through the config file that
+/// `spawn_local_pty` points `ZELLIJ_CONFIG_FILE` / `ZELLIJ_CONFIG_DIR` at.
+fn build_zellij_attach_command(name: &str) -> String {
+    // Session names come from `sanitize_session_name`, which emits only
+    // `[A-Za-z0-9_-]`, so there is nothing here to quote or escape. Asserted
+    // by `zellij_attach_command_is_a_single_safe_line` below.
+    format!("zellij attach -c {name}\r\n")
+}
+
+/// Parse `zellij list-sessions -n` (`--no-formatting`, which upstream
+/// documents as "useful for parsing").
+///
+/// Real output captured 2026-08-19 from zellij 0.44.3 on Windows:
+/// ```text
+/// spike [Created 12m 30s ago]
+/// old-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
+/// current-one [Created 5s ago] (current)
+/// ```
+/// Written as its own parser rather than a branch in `parse_tmux_sessions`,
+/// which decodes a completely different `<<<YMUX_META>>>` record joined
+/// against `session-meta.json`.
+///
+/// Zellij lists EXITED sessions too — they are resurrectable, which is the
+/// one thing it does that tmux cannot (they survive a reboot). They are
+/// returned here, marked `attached: false`, so the picker can offer them.
+fn parse_zellij_sessions(text: &str) -> Vec<TmuxSessionInfo> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut out: Vec<TmuxSessionInfo> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("No active zellij sessions") {
+            continue;
+        }
+        let name = match line.split_whitespace().next() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        // `[Created <dur> ago]` → seconds. Absent or unparseable simply means
+        // "unknown age": fall back to `now` rather than dropping the session,
+        // since a session we cannot date is still one the user can attach to.
+        let age = line
+            .split_once("[Created ")
+            .and_then(|(_, rest)| rest.split_once(" ago]"))
+            .map(|(dur, _)| parse_zellij_duration(dur))
+            .unwrap_or(0);
+        out.push(TmuxSessionInfo {
+            name,
+            created: now - age,
+            // Zellij marks the session the CALLING client is inside as
+            // "(current)". ymux always asks from outside a session, so this
+            // is never us; treat it as "someone is attached".
+            attached: line.contains("(current)"),
+            // Zellij has no window count in this output. 1 is the honest
+            // floor — a session always has at least one pane — and the
+            // picker renders it as a hint, not a fact it acts on.
+            windows: 1,
+            last_attached: 0,
+            // Zellij keeps a serialized copy of a session after its shell
+            // exits and will rebuild it on the next attach. tmux has no such
+            // state, so this is false on every tmux path.
+            exited: line.contains("(EXITED"),
+            label: None,
+            claude_title: None,
+            // Phase 81.F: zellij sessions carry no session-meta join yet —
+            // the picker falls back to `name`, same as a pre-rename server.
+            auto_name: None,
+            claude_session_id: None,
+            origin: None,
+        });
+    }
+    // Newest first, matching parse_tmux_sessions' ordering contract.
+    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out
+}
+
+/// `12m 30s` / `3h 4m 1s` / `5s` / `2days 1h` → seconds. Unknown units are
+/// skipped rather than poisoning the whole duration, so a future zellij
+/// spelling degrades to a slightly wrong age instead of a lost session.
+fn parse_zellij_duration(s: &str) -> i64 {
+    let mut total: i64 = 0;
+    for tok in s.split_whitespace() {
+        let digits: String = tok.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let n: i64 = match digits.parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let unit = &tok[digits.len()..];
+        total += match unit {
+            u if u.starts_with('s') => n,
+            u if u.starts_with("ms") => 0,
+            u if u.starts_with('m') => n * 60,
+            u if u.starts_with('h') => n * 3600,
+            u if u.starts_with('d') => n * 86_400,
+            _ => 0,
+        };
+    }
+    total
+}
+
 fn build_tmux_attach_script(
     name: &str,
     socket_addr: &str,
@@ -3646,9 +4156,16 @@ async fn spawn_ssh(
 /// destroy — it closes the local SSH channel (`SshCmd::Kill` →
 /// `channel.close()`), which makes the remote tmux *client* exit; the
 /// tmux *session* keeps running on the server, so a later reconnect with
-/// the same (pane-deterministic) name reattaches it. The ONLY path that
-/// actually destroys a tmux session is `pane_kill_session`
-/// (`tmux kill-session`), wired to the explicit "Kill session" button.
+/// the same (pane-deterministic) name reattaches it.
+///
+/// 2026-08-20: **the same is true of a local zellij pane**, for a different
+/// mechanism. `l.killer.kill()` kills the PTY child, which is PowerShell —
+/// zellij is not the pane process, it is typed into that shell afterwards. So
+/// the zellij *client* dies with the shell and the *server* keeps the session.
+/// That is not a leak, it is the persistence feature.
+///
+/// The ONLY path that actually destroys a session — tmux or zellij — is
+/// `pane_kill_session`, wired to the explicit "Kill session" button.
 pub(crate) fn kill_session_inner(s: &mut Session) {
     match s {
         Session::Local(l) => {
@@ -6289,6 +6806,28 @@ fn workspace_close_pane(
                 // binding now but `pick_ssh_handle_for_workspace`
                 // will still find it via its workspace_id.
             } else if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {
+                // Closing a pane is not killing its session. `kill_session_inner`
+                // is a detach on every backend, so a persistent session OUTLIVES
+                // the pane — deliberately, and symmetrically with SSH and WSL,
+                // where making the X destructive would be a nasty surprise.
+                //
+                // But the pane id is retired, so nothing will ever re-attach
+                // automatically and the restore hint is pruned with the pane.
+                // The session is still reachable — it is listed by name in the
+                // Connect picker — and this is the only line that records the
+                // name anywhere, so "where did my session go" has a trail.
+                if let Session::Local(l) = &s {
+                    if let (Some(name), None) = (&l.tmux_session, &l.wsl_distro) {
+                        log_info(
+                            "PTY",
+                            &format!(
+                                "workspace_close_pane: pane {pid} closed; its zellij session \
+                                 '{name}' keeps running and can be re-attached from the \
+                                 Connect picker"
+                            ),
+                        );
+                    }
+                }
                 kill_session_inner(&mut s);
             }
         }
@@ -6754,9 +7293,10 @@ async fn pane_connect(
     accept_unknown_host: Option<bool>,
     cols: u16,
     rows: u16,
-    // Phase 11.A: when true the SSH shell is wrapped in `tmux new-session -A`
-    // so reconnects resume the same shell. Ignored for local panes for now —
-    // can be added later via WSL/conpty + tmux on linux.
+    // Phase 11.A: when true the shell is wrapped in a multiplexer so
+    // reconnects resume it — `tmux new-session -A` over SSH, `zellij attach
+    // -c` on a native Windows pane (2026-08-19). Every connection kind
+    // honours it now.
     persistent: Option<bool>,
     // Phase 12.B Smart Connect: when set, after the shell is up we inject a
     // mode-specific command. `mode` is one of: "default" (current behavior),
@@ -6854,16 +7394,43 @@ async fn pane_connect(
         }
     }
 
+    // 2026-08-19: set by the Local arm below when the pane is persistent, so
+    // the smart-connect injection at the end of this function can address the
+    // zellij session directly instead of typing into the shell in front of it.
+    // Assigned only in the cfg(windows) arm below; elsewhere it stays None
+    // and the smart-connect injection falls back to typing into the shell.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut zellij_target: Option<String> = None;
     let session_id = match conn {
+        // 2026-08-19: native Windows panes are persistent by default too,
+        // via zellij. This arm used to DROP `persistent` / `mode` /
+        // `effective_tmux_name` on the floor, which is why the connect
+        // wizard's persistence toggle was a live control with no effect.
         Connection::Local { shell } => {
-            // Windows local panes: ConPTY, never tmux — unchanged.
+            // One concept, two backends. Windows panes are persistent by
+            // default - zellij is the whole point of the native-local path.
+            // Elsewhere the default stays a plain shell and tmux is opt-in,
+            // which is the behaviour the macOS port shipped.
             #[cfg(windows)]
-            let tmux_name: Option<String> = None;
-            // macOS port: local panes can be tmux-persistent like WSL/SSH
-            // ones. Default stays a plain shell (`persistent` unset →
-            // false); mode="tmux" forces it on, mode="plain" forces off.
+            let persist_name: Option<String> = {
+                let effective_persistent = match mode.as_deref() {
+                    Some("tmux") => true,
+                    Some("plain") => false,
+                    _ => persistent.unwrap_or(true),
+                };
+                if effective_persistent {
+                    Some(
+                        effective_tmux_name
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| sanitize_tmux_session_name(&pane_id)),
+                    )
+                } else {
+                    None
+                }
+            };
             #[cfg(not(windows))]
-            let tmux_name: Option<String> = {
+            let persist_name: Option<String> = {
                 let effective_persistent = match mode.as_deref() {
                     Some("tmux") => true,
                     Some("plain") => false,
@@ -6880,6 +7447,12 @@ async fn pane_connect(
                     None
                 }
             };
+            // Only the zellij path can be addressed by name after the fact;
+            // the tmux path types into the shell, as it always has.
+            #[cfg(windows)]
+            {
+                zellij_target = persist_name.clone();
+            }
             spawn_local_pty(
                 &state,
                 pane_id.clone(),
@@ -6888,7 +7461,7 @@ async fn pane_connect(
                 cwd,
                 cols,
                 rows,
-                tmux_name,
+                persist_name,
             )?
         }
         // Phase 80: WSL panes default to PERSISTENT (tmux) — persistence
@@ -6994,8 +7567,51 @@ async fn pane_connect(
         if !script.is_empty() {
             let sessions_clone = state.core.sessions.clone();
             let session_id_clone = session_id.clone();
+            let zellij_target = zellij_target.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                // 2026-08-19: a persistent local pane runs its shell INSIDE
+                // zellij, and the attach line is typed at 900ms while this
+                // fired at 1100ms. Those 200ms were the only thing keeping
+                // `claude --continue` from landing in the outer PowerShell —
+                // no margin at all on a cold start of a 48MB binary.
+                //
+                // Address the session instead of racing it: wait for it to
+                // appear, then have zellij type the script into it. Pure argv,
+                // no shell in between (Rule #3).
+                if let Some(name) = zellij_target {
+                    let mut appeared = false;
+                    for _ in 0..8 {
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        if list_zellij_sessions()
+                            .await
+                            .iter()
+                            .any(|s| s.name == name && !s.exited)
+                        {
+                            appeared = true;
+                            break;
+                        }
+                    }
+                    if appeared
+                        && zellij_run(
+                            &zellij_args_write_chars(&name, &script),
+                            "write-chars",
+                        )
+                        .await
+                    {
+                        return;
+                    }
+                    // Fell through: zellij never came up, or refused the
+                    // write. The pane is still a working shell, so type into
+                    // it directly rather than dropping the user's command.
+                    log_debug(
+                        "PTY",
+                        &format!(
+                            "smart-connect: zellij delivery unavailable (appeared={appeared}), typing into the pane"
+                        ),
+                    );
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                }
                 let mut sessions = sessions_clone.lock().unwrap();
                 if let Some(s) = sessions.get_mut(&session_id_clone) {
                     match s {
@@ -7025,8 +7641,12 @@ pub(crate) struct TmuxSessionInfo {
     pub attached: bool,
     pub windows: u32,
     pub last_attached: i64,
+    /// 2026-08-19: zellij only. The session's shell has exited but zellij
+    /// still holds a serialized copy, so attaching RESURRECTS it — including
+    /// across a reboot, which tmux cannot do. Always false for tmux.
+    pub exited: bool,
     /// Phase 81: joined from the server-side `~/.ymux/session-meta.json`.
-    /// Picker display precedence: label > claude_title > name.
+    /// Picker display precedence: label > auto_name > claude_title > name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -7070,6 +7690,75 @@ struct SessionMetaEntryMirror {
 /// exist. Used by the Connect (tmux) split-button to populate a
 /// picker so users can attach to an orphan session whose original
 /// pane was closed.
+/// Ask zellij for its sessions. Used by both the workspace-level list and
+/// the per-pane probe; unlike SSH there is no handle or auth involved, so
+/// this answers from cold whenever the binary is present.
+///
+/// A missing binary is NOT an error here — it is an empty list. `zellij_exe`
+/// falls back to the bare word, so a machine that never ran the installer
+/// simply has no sessions, and the picker renders its "new session" row.
+async fn list_zellij_sessions() -> Vec<TmuxSessionInfo> {
+    let mut c = local_setup::hidden_cmd(&zellij_exe());
+    for a in zellij_args_list() {
+        c.arg(a);
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(6), c.output()).await {
+        Ok(Ok(out)) => {
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            parse_zellij_sessions(&text)
+        }
+        Ok(Err(e)) => {
+            log_debug("PTY", &format!("list_zellij_sessions: spawn failed: {e}"));
+            Vec::new()
+        }
+        Err(_) => {
+            log_warn("PTY", "list_zellij_sessions: timed out after 6s");
+            Vec::new()
+        }
+    }
+}
+
+/// Destroy a zellij session BY NAME, with no pane involved.
+///
+/// The picker lists every zellij session on the machine, including EXITED ones
+/// (they are resurrectable — that is the point of listing them). Two things
+/// put sessions there that no pane will ever reclaim automatically: closing a
+/// pane leaves its session running on purpose, and a reboot leaves everything
+/// EXITED. Without this the list was append-only — the user could resurrect a
+/// corpse but never bury one.
+///
+/// Zellij-only on purpose, not out of laziness: the delete affordance is shown
+/// only for `exited` rows, and `TmuxSessionInfo::exited` is documented as
+/// always false on tmux. There is no tmux case to handle.
+#[tauri::command]
+async fn zellij_delete_session(name: String) -> Result<KillSessionOutcome, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("no session name".into());
+    }
+    // Argv only (Rule #3) — the name goes into one slot and is never reparsed.
+    Ok(
+        match zellij_try(&zellij_args_delete_force(&name), "delete-session -f").await {
+            ZellijOutcome::Ok => KillSessionOutcome::new("killed", "zellij", Some(name)),
+            ZellijOutcome::Missing => {
+                KillSessionOutcome::new("multiplexer_missing", "zellij", Some(name))
+            }
+            ZellijOutcome::Failed { code, stderr } => {
+                let r = if stderr.contains("not found") {
+                    "already_gone"
+                } else {
+                    "failed"
+                };
+                log_debug(
+                    "PTY",
+                    &format!("zellij_delete_session: {r} (exit {code:?}): {stderr}"),
+                );
+                KillSessionOutcome::new(r, "zellij", Some(name)).with_detail(stderr)
+            }
+        },
+    )
+}
+
 #[tauri::command]
 async fn pane_list_tmux_sessions(
     state: State<'_, AppState>,
@@ -7093,6 +7782,21 @@ async fn pane_list_tmux_sessions(
             .await
             .unwrap_or((-1, String::new()));
         return Ok(parse_tmux_sessions(&text));
+    }
+
+    // 2026-08-19: native Windows workspaces answer from zellij. Without this
+    // arm a local workspace fell through to the SSH branch below and got a
+    // silent Ok([]), which is why the picker never appeared for local panes.
+    let is_local = {
+        let file = state.workspaces.lock().unwrap();
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| matches!(w.connection, None | Some(Connection::Local { .. })))
+            .unwrap_or(false)
+    };
+    if is_local {
+        return Ok(list_zellij_sessions().await);
     }
 
     // Phase 23.H: silent Ok([]) fallback when no live SSH handle.
@@ -7328,6 +8032,7 @@ fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             attached: parts[2] == "1",
             windows: parts[3].parse().unwrap_or(0),
             last_attached: parts[4].parse().unwrap_or(0),
+            exited: false, // tmux does not keep dead sessions around
             label: m.and_then(|m| m.label.clone()),
             claude_title: m.and_then(|m| m.claude_title.clone()),
             auto_name: m.and_then(|m| m.auto_name.clone()),
@@ -7424,6 +8129,13 @@ async fn pane_probe_tmux_sessions(
                     .await
                     .unwrap_or((-1, String::new()));
             return Ok(Some(parse_tmux_sessions(&text)));
+        }
+        // 2026-08-19: a native Windows pane answers from zellij, from cold —
+        // no handle, no auth. Previously it fell into the `_` arm below and
+        // returned None ("couldn't ask"), so boot-time session restore
+        // skipped local panes entirely.
+        None | Some(Connection::Local { .. }) => {
+            return Ok(Some(list_zellij_sessions().await));
         }
         _ => return Ok(None),
     };
@@ -8045,19 +8757,74 @@ fn pane_persistence_list(
     out
 }
 
-/// Phase 11.A: hard-kill the tmux session bound to this pane. Opens a fresh
-/// exec channel on the existing SSH handle, runs `tmux kill-session -t NAME`,
-/// then closes the original shell channel. Falls through to a plain
-/// disconnect for non-tmux panes so `ymux pane-disconnect --kill` is
+/// What a kill actually achieved, as reported to the frontend and the CLI.
+///
+/// Before 2026-08-20 `pane_kill_session` returned `Ok(())` on every branch —
+/// including the early return where it did no work at all — so the frontend
+/// inferred success from "the invoke did not throw". With zellij uninstalled
+/// that produced a Kill that destroyed nothing and said it worked.
+///
+/// String-tagged rather than a Rust enum with data because this crosses both
+/// Tauri IPC and the JSON-RPC surface, and serde's externally-tagged enums
+/// make awkward JSON for the CLI to print.
+///
+/// `Err(String)` (Rule #6) stays reserved for "we could not even try". "This
+/// pane has no session" is a normal answer, so it is `no_session`, not an
+/// error.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct KillSessionOutcome {
+    /// `killed` | `already_gone` | `no_session` | `multiplexer_missing` | `failed`
+    pub(crate) result: String,
+    /// `zellij` | `tmux` | `none`
+    pub(crate) backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) session: Option<String>,
+    /// Short diagnostic for the log and the toast. The multiplexer's own
+    /// stderr, never PTY content (Rule #1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<String>,
+}
+
+impl KillSessionOutcome {
+    fn new(result: &str, backend: &str, session: Option<String>) -> Self {
+        Self {
+            result: result.to_string(),
+            backend: backend.to_string(),
+            session,
+            detail: None,
+        }
+    }
+    fn with_detail(mut self, detail: String) -> Self {
+        self.detail = Some(detail);
+        self
+    }
+    /// Did the session end up gone? `no_session` counts: there was nothing to
+    /// destroy, so the caller's goal is satisfied either way.
+    pub(crate) fn is_gone(&self) -> bool {
+        matches!(
+            self.result.as_str(),
+            "killed" | "already_gone" | "no_session"
+        )
+    }
+}
+
+/// Phase 11.A: hard-kill the multiplexer session bound to this pane — tmux
+/// over SSH or WSL, zellij on a native Windows pane. Falls through to a plain
+/// disconnect for non-persistent panes so `ymux pane-disconnect --kill` is
 /// always meaningful regardless of which mode the pane was started in.
-#[tauri::command]
-async fn pane_kill_session(
-    state: State<'_, AppState>,
-    pane_id: String,
-) -> Result<(), String> {
-    let sid_opt = state.core.pane_sessions.lock().unwrap().get(&pane_id).cloned();
+///
+/// Free function rather than only a `#[tauri::command]` so the JSON-RPC
+/// handler can call the SAME code. It used to carry its own hand-rolled copy
+/// that matched only `Session::Ssh` — a zellij pane fell through it, no verb
+/// ran, and it still answered `killed: true`. Two implementations of "kill"
+/// is how that happened; there is now one.
+pub(crate) async fn kill_pane_session_inner(
+    state: &AppState,
+    pane_id: &str,
+) -> KillSessionOutcome {
+    let sid_opt = state.core.pane_sessions.lock().unwrap().get(pane_id).cloned();
     let Some(sid) = sid_opt else {
-        return Ok(());
+        return KillSessionOutcome::new("no_session", "none", None);
     };
     // Snapshot the kill target without holding the lock across the
     // .await — russh's Handle is shared as Arc<> so this is cheap.
@@ -8066,7 +8833,10 @@ async fn pane_kill_session(
     enum KillTarget {
         Ssh(Arc<client::Handle<SshClient>>, String),
         Wsl(Option<String>, String),
-        /// macOS port: a persistent LOCAL pane (no distro) — kill via the
+        // 2026-08-19: a native Windows pane's zellij session.
+        #[cfg(windows)]
+        Zellij(String),
+        /// A persistent LOCAL pane (no distro) off Windows - kill via the
         /// local tmux binary.
         #[cfg(not(windows))]
         LocalUnix(String),
@@ -8079,41 +8849,95 @@ async fn pane_kill_session(
                 Some(name) => KillTarget::Ssh(s.handle.clone(), name.clone()),
                 None => KillTarget::None,
             },
-            Some(Session::Local(l)) => match &l.tmux_session {
+            // `Session::Local` covers BOTH a WSL pane and a native local pane,
+            // so the distro - not the variant - is what tells them apart.
+            // A native-local kill routed through the single `Some(name)` arm
+            // would become `wsl.exe -- tmux kill-session` against the DEFAULT
+            // distro. Split explicitly rather than relying on ordering.
+            Some(Session::Local(l)) => match (&l.tmux_session, &l.wsl_distro) {
+                (Some(name), Some(distro)) => {
+                    KillTarget::Wsl(Some(distro.clone()), name.clone())
+                }
+                #[cfg(windows)]
+                (Some(name), None) => KillTarget::Zellij(name.clone()),
                 #[cfg(not(windows))]
-                Some(name) if l.wsl_distro.is_none() => KillTarget::LocalUnix(name.clone()),
-                Some(name) => KillTarget::Wsl(l.wsl_distro.clone(), name.clone()),
-                None => KillTarget::None,
+                (Some(name), None) => KillTarget::LocalUnix(name.clone()),
+                (None, _) => KillTarget::None,
             },
             None => KillTarget::None,
         }
     };
-    match target {
+    let outcome = match target {
         #[cfg(not(windows))]
         KillTarget::LocalUnix(name) => {
-            // Pure argv — tmux receives the name verbatim (Rule #3).
+            // Pure argv - tmux receives the name verbatim (Rule #3).
             match local_tmux_output(&["kill-session", "-t", &name]).await {
-                Ok((Some(0), _)) => {}
-                Ok((code, _)) => log_warn("PTY", &format!(
-                    "pane_kill_session(local): tmux kill-session exited {code:?}"
-                )),
-                Err(e) => log_warn("PTY", &format!("pane_kill_session(local): {e}")),
+                Ok((Some(0), _)) => KillSessionOutcome::new("killed", "tmux", Some(name)),
+                Ok((code, out)) => {
+                    log_warn(
+                        "PTY",
+                        &format!(
+                            "pane_kill_session(local): tmux kill-session exited {code:?}"
+                        ),
+                    );
+                    // tmux says this when the session is already gone, which
+                    // is the caller's goal, not a failure.
+                    let r = if out.contains("can't find session") {
+                        "already_gone"
+                    } else {
+                        "failed"
+                    };
+                    KillSessionOutcome::new(r, "tmux", Some(name)).with_detail(out)
+                }
+                Err(e) => {
+                    log_warn("PTY", &format!("pane_kill_session(local): {e}"));
+                    // `local_tmux_output` reports a missing binary this way.
+                    let r = if e.contains("tmux not found") {
+                        "multiplexer_missing"
+                    } else {
+                        "failed"
+                    };
+                    KillSessionOutcome::new(r, "tmux", Some(name)).with_detail(e)
+                }
             }
         }
         KillTarget::Ssh(handle, name) => {
-            let cmd = format!("tmux kill-session -t {} 2>&1 || true", shell_quote(&name));
+            // `2>&1` STAYS — it is how tmux's own message reaches us instead
+            // of vanishing into the server's stderr. `|| true` is GONE: it
+            // forced exit 0, and the drain loop below already receives
+            // ExitStatus and used to throw it away, so this arm could only
+            // ever claim success. It is the same shape of lie the zellij arm
+            // had, one layer down.
+            //
+            // shell_quote is correct here and stays: unlike every other verb
+            // in this function, this one genuinely goes through a remote
+            // shell, so Rule #3's argv rule has nothing to apply to.
+            let cmd = format!("tmux kill-session -t {} 2>&1", shell_quote(&name));
+            let mut status: Option<u32> = None;
+            let mut output = String::new();
+            let mut transport_err: Option<String> = None;
             match handle.channel_open_session().await {
                 Ok(mut ch) => {
                     if let Err(e) = ch.exec(true, cmd.as_bytes()).await {
                         log_warn("SSH", &format!("pane_kill_session: exec failed: {e}"));
+                        transport_err = Some(e.to_string());
                     }
-                    // Drain the channel briefly so the server completes the exec.
+                    // Drain the channel briefly so the server completes the
+                    // exec — and keep what it said, which is the whole point.
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_millis(800),
                         async {
                             while let Some(msg) = ch.wait().await {
-                                if matches!(msg, ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close) {
-                                    break;
+                                match msg {
+                                    ChannelMsg::Data { ref data } => {
+                                        output.push_str(&String::from_utf8_lossy(data));
+                                    }
+                                    ChannelMsg::ExitStatus { exit_status } => {
+                                        status = Some(exit_status);
+                                        break;
+                                    }
+                                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                                    _ => {}
                                 }
                             }
                         },
@@ -8123,7 +8947,37 @@ async fn pane_kill_session(
                 }
                 Err(e) => {
                     log_warn("SSH", &format!("pane_kill_session: channel_open failed: {e}"));
+                    transport_err = Some(e.to_string());
                 }
+            }
+            let output = output.trim().to_string();
+            match (transport_err, status) {
+                // Could not reach the host at all. Not a failed kill — an
+                // un-attempted one, and it must not drop the restore hint.
+                (Some(e), _) => KillSessionOutcome::new("failed", "tmux", Some(name))
+                    .with_detail(e),
+                (None, Some(0)) => KillSessionOutcome::new("killed", "tmux", Some(name)),
+                (None, Some(code)) => {
+                    // tmux's wording when the session is already gone. That is
+                    // the caller's goal, so it is not a failure.
+                    let r = if output.contains("can't find session")
+                        || output.contains("session not found")
+                    {
+                        "already_gone"
+                    } else {
+                        "failed"
+                    };
+                    log_warn(
+                        "SSH",
+                        &format!("pane_kill_session: tmux exited {code}: {output}"),
+                    );
+                    KillSessionOutcome::new(r, "tmux", Some(name)).with_detail(output)
+                }
+                // Drained to EOF without an ExitStatus, or timed out. The verb
+                // very likely ran, but this does not KNOW that — say so rather
+                // than pick a side.
+                (None, None) => KillSessionOutcome::new("attempted", "tmux", Some(name))
+                    .with_detail(output),
             }
         }
         KillTarget::Wsl(distro, name) => {
@@ -8137,26 +8991,97 @@ async fn pane_kill_session(
             }
             c.arg("--").arg("tmux").arg("kill-session").arg("-t").arg(&name);
             match c.output().await {
-                Ok(out) if !out.status.success() => log_warn("PTY", &format!(
-                    "pane_kill_session(wsl): tmux kill-session exited {:?}",
-                    out.status.code()
-                )),
-                Ok(_) => {}
-                Err(e) => log_warn("PTY", &format!("pane_kill_session(wsl): spawn failed: {e}")),
+                Ok(out) if out.status.success() => {
+                    KillSessionOutcome::new("killed", "tmux", Some(name))
+                }
+                Ok(out) => {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    log_warn(
+                        "PTY",
+                        &format!(
+                            "pane_kill_session(wsl): tmux kill-session exited {:?}: {err}",
+                            out.status.code()
+                        ),
+                    );
+                    // tmux says this when the session is already gone, which
+                    // is the caller's goal, not a failure.
+                    let r = if err.contains("can't find session") {
+                        "already_gone"
+                    } else {
+                        "failed"
+                    };
+                    KillSessionOutcome::new(r, "tmux", Some(name)).with_detail(err)
+                }
+                Err(e) => {
+                    log_warn("PTY", &format!("pane_kill_session(wsl): spawn failed: {e}"));
+                    let r = if e.kind() == std::io::ErrorKind::NotFound {
+                        "multiplexer_missing"
+                    } else {
+                        "failed"
+                    };
+                    KillSessionOutcome::new(r, "tmux", Some(name)).with_detail(e.to_string())
+                }
             }
         }
-        KillTarget::None => {}
-    }
+        #[cfg(windows)]
+        KillTarget::Zellij(name) => {
+            // ONE verb. `-f` kills it first if it is running, then deletes the
+            // serialized copy, so this covers both the live and the
+            // already-exited case — and "Kill session" finally means the
+            // session is gone rather than resurrectable.
+            //
+            // This replaced `kill-session` + a conditional `delete-session`;
+            // the doc block on `zellij_args_delete_force` says why that
+            // two-step could never be reached from the UI.
+            match zellij_try(&zellij_args_delete_force(&name), "delete-session -f").await {
+                ZellijOutcome::Ok => KillSessionOutcome::new("killed", "zellij", Some(name)),
+                ZellijOutcome::Missing => {
+                    KillSessionOutcome::new("multiplexer_missing", "zellij", Some(name))
+                }
+                ZellijOutcome::Failed { code, stderr } => {
+                    // Captured from 0.44.3 on 2026-08-20: deleting a name that
+                    // does not exist exits 2 and prints
+                    // `Session: "<name>" not found.` on stderr. Nothing to
+                    // destroy is the caller's goal, not a failure.
+                    let r = if stderr.contains("not found") {
+                        "already_gone"
+                    } else {
+                        "failed"
+                    };
+                    log_debug(
+                        "PTY",
+                        &format!(
+                            "pane_kill_session(zellij): {r} (exit {code:?}): {stderr}"
+                        ),
+                    );
+                    KillSessionOutcome::new(r, "zellij", Some(name)).with_detail(stderr)
+                }
+            }
+        }
+        KillTarget::None => KillSessionOutcome::new("no_session", "none", None),
+    };
     // Now close the shell + remove session bookkeeping. This re-uses the
     // existing pane_disconnect logic by removing from pane_sessions and
     // killing the underlying session.
-    let sid = state.core.pane_sessions.lock().unwrap().remove(&pane_id);
+    //
+    // Unconditional: the PTY goes either way. A multiplexer session we failed
+    // to destroy is reported through `outcome`, not by leaving a dead pane
+    // wired up in the maps.
+    let sid = state.core.pane_sessions.lock().unwrap().remove(pane_id);
     if let Some(sid) = sid {
         if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {
             kill_session_inner(&mut s);
         }
     }
-    Ok(())
+    outcome
+}
+
+#[tauri::command]
+async fn pane_kill_session(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<KillSessionOutcome, String> {
+    Ok(kill_pane_session_inner(&state, &pane_id).await)
 }
 
 #[tauri::command]
@@ -8980,6 +9905,7 @@ pub fn run() {
             pane_connect,
             pane_disconnect,
             pane_kill_session,
+            zellij_delete_session,
             pane_persistence_get,
             pane_persistence_list,
             pane_list_claude_sessions,
@@ -10220,5 +11146,515 @@ mod utf8_pty_live_tests {
             !out.contains('\u{FFFD}'),
             "replacement chars in the stream:\n{out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod zellij_tests {
+    // Parser tests written against output CAPTURED from zellij 0.44.3 on
+    // Windows on 2026-08-19, not from the docs — the spike session Yossi left
+    // running produced `spike [Created 12m 30s ago]` verbatim.
+    use super::{
+        build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions,
+        pick_zellij_resources, zellij_args_delete_force, zellij_args_list,
+        zellij_args_write_chars, zellij_spawn_error_outcome, KillSessionOutcome,
+        ZellijOutcome,
+    };
+
+    // ── The shipped resources ────────────────────────────────────────────
+    //
+    // Embedded with `include_str!`, not read from a path at runtime — the same
+    // choice remote-manifest.json makes above, for the same reason: a runtime
+    // read passes on a dev box and fails on a user's machine, while a missing
+    // or renamed file here fails the BUILD. That is exactly the class of
+    // failure 3709c53 spent a round chasing.
+    const ZELLIJ_KDL: &str = include_str!("../resources/ymux-zellij.kdl");
+    const ZELLIJ_LAYOUT: &str = include_str!("../resources/layouts/ymux.kdl");
+    const TAURI_CONF: &str = include_str!("../tauri.conf.json");
+
+    /// Strip `//` comment lines so an assertion cannot pass on prose. Both kdl
+    /// files are mostly comments, and every one of them mentions the keys.
+    fn code_only(kdl: &str) -> String {
+        kdl.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Zellij is a persistence layer under a ymux pane, not a multiplexer the
+    /// user drives. Each key here is one piece of that; a silent drop would
+    /// show up only as chrome reappearing on someone's screen.
+    #[test]
+    fn zellij_config_is_the_full_lock() {
+        let code = code_only(ZELLIJ_KDL);
+        for key in [
+            "pane_frames false",
+            "default_layout \"ymux\"",
+            "keybinds clear-defaults=true {",
+            "default_mode \"locked\"",
+            "mouse_mode true",
+            "show_release_notes false",
+            "show_startup_tips false",
+        ] {
+            assert!(code.contains(key), "ymux-zellij.kdl lost `{key}`:\n{code}");
+        }
+    }
+
+    /// `keybinds clear-defaults=true` with NO children fails to parse —
+    /// "keybindings with no children", from `zellij setup --check` on
+    /// 2026-08-20. The empty body is load-bearing, so it is pinned.
+    #[test]
+    fn the_cleared_keybinds_block_keeps_its_body() {
+        let code = code_only(ZELLIJ_KDL);
+        let at = code
+            .find("keybinds clear-defaults=true")
+            .expect("keybinds line");
+        assert!(
+            code[at..].starts_with("keybinds clear-defaults=true {"),
+            "the empty `{{ }}` body is required by zellij's parser:\n{}",
+            &code[at..],
+        );
+    }
+
+    /// One pane, no plugin rows. The two plugin rows in zellij's DEFAULT
+    /// layout are what "the frame is still there" actually was — `pane_frames
+    /// false` never touched them.
+    #[test]
+    fn zellij_layout_is_one_pane_and_no_plugins() {
+        let code = code_only(ZELLIJ_LAYOUT);
+        assert!(
+            !code.contains("plugin location="),
+            "a plugin row is chrome the pane cannot afford:\n{code}"
+        );
+        assert!(!code.contains("tab "), "no explicit tab node:\n{code}");
+        assert_eq!(
+            code.matches("pane").count(),
+            1,
+            "exactly one pane — ymux owns splitting:\n{code}"
+        );
+    }
+
+    /// The config selects the layout BY NAME. Renaming one file without the
+    /// other leaves a `default_layout` that resolves to nothing, and zellij is
+    /// not loud about that.
+    #[test]
+    fn the_config_names_the_layout_file_that_ships_with_it() {
+        assert!(
+            code_only(ZELLIJ_KDL).contains("default_layout \"ymux\""),
+            "default_layout must name layouts/ymux.kdl"
+        );
+    }
+
+    /// Wrote the file, forgot the bundle entry — an installed build would then
+    /// find neither and fall back to zellij's own config.
+    #[test]
+    fn bundled_zellij_resources_are_declared_in_tauri_conf() {
+        let conf: serde_json::Value =
+            serde_json::from_str(TAURI_CONF).expect("tauri.conf.json must parse");
+        let res = conf["bundle"]["resources"]
+            .as_array()
+            .expect("bundle.resources must be an array");
+        for want in ["resources/ymux-zellij.kdl", "resources/layouts/ymux.kdl"] {
+            assert!(
+                res.iter().any(|v| v.as_str() == Some(want)),
+                "tauri.conf.json does not bundle `{want}`"
+            );
+        }
+    }
+
+    /// All-or-nothing: a directory holding only the config would promise a
+    /// `default_layout` the layouts dir cannot keep.
+    #[test]
+    fn zellij_resources_are_all_or_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let roots = vec![root.clone()];
+
+        assert!(
+            pick_zellij_resources(&roots).is_none(),
+            "an empty root resolves to nothing"
+        );
+
+        std::fs::write(root.join("ymux-zellij.kdl"), "pane_frames false\n").expect("write config");
+        assert!(
+            pick_zellij_resources(&roots).is_none(),
+            "config without the layout must be refused"
+        );
+
+        std::fs::create_dir_all(root.join("layouts")).expect("mkdir layouts");
+        std::fs::write(root.join("layouts").join("ymux.kdl"), "layout {\n pane\n}\n")
+            .expect("write layout");
+        let got = pick_zellij_resources(&roots).expect("both present resolves");
+        assert_eq!(got.config_dir, root);
+        assert_eq!(got.config_file, root.join("ymux-zellij.kdl"));
+    }
+
+    /// The layout-only half of the same rule, kept separate so a failure names
+    /// which direction broke.
+    #[test]
+    fn a_layout_without_its_config_is_refused() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(root.join("layouts")).expect("mkdir layouts");
+        std::fs::write(root.join("layouts").join("ymux.kdl"), "layout {\n pane\n}\n")
+            .expect("write layout");
+        assert!(pick_zellij_resources(&[root]).is_none());
+    }
+
+    #[test]
+    fn parses_the_real_captured_line() {
+        let out = parse_zellij_sessions("spike [Created 12m 30s ago]\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "spike");
+        assert!(!out[0].attached);
+        // created = now - 750s; allow a couple of seconds of clock drift.
+        let age = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - out[0].created;
+        assert!((748..=752).contains(&age), "age was {age}, expected ~750");
+    }
+
+    #[test]
+    /// 2026-08-20: this is no longer just "do not drop rows" — it is the
+    /// REBOOT-RESTORE path. A Windows reboot leaves every zellij session
+    /// EXITED, and App.tsx feeds this list to `attach -c` to bring them back.
+    /// The guarantee that a KILLED session stays dead is `delete-session -f`
+    /// in pane_kill_session, not a filter here.
+    fn an_exited_session_is_kept_because_it_can_be_resurrected() {
+        // Surviving a reboot is the one thing zellij does that tmux cannot.
+        // Dropping these rows would throw away the whole point.
+        let out = parse_zellij_sessions(
+            "old [Created 3h 4m 1s ago] (EXITED - attach to resurrect)\n",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "old");
+        assert!(!out[0].attached);
+    }
+
+    #[test]
+    fn current_marks_the_session_as_attached() {
+        let out = parse_zellij_sessions("mine [Created 5s ago] (current)\n");
+        assert!(out[0].attached);
+    }
+
+    #[test]
+    fn the_empty_message_is_not_a_session() {
+        // zellij prints this sentence on stdout rather than an empty body.
+        assert!(parse_zellij_sessions("No active zellij sessions found.\n").is_empty());
+        assert!(parse_zellij_sessions("").is_empty());
+        assert!(parse_zellij_sessions("   \n\n").is_empty());
+    }
+
+    #[test]
+    fn sessions_come_back_newest_first() {
+        let out = parse_zellij_sessions(
+            "older [Created 2h ago]\nnewest [Created 3s ago]\nmiddle [Created 10m ago]\n",
+        );
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["newest", "middle", "older"]);
+    }
+
+    #[test]
+    fn an_undateable_row_is_still_offered() {
+        // A future zellij could reword the bracket. Losing the age is fine;
+        // losing a session the user can still attach to is not.
+        let out = parse_zellij_sessions("weird-format-session\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "weird-format-session");
+    }
+
+    #[test]
+    fn durations_add_up_across_units() {
+        assert_eq!(parse_zellij_duration("30s"), 30);
+        assert_eq!(parse_zellij_duration("12m 30s"), 750);
+        assert_eq!(parse_zellij_duration("3h 4m 1s"), 3 * 3600 + 4 * 60 + 1);
+        assert_eq!(parse_zellij_duration("2days 1h"), 2 * 86_400 + 3600);
+        // Unknown units are skipped, not treated as seconds.
+        assert_eq!(parse_zellij_duration("5fortnights 10s"), 10);
+        assert_eq!(parse_zellij_duration(""), 0);
+    }
+
+    #[test]
+    fn ms_does_not_get_read_as_minutes() {
+        // "m" is a prefix of "ms"; ordering the match arms wrong would turn
+        // 500ms into 500 minutes and date every session eight hours old.
+        assert_eq!(parse_zellij_duration("500ms"), 0);
+        assert_eq!(parse_zellij_duration("5m"), 300);
+    }
+
+    #[test]
+    fn zellij_verbs_are_the_ones_0_44_3_documents() {
+        // Captured from `zellij 0.44.3 --help` on Windows, 2026-08-19. If a
+        // future zellij renames one of these, this test is where it shows up
+        // rather than in a silent no-op at runtime.
+        assert_eq!(zellij_args_list(), vec!["list-sessions", "-n"]);
+        assert_eq!(
+            zellij_args_delete_force("ymux-p_1a2b_0"),
+            vec!["delete-session", "-f", "ymux-p_1a2b_0"]
+        );
+    }
+
+    /// THE test on this path. `delete-session [OPTIONS] <TARGET_SESSION>` —
+    /// swap the two and clap reads `-f` as the session to destroy, which is a
+    /// silent wrong-target destroy, the worst thing a Kill button can do.
+    #[test]
+    fn the_force_flag_comes_before_the_session_name() {
+        let a = zellij_args_delete_force("ymux-p_1a2b_0");
+        assert_eq!(a[0], "delete-session");
+        assert_eq!(a[1], "-f", "-f must precede the session name");
+        assert_eq!(a[2], "ymux-p_1a2b_0");
+    }
+
+    /// One click, one verb. The old two-step (`kill-session`, then
+    /// `delete-session` only if the kill failed) left a resurrectable corpse
+    /// and could not be reached a second time from the UI.
+    #[test]
+    fn one_click_is_one_verb() {
+        let a = zellij_args_delete_force("s");
+        assert_eq!(a.len(), 3, "exactly one verb with one flag and one name");
+        assert!(
+            !a.iter().any(|x| x == "kill-session"),
+            "kill-session leaves a resurrectable copy — it is not what Kill means"
+        );
+    }
+
+    /// "zellij is not installed" and "the verb failed" used to be the same
+    /// `false`, which is why a Kill with no zellij present reported success.
+    #[test]
+    fn a_missing_binary_is_not_a_failed_verb() {
+        use std::io::ErrorKind;
+        assert_eq!(
+            zellij_spawn_error_outcome(ErrorKind::NotFound, "not found"),
+            ZellijOutcome::Missing
+        );
+        assert!(matches!(
+            zellij_spawn_error_outcome(ErrorKind::PermissionDenied, "denied"),
+            ZellijOutcome::Failed { .. }
+        ));
+    }
+
+    /// The IPC contract App.tsx and rpc_server.rs both read. Nothing else
+    /// pins these field names, and a rename would show up as a false "kill
+    /// failed" toast on a kill that worked.
+    #[test]
+    fn kill_outcome_serializes_the_field_names_the_frontend_reads() {
+        let o = KillSessionOutcome::new("killed", "zellij", Some("ymux-p_1".into()));
+        let v = serde_json::to_value(&o).expect("serialize");
+        assert_eq!(v["result"], "killed");
+        assert_eq!(v["backend"], "zellij");
+        assert_eq!(v["session"], "ymux-p_1");
+        assert!(
+            v.get("detail").is_none(),
+            "skip_serializing_if must drop absent fields, not send null"
+        );
+    }
+
+    /// `no_session` means there was nothing to destroy, which satisfies the
+    /// caller — so it must not read as a failure and pop an error toast.
+    #[test]
+    fn nothing_to_destroy_counts_as_gone() {
+        assert!(KillSessionOutcome::new("killed", "zellij", None).is_gone());
+        assert!(KillSessionOutcome::new("already_gone", "zellij", None).is_gone());
+        assert!(KillSessionOutcome::new("no_session", "none", None).is_gone());
+        assert!(!KillSessionOutcome::new("failed", "zellij", None).is_gone());
+        assert!(!KillSessionOutcome::new("multiplexer_missing", "zellij", None).is_gone());
+    }
+
+    #[test]
+    fn zellij_write_chars_targets_the_session_before_the_subcommand() {
+        // `-s` is a ROOT option in zellij's CLI, so it has to precede `action`.
+        // Getting that order wrong is a silent no-op: zellij would look for a
+        // session named "action" and the wizard's command would vanish.
+        let a = zellij_args_write_chars("ymux-p_1a2b_0", "claude --continue
+");
+        assert_eq!(
+            a,
+            vec!["-s", "ymux-p_1a2b_0", "action", "write-chars", "claude --continue
+"]
+        );
+    }
+
+    #[test]
+    fn zellij_write_chars_keeps_the_script_in_one_argv_slot() {
+        // The script carries spaces, quotes, backslashes and a CRLF. It must
+        // reach zellij as ONE argument with no shell in between (Rule #3) — a
+        // split here would execute fragments of the user's command.
+        let script = "cd \"C:\\Program Files\\x\" && claude --continue\r\n";
+        let a = zellij_args_write_chars("s", script);
+        assert_eq!(a.len(), 5);
+        assert_eq!(a[4], script);
+        assert!(a[4].contains(' '), "spaces stay inside the slot");
+        assert!(a[4].ends_with("\r\n"), "the newline is what submits it");
+    }
+
+    #[test]
+    fn zellij_verbs_pass_the_name_as_one_argv_slot() {
+        // Rule #3: no shell in between, so a name is never re-parsed. Names
+        // come from `sanitize_session_name` and cannot contain spaces today —
+        // this pins the argv shape so that stays true if it ever changes.
+        let args = zellij_args_delete_force("weird name; rm -rf");
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[2], "weird name; rm -rf");
+    }
+
+    #[test]
+    fn zellij_sessions_flag_exited_ones() {
+        // The EXITED marker is what tells the picker "attaching resurrects
+        // this" instead of "this is live". Dropping it is how a dead session
+        // became indistinguishable from a running one.
+        let out = parse_zellij_sessions(
+            "live-one [Created 5s ago] 
+dead-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
+",
+        );
+        assert_eq!(out.len(), 2);
+        let dead = out.iter().find(|s| s.name == "dead-one").expect("dead-one parsed");
+        let live = out.iter().find(|s| s.name == "live-one").expect("live-one parsed");
+        assert!(dead.exited, "EXITED row must be flagged");
+        assert!(!live.exited, "a live row must not be");
+        assert!(!dead.attached, "an exited session has nobody attached");
+    }
+
+    #[test]
+    fn zellij_attach_command_is_a_single_safe_line() {
+        let cmd = build_zellij_attach_command("ymux-p_1a2b_0");
+        assert_eq!(cmd, "zellij attach -c ymux-p_1a2b_0\r\n");
+        // One line typed into a shell: a stray newline would run whatever
+        // followed it as a second command.
+        assert_eq!(cmd.matches('\n').count(), 1);
+        assert!(cmd.ends_with("\r\n"));
+    }
+}
+
+#[cfg(test)]
+mod wsl_migration_tests {
+    // The WSL removal is the part of this change that can cost a user every
+    // workspace they have, so it gets covered before it ships. The failure
+    // being guarded against is concrete: `Connection` is serde-tagged and
+    // lives in workspaces.json, so an unparseable variant fails the WHOLE
+    // file and load_from_disk then refuses all later saves.
+    use super::{migrate_wsl_workspaces, Connection, LayoutNode, PaneKind, WorkspacesFile};
+    use ymux_types::Workspace;
+
+    fn pane(conn: Option<Connection>) -> LayoutNode {
+        LayoutNode::Pane {
+            pane_id: "p_test".into(),
+            pane_kind: PaneKind::Terminal,
+            connection: conn,
+            browser: None,
+            title: None,
+            auto_title: None,
+            annotation: None,
+            color: None,
+            emoji: None,
+            help_topic: None,
+            diff_source: None,
+            smart_bidi: None,
+        }
+    }
+
+    fn ws(conn: Option<Connection>, layout: Option<LayoutNode>) -> Workspace {
+        Workspace {
+            id: "w_test".into(),
+            name: "test".into(),
+            connection: conn,
+            layout,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_wsl_workspace_becomes_local_and_keeps_everything_else() {
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![ws(
+                Some(Connection::Wsl { distro: Some("Ubuntu".into()) }),
+                Some(pane(None)),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1);
+        assert!(matches!(
+            f.workspaces[0].connection,
+            Some(Connection::Local { .. })
+        ));
+        assert_eq!(f.workspaces[0].name, "test", "the workspace itself survives");
+        assert!(f.workspaces[0].layout.is_some(), "the layout survives");
+    }
+
+    #[test]
+    fn a_wsl_connection_on_a_PANE_is_migrated_too() {
+        // A pane can carry its own connection that overrides the workspace's.
+        // Migrating only the workspace would leave a wsl pane inside a local
+        // workspace, with no spawn path left behind it.
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![ws(
+                Some(Connection::Local { shell: None }),
+                Some(LayoutNode::Split {
+                    split_id: "sp_1".into(),
+                    direction: ymux_types::SplitDirection::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(pane(Some(Connection::Wsl { distro: None }))),
+                    second: Box::new(pane(Some(Connection::Local { shell: None }))),
+                }),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1, "the nested pane counts");
+    }
+
+    #[test]
+    fn ssh_and_local_workspaces_are_left_completely_alone() {
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![
+                ws(
+                    Some(Connection::Ssh {
+                        host: "h".into(),
+                        user: "u".into(),
+                        port: 22,
+                        key_path: None,
+                    }),
+                    Some(pane(None)),
+                ),
+                ws(Some(Connection::Local { shell: Some("pwsh.exe".into()) }), None),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 0, "nothing to do → no persist");
+        assert!(matches!(f.workspaces[0].connection, Some(Connection::Ssh { .. })));
+        // The chosen shell must not be flattened away by a careless rewrite.
+        match &f.workspaces[1].connection {
+            Some(Connection::Local { shell }) => assert_eq!(shell.as_deref(), Some("pwsh.exe")),
+            _ => panic!("the local workspace's connection was altered"),
+        }
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let mut f = WorkspacesFile {
+            version: 1,
+            workspaces: vec![ws(Some(Connection::Wsl { distro: None }), None)],
+            ..Default::default()
+        };
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1);
+        assert_eq!(migrate_wsl_workspaces(&mut f), 0, "second pass must be a no-op");
+    }
+
+    #[test]
+    fn a_workspaces_json_containing_wsl_still_DESERIALISES() {
+        // The whole reason the enum variant is kept. If this ever fails, every
+        // user with a wsl workspace loses their entire file on upgrade.
+        let json = r#"{"version":1,"active_workspace_id":null,"workspaces":[
+            {"id":"w1","name":"WSL","connection":{"type":"wsl","distro":"Ubuntu"}}
+        ]}"#;
+        let mut f: WorkspacesFile =
+            serde_json::from_str(json).expect("a wsl connection must still parse");
+        assert_eq!(f.workspaces.len(), 1);
+        assert_eq!(migrate_wsl_workspaces(&mut f), 1);
     }
 }

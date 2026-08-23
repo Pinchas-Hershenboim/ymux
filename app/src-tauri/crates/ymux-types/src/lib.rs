@@ -39,13 +39,20 @@ pub enum Connection {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key_path: Option<String>,
     },
-    /// Phase 80: a local workspace whose panes run inside a WSL distro,
-    /// wrapped in tmux for persistence across app restarts (same attach
-    /// mechanism as SSH panes, transported over wsl.exe instead of SSH).
-    /// Old workspaces.json files never contain `"type":"wsl"`, so their
-    /// round-trip is untouched; an OLDER app build cannot read a file
-    /// containing a wsl workspace (serde unknown-variant) — release-note
-    /// caveat, same posture as every prior variant addition.
+    /// **DEPRECATED 2026-08-19 — deserialization shim only. Do not create.**
+    ///
+    /// Phase 80 ran local panes inside a WSL distro wrapped in tmux, purely
+    /// to get session persistence. Native Windows panes have that now via
+    /// zellij, so WSL earns nothing and the whole path is gone.
+    ///
+    /// The variant itself stays for exactly one reason: `Connection` is
+    /// `#[serde(tag = "type")]` and lives in `workspaces.json`. Removing it
+    /// while any file in the wild still contains `"type":"wsl"` makes serde
+    /// reject the WHOLE file, and `load_from_disk` then refuses every later
+    /// save — the `load FAILED … persists will refuse` failure already seen
+    /// on 2026-08-18. So it must still parse; `migrate_wsl_workspaces`
+    /// rewrites it to `Local` on load, and the variant can be deleted a
+    /// release later, once no file can still carry one.
     Wsl {
         /// None = the machine's default distro.
         #[serde(default, skip_serializing_if = "Option::is_none")]

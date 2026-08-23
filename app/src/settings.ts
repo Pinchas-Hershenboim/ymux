@@ -3,7 +3,20 @@
 // this file is the typed mirror used by the frontend.
 
 import { invoke } from "@tauri-apps/api/core";
-import { setTerminalFont, setTerminalTheme, setRtlMode, setAutoDirection, setAutoResetOnConnect, type RtlMode } from "./terminalInstance";
+import { createLogger } from "./logger";
+
+/** Rule #9: the unified logger, not console.*. */
+const rtlLog = createLogger("SETTINGS");
+import {
+  setTerminalFont,
+  setTerminalTheme,
+  setRtlProfiles,
+  setAutoResetOnConnect,
+  type RtlMode,
+  type RtlProfileSettings,
+  type DirectionPolicy,
+} from "./terminalInstance";
+import type { RtlProfileKind } from "./types";
 import type { ITheme } from "@xterm/xterm";
 
 export interface AnsiPalette {
@@ -64,10 +77,34 @@ export interface TerminalSettings {
   auto_direction?: boolean;
   /** 2026-08-18: force LTR while a self-bidi TUI holds the pane. Default false. */
   tui_owns_bidi?: boolean;
+  /** 2026-08-19: the four RTL knobs above, split per pane class. The flat
+   *  fields are deprecated and kept only so a pre-split settings.json still
+   *  loads; the backend seeds this from them on first load. Optional here
+   *  because that migration is what fills it in. */
+  rtl?: RtlProfilesSettings;
   /** v0.4.4-beta.2: clear stale mouse-tracking modes on connect (fixes the
    *  `\e[<..M` mouse-escape leak from an unclean vim/fzf/less exit).
    *  Default true. */
   auto_reset_on_connect?: boolean;
+}
+
+/** One class of pane's RTL knobs. Mirrors `RtlProfile` in settings.rs. */
+export interface RtlProfileFields {
+  rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
+  auto_direction?: boolean;
+  mirror_arrows_rtl?: boolean;
+  tui_owns_bidi?: boolean;
+  /** 2026-08-19: which rule sets a row's paragraph direction. Absent reads as
+   *  "any_rtl", the pre-2026-08-19 rule — see `directionPolicy` in
+   *  terminalInstance.ts for why this is per pane class and not per TUI. */
+  direction_policy?: DirectionPolicy;
+}
+
+/** `local` = native Windows ConPTY panes; `remote` = anything with a POSIX
+ *  shell behind it, which includes WSL. See `profileFor` in types.ts. */
+export interface RtlProfilesSettings {
+  local?: RtlProfileFields;
+  remote?: RtlProfileFields;
 }
 
 export interface HooksSettings {
@@ -452,6 +489,54 @@ export const checkForUpdates = (): Promise<UpdateInfo> =>
  * them (var(--w-bg) etc.) so the entire UI re-tints instantly. Called on
  * startup after load and on every `settings:changed` event.
  */
+/**
+ * 2026-08-19: settings → the per-profile RTL record the terminals read.
+ *
+ * Falls back to the deprecated flat fields per key, so this stays correct in
+ * the window before the backend migration has run (and if a hand-edited
+ * settings.json carries only one of the two shapes). `local` and `remote`
+ * deliberately fall back to DIFFERENT defaults — they were measured to need
+ * opposite modes; see `profileFor` in types.ts.
+ */
+export function resolveRtlProfiles(
+  t: TerminalSettings,
+): Record<RtlProfileKind, RtlProfileSettings> {
+  const pick = (
+    p: RtlProfileFields | undefined,
+    fallbackMode: RtlMode,
+    // 2026-08-19: local defaults this ON and remote OFF, because Claude Code on
+    // Windows writes RTL already in visual order (measured with
+    // `zellij action dump-screen`) while the remote path does not need it.
+    fallbackTuiOwnsBidi: boolean,
+  ): RtlProfileSettings => ({
+    rtlMode: (p?.rtl_mode ?? t.rtl_mode ?? fallbackMode) as RtlMode,
+    autoDirection: p?.auto_direction ?? t.auto_direction ?? true,
+    mirrorArrowsRtl: p?.mirror_arrows_rtl ?? t.mirror_arrows_rtl ?? true,
+    tuiOwnsBidi: p?.tui_owns_bidi ?? t.tui_owns_bidi ?? fallbackTuiOwnsBidi,
+    // No flat-field fallback on purpose: `direction_policy` postdates the
+    // split, so there is no deprecated global to inherit from, and an absent
+    // value must mean the older rule rather than the newer one.
+    directionPolicy: p?.direction_policy ?? "any_rtl",
+  });
+  const out = {
+    local: pick(t.rtl?.local, "auto_per_line", true),
+    remote: pick(t.rtl?.remote, "auto_per_line", false),
+  };
+  // 2026-08-19: state what was actually resolved, and whether the stored block
+  // existed at all. Two separate bugs hid behind this — a partial profile write
+  // collapsing unspecified fields to the wrong defaults, and a stale client
+  // save dropping `terminal.rtl` entirely — and neither was visible from the
+  // per-pane logs, which report the RESULT without saying where it came from.
+  rtlLog.info(
+    `rtl-profiles block=${t.rtl ? 1 : 0} ` +
+      `local(mode=${out.local.rtlMode},tui=${out.local.tuiOwnsBidi ? 1 : 0},` +
+      `policy=${out.local.directionPolicy}) ` +
+      `remote(mode=${out.remote.rtlMode},tui=${out.remote.tuiOwnsBidi ? 1 : 0},` +
+      `policy=${out.remote.directionPolicy})`,
+  );
+  return out;
+}
+
 export function applyTheme(s: Settings): void {
   const r = document.documentElement.style;
   const t = s.theme;
@@ -500,10 +585,7 @@ export function applyTheme(s: Settings): void {
   // Phase 15.A: push the RTL mode. The write pipeline flips immediately
   // on every live pane; the renderer choice (DOM vs WebGL) is sticky
   // per pane and only affects newly-opened terminals.
-  const mode = (s.terminal.rtl_mode ?? "auto_per_line") as RtlMode;
-  setRtlMode(mode);
-  // v0.4.4: per-line auto-direction escape hatch (default on).
-  setAutoDirection(s.terminal.auto_direction ?? true);
+  setRtlProfiles(resolveRtlProfiles(s.terminal));
   // v0.4.4-beta.2: clear stale mouse-tracking modes on connect (default on).
   setAutoResetOnConnect(s.terminal.auto_reset_on_connect ?? true);
 

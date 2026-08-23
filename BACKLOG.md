@@ -11,7 +11,7 @@ Format:
 
 ## Open
 
-- [ ] 2026-08-03 | manual | **P2** — `typescript` is not a project dependency; there is no reproducible type-check
+- [x] 2026-08-03 | manual | **P2** — `typescript` is not a project dependency; there is no reproducible type-check — **DONE 2026-08-19.** `typescript@~5.6.2` is in `app/package.json` devDependencies and `npm run typecheck` now exists. `ci-windows.yml` had been papering over this with `npm i --no-save typescript@5`, which also meant CI type-checked against a different minor than developers ran locally; that line is gone.
 
   Found during the Phase 2 rebase verification. `app/node_modules` was
   completely empty (0 entries) in the main checkout, so no frontend
@@ -94,5 +94,18 @@ Payoff is real though — it is what would fix the two FOLLOWUPS above
 (diff_pane on remote workspaces, addons misclassifying WSL) rather than
 patching each one separately.
 
-
 ## Done
+
+### Scrollback inside a locked zellij pane (2026-08-20 — closed same day)
+
+Filed when the full lock shipped with `mouse_mode false`: no keybinds meant no scroll
+mode, the mouse was withheld, and xterm.js's own wheel scrolls a normal buffer that sits
+behind zellij's alt screen — so a zellij pane could not scroll back at all.
+
+Closed by giving zellij the wheel (`mouse_mode true`) rather than by building the
+`dump-screen --full` viewer this entry proposed. That viewer is not needed: the wheel is
+the affordance, and it is the same bet the tmux side already took (`set -g mouse on`,
+decision O-3 in docs/MOUSE-DEBUG.md).
+
+(Also: this entry was originally appended below the `## Done` heading by mistake, so it
+read as done on the day it was filed. It is done now, which is a coincidence.)
