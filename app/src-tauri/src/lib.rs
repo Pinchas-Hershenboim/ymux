@@ -11202,6 +11202,7 @@ pub fn run() {
             settings::list_system_fonts,
             fonts::font_catalog,
             fonts::font_install,
+            fonts::font_uninstall,
             updater::check_for_updates_now,
             updater::download_and_install_update,
             updater::updater_skip_version,

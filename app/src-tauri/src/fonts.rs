@@ -17,6 +17,12 @@
 //!                it with the shell so the user gets Windows' own
 //!                "Install" button. A locked-down box (GPO, AV) can refuse
 //!                the silent path; it must not become a dead end.
+//!
+//! And the mirror: `font_uninstall` removes what `font_install` put there.
+//! Symmetry is the point — we wrote those files, so we owe the user a way
+//! to remove them that is not "hand-delete from %LOCALAPPDATA% and HKCU".
+//! Only the guided path is one-way, and only because Windows performed
+//! that install, not us.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -184,6 +190,28 @@ pub(crate) struct FontCatalogItem {
     pub homepage: String,
     pub license: String,
     pub download_bytes: u64,
+    /// At least one face of this entry is present in the per-user font
+    /// directory right now. Drives the Remove button.
+    ///
+    /// Derived from the directory rather than from a record of what we
+    /// installed, deliberately: a manifest would only know about installs
+    /// done AFTER it shipped, and every font already on a user's machine
+    /// — the ones this followup was filed about — would stay unremovable.
+    pub installed: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct FontUninstallResult {
+    /// File names deleted from the per-user font directory.
+    pub removed: Vec<String>,
+    /// Registry values dropped (Windows only; empty elsewhere, where a
+    /// font is found by directory scan and has nothing to unregister).
+    pub unregistered: Vec<String>,
+    /// Faces found but NOT removed, each with its reason. The expected
+    /// case on Windows is a font file held open by a running application,
+    /// which is why this is a reported outcome and not an error: the rest
+    /// of the family still came out.
+    pub failed: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -203,6 +231,10 @@ pub(crate) struct FontInstallResult {
 
 #[tauri::command]
 pub(crate) fn font_catalog() -> Result<Vec<FontCatalogItem>, String> {
+    // One directory read for the whole catalog, not one per entry.
+    // A missing or unreadable font dir is not an error here: it means
+    // nothing is installed, which is a perfectly good answer.
+    let present = installed_face_files().unwrap_or_default();
     Ok(CATALOG
         .iter()
         .map(|e| FontCatalogItem {
@@ -212,6 +244,7 @@ pub(crate) fn font_catalog() -> Result<Vec<FontCatalogItem>, String> {
             homepage: e.homepage.to_string(),
             license: e.license.to_string(),
             download_bytes: e.assets.iter().map(|a| a.bytes).sum(),
+            installed: present.iter().any(|f| entry_owns_file(e, f)),
         })
         .collect())
 }
@@ -225,6 +258,205 @@ pub(crate) async fn font_install(id: String) -> Result<FontInstallResult, String
     tauri::async_runtime::spawn_blocking(move || install_blocking(&id))
         .await
         .map_err(|e| format!("font install task failed: {e}"))?
+}
+
+/// Remove the faces of catalog entry `id` from the per-user font
+/// directory, and drop their HKCU registrations.
+///
+/// Blocking for the same reason `font_install` is: file deletion and a
+/// registry walk are synchronous, and a font held open by another app
+/// makes the delete slow as well as fallible.
+#[tauri::command]
+pub(crate) async fn font_uninstall(id: String) -> Result<FontUninstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || uninstall_blocking(&id))
+        .await
+        .map_err(|e| format!("font uninstall task failed: {e}"))?
+}
+
+fn uninstall_blocking(id: &str) -> Result<FontUninstallResult, String> {
+    // Same as install: look the id up rather than trusting it. Here it
+    // matters more — an unchecked id would turn this into "delete an
+    // arbitrary file from the font directory".
+    let entry = CATALOG
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| format!("unknown font id: {id}"))?;
+
+    let dir = user_font_dir()?;
+    let names: Vec<String> = installed_face_files()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| entry_owns_file(entry, f))
+        .collect();
+
+    log_info(
+        "FONTS",
+        &format!("uninstall: {} ({} face(s) found)", entry.id, names.len()),
+    );
+
+    // Delete FIRST, unregister only what actually went. The other order
+    // would leave a font that is still on disk and still loadable with no
+    // registry entry — present but invisible to the picker, which is a
+    // worse state than either end of the operation.
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    let mut gone_paths = Vec::new();
+    for name in names {
+        let target = dir.join(&name);
+        match std::fs::remove_file(&target) {
+            Ok(()) => {
+                gone_paths.push(target);
+                removed.push(name);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Raced with something else removing it. Still unregister.
+                gone_paths.push(target);
+                removed.push(name);
+            }
+            Err(e) => {
+                // The everyday case: an app has the file open. Report it
+                // per-face instead of failing the whole call — the rest of
+                // the family did come out.
+                log_warn("FONTS", &format!("uninstall: {name} not removed: {e}"));
+                failed.push(format!("{name}: {e}"));
+            }
+        }
+    }
+
+    let unregistered = unregister_fonts(&gone_paths);
+    if !removed.is_empty() {
+        notify_font_change();
+    }
+    log_info(
+        "FONTS",
+        &format!(
+            "uninstall: {} done ({} removed, {} registry, {} failed)",
+            entry.id,
+            removed.len(),
+            unregistered.len(),
+            failed.len()
+        ),
+    );
+    Ok(FontUninstallResult {
+        removed,
+        unregistered,
+        failed,
+    })
+}
+
+// ─── which files belong to which entry ─────────────────────────────────────
+
+/// A font file by extension. Both are what the catalog ships and what
+/// `validate_font_magic` accepts.
+fn has_font_extension(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    lower.ends_with(".ttf") || lower.ends_with(".otf")
+}
+
+/// Does a bare file name in the per-user font dir belong to this entry?
+///
+/// Mirrors what `install_faces` wrote, from the same catalog data, which
+/// is why no install-time record is needed:
+///   - a zip asset produced every entry matching `ZipFilter::name_prefix`,
+///     so the prefix identifies them again;
+///   - a bare asset produced exactly `save_as`.
+///
+/// The prefixes are specific enough not to collide across the catalog —
+/// `FiraCodeNerdFontMono-` is not matched by `FiraCode-`, since the file
+/// names differ from the fourth character. `entry_prefixes_do_not_collide`
+/// pins that, because a future entry could break it silently.
+///
+/// A user's own hand-installed copy of the same family WOULD match. That
+/// is accepted rather than worked around: it is the same family they just
+/// asked to remove, it lives in the per-user directory either way, and the
+/// alternative — a manifest — cannot see anything installed before it
+/// existed, which is precisely the case this feature was filed for.
+fn entry_owns_file(entry: &CatalogEntry, file_name: &str) -> bool {
+    entry.assets.iter().any(|asset| match &asset.zip {
+        Some(filter) => has_font_extension(file_name) && file_name.starts_with(filter.name_prefix),
+        None => file_name.eq_ignore_ascii_case(asset.save_as),
+    })
+}
+
+/// Bare file names of every font sitting in the per-user font directory.
+/// `Err` only for a directory that exists and cannot be read; a missing
+/// one yields an empty list, since "no font dir" and "no fonts" are the
+/// same answer to every caller here.
+fn installed_face_files() -> Result<Vec<String>, String> {
+    let dir = user_font_dir()?;
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let read = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+    Ok(read
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| has_font_extension(n))
+        .collect())
+}
+
+/// Drop the HKCU values pointing at `paths`.
+///
+/// Matched by VALUE DATA rather than by rebuilding the value name.
+/// `register_font` names the value from the font's internal name table
+/// with a fallback to the file stem, so rebuilding it would have to
+/// reproduce that decision from a file that has just been deleted. The
+/// path is the thing we actually know.
+#[cfg(target_os = "windows")]
+fn unregister_fonts(paths: &[PathBuf]) -> Vec<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
+    use winreg::RegKey;
+
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = match hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows NT\CurrentVersion\Fonts",
+        KEY_READ | KEY_SET_VALUE,
+    ) {
+        Ok(k) => k,
+        Err(e) => {
+            // No key means nothing was ever registered per-user. The files
+            // are already gone, so this is not a failure.
+            log_warn("FONTS", &format!("uninstall: per-user font key unavailable: {e}"));
+            return Vec::new();
+        }
+    };
+
+    let wanted: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_lowercase())
+        .collect();
+    // Collect before deleting: mutating the key while enumerating it is
+    // undefined for the iterator.
+    let doomed: Vec<String> = key
+        .enum_values()
+        .filter_map(|r| r.ok())
+        .filter_map(|(name, _)| {
+            let data: String = key.get_value(&name).ok()?;
+            wanted.contains(&data.to_lowercase()).then_some(name)
+        })
+        .collect();
+
+    let mut dropped = Vec::new();
+    for name in doomed {
+        match key.delete_value(&name) {
+            Ok(()) => dropped.push(name),
+            Err(e) => log_warn(
+                "FONTS",
+                &format!("uninstall: cannot drop registry value {name}: {e}"),
+            ),
+        }
+    }
+    dropped
+}
+
+/// No-op off Windows, mirroring `register_font`: CoreText and fontconfig
+/// scan the directory, so removing the file IS the uninstall.
+#[cfg(not(target_os = "windows"))]
+fn unregister_fonts(_paths: &[PathBuf]) -> Vec<String> {
+    Vec::new()
 }
 
 fn install_blocking(id: &str) -> Result<FontInstallResult, String> {
@@ -651,6 +883,89 @@ fn hand_off_to_shell(faces: &[(String, Vec<u8>)]) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── uninstall: which files belong to which entry ──────────────────────
+    //
+    // The whole mechanism rests on `entry_owns_file` being exactly as wide as
+    // what `install_faces` wrote - no wider. Too narrow leaves orphans the
+    // user still cannot remove; too wide deletes somebody else's font.
+
+    #[test]
+    fn entry_owns_exactly_what_it_would_have_installed() {
+        let jb = CATALOG.iter().find(|e| e.id == "jetbrains-mono").unwrap();
+        assert!(entry_owns_file(jb, "JetBrainsMono-Regular.ttf"));
+        assert!(entry_owns_file(jb, "JetBrainsMono-BoldItalic.ttf"));
+        // The no-ligature sibling is a DIFFERENT family that the ZipFilter
+        // deliberately excludes at install time, so uninstall must not claim
+        // it either.
+        assert!(!entry_owns_file(jb, "JetBrainsMonoNL-Regular.ttf"));
+        // Not a font file.
+        assert!(!entry_owns_file(jb, "JetBrainsMono-Regular.txt"));
+        assert!(!entry_owns_file(jb, "JetBrainsMono.zip"));
+
+        // A bare-asset entry matches its exact file names and nothing else.
+        let meslo = CATALOG.iter().find(|e| e.id == "meslolgs-nf").unwrap();
+        assert!(entry_owns_file(meslo, "MesloLGS NF Regular.ttf"));
+        assert!(entry_owns_file(meslo, "MesloLGS NF Bold Italic.ttf"));
+        assert!(!entry_owns_file(meslo, "MesloLGS NF Light.ttf"));
+        // Windows file names are case-insensitive; a face installed by an
+        // older build or by the user's own hand may differ in case.
+        assert!(entry_owns_file(meslo, "meslolgs nf regular.TTF"));
+    }
+
+    #[test]
+    fn entry_prefixes_do_not_collide() {
+        // `FiraCode-` and `FiraCodeNerdFontMono-` are different families that
+        // share a stem. If a future catalog entry ever makes one prefix a
+        // prefix of another, uninstalling one would silently take the other -
+        // so this is checked over the whole catalog, not just today's pair.
+        for a in CATALOG {
+            for b in CATALOG {
+                if a.id == b.id {
+                    continue;
+                }
+                for asset in a.assets {
+                    let Some(filter) = &asset.zip else { continue };
+                    let sample = format!("{}Regular.ttf", filter.name_prefix);
+                    assert!(
+                        !entry_owns_file(b, &sample),
+                        "{} would claim {}'s file {sample}",
+                        b.id,
+                        a.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_bare_asset_is_a_font_file_we_can_find_again() {
+        // A bare asset is matched by exact name, so `save_as` has to BE the
+        // installed file name - if one ever gets a .zip extension by mistake,
+        // install writes it and uninstall can never see it.
+        for e in CATALOG {
+            for asset in e.assets {
+                if asset.zip.is_none() {
+                    assert!(
+                        has_font_extension(asset.save_as),
+                        "{}: bare asset {} is not a font file",
+                        e.id,
+                        asset.save_as
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_id_is_refused_before_anything_is_deleted() {
+        // The id is what selects files for deletion, so an unchecked one
+        // would make this "delete arbitrary things from the font directory".
+        let err = uninstall_blocking("../../etc/passwd").unwrap_err();
+        assert!(err.contains("unknown font id"), "got: {err}");
+        let err = uninstall_blocking("").unwrap_err();
+        assert!(err.contains("unknown font id"), "got: {err}");
+    }
 
     #[test]
     fn catalog_ids_are_unique_and_wired() {

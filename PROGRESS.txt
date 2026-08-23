@@ -6304,3 +6304,66 @@ extracted into a function instead.
 STATUS: per Rule #17 nothing was built or tested here; CI is the verification
 step. Live check after that: run two builds against one config dir and confirm
 the older one now says REFUSING instead of silently winning.
+
+================================================================================
+2026-08-23 | Phase 84.H - fonts: the install finally has an uninstall
+Files: app/src-tauri/src/fonts.rs, app/src-tauri/src/lib.rs (command reg),
+       app/src/settings.ts, app/src/SettingsModal.tsx, app/src/App.css,
+       app/src/i18n/{en,he,ar,ru}.json, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
+Closes FOLLOWUPS P1 of 2026-08-03 ("Install has no matching UNINSTALL")
+
+font_uninstall(id) mirrors font_install(id). 27 MB and six files no longer
+need hand-deleting from %LOCALAPPDATA%\Microsoft\Windows\Fonts and HKCU.
+
+THE DESIGN DECISION THAT MATTERS: which files belong to an entry is derived
+from the CATALOG, not recorded at install time.
+  A zip asset wrote every entry matching its ZipFilter::name_prefix; a bare
+  asset wrote exactly its save_as. The same catalog data identifies them
+  again, so entry_owns_file() needs no history.
+  A manifest written at install time was the obvious alternative and is
+  WRONG here: it would only know about installs done after it shipped, and
+  every font already on a user's machine - exactly the ones this entry was
+  filed about - would stay unremovable forever.
+  Accepted cost, written down rather than hidden: a user's own hand-installed
+  copy of the same family, in the same per-user directory, also matches. It is
+  the family they just asked to remove, and the alternative cannot see the
+  past.
+
+Two orderings that are easy to get backwards, both chosen deliberately:
+  DELETE THEN UNREGISTER. The reverse leaves a font still on disk and still
+    loadable with no registry entry - present but invisible to the picker,
+    which is a worse state than either end of the operation. Only paths that
+    actually went are unregistered.
+  MATCH REGISTRY BY DATA, NOT BY NAME. register_font builds the value name
+    from the font's internal name table with a fallback to the file stem;
+    rebuilding it at uninstall would mean reproducing that decision from a
+    file that has just been deleted. The path is the thing we know.
+
+A face held open by a running app is a REPORTED outcome (`failed`), not an
+error - the rest of the family still comes out and the UI names what did not.
+That is the everyday Windows case, not an edge one.
+
+UI: font_catalog grew an `installed` flag (read from the directory per call),
+and a new "Installed by ymux" list sits under both font pickers with a Remove
+button per row, rendering nothing when nothing is installed. It is a LIST and
+not a button beside the picker for a concrete reason: FontMissingNotice only
+renders while a family is MISSING, so an installed font had nowhere to hang a
+control. window.confirm guards it - deleting files, and the way back is a
+multi-MB download. Noted for later: the codebase has been moving destructive
+WORKSPACE actions off window.confirm to a styled component; this could follow,
+but a font removal is not that weight. i18n in all four locales.
+
+TESTS: four. The interesting one is entry_prefixes_do_not_collide, which walks
+the whole catalog rather than today's pair - `FiraCode-` and
+`FiraCodeNerdFontMono-` share a stem, and a future entry could silently make
+one swallow the other. Also: an unknown id is refused BEFORE anything is
+deleted (the id selects files for deletion, so an unchecked one turns this
+into "delete arbitrary things from the font directory"), the JetBrains
+no-ligature sibling that the install filter excludes is not claimed by
+uninstall either, and every bare asset's save_as is really a font file.
+
+STATUS: per Rule #17 nothing was built or tested here; CI is the verification
+step, and CI could not even be reached this session - `git fetch` failed on a
+network timeout, so the branch is unpushed and NOTHING here has compiled.
+Rule #14 after that: install a font, remove it, confirm the picker flips back
+to the warning row and that the files and HKCU values are really gone.

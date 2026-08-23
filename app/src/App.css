@@ -2497,6 +2497,45 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   text-decoration: none;
 }
 .font-missing-actions a:hover { text-decoration: underline; }
+/* Settings -> Fonts: the mirror of the notice above. What ymux has already
+   put on this machine, with a way to take it back off — the install notice
+   only renders while the family is MISSING, so an installed font would
+   otherwise have nowhere to hang a control. Quiet by default: this is
+   housekeeping, not a warning, so it borrows the surface colours rather
+   than the warning ones. */
+.font-installed-list {
+  margin: 8px 0 2px 0;
+  padding: 6px 10px;
+  font-size: var(--w-fs-sm);
+  background: var(--w-surface-hi);
+  border: 1px solid var(--w-border);
+  border-radius: 6px;
+}
+.font-installed-title {
+  color: var(--w-text-dim);
+  margin-bottom: 4px;
+}
+.font-installed-row {
+  display: flex;
+  align-items: center;
+  /* space-between rather than a fixed gap: the family names differ in
+     length, and the buttons should still line up down the right edge —
+     which under RTL means the left edge, handled by the flow direction
+     rather than by a hardcoded side. */
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+}
+.font-installed-name {
+  /* Long family names must not push the button off the row. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.font-installed-row button {
+  padding: 3px 10px;
+  font-size: var(--w-fs-sm);
+}
 .settings-hint code {
   background: var(--w-surface-hi);
   padding: 1px 6px;

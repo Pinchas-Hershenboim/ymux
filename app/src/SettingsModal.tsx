@@ -8,6 +8,7 @@ import {
   FontFamilies,
   FontEntry,
   FontCatalogItem,
+  fontUninstall,
   fontCatalog,
   fontInstall,
   UpdateInfo,
@@ -193,6 +194,47 @@ function FontMissingNotice(props: {
   );
 }
 
+/**
+ * The other half of FontMissingNotice: what ymux has already put on this
+ * machine, and a way to take it back off.
+ *
+ * It is a list rather than a button beside the picker, because the picker
+ * only ever shows ONE family and the notice above it only renders when that
+ * family is MISSING — so an installed font has nowhere to hang a control.
+ * Renders nothing at all when nothing is installed.
+ */
+function FontInstalledList(props: {
+  catalog: FontCatalogItem[];
+  busy: string | null;
+  onUninstall: (item: FontCatalogItem) => void;
+}) {
+  const installed = () => props.catalog.filter((c) => c.installed);
+  return (
+    <Show when={installed().length > 0}>
+      <div class="font-installed-list">
+        <div class="font-installed-title">
+          {t("settings.font.installed.title")}
+        </div>
+        <For each={installed()}>
+          {(c) => (
+            <div class="font-installed-row">
+              <span class="font-installed-name">{c.family}</span>
+              <button
+                disabled={props.busy !== null}
+                onClick={() => props.onUninstall(c)}
+              >
+                {props.busy === c.id
+                  ? t("settings.font.uninstalling")
+                  : t("settings.font.uninstall")}
+              </button>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+}
+
 interface Props {
   open: boolean;
   settings: Settings;
@@ -261,9 +303,56 @@ export function SettingsModal(p: Props) {
         );
       }
       setFonts(await listSystemFonts());
+      // The catalog carries the installed flag, so it has to be re-read
+      // too or the Remove row will not appear until Settings is reopened.
+      setCatalog(await fontCatalog());
     } catch (e) {
       log.warn("fontInstall failed", e);
       setFontNote(t("settings.font.install.failed", { error: String(e) }));
+    } finally {
+      setFontBusy(null);
+    }
+  };
+
+  /**
+   * Remove a catalog font. Confirmed first: this deletes files, and the
+   * only way back is a multi-MB download.
+   *
+   * A partial result is the expected outcome, not an error — Windows will
+   * not delete a font file that a running application has open — so the
+   * `failed` list gets its own message rather than being folded into the
+   * success one.
+   */
+  const uninstallFont = async (item: FontCatalogItem) => {
+    if (!window.confirm(t("settings.font.uninstall.confirm", { family: item.family }))) {
+      return;
+    }
+    setFontBusy(item.id);
+    setFontNote(null);
+    try {
+      const r = await fontUninstall(item.id);
+      if (r.failed.length > 0) {
+        setFontNote(
+          t("settings.font.uninstall.partial", {
+            family: item.family,
+            count: r.removed.length,
+            failed: r.failed.length,
+          }),
+        );
+        log.warn("font uninstall left faces behind", r.failed);
+      } else {
+        setFontNote(
+          t("settings.font.uninstall.ok", {
+            family: item.family,
+            count: r.removed.length,
+          }),
+        );
+      }
+      setFonts(await listSystemFonts());
+      setCatalog(await fontCatalog());
+    } catch (e) {
+      log.warn("fontUninstall failed", e);
+      setFontNote(t("settings.font.uninstall.failed", { error: String(e) }));
     } finally {
       setFontBusy(null);
     }
@@ -820,6 +909,11 @@ export function SettingsModal(p: Props) {
                     onApply={(family) =>
                       update("font", { ...p.settings.font, terminal_family: family })
                     }
+                  />
+                  <FontInstalledList
+                    catalog={catalog()}
+                    busy={fontBusy()}
+                    onUninstall={uninstallFont}
                   />
                   <Show when={fontNote()}>
                     {(note) => <p class="settings-hint">{note()}</p>}
