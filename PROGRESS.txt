@@ -5526,3 +5526,35 @@ or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
 
 =========================================================================
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.F | CI green after the merge - artifacts ready for the Mac
+--------------------------------------------------------------------------------
+ci-windows 32652194025 SUCCESS, build-macos 32652195528 SUCCESS on arm64 and x64,
+against the tree with origin/main's tmux workspace-scope (PR #17) and node20 CI
+bump (PR #19) merged in. The entitlement assertions fired again on the rebuilt
+bundle - flags=0x10002(adhoc,runtime) plus all six keys - so the node20 bump did
+not disturb them.
+
+An earlier dispatch (32651888559 / 32651889811) ran the same 82.F code before the
+merge: ci-windows SUCCESS, build-macos CANCELLED. The cancellation was this
+workflow's own `concurrency: cancel-in-progress` firing when the post-merge
+dispatch landed on the same ref - not a failure.
+
+ARTIFACTS on run 32652195528 (90-day expiry):
+  ymux-macos-arm64-dmg  22MB      ymux-macos-x64-dmg  23MB
+  ymux-macos-arm64-app  20MB      ymux-macos-x64-app  21MB
+
+The branch claude/ymux-js-macos-issue-98d625 is pushed and even with main. No PR
+opened - Yossi's call.
+
+STILL UNDONE, and it is the whole point (Rule #14): nobody has RUN this. Both
+halves need a human, in this order:
+  1. Windows, as the control. Open the Browser on a service, capture every
+     BROWSERDIAG line from Settings -> Logs. Healthy = p=boot/feat/scripts/report
+     with a non-zero `gd`. The new terminal-icon button next to Dev Mode should
+     open the inspector on the page.
+  2. The Mac. Drag the .app to /Applications (not from the mounted dmg - App
+     Translocation), xattr -dr com.apple.quarantine, same URL, wait ~10s, copy
+     every BROWSERDIAG and page_load line. Verdict table: docs/DECISIONS.md,
+     Open section, the 82.E entry.
