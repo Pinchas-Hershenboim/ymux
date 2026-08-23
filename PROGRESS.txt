@@ -6741,7 +6741,6 @@ tree, or ship it warn-only for one cycle and flip it to blocking after.
 Also worth stating plainly: this branch has now merged origin/main FOUR times
 in one session and is racing a tree that four other sessions are pushing to.
 Every extra hour open is another merge. It is green and reviewable now.
-================================================================================
 2026-08-24 — TMUX picker: mark the sessions that belong to another folder
 Branch: yos/tmux-folder-files-display-785d6f
 
@@ -6831,3 +6830,11 @@ STATUS: not built, not run. `git fetch` failed this session (no route to
 github.com), so this has NOT been rebased on current origin/main — fetch before
 pushing, per Rule #15. CI is the verification step (Rule #17) and even green CI
 is "compiles, untested" (Rule #14); the smoke list is in FOLLOWUPS P1.
+
+[2026-08-23] Phase 88: CI speedup — parallel jobs, PR-lean mac build, paths-ignore
+- Task: every PR ran ~6 min serial ci-windows + 7-10 min full mac release (bundle+dmg+signing). Cut PR wall-clock to ~4 min.
+- ci-windows.yml: split into 3 parallel jobs — frontend (parse-check, vault gate, tsc, npm test, vite build), rust (stage CLI + cargo test, windows), go (vet/test/cross-build/rebake gate/sdk drift, MOVED TO ubuntu-latest — linux is the shipping platform, GOOS=windows testing was an accident of the runner). Go cross-build deduped: one compile per arch (was two), binary copied from the ./... output dir.
+- build-macos-intel.yml: on pull_request only the gates run (cargo test, tsc, frontend build, CLI arch assert); .app bundle, embed assert, dmg, signing, notarisation, uploads all gated behind github.event_name != 'pull_request' (still run on push to main + dispatch). Removed stale `npm i --no-save typescript@5` (typescript is a devDependency since the engines bump).
+- Both workflows: paths-ignore for PROGRESS*/FOLLOWUPS*/BACKLOG/README*/.claude — docs/** deliberately still triggers (vault gate). Safe: no required checks on main (verified 404 on branch protection).
+- Files: .github/workflows/ci-windows.yml, .github/workflows/build-macos-intel.yml, CLAUDE.md (CI section), PROGRESS.txt. Vault: workflows not covered by lock; build-glue.md claims still true, no prose change needed; vault-check clean.
+- Result: compiles-not-applicable (YAML); verification = the PR's own CI runs. Trade-off logged: mac bundle-stage breaks now surface on the merge run instead of the PR.
