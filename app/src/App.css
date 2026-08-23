@@ -5293,6 +5293,9 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   background: rgba(224, 86, 122, 0.12);
 }
 .bw-devmode-btn.active:hover { color: #e0567a; }
+/* Web Inspector. A plain action next to the Dev Mode toggle — it has no
+   lit state to advertise, because the inspector is its own window. */
+.bw-devtools-btn { margin-inline-start: 2px; }
 .bw-port-server {
   flex: 0 0 auto;
   font-size: 12px;

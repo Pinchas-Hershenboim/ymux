@@ -9972,6 +9972,7 @@ pub fn run() {
             workspace_browser::workspace_browser_hide,
             workspace_browser::workspace_browser_navigate,
             workspace_browser::workspace_browser_eval,
+            workspace_browser::workspace_browser_open_devtools,
             workspace_browser::workspace_browser_close,
             workspace_browser::workspace_browser_resize,
             tickets::tickets_list,

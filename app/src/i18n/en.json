@@ -464,6 +464,7 @@
   "browser.dev.on": "Dev Mode: right-click an element to open a ticket",
   "browser.dev.off": "Dev Mode is on — click to turn off",
   "browser.dev.captured": "Element captured",
+  "browser.devtools.open": "Open Web Inspector on the page (console, network, errors)",
   "tickets.modal.title": "New ticket",
   "tickets.modal.url": "Page",
   "tickets.modal.selector": "Element",

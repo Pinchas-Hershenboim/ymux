@@ -370,14 +370,17 @@ pub(crate) async fn workspace_browser_show(
             .on_navigation(move |url| handle_ticket_navigation(&bridge_app, &bridge_ws, url))
             // ----- Phase 82.E diagnostics (see the const block above) -----
             .initialization_script(DIAG_SCRIPT)
-            // macOS only: without the `devtools` feature wry never calls
-            // `setInspectable(true)`, so Safari's Develop menu cannot
-            // attach. This webview shows a tunneled third-party service,
-            // not ymux's own UI, so an inspector here leaks nothing of
-            // ours — and the main window is explicitly opted OUT in
-            // lib.rs, because enabling the feature flips the default for
-            // every webview to `true`.
-            .devtools(cfg!(target_os = "macos"))
+            // Both platforms, on purpose (Yossi's call): the Windows
+            // build is the control run for the macOS bug, and a control
+            // you cannot inspect is worth much less. Without the
+            // `devtools` feature wry never calls `setInspectable(true)`
+            // on macOS, so Safari's Develop menu cannot attach at all.
+            // This webview shows a tunneled third-party service, not
+            // ymux's own UI, so an inspector here exposes nothing of
+            // ours — the main and popout windows are explicitly opted
+            // OUT in lib.rs, because enabling the feature flips the
+            // runtime default for every webview to `true`.
+            .devtools(true)
             // Handlers run on the WebView2 UI thread / the macOS KVO
             // thread. They may only decode and log — `log_*` just pushes
             // onto a channel. Anything that re-enters the webview (an
@@ -527,6 +530,44 @@ pub(crate) async fn workspace_browser_eval(
         .ok_or_else(|| format!("no browser webview for workspace {workspace_id}"))?;
     webview.eval(js).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Open the inspector on the workspace's Browser webview.
+///
+/// The one-click alternative to Safari → Develop → <machine> → <webview>,
+/// and the only way in at all on Windows, where WebView2's own F12 is not
+/// wired up for a child webview. Only this webview is inspectable — see
+/// the `.devtools(...)` call in `workspace_browser_show`.
+#[tauri::command]
+pub(crate) async fn workspace_browser_open_devtools(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let webview = state
+        .workspace_browsers
+        .lock()
+        .unwrap()
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(|| format!("no browser webview for workspace {workspace_id}"))?;
+    // The command always exists so the frontend needs no build-shape
+    // knowledge; only the body is gated. `open_devtools` is compiled out
+    // unless the `devtools` feature is on (it is — see Cargo.toml) or
+    // this is a debug build.
+    #[cfg(any(debug_assertions, feature = "devtools"))]
+    {
+        webview.open_devtools();
+        log_info(
+            "BROWSER",
+            &format!("[workspace_browser_open_devtools] ws={workspace_id}"),
+        );
+        Ok(())
+    }
+    #[cfg(not(any(debug_assertions, feature = "devtools")))]
+    {
+        let _ = webview;
+        Err("this build was compiled without devtools support".to_string())
+    }
 }
 
 #[tauri::command]

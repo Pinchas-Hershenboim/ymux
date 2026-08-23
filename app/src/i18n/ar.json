@@ -464,6 +464,7 @@
   "browser.dev.on": "وضع المطوّر: انقر بزر الفأرة الأيمن على عنصر لفتح تذكرة",
   "browser.dev.off": "وضع المطوّر مُفعّل — انقر للإيقاف",
   "browser.dev.captured": "تم التقاط العنصر",
+  "browser.devtools.open": "افتح Web Inspector للصفحة (الوحدة الطرفية، الشبكة، الأخطاء)",
   "tickets.modal.title": "تذكرة جديدة",
   "tickets.modal.url": "الصفحة",
   "tickets.modal.selector": "العنصر",

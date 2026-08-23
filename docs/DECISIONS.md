@@ -56,17 +56,27 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
   the one machine we cannot debug, "no beacon in the log" would be ambiguous
   between "the JS engine is dead" and "my probe is broken". Windows runs it first
   as the control.
-- **OPEN QUESTION - does the `devtools` feature stay on after the verdict?**
-  Enabling it in Cargo.toml is the only way wry calls `setInspectable(true)`, i.e.
-  the only way Safari's Web Inspector can attach to a release build. But
-  tauri-runtime-wry reads it as `devtools.unwrap_or(true)`, so the feature flips
-  the default for EVERY webview - the main window included, which renders live PTY
-  output (Rule #1). It is neutralised by an explicit `.devtools(false)` on the
-  main and popout builders, and only the Browser child webview opts in, only on
-  macOS. That is a correct but load-bearing arrangement: anyone adding a webview
-  later inherits `true` by default. Decide after the diagnosis whether to keep it
-  (permanently useful for a browser feature) or drop the feature and the three
-  call sites together.
+- **DECIDED (Yossi, 2026-08-23) - DevTools stays, scoped to the Browser webview,
+  on BOTH platforms, with a button.** He asked for it directly: "so we can see
+  everything including errors." The `.devtools(cfg!(target_os = "macos"))` that
+  shipped first is now `.devtools(true)` - a Windows control run you cannot
+  inspect is worth much less than one you can - plus a
+  `workspace_browser_open_devtools` command and a terminal-icon button next to
+  the Dev Mode toggle in the Browser header. That is the only entry point that
+  exists on Windows (F12 is not wired up for a child webview) and it saves a
+  trip through Safari -> Develop -> machine -> webview on macOS.
+  - **The main window and popouts stay OUT, and this is the line to hold.**
+    Enabling the `devtools` feature makes tauri-runtime-wry read
+    `devtools.unwrap_or(true)`, so every webview is inspectable unless it says
+    otherwise. The two explicit `.devtools(false)` calls in lib.rs are what keep
+    ymux's own UI - which renders live PTY output - out of an inspector, and the
+    deliberate F12 / Ctrl+Shift+I blocker at `App.tsx:3184` stays. Anyone adding
+    a webview later inherits `true` by default: opt it out at the builder.
+  - Scope justification: the Browser child webview shows a tunneled third-party
+    service, not ymux's own surface, so an inspector attached there exposes
+    nothing of ours. On macOS `isInspectable` only means the app shows up in
+    Safari's Develop menu on the same machine, for a user who already enabled
+    that menu - it is not a remote surface.
 - **Also corrected on the way.** The comment at `workspace_browser.rs` claiming no
   Tauri IPC is injected into the child webview is factually wrong for 2.10.3 -
   `__TAURI_INTERNALS__` is prepended to every webview including external URLs.

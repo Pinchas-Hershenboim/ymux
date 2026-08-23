@@ -5292,3 +5292,44 @@ NEXT (needs a human, both halves - Rule #14):
      open the same URL, wait ~10s, copy every BROWSERDIAG and page_load line.
      Fallback path: ~/Library/Application Support/ymux/debug.log
   3. Read the verdict table in docs/DECISIONS.md (Open, 2026-08-23).
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.F | DevTools on the Browser webview, both platforms
+--------------------------------------------------------------------------------
+Yossi: "so maybe add DEVTOOLS - so we can see everything including errors."
+
+It was already half there: 82.E enabled the tauri `devtools` feature (the only
+thing that makes wry call setInspectable(true)) but wired it to
+`.devtools(cfg!(target_os = "macos"))` with no UI, so on Windows there was no
+inspector at all and on macOS you had to walk Safari -> Develop -> machine ->
+webview. Both fixed.
+
+  workspace_browser.rs  .devtools(cfg!(target_os = "macos")) -> .devtools(true).
+                        A Windows control run you cannot inspect is worth much
+                        less than one you can, and the whole point of not
+                        cfg-gating the probe was to make Windows the baseline.
+                        New command `workspace_browser_open_devtools`: the
+                        command always exists, only its body is cfg'd, so the
+                        frontend needs no knowledge of the build shape.
+  lib.rs                registered in generate_handler!.
+  BrowserWindow.tsx     `openDevtools()` + a terminal-icon button beside the
+                        Dev Mode bug toggle. No lit state - the inspector is its
+                        own window, there is nothing to advertise.
+  App.css               .bw-devtools-btn (spacing only).
+  i18n en/he/ar/ru      "browser.devtools.open".
+
+SCOPE HELD DELIBERATELY: main window and popouts keep their explicit
+.devtools(false), and the F12 / Ctrl+Shift+I blocker at App.tsx:3184 stays.
+The feature makes tauri read devtools.unwrap_or(true), so every webview is
+inspectable unless it opts out - that is the trap, and those two calls are the
+whole guard. A new webview added later inherits `true`.
+
+Justification for the Browser being the exception: it renders a tunneled
+third-party service, not ymux's own surface. An inspector there exposes nothing
+of ours, and on macOS isInspectable only means the app appears in Safari's
+Develop menu on the same machine.
+
+STATUS: compiles-untested until CI. This does NOT replace the 82.E beacons -
+devtools is the live console when you are sitting in front of the machine; the
+beacons are what work when you are not, which is the actual situation with the
+Mac.
