@@ -409,6 +409,7 @@ fn apply_to_settings(
         if has_ymux
             && !force
             && ymux_entry_is_runnable(&entries)
+            && ymux_entry_points_at(&entries, exe_path)
             && ymux_entry_has_timeout(&entries, ev_spec.timeout)
         {
             already_present.push(event.clone());
@@ -529,7 +530,11 @@ fn apply_to_legacy(
         let cmd = expand_command(&ev_spec.command, exe_path);
         let entries = config[event].as_array().cloned().unwrap_or_default();
         let has_ymux = entries.iter().any(is_ymux_entry);
-        if has_ymux && !force && ymux_entry_has_timeout(&entries, ev_spec.timeout) {
+        if has_ymux
+            && !force
+            && ymux_entry_points_at(&entries, exe_path)
+            && ymux_entry_has_timeout(&entries, ev_spec.timeout)
+        {
             continue;
         }
         to_apply.push((event.clone(), cmd, ev_spec.matcher.clone(), ev_spec.timeout));
@@ -634,6 +639,34 @@ fn is_ymux_entry(entry: &Value) -> bool {
 /// yet the version stamp would still move to 1.6.0 and silence the
 /// outdated-hooks banner. Only checks the spec's direction (a spec with no
 /// timeout accepts any entry).
+/// Phase 86: "present" also means "points at THIS binary". Found live on
+/// Yossi's server: 4 of 5 entries still ran `~/.winmux/bin/winmux` (a
+/// pre-rename build with no last.env fallback, failing on every prompt
+/// with `connect tcp 127.0.0.1:<dead port>`), the file existed so
+/// `ymux_entry_is_runnable` was happy, and the stamp said 1.5.0. The
+/// compat symlink keeps the old binary alive forever, so the only way an
+/// install converges on the current CLI is to rewrite any of our entries
+/// whose executable differs from the one being installed.
+fn ymux_entry_points_at(entries: &[Value], exe_path: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_matches('"').to_string();
+    let want = norm(exe_path);
+    entries.iter().filter(|e| is_ymux_entry(e)).all(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .map(|hooks| {
+                hooks.iter().all(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .and_then(executable_token)
+                        .map(|exe| norm(&exe) == want)
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    })
+}
+
 fn ymux_entry_has_timeout(entries: &[Value], want: Option<u64>) -> bool {
     let Some(want) = want else { return true };
     entries.iter().filter(|e| is_ymux_entry(e)).all(|entry| {
@@ -898,6 +931,18 @@ mod tests {
         let me = std::env::current_exe().expect("test binary path");
         let live = entry(&format!("\"{}\" claude-hook stop", me.display()));
         assert!(ymux_entry_is_runnable(&[live]));
+    }
+
+    #[test]
+    fn entry_pointing_at_another_binary_is_stale() {
+        let exe = "/home/u/.ymux/bin/ymux";
+        let old = vec![hook_entry("", "/home/u/.winmux/bin/winmux claude-hook stop", None)];
+        assert!(!ymux_entry_points_at(&old, exe));
+        let cur = vec![hook_entry("", "/home/u/.ymux/bin/ymux claude-hook stop", None)];
+        assert!(ymux_entry_points_at(&cur, exe));
+        // Windows quoting + backslashes normalise to the same thing.
+        let win = vec![hook_entry("", "\"C:\\Users\\y\\ymux-cli.exe\" claude-hook stop", None)];
+        assert!(ymux_entry_points_at(&win, "C:\\Users\\y\\ymux-cli.exe"));
     }
 
     #[test]

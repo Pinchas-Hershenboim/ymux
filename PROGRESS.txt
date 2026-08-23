@@ -6137,3 +6137,12 @@ skip path treats an existing ymux entry as "present" and never rewrites it,
 so a 1.5.0 install would have kept its timeout-less PreToolUse entry while
 the version stamp moved to 1.6.0 and silenced the banner. Added
 `ymux_entry_has_timeout` to both writers' skip conditions + a test.
+
+Live on Yossi's server, mid-session: `UserPromptSubmit hook error … winmux
+claude-hook: pipe error: connect tcp 127.0.0.1:38755: Connection refused`.
+~/.claude/settings.json had 4 of 5 entries on `~/.winmux/bin/winmux` (Aug 19
+build, no last.env fallback) and only Notification on ymux, stamp 1.5.0.
+setup-hooks kept them because the old file exists. Added
+`ymux_entry_points_at(entries, exe_path)` to both writers' skip path: an
+entry of ours whose executable is not the one being installed is stale.
+Repaired this server with `ymux setup-hooks --agent claude --force`.
