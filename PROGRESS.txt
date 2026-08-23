@@ -3672,10 +3672,16 @@ Current state: the committed blobs are NOT stale. Both are from 90626bb
 (2026-08-19, the rename) and `git log 90626bb..HEAD -- app/src-tauri/server/`
 is empty. So this is a gate, not a fix.
 
-NOT VERIFIED (Rule #14/#17): workflow edits only, nothing run. The CI run on
-this branch is the verification. Two things it will settle that reading
-cannot: whether `go vet ./...` is clean on the current tree (it has not run
-since the rename), and whether ci-check.mjs is green on a fresh Windows
+VERIFIED ON CI (PR #14, ci-windows run 32640896350, SUCCESS). Every new
+step green on the first try, including the two that could only be settled
+by running them: `go vet ./...` is clean on the current tree (it had not
+run since the rename), and sdk-gen/ci-check.mjs is green on a fresh Windows
 checkout — it shells `go run ./cmd/ymux-server openapi` and diffs generated
-output, and .gitattributes forces LF everywhere so line endings should not
-bite, but should is not did.
+output, and the .gitattributes LF normalisation held. The cross-build
+produced the `ymux-server-linux` artifact (10,524,795 bytes zipped, both
+arches). The drift gate reported "no shipping Go source changed" on this
+PR's own diff, which is correct.
+
+Rule #14 still applies to the SERVER ITSELF: nothing here ran the produced
+binary. What is verified is that it compiles for linux/amd64 and
+linux/arm64 and that the gate fires on the right inputs.
