@@ -19,7 +19,7 @@ covers:
 
 # `ymux-server` — the Go control-plane daemon
 
-Runs **on the user's remote Linux box**, not on the desktop. ~9,900 lines across 12
+Runs **on the user's remote Linux box**, not on the desktop. ~11,300 lines across 12
 `internal/` packages. Formerly `ymux-insights`; Phase 77 restructured it into subsystems
 behind interfaces.
 
@@ -58,7 +58,7 @@ dependency arrow points one way, so there is no cycle to break later.
 | `core` | 110 | the leaf interface package |
 | `files` | 682 | the Files API (`/api/v2/files/*`) |
 | `hooks` | 42 | a thin TCP listener — owns none of the protocol |
-| `insights` | 1,229 | sampler, store, Docker, and the hygiene reaper |
+| `insights` | 2,653 | sampler, store, Docker, the hygiene reaper, and the two Phase-84 rollups |
 | `logging` | 599 | the unified `log/slog` handler |
 | `logs` | 475 | per-client log storage and the SSE tail |
 | `push` | 433 | self-hosted push over a long-lived WebSocket |
@@ -89,6 +89,7 @@ hand each connection to a `core.HookConnHandler` — which is `chat.SessionManag
 thing that actually owns per-session HMAC tokens and pending-hook state. That
 indirection is what breaks the import cycle.
 
+<<<<<<< HEAD
 **`insights/hygiene.go`** — detects the leaks Yossi hit: duplicate `ymux port-watch`
 processes (one per workspace at most), **orphaned ones (ppid==1 for >60s — the SSH
 channel died and nothing else ever kills an exec child; Phase 86.B)**, and orphaned
@@ -131,6 +132,44 @@ split survives end to end (a 1h write is 2× base against 1.25×, and agentic wo
 mostly cache writes). A local workspace gets the same JSON from the Rust mirror
 `claude_usage_local.rs` (`backend-claude.md`). Both routes are registered in
 `service.go` next to the existing ones, each with a `/api/v2/insights/...` alias.
+=======
+**`insights/analytics.go`** (424) — `GET /analytics`, the Monitor's Analytics tab. It is a
+separate endpoint from `/history` for two reasons, both of them about the transport.
+Every desktop fetch is one `curl` over the workspace SSH session with `--max-time 6`
+(`insights_fetch` in `addons.rs`), so **the whole screen has to come back in one
+response** — N round trips for N series is not on the table. And `/history` is raw rows
+with `LIMIT 2000`, which at the 5s sample interval is 2.8 hours; a "last 7 days" question
+served from it would silently answer with the OLDEST 2.8 hours of the window. So the
+aggregation is SQL, server-side, and the client only draws. Windows are clamped to
+`[5 minutes, retentionDays]` — asking for more than the store keeps just renders a
+half-empty chart. It is the first reader of `disk_samples` and `docker_samples`, which
+the sampler was already writing: `AnalyticsDisk.GrowthBytes` is signed (last `used` minus
+first, i.e. "/var grew 3 GB overnight") and `AnalyticsContainer.UptimePct` is the share of
+samples in which the container was running, which a point-in-time `/docker` list cannot
+tell you.
+
+**`insights/claudeusage.go`** (443) — `GET /claude-usage`: what Claude Code actually spent
+on this machine, read from the transcripts it already writes to
+`~/.claude/projects/<encoded-cwd>/<session>.jsonl`. Every assistant line carries
+`message.model` and a `message.usage` block with real token counts, **including the
+5-minute/1-hour cache-write split** — kept separate because the two are priced
+differently and collapsing them understates a long session. This is the only record of it
+on the box: `claude -p /usage` reports subscription quota *percentages* with no history.
+
+The rule to not break: **this endpoint counts tokens and never prices them.** The price
+table lives in the desktop at `app/src/claudePricing.ts`, in one place, so a price change
+is a one-file edit instead of a server rebake plus a matching edit in the Rust local
+mirror. Token counts are facts; prices are a table that goes stale. Guard rails matter
+here because nobody controls the size of `~/.claude/projects` — hundreds of MB is normal
+— and this runs inside a 6-second curl, so lines are rejected on a `"usage"` byte scan
+before the JSON decoder sees them.
+
+**`insights/hygiene.go`** — detects the two leaks Yossi hit: duplicate
+`ymux port-watch` processes (there should be exactly one per workspace) and orphaned
+long-running `claude` sessions with no terminal. Reaps the safe ones on request; the
+desktop's Monitor → Cleanup tab is the UI. Uses gopsutil so `go test` still runs on the
+dev box.
+>>>>>>> origin/main
 
 **`push/push.go`** — no Firebase, no FCM, no APNs. A paired device holds a long-lived
 WebSocket (`GET /api/v2/push/subscribe`) from an Android foreground service; the server
