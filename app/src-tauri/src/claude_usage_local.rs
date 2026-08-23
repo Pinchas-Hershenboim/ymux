@@ -1,4 +1,4 @@
-//! Phase 84.B — the LOCAL half of `/claude-usage`.
+//! Phase 84.E — the LOCAL half of `/claude-usage`.
 //!
 //! Deliberate mirror of `server/internal/insights/claudeusage.go`: same scan,
 //! same JSON field names, same clamping. That is the pattern `insights_local`

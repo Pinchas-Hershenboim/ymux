@@ -380,7 +380,7 @@ export function InsightsWindow(p: Props) {
                   </>
                 )}
               </Show>
-              {/* Phase 84.B: the quota bars above say how much allowance is
+              {/* Phase 84.E: the quota bars above say how much allowance is
                   left; this says where it went, in tokens and dollars. */}
               <h4 class="ins-h4">{t("insights.cc.title")}</h4>
               <InsightsClaudeCost

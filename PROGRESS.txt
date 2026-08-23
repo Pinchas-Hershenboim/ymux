@@ -5122,7 +5122,7 @@ of problem and the same directory.
 
 
 ================================================================================
-2026-08-23 | Phase 84 - Monitor > Analytics tab (historical metrics)
+2026-08-23 | Phase 84.C - Monitor > Analytics tab (historical metrics)
 ================================================================================
 Task: Yossi asked for a screen like the dev-pipeline dashboard's /efficiency
 page inside the Monitor card (the ניטור window, InsightsWindow.tsx). Ported the
@@ -5310,7 +5310,7 @@ Two rules earned:
      command that mutates git state, not before it.
 
 --------------------------------------------------------------------------------
-2026-08-23 | Phase 84.A - "Copy for Claude" on the Analytics tab
+2026-08-23 | Phase 84.D - "Copy for Claude" on the Analytics tab
 --------------------------------------------------------------------------------
 Yossi's follow-up, and the right question: if everything is already stored, is
 there a simple place to hand it to Claude and ask what happened? There is now -
@@ -5353,7 +5353,7 @@ verified live - clipboard-write inside WebView2 for this panel is exactly the
 kind of thing that only a real run settles. Rolled into the FOLLOWUPS P1.
 
 --------------------------------------------------------------------------------
-2026-08-23 | Phase 84.B - Claude usage + cost analysis (the thing Yossi
+2026-08-23 | Phase 84.E - Claude usage + cost analysis (the thing Yossi
                           actually asked for)
 --------------------------------------------------------------------------------
 Yossi asked whether the Claude usage/cost/API analysis had been added. Checked
@@ -5364,7 +5364,7 @@ the code rather than guessing. IT HAD NOT, AND IT DID NOT EXIST:
     all (5-min cache, one point in time; yesterday's number was simply gone).
   * The closest thing to data was a free-text line, "Last 24h - 3466 requests -
     10 sessions". A string, not a dataset.
-  * Phase 84 (Analytics) had answered "what did the MACHINE do". The question
+  * Phase 84.C (Analytics) had answered "what did the MACHINE do". The question
     was "what did CLAUDE cost".
 
 Same story as the metrics DB, one layer over: THE DATA WAS ALREADY ON DISK AND
@@ -5645,3 +5645,24 @@ BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
 STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 84.C/D/E - renumbered from 84/84.A/84.B (collision)
+--------------------------------------------------------------------------------
+The Monitor work in this branch was written as Phase 84 / 84.A / 84.B. While it
+sat in PR #22, the pane-tabs branch merged to main having taken exactly those
+three numbers for entirely different work (tab strip + Claude traffic light,
+PR #18). CLAUDE.md: "Phase numbering: stable in commit history. No reuse."
+
+Theirs was already on main, ours was not, so ours moved:
+  Phase 84    Monitor > Analytics tab          -> 84.C
+  Phase 84.A  "Copy for Claude"                -> 84.D
+  Phase 84.B  Claude usage + cost              -> 84.E
+
+Commit subjects on the branch were rewritten to match (unmerged, unshared
+branch, force-with-lease). Yossi's call to continue the number rather than jump
+to 85. Worth knowing when reading the log: 84.C-E are NOT follow-ups to 84/84.A/
+84.B - they are a separate feature that lost a race for the number.
+
+The entries above this note still say what they always said; only the phase
+labels moved. Nothing about the pane-tabs entries was touched.
