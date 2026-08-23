@@ -38,6 +38,25 @@ did. Details in `docs/CONTRIBUTING.md` § Updating the vault.
 | [frontend-flows.md](frontend-flows.md) | the setup wizard mode tree, the create/edit modals, SSH form sharing, SettingsModal |
 | [frontend-lib.md](frontend-lib.md) | the xterm.js wrapper, the four RTL modules, ts-rs type mirrors, logger, i18n, shortcuts |
 
+**Everything else**
+
+| Read this | When you want |
+|---|---|
+| [server-go.md](server-go.md) | the `ymux-server` Go daemon on the remote — its 12 packages, the leaf-`core` rule, the frame contract, and why the two Linux blobs are committed |
+| [cli.md](cli.md) | the `ymux` CLI: transport selection, the verb families, hooks, the port watcher, session-meta |
+| [build-glue.md](build-glue.md) | how a binary gets built, what is generated vs written, and the guard on each |
+
+## Coverage
+
+96% of the tracked `.rs` / `.ts` / `.tsx` / `.go` / `.mjs` lines are covered by a vault
+file. The remainder is, by design: generated SDK output, generated ts-rs bindings, test
+files, and a two-line vite shim. `node scripts/vault-check.mjs` prints the current
+number.
+
+Test files are deliberately uncovered — a test edit should not trip the freshness gate,
+and where the tests are the specification (the RTL modules) the vault says to read them
+rather than paraphrasing.
+
 ## What the vault is not
 
 - **Not design docs.** Why the system is shaped this way lives in
