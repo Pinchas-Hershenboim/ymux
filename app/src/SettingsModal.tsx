@@ -36,7 +36,12 @@ import { isFontAvailableAsync } from "./fontProbe";
 import { isWindows } from "./platform";
 import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
-import { formatEvent } from "./shortcuts";
+import {
+  SHORTCUT_GROUPS,
+  canonicalAccel,
+  conflictingAccels,
+  formatEvent,
+} from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
 import { YmuxToolsTab } from "./YmuxToolsTab";
 import { createLogger } from "./logger";
@@ -224,6 +229,16 @@ const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
 
 export function SettingsModal(p: Props) {
   const [tab, setTab] = createSignal<Tab>("general");
+  // Phase 87: canonical accelerators claimed by more than one action. The
+  // dispatcher is first-match-wins, so a duplicate leaves the loser silently
+  // dead — every member of a colliding group is flagged and the user picks
+  // which one to move. Push-to-talk is passed in explicitly because it lives
+  // under settings.stt, not settings.shortcuts.
+  const shortcutConflicts = createMemo(() =>
+    conflictingAccels(p.settings.shortcuts, {
+      push_to_talk: p.settings.stt?.push_to_talk_hotkey,
+    }),
+  );
   // beta.3: sub-tab inside the "Hooks & Notifications" card.
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
   // 2026-08-19: which RTL profile the controls below are editing. Local
@@ -1012,28 +1027,32 @@ export function SettingsModal(p: Props) {
               <Show when={tab() === "shortcuts"}>
                 <section>
                   <h4>{t("settings.shortcuts.title")}</h4>
-                  <For each={[
-                    ["copy", "settings.shortcuts.copy"],
-                    ["paste", "settings.shortcuts.paste"],
-                    ["select_all", "settings.shortcuts.select_all"],
-                    ["find", "settings.shortcuts.find"],
-                    ["new_workspace", "settings.shortcuts.new_workspace"],
-                    ["toggle_notes", "settings.shortcuts.toggle_notes"],
-                    ["toggle_settings", "settings.shortcuts.toggle_settings"],
-                    ["summarize_claude", "settings.shortcuts.summarize_claude"],
-                  ] as const}>
-                    {([key, labelKey]) => (
-                      <ShortcutRow
-                        label={t(labelKey)}
-                        value={(p.settings.shortcuts ?? DEFAULT_SHORTCUTS)[key]}
-                        defaultValue={DEFAULT_SHORTCUTS[key]}
-                        onChange={(v) =>
-                          update("shortcuts", {
-                            ...(p.settings.shortcuts ?? DEFAULT_SHORTCUTS),
-                            [key]: v,
-                          } as Settings["shortcuts"])
-                        }
-                      />
+                  <p class="settings-hint">{t("settings.shortcuts.hint")}</p>
+                  <For each={SHORTCUT_GROUPS}>
+                    {(group) => (
+                      <>
+                        <h5 class="settings-shortcut-group">
+                          {t(`settings.shortcuts.group.${group.key}`)}
+                        </h5>
+                        <For each={group.ids}>
+                          {(key) => (
+                            <ShortcutRow
+                              label={t(`settings.shortcuts.${key}`)}
+                              value={(p.settings.shortcuts ?? DEFAULT_SHORTCUTS)[key]}
+                              defaultValue={DEFAULT_SHORTCUTS[key]}
+                              conflict={shortcutConflicts().has(
+                                canonicalAccel((p.settings.shortcuts ?? DEFAULT_SHORTCUTS)[key]) ?? "",
+                              )}
+                              onChange={(v) =>
+                                update("shortcuts", {
+                                  ...(p.settings.shortcuts ?? DEFAULT_SHORTCUTS),
+                                  [key]: v,
+                                } as Settings["shortcuts"])
+                              }
+                            />
+                          )}
+                        </For>
+                      </>
                     )}
                   </For>
                   <label class="settings-checkbox" style="margin-top: 12px;">
@@ -1049,6 +1068,28 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.shortcuts.ctrl_c_copy")}</span>
                   </label>
+
+                  {/* Phase 87: bindings that are NOT rebindable, listed so they
+                      stop being invisible. Ctrl+1..9 is a numeric family (and
+                      9 means "last"), Escape is a contextual dismissal, and the
+                      editor / browser ones are scoped to a focused component
+                      and never reach the global handler. */}
+                  <h5 class="settings-shortcut-group">{t("settings.shortcuts.fixed.title")}</h5>
+                  <p class="settings-hint">{t("settings.shortcuts.fixed.hint")}</p>
+                  <For each={[
+                    ["Ctrl+1 … Ctrl+9", "settings.shortcuts.fixed.tab_jump"],
+                    ["Escape", "settings.shortcuts.fixed.escape"],
+                    ["Ctrl+S / Ctrl+F / Ctrl+H", "settings.shortcuts.fixed.editor"],
+                    ["Ctrl+T / Ctrl+W / Ctrl+Tab", "settings.shortcuts.fixed.browser"],
+                  ] as const}>
+                    {([accel, labelKey]) => (
+                      <div class="settings-shortcut-row">
+                        <span class="settings-shortcut-label">{t(labelKey)}</span>
+                        <span class="settings-shortcut-fixed">{accel}</span>
+                        <span />
+                      </div>
+                    )}
+                  </For>
                 </section>
               </Show>
 
@@ -1465,26 +1506,32 @@ export function SettingsModal(p: Props) {
                       <option value="ru-RU">Русский</option>
                     </select>
                   </label>
-                  <label>
-                    <span>{t("settings.stt.hotkey.label")}</span>
-                    <input
-                      type="text"
-                      value={p.settings.stt?.push_to_talk_hotkey ?? "Ctrl+Shift+M"}
-                      placeholder="Ctrl+Shift+M"
-                      onInput={(e) =>
-                        update("stt", {
-                          ...(p.settings.stt ?? {
-                            enabled: false,
-                            backend: "webspeech",
-                            local_endpoint: null,
-                            language: "auto",
-                            push_to_talk_hotkey: "Ctrl+Shift+M",
-                          }),
-                          push_to_talk_hotkey: e.currentTarget.value,
-                        })
-                      }
-                    />
-                  </label>
+                  {/* Phase 87: this was a free-text box — the accelerator had
+                      to be TYPED, and a typo produced a hotkey that silently
+                      never fired. Same click-to-record picker as the Shortcuts
+                      tab now. The binding still lives in settings.stt rather
+                      than settings.shortcuts, but conflictingAccels() is fed
+                      it so a clash with a table binding is still flagged. */}
+                  <ShortcutRow
+                    label={t("settings.stt.hotkey.label")}
+                    value={p.settings.stt?.push_to_talk_hotkey ?? "Ctrl+Shift+M"}
+                    defaultValue="Ctrl+Shift+M"
+                    conflict={shortcutConflicts().has(
+                      canonicalAccel(p.settings.stt?.push_to_talk_hotkey ?? "Ctrl+Shift+M") ?? "",
+                    )}
+                    onChange={(v) =>
+                      update("stt", {
+                        ...(p.settings.stt ?? {
+                          enabled: false,
+                          backend: "webspeech",
+                          local_endpoint: null,
+                          language: "auto",
+                          push_to_talk_hotkey: "Ctrl+Shift+M",
+                        }),
+                        push_to_talk_hotkey: v,
+                      })
+                    }
+                  />
                 </section>
               </Show>
 
@@ -1674,6 +1721,8 @@ function ShortcutRow(p: {
   value: string;
   defaultValue: string;
   onChange: (v: string) => void;
+  /** True when another action is bound to the same combination. */
+  conflict?: boolean;
 }) {
   const [recording, setRecording] = createSignal(false);
   return (
@@ -1681,13 +1730,23 @@ function ShortcutRow(p: {
       <span class="settings-shortcut-label">{p.label}</span>
       <input
         type="text"
-        class="settings-shortcut-input"
+        classList={{
+          "settings-shortcut-input": true,
+          "settings-shortcut-input--conflict": !!p.conflict && !recording(),
+        }}
+        title={p.conflict ? t("settings.shortcuts.conflict") : undefined}
         value={recording() ? t("settings.shortcuts.recording") : p.value}
         readOnly
         onFocus={() => setRecording(true)}
         onBlur={() => setRecording(false)}
         onKeyDown={(e) => {
           if (!recording()) return;
+          // Phase 87: the window keydown listener in App.tsx is bubble-phase,
+          // so without this the combination being RECORDED also fires the
+          // action it is bound to — which since the shortcut table grew means
+          // recording Ctrl+Shift+W closes the active pane and Ctrl+Enter
+          // maximizes it. preventDefault alone does not stop propagation.
+          e.stopPropagation();
           // Esc cancels the recording without committing.
           if (e.key === "Escape") {
             e.preventDefault();

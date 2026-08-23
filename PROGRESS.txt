@@ -2,7 +2,6 @@ PROGRESS LOG — append-only. Newest entries at bottom. Rotate as PROGRESS_OLD_<
 
 Entry format:
 
-==================================================================
 [YYYY-MM-DD HH:MM TZ] session=<id-or-tag>
 TASK: <one-line summary>
 FILES:
@@ -11,9 +10,7 @@ FILES:
   D <path>
 RESULT: <verified-live | compiles-untested | reverted | partial>
 NOTES: <optional — anything a future session would want to grep for>
-==================================================================
 
-==================================================================
 [2026-07-15 13:10 IDT] session=multi-machine-sync
 TASK: track BACKLOG/FOLLOWUPS/PROGRESS in git for cross-machine sync
 FILES:
@@ -26,10 +23,7 @@ RESULT: verified-live (pushed to origin/main)
 NOTES: local WIP stash "wip: terminal/textDirection changes during sync-commit"
   kept in stash@{0} — appears to be a stale copy of font/RTL work already
   committed remotely (7956c30, a20f375). Safe to drop after Yossi confirms.
-==================================================================
 
-===========================================================
-==================================================================
 [2026-07-28 16:19 IDT] session=restore-sessions-and-fm-path
 TASK: Phase 80 — restore SSH tmux sessions on app start; Phase 80.1 — file manager reopens at its last directory
 FILES:
@@ -54,9 +48,7 @@ NOTES: frontend-only by design — no Rust touched, no new Tauri command, no sch
   NEEDS LIVE TEST (Windows): (1) attach a pane to tmux, close the app, reopen → pane re-attaches
   to the same session at the right size; (2) kill the session on the server, reopen → pane falls
   back to [Connect], no error banner; (3) FM: navigate somewhere, close/reopen → same directory.
-==================================================================
 
-==================================================================
 [2026-07-28 18:05 IDT] session=restore-sessions-and-fm-path (review pass)
 TASK: Phase 80 / 80.1 — fix the code-review + security-review findings on the branch
 FILES:
@@ -90,9 +82,7 @@ NOTES: three P1s came out of the review, all in the new code:
   BEHAVIOR WORTH KNOWING: restore does one SSH handshake PER restored pane and re-runs the
   workspace setup_command on each — a fail2ban-fronted host sees a burst of auths at app start.
   STILL NEEDS LIVE TEST (Windows) — the 3-point checklist in the previous entry is unchanged.
-==================================================================
 
-==================================================================
 [2026-07-28 21:40 IDT] session=restore-sessions-and-fm-path (live-test round 1)
 TASK: Phase 80 — Yossi's first live run: panes still showed [Connect]; restore only appeared to
   work when he clicked Connect himself (which is the PRE-EXISTING `new-session -A` behavior)
@@ -119,9 +109,7 @@ NOTES: two changes.
   Still to confirm from Yossi's debug.log which path his setup takes; if the line says
   "server reported 0 tmux sessions", the cause is password-auth (the headless gate can't open
   it) and the fix is a deliberate decision about prompting at boot, not a bug.
-==================================================================
 
-==================================================================
 [2026-07-28 22:35 IDT] session=restore-sessions-and-fm-path (dead-session rule)
 TASK: Yossi: "if the session is dead, don't open anything — show the Connect buttons"
 FILES:
@@ -147,9 +135,7 @@ NOTES: the previous commit's per-pane-connection path had no liveness pre-check,
   pane — each probe is a full handshake.
   NET EFFECT: nothing is ever attached on a guess. A pane is re-attached only when the server has
   just confirmed the session name is live.
-==================================================================
 
-==================================================================
 [2026-07-28 23:55 IDT] session=restore-sessions-and-fm-path (opt-in settings)
 TASK: Yossi: "did this override existing behavior? I want it to work only if the user turns it on"
 FILES:
@@ -173,7 +159,6 @@ NOTES: answer to "was existing behavior overridden": yes, in one place — the f
   Two separate toggles (Yossi's choice) rather than one, so remembering a directory — which costs
   nothing and touches no network — doesn't have to be bought together with SSH activity at boot.
 
-==================================================================
 [2026-07-29 00:40 IDT] session=restore-sessions-and-fm-path (live-test round 2)
 TASK: Yossi turned both flags on, connected a terminal, closed + reopened — pane still did not
   re-attach. Flags themselves persisted correctly.
@@ -196,9 +181,7 @@ NOTES: found a real bug by reading, not by guessing — and made the write path 
   (3) DIAGNOSTIC: restore now logs the whole remembered map (count + paneId→session) right after
       pruning, so "the map is empty" and "the map is fine but nothing matched" can never be
       confused again. New allPaneSessions() export, 2 tests.
-==================================================================
 
-==================================================================
 [2026-07-29 01:20 IDT] session=restore-sessions-and-fm-path (LIVE VERIFIED)
 TASK: Yossi's live run of the CI build (run 30401647836)
 RESULT: verified-live — "הורדתי והתקנתי, עכשיו זה נפתח אוטומטית". Session restore re-attaches
@@ -211,9 +194,7 @@ NOTES: so the root cause was the `pane_kind` read (previous entry): his workspac
    - 80.1 file manager reopening at the last directory (the second flag)
    - dead session → pane stays on [Connect], no empty session created
    - both flags off → startup identical to pre-80 behavior
-==================================================================
 
-==================================================================
 [2026-07-29 09:05 IDT] session=restore-sessions-and-fm-path (80.1 LIVE VERIFIED)
 TASK: Yossi's live check of the second flag
 RESULT: verified-live — the file manager reopens at the last directory (file_manager_remember_path
@@ -224,7 +205,6 @@ NOTES: remaining unverified cases, both cheap and both about NOT doing something
      and it is the one behavior a user only notices when it's wrong.
    - both flags off → startup identical to pre-80.
   PR #5 body + the @yyhezkel comment both updated to say two verified, these two open.
-==================================================================
 2026-07-15 · Redesign directions as themes (Claude Design handoff)
 TASK: implement the WINMUX redesign export — 4 visual directions
   (Industry / Broadsheet / Modernist / Classical) shipped as selectable
@@ -255,8 +235,6 @@ NOTES:
   - NEXT (pending Yossi's nod): finer per-screen chrome (Industry 4-corner
     registration marks via markup, Broadsheet masthead, Modernist tab rules,
     Classical dashed frames on modals), and derived dark variants if wanted.
-===========================================================
-==================================================================
 
 ------------------------------------------------------------------
 2026-07-15 · Redesign themes — pass 2 (Yossi's calls)
@@ -490,9 +468,7 @@ NOTES: root cause proven with a ConPTY probe typing into claude.exe
   Detection = terminal title (claude sets "claude" on start, "" on exit).
   Remote panes: tmux doesn't forward titles (no set-titles in bundled
   conf) — followup in FOLLOWUPS.md.
-==================================================================
 
-==================================================================
 [2026-07-16 16:20 IDT] session=integration (worktree)
 TASK: integrate all live branches into one tree for the beta test+release
   round. Branch claude/integration, merge order (easy->hard):
@@ -516,7 +492,6 @@ RESULT: cargo check+test (19 suites ok), go test ./... ok, tsc clean.
   regression pass.
 NOTES: beta.3-unified fully merged (worktree removable); design-pass-01
   salvaged earlier on main; 67-mobile stays frozen per DECISIONS.
-==================================================================
 
 ------------------------------------------------------------------
 [2026-07-16 17:40 IDT] session=integration (worktree)
@@ -572,7 +547,6 @@ RESULT: tsc clean, textDirection+mouseRtl 48/48. Exe rebuilt -> user
   home. NEEDS Yossi live test: drag on the mixed table lines from the
   screenshot — highlight must start at the pointer; Ctrl+C copies it.
 ------------------------------------------------------------------
-=======
 [2026-07-16 ~14:30 IDT] session=multi-machine-sync
 TASK: Phase 81 - server-side session-meta: Claude titles on tmux sessions + shared/local picker scope
 FILES:
@@ -592,8 +566,6 @@ NOTES: server file ~/.winmux/session-meta.json; grep keywords: session-meta, mac
   auto_title, session_visibility, origin-if-absent, label-hex. Verification checklist in
   DECISIONS.md Phase 81 entry. Worktree resources/ was missing winmux-cli.exe (gitignored)
   - copied from main repo checkout to unblock cargo check.
-=======
-==================================================================
 DATE: 2026-07-16 19:00 (+03:00)
 TASK: Group creation moved into workspace context menu (sidebar cleanup)
   - Removed the bottom "New group" button + inline input from Sidebar
@@ -615,8 +587,6 @@ FILES: app/src/Sidebar.tsx, app/src/App.tsx, app/src/App.css
 RESULT: verified-live (dev build, isolated WINMUX_CONFIG_DIR: created
   group via context menu incl. keyboard-only flow, assign/delete/
   re-create exercised; tsc --noEmit clean)
-==================================================================
-==================================================================
 [2026-07-16 ~19:45 IDT] session=integration (round 5 - two more merges)
 TASK: merge claude/tmux-claude-session-sync-d57bda (Phase 81) +
   claude/group-state-button-layout-f6340d into claude/integration.
@@ -635,7 +605,6 @@ FILES:
 RESULT: cargo check workspace clean, tsc clean, CLI tests 10/10,
   frontend tests 48/48. Commits a57240a + af33607. Release build running.
 ------------------------------------------------------------------
-==================================================================
 [2026-07-16 ~21:05 IDT] session=integration (round 6 - settings Phase A)
 TASK: apply phase-a-dead-cleanup-d41b290.patch from the
   settings-refactor-walkthrough session (delivered via local-agent-mode
@@ -651,7 +620,6 @@ NOTES: README from that session plans Phase D (settings tab merges) -
   keep Logs tab features (component filter, LTR viewer, level select)
   when it lands. RTL policy note there matches our DECISIONS entries.
 ------------------------------------------------------------------
-==================================================================
 [2026-07-16 ~21:50 IDT] session=integration (round 7 - settings Phase D)
 TASK: settings-refactor-walkthrough session wrote Phase D directly into
   this worktree (SettingsModal + 4 i18n): 14 tabs -> 7 (general,
@@ -665,7 +633,6 @@ RESULT: cargo test 116/116, tsc clean, frontend 48/48. Commit 0f882f9
   on claude/integration; settings-refactor-walkthrough branch -f synced.
   Release build running.
 ------------------------------------------------------------------
-==================================================================
 [2026-07-17 ~00:05 IDT] session=integration (round 8 - settings Phase F)
 TASK: Phase F from settings-refactor-walkthrough session (written direct
   to worktree): 26 hints purged, fmtAge orphan removed, modal 900->1100px
@@ -676,7 +643,6 @@ NOTE: their message claimed 6 modified files; actual was 2 (App.css +
 RESULT: cargo test 116/116, tsc clean, frontend 48/48. Committed on
   claude/integration, branch pointer synced. Release build running.
 ------------------------------------------------------------------
-==================================================================
 [2026-07-17 ~00:50 IDT] session=integration (round 9 - mouse rollback)
 TASK: Yossi: rounds 3-4 mouse work (native selection + output freeze)
   "got tangled" - return mouse to exactly v0.4.5-beta.1 release behavior.
@@ -688,7 +654,6 @@ FIX: git checkout e3ec47f -- app/src/terminalInstance.ts (single-file;
   freeze gate. Recoverable from history: 461f163, 6f26f9f.
 RESULT: tsc clean, 48/48 tests. DECISIONS saga entry updated (round 5).
 ------------------------------------------------------------------
-==================================================================
 [2026-07-17 ~03:30 IDT] session=integration (round 10 - THE DIAGNOSIS)
 TASK: Yossi: display catastrophically broken (letters reversed, left
   aligned, clipped font) on Claude/SSH panes; wanted commits rolled back
@@ -790,7 +755,6 @@ VERIFICATION (real runs, not just compile):
 Worktrees: 4 -> 6 (added browser-tickets-v2, 67-mobile).
 NOT DONE: file-transfer-progress is NOT merged into main — that is
   Phase 3 and needs Yossi's go-ahead. Nothing pushed.
-==================================================================
 [2026-08-03 ~13:00 IDT] session=wsl-smart-install-fix (INVESTIGATION ONLY)
 TASK: Yossi reported 2 bugs in the LOCAL HOST WSL flow (v0.4.5-beta.1
   known-broken): (A) Smart Install "finished" but opened a PowerShell
@@ -861,7 +825,6 @@ SEPARATE LATENT BUG FOUND: lib.rs:1565-1576 emit_data - strict UTF-8
   mechanism (ConPTY re-encodes from UTF-16), but real. -> FOLLOWUPS.
 RESULT: investigation only, no code changed. Awaiting Yossi's go-ahead.
 ------------------------------------------------------------------
-==================================================================
 [2026-08-03 ~13:50 IDT] session=wsl-smart-install-fix (BOTH FIXES IN)
 TASK: Yossi approved fixing both bugs from the investigation above.
 COMMITS: 1bcb584 (Bug B, lib.rs) + 6753759 (Bug A, local_setup + UI).
@@ -976,7 +939,6 @@ NOT VERIFIED LIVE. Compiles + unit-tested only. The live smoke that
 Reverted the ts-rs trailing-whitespace churn in bindings/Settings.ts
   again (cosmetic, unrelated - same as last session).
 ------------------------------------------------------------------
-==================================================================
 [2026-08-03 ~15:10 IDT] session=wsl-smart-install-fix (install path)
 TASK: Yossi: "שיוסיף תהליך התקנה נכון" — preflight + exit-code elevation
   detection + 3010 reboot handling + self-elevation. COMMIT: 65d6fdc.
@@ -1031,7 +993,6 @@ NOTE: winmux-utf8-test.exe appeared untracked in the repo root during
   this session — not mine, left alone (assumed Yossi testing the Bug B
   build).
 ------------------------------------------------------------------
-==================================================================
 [2026-08-03 ~14:40 IDT] session=font-detect-install (stage 0)
 TASK: Yossi on an AnyDesk onboarding call: picking a font in Settings
   changes nothing on a clean machine. Investigate + propose, then build
@@ -1071,7 +1032,6 @@ NEXT: install flow (guided vs silent per-user) - awaiting Yossi on catalog
   scope. Decided to SKIP the standalone canvas-detection layer: the Rust
   enumeration covers it, canvas only pays off as a post-install check.
 ------------------------------------------------------------------
-==================================================================
 [2026-08-03 ~15:30 IDT] session=font-detect-install (install flow)
 TASK: second half of the font fix - let winmux install the font it just
   flagged as missing. Yossi chose: silent per-user with guided fallback.
@@ -1110,7 +1070,6 @@ STATUS: cargo test 133 + 2 ignored live tests, tsc clean, vite build
   app - that is the one remaining gap.
 COMMITS: fca8b54, 73505cc, e513e29, e646383
 ------------------------------------------------------------------
-==================================================================
 [2026-08-03 ~16:05 IDT] session=font-detect-install (catalog name fix)
 BUG (400c3bd): the Nerd Font catalog entry declared family
   "FiraCodeNerdFontMono" but the font's name table says "FiraCode Nerd
@@ -1139,7 +1098,6 @@ REMAINING GAP: the Settings UI has never been exercised in the running
   app. Everything above is command-level and unit-level verification.
 COMMITS: fca8b54, 73505cc, e513e29, e646383, 1959439, 400c3bd
 ------------------------------------------------------------------
-==================================================================
 [2026-08-03 ~16:40 IDT] session=font-detect-install (cleanup + custom field)
 YOSSI'S CORRECTION: "I didn't mean install it on MY machine, I wanted it
   built so any user can install." Fair - I read "download and test" as
@@ -1178,7 +1136,6 @@ REMAINING GAP (unchanged): the Settings UI has never been exercised in
 ------------------------------------------------------------------
 
 [2026-08-03] Phase 81 — file-transfer progress bar + cancel
-==================================================================
 TASK: Yossi reported a 60 MB upload in the File Manager shows nothing —
   no bar, no percent, no sign of life. Same suspected for downloads.
 BRANCH: file-transfer-progress (worktree, from main @1614af7)
@@ -1225,7 +1182,6 @@ RESULT: compiles-only — NOT verified live.
 NOTES: worktree needed app/src-tauri/resources/winmux-cli.exe copied in
   by hand (gitignored build artifact) before cargo would build, and a
   node_modules junction to the main checkout.
-==================================================================
 
 === 2026-08-03 — Phase 3 of 3: merge everything into main ===
 
@@ -1394,7 +1350,6 @@ UNAFFECTED: the merges, the 266 tests and the wsl --install capture fix
   are all source-level and were never in question. Only my packaging of
   the binary was wrong.
 
-==================================================================
 [2026-08-09 11:45 IDT] session=macos-intel-port
 TASK: macOS Intel (x86_64, macOS 13+) build — IPC port + CI, merged to main
 FILES:
@@ -1413,7 +1368,6 @@ NOTES: dmg built with hdiutil (tauri bundle_dmg.sh needs Finder, fails headless)
   clean on split crates. Known mac gaps: updater still MSI-only, local-workspace
   wizard is WSL-based, no mac-native winmux-cli/mcp bundled. macos-build branch
   kept for CI trigger (workflow runs on push to it + workflow_dispatch).
-==================================================================
 [2026-08-10] macOS: "UI stall 1000ms" (perceived as connection dropping every second)
 TASK: Yossi reported the mac build "disconnects every second". debug.log showed a
   clean tunnel/RPC path (handshake OK, bridge done Ok(46)/Ok(107), no ssh-disconnect,
@@ -1431,9 +1385,7 @@ NOTES: if 1Hz persists with the plist in place, it's WebKit page-occlusion throt
   rather than App Nap; plan B is disabling NSApplication _windowOcclusionDetectionEnabled
   (private API) at startup. Verify by checking whether stalls only appear while the
   winmux window is covered/minimized.
-==================================================================
 
-==================================================================
 [2026-08-10 16:04 IDT] session=macos-ports-upload-fix
 TASK: Yossi (first live run on a real Mac): ports list empty + file
   upload broken (both drag-drop and SFTP panel), SSH workspace to a
@@ -1511,7 +1463,6 @@ NOTES: ports triage on the Mac, now that the socket is ruled out — grep
   there before assuming a mac cause.
   Windows regression check still owed: SFTP panel nav + upload, and
   drag-drop on a 125%/150%-scaled display (dpr != 1).
-==================================================================
 
 === 2026-08-09 — Windows CI/CD on GitHub Actions ===
 
@@ -1673,7 +1624,6 @@ SCANNED for the same swallow pattern in the other generated scripts:
 
 cargo test 266/0.
 
-==================================================================
 [2026-08-17 IDT] session=macos-local-shell (branch macos-build)
 TASK: local workspace on macOS offered no zsh/bash — only the Windows list.
 ROOT CAUSE: local_wizard::which() returned None on non-Windows,
@@ -1698,7 +1648,6 @@ FILES:
 RESULT: compiles-on-CI pending (Rule #17), untested live. Windows path
   unchanged (all new code behind cfg(not(windows)) / same defaults).
 
-==================================================================
 [2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 2
 TASK: full macOS adaptation of "new workspace → local" (both flavors) +
   local terminal commands. Done via 4 parallel subagents on disjoint files.
@@ -1731,7 +1680,6 @@ FILES:
     step labels, connect.*.hintLocal (parity 1016 keys each).
 RESULT: compiles-on-CI pending, untested live. Known gap: hooks/CLI on mac.
 
-==================================================================
 [2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 3
 BUGS (Yossi, live on mac):
   1. Directory picker on a local pane fell back to a text input.
@@ -1750,7 +1698,6 @@ BUGS (Yossi, live on mac):
      +2 unit tests.
 RESULT: CI pending, untested live.
 
-==================================================================
 [2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 4
 BUG (Yossi): usage ticker on a local workspace kept showing the SSH
   account's quota. ROOT CAUSE claude_usage_fetch only had an SSH probe
@@ -1764,7 +1711,6 @@ FIX claude_usage.rs — run_usage_probe(): SSH handle → remote exec (as
   local_setup.rs: resolve_claude_binary() + unix_path_env pub(crate).
 RESULT: CI pending, untested live.
 
-==================================================================
 [2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 5
 BUG (Yossi): Hebrew typing in a local mac pane shows `_`.
 ROOT CAUSE: Finder-launched app has no LANG/LC_* — zsh ZLE + tmux in a
@@ -1775,7 +1721,6 @@ FIX lib.rs spawn_local_pty (unix): if LANG/LC_ALL/LC_CTYPE are all unset,
   en_US.UTF-8 (default_utf8_locale(), probed once). Note: an already-
   running tmux server keeps its old env — `tmux kill-server` once.
 
-==================================================================
 [2026-08-17 IDT] session=macos-local-shell (branch macos-build) — part 6
 BUG (Yossi): local Insights on mac says Docker socket exists but daemon
   doesn't answer, shows \\.\pipe\docker_engine.
@@ -1935,7 +1880,6 @@ STILL NOT VERIFIED LIVE (both unrelated to WSL):
     (`sudo apt install openssh-server`).
 
 [2026-08-10] winmux-tools Half A — modular statuslines + session Ticker (issue #4)
-==================================================================
 TASK: GitHub issue #4 (Dina) — "ETA per Claude session" so she can decide
   whether to go do dishes or stay. Yossi widened it: build winmux-tools/,
   a modular home split into skills/ + statuslines/, decomposing the sabra
@@ -1975,7 +1919,6 @@ REMAINING (per approved plan C:\Users\...\plans\precious-sparking-iverson.md):
 ------------------------------------------------------------------
 
 [2026-08-10] winmux-tools Half A — chrome Ticker (winmux backend + frontend)
-==================================================================
 TASK: second surface for the issue #4 Ticker — a live per-pane label in the
   winmux chrome (not just Claude's statusline), visible across panes.
 BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
@@ -2067,7 +2010,6 @@ REMAINING (tracked in the Half A entry above, unchanged): statusLine deploy
 ------------------------------------------------------------------
 
 [2026-08-10] winmux-tools Half B — skills registry UI (frontend)
-==================================================================
 TASK: frontend for the skills registry (backend landed in bc505d2 via
   implementer-tester). Settings panel to install/uninstall skills per-workspace.
 BRANCH: claude/winmux-github-issue-4-9233e2 (worktree)
@@ -2088,9 +2030,7 @@ REMAINING: B3 statusLine deploy (apply_to_settings merge-writer to point each
   running app.
 ------------------------------------------------------------------
 
-================================================================================
 2026-08-11  Browser Dev Mode + Tickets (v2) — branch browser-tickets-v2
-================================================================================
 
 FOUND FIRST (this is the headline): the feature was already built and then
   LOST. 13 commits ending at aefbba4 ("Phase 54") implemented tickets +
@@ -2316,7 +2256,6 @@ Task: Yossi — "hooks never end / keep asking approval", "the blink stopped", "
    NOT VERIFIED LIVE yet — build + run per plan. Windows "sound only first time"
    left as a to-verify (likely notify_rust coalescing identical titles).
 2026-08-18 — Project folders v4: a project folder IS a workspace
-================================================================================
 Branch: claude/pane-overflow-project-folders-a7353c
 Commits: 8700032, e2d0f17, 804246a, 876d17f, b6f32a4 (+ docs)
 
@@ -2394,7 +2333,6 @@ ADDENDUM 2026-08-18 (same branch) — two bugs found by live testing
    Follow-on UX, per Yossi: a non-repo is demoted once (workspace_set_project_root
    -> false) instead of re-asking on every expand and restart, and a confirmed
    repo carries a small git badge on its folder glyph.
-=======
 --------------------------------------------------------------------------------
 2026-08-12  Tickets land on the machine the agent runs on (SSH/WSL/Local)
 --------------------------------------------------------------------------------
@@ -2559,9 +2497,7 @@ THREE CORRECTIONS I MADE TO MYSELF THIS SESSION (all were confident and wrong):
     the real reason for the opaque form is that the payload lands in host_str()
     and path() comes back empty.
 
-================================================================================
 2026-08-18 — Reconnect storm + SFTP bootstrap hardening (worktree follow-up-options-d63140)
-================================================================================
 TRIGGER: Yossi pasted a full transcript from his second machine — repeated
 "sftp write: Timeout" against runner@185.237.252.130, followed by "unplugging
 the laptop from AC closed every tmux session on the server".
@@ -2611,7 +2547,6 @@ STILL OPEN — tmux vanishing server-side
   Remaining candidates need server evidence, not more code reading — see
   FOLLOWUPS P0 and docs/DECISIONS.md.
 
-===========================================================[2026-08-18 ~20:50 IDT] session=session-autoname (worktree)
 TASK: Phase 81.F - sessions get a STABLE name from their first prompt
   Problem with Phase 81 as shipped: the session's display name came from
   `claude_title`, which the stop hook re-reads from the transcript EVERY
@@ -2653,7 +2588,6 @@ NOTES: no hook-spec change and no setup-hooks re-run needed - UserPromptSubmit
   prompt text, which the desktop was throwing away. Two-word extraction is
   deliberately heuristic, not `claude -p`: this hook gates the START of a turn.
   grep keywords: auto_name, decide_auto_name, two_words, derive_session_name.
-==================================================================
 
 ------------------------------------------------------------------
 [2026-08-18 ~21:05 IDT] session=session-autoname — CI verdict on Phase 81.F
@@ -2675,7 +2609,6 @@ NOTES: no hook-spec change and no setup-hooks re-run needed - UserPromptSubmit
   open - the branch is pushed and CI-verified, Yossi opens the PR.
 ------------------------------------------------------------------
 
-==================================================================
 [2026-08-18 ~22:30 IDT] session=hook-pane-resolve (worktree)
 TASK: Phase 81.G - the pane-header hook path never worked. Two bugs, found
   by Yossi actually RUNNING 81.F instead of trusting green CI.
@@ -2722,8 +2655,6 @@ NOTES: also found in the live hook payload that Claude Code now sends a
   `session_title` field on UserPromptSubmit - an official session name we could
   prefer over the heuristic two words. Deliberately NOT taken in this round:
   get the pipe working first. grep: resolve_hook_pane, recover_session_name.
-==================================================================
-=======
 [PANE-OVERFLOW + PROJECT-FOLDERS] two features, plan functional-bouncing-ritchie
    2026-08-13 ~17:00 +0300. Branch claude/pane-overflow-project-folders-a7353c
    (worktree pane-overflow-project-folders-0fd4f0). 5 commits:
@@ -2909,7 +2840,6 @@ NOTES: also found in the live hook payload that Claude Code now sends a
       clean boot is consistent with the sidebar rendering, but was not proven by
       deliberately breaking it.
 
-=========================================================================
 2026-08-18 — RTL: tuiOwnsBidi restored after 18 days missing (lost in a merge)
 
 TASK
@@ -3325,9 +3255,7 @@ STILL OWED BEFORE RELEASE (FOLLOWUPS P0 x2)
   a real sshd is the behaviour no test here covers. Repro C in FOLLOWUPS is the
   smoke test that settles it.
 
-================================================================================
 2026-08-19 -- Sidebar design pass (branch claude/sidebar-design-1985e3)
-================================================================================
 Yossi pointed at two screenshots of the rail in Hebrew/RTL light mode: it read
 as confetti, not as a list. Root causes found, in order of blame:
 
@@ -3575,7 +3503,6 @@ FOLLOWUPS: the P1 is closed. What remains is a P3 for the surfaces still never
 exercised -- the Settings font-size slider (the whole reason for the px ->
 --w-fs-* sweep), drag-reorder, the menus/rename/colour picker, 11 of the 13
 presets, and prefers-reduced-motion.
-================================================================================
 2026-08-19 02:00-03:00 | Build speed: measure first, then cut
   Branch claude/optimize-build-process-18f637, worktree optimize-build-process-18f637
   Commits: 6234dac (perf), b2217d0 (docs), + this entry
@@ -3862,9 +3789,7 @@ presets, and prefers-reduced-motion.
   `rtl` written (both = their old value) and will not be re-migrated. That is
   a single build and a single session; not worth a second migration pass.
 
-================================================================================
 2026-08-19 — Zellij replaces WSL: persistence for native Windows panes
-================================================================================
 
 GATE FIRST. Yossi ran the manual spike: detach -> reattach -> TYPING WORKS.
 That was the one thing that could have killed the idea (#5365 reports it
@@ -3941,9 +3866,7 @@ STILL IN THE TREE, UNREACHABLE FROM THE UI  wsl_exec, the RPC bridge, the 8
 CHECKS  267 cargo tests (14 new), 58 JS tests, tsc + vite clean, i18n 1088 x4.
         Installer sha256 15fc1236954e4b1a98530d6a806e9e3add225dfb6efca6d57056febfd71ef306
 
-================================================================================
 2026-08-19 (cont.)  RTL round 2 — the status bar — + the zellij verb surface
-================================================================================
 
 WHAT YOSSI SAW  A screenshot of Claude Code inside a local zellij pane: right
      aligned, and the Latin runs in the wrong order. "winget upgrade
@@ -4017,9 +3940,7 @@ REGRESSION, CAUGHT IN ONE BUILD  "עכשיו זה מיושר לשמאל - וגם
      default-off. 3 new tests pin the ungated path, including one that asserts
      all 24 table cases are identical with the gate off.
 
-================================================================================
 2026-08-19 (cont.)  RTL round 3 — separating remote from local for real
-================================================================================
 
 THE INSTRUCTION  "הרי מקודם הכל במרוחק עבד כמו שצריך ... אתה יכול להשוות מול
      MAIN ... אתה רק צריך לוודא שיש הפרדה מוחלטת בין המרוחק למקומי - ואז
@@ -4089,9 +4010,7 @@ FOUND, NOT LANDED  flushPending reads the LIVE rtl mode while the renderer
 CHECKS  272 cargo tests (2 new), 71 JS tests (3 new), tsc + vite clean,
         i18n 1091 keys x 4 locales.
 
-================================================================================
 2026-08-19 (cont.)  RTL round 4 — the log answered it, and it was not the answer
-================================================================================
 
 THE MEASUREMENT THAT SHOULD HAVE COME FIRST  `zellij action dump-screen` on the
      live local pane returned the cwd as U+05E8 U+05D1 U+05E6 — צבר in VISUAL
@@ -4138,9 +4057,7 @@ ALSO CONFIRMED FROM THE LOG  stripPaneFrame works (local rows=31 rtl=1, not
 
 CHECKS  275 cargo tests, 76 JS tests, tsc + vite clean.
 
-================================================================================
 2026-08-20  docs/ZELLIJ.md — the zellij command surface, from the binary
-================================================================================
 WHY  Every zellij verb so far was checked ad-hoc against --help and the finding
      lived in a doc-comment in lib.rs. Next time we add one we would guess, or
      read zellij.dev — which documents a NEWER build: it lists focus-last-pane,
@@ -4162,9 +4079,7 @@ WHAT  docs/ZELLIJ.md (new). Generated from `%LOCALAPPDATA%\Zellij\zellij.exe`
 NOTE  Doc only, no code touched. Raw --help dumps are in the session scratchpad,
      not committed; §7 regenerates them in one paste.
 
-================================================================================
 2026-08-20  Zellij lockdown, part 1: one pane, no chrome, no keybinds
-================================================================================
 WHY  Yossi: "each of our panes should hold exactly ONE zellij pane" — and the
      frame was still on screen after the 2026-08-19 fix. Both true, and the
      second had a cause nobody had looked for: `pane_frames false` removes the
@@ -4237,9 +4152,7 @@ NOT VERIFIED  Nothing here has run live. Zero chrome on screen, keys reaching
      the shell, and `default_layout` resolving at session CREATION are all
      checklist items, not claims. Rule #14.
 
-================================================================================
 2026-08-20  Zellij lockdown, part 2: Kill actually kills, and reports what it did
-================================================================================
 WHY  Yossi: "session disconnect doesn't really work today — it should be a
      delete command." Correct, and worse than it looked.
 
@@ -4314,9 +4227,7 @@ NOT VERIFIED  Rule #14. Nothing here has run live. The whole checklist is in
      zellij.exe and confirm the failure toast + hint kept; reboot and confirm
      resurrection still works.
 
-================================================================================
 2026-08-20  Zellij lockdown, part 3: the session picker was append-only
-================================================================================
 WHY  Parts 1-2 left two decisions that both assume the user can get rid of a
      session: closing a pane deliberately leaves its zellij session running
      (Yossi's call, symmetric with SSH/WSL where X is a detach), and session
@@ -4349,9 +4260,7 @@ NOT VERIFIED  Live: delete an EXITED row and confirm it is gone from
      `zellij list-sessions -n`; and click the row BODY to confirm that still
      attaches and destroys nothing.
 
-================================================================================
 2026-08-20  Zellij lockdown, part 4: the SSH kill was lying the same way
-================================================================================
 WHY  Kept separate on purpose — it touches a REMOTE path, and its failure mode
      is the opposite of the zellij one.
 
@@ -4391,9 +4300,7 @@ NOT VERIFIED  Live, and this one needs a real server: kill an SSH tmux pane
      (expect gone + killed), then kill one whose session is already gone
      (expect NOT `failed`).
 
-================================================================================
 2026-08-20  Release build + what the build actually proved (Rules #13, #14)
-================================================================================
 BUILT  `npm run tauri build -- --no-bundle` from app/ — 6m40s, exit 0,
        target/release/app.exe.
 
@@ -4433,9 +4340,7 @@ STILL NOT VERIFIED, and none of it is inferable from the above:
        - reboot -> EXITED session still resurrects
        - picker trash button, and the mis-click case (row body still attaches)
 
-================================================================================
 2026-08-20  The wheel back, and Hebrew that pastes the right way round
-================================================================================
 THE MEASUREMENT THAT MADE THIS DECIDABLE — Yossi, side by side:
 
        pane              on screen     pasted elsewhere
@@ -4542,9 +4447,7 @@ STILL OPEN, and now isolated: the plain shell DISPLAYS Hebrew reversed. Its
      logical Hebrew out correctly and does not. FOLLOWUPS P2, now carrying the
      truth table as evidence. Same model as this fix, opposite sign.
 
-================================================================================
 2026-08-20  LIVE PASS on the wheel + copy build — verified, not just built
-================================================================================
 Yossi ran the 15:35 build (commit e40f427). Rule #14: this is the run, not the
 compile.
 
@@ -4578,9 +4481,7 @@ BUILD NOTE, worth remembering  the first rebuild FAILED with `failed to remove
   task notification said "exit code 0" on a failed build. Check the output text,
   not the status.
 
-================================================================================
 2026-08-20  Right-aligned Hebrew in Claude — normalise on the way IN
-================================================================================
 GOAL  Local Claude panes showed correct letters but pinned to the LEFT. Yossi
      wanted them on the right, and remembered it had worked once.
 
@@ -4648,9 +4549,7 @@ NOT VERIFIED  Rule #14. The three that matter: Hebrew from Claude correct AND
      right; the CARET while typing Hebrew (the known-risky one); and Claude's
      box-drawing rows not flipping — 770013b is the regression to watch.
 
-================================================================================
 2026-08-20 20:45 — v0.5.0-beta.1 cut from the branch; main deliberately untouched
-================================================================================
 Task: release 0.5.0 after the zellij chain + PR #6 + the merge repairs.
 
 What changed about the plan, and why:
@@ -4776,10 +4675,8 @@ app over the Unix socket — this is the hooks/statusline path and the one
 most likely to be wrong, (c) the connect wizard stops flagging every key
 as badly permissioned, (d) Settings shows real installed fonts.
 
-========================================================================
 2026-08-23 | fix(ci): the mac build's ad-hoc path could never bundle
 Files: .github/workflows/build-macos-intel.yml
-===============================================================================
 
 Run 32421631034 (claude/macos-universal-signing, workflow_dispatch) failed
 in BOTH matrix legs at "Build (.app bundle)":
@@ -4834,7 +4731,6 @@ runnable locally but NOT distributable — new followup.
 
 Rule #14 still applies: green CI is not a launched app. Nothing here ran
 the .app on a real Mac.
-=======
 
 2026-08-23  Align main with the 0.5.0 line: merge Phase 82 into the release branch
   Branch claude/worktrees-clean-build-988849, worktree worktrees-clean-build-988849
@@ -4973,10 +4869,8 @@ the .app on a real Mac.
   session that OUTLIVED its creating pane on a real box -- reconnect to
   it and confirm the pane header takes Claude's title. The CLI half has
   29/29 plus a live smoke for bug 2; the desktop half is CI-compiled only.
-===============================================================================
 2026-08-23 | MERGED TO MAIN: the mac signing fix + the two-arch matrix
 Files: merge 47dfab0 (main 1cfbb1e -> 47dfab0, fast-forward)
-===============================================================================
 
 `main` moved 69 commits DURING this session -- the 0.5.0 alignment
 (7a44526) landed from another session about an hour before the merge,
@@ -5029,9 +4923,7 @@ ad-hoc path, which is exactly the behaviour this decision wants.
 
 
 
-================================================================================
 2026-08-23 | Phase 83 — the Go server enters the CI pipeline
-================================================================================
 Files: .github/workflows/ci-windows.yml, .gitattributes, CLAUDE.md,
 docs/ymux-server/README.md, docs/DECISIONS.md, FOLLOWUPS.md
 
@@ -5121,9 +5013,7 @@ hand, so that optimisation does not cover them — but it is the same class
 of problem and the same directory.
 
 
-================================================================================
 2026-08-23 | Phase 84.C - Monitor > Analytics tab (historical metrics)
-================================================================================
 Task: Yossi asked for a screen like the dev-pipeline dashboard's /efficiency
 page inside the Monitor card (the ניטור window, InsightsWindow.tsx). Ported the
 SHAPE of that page, not its data: stat tiles + a hand-rolled SVG sparkline +
@@ -5195,7 +5085,6 @@ Two things worth knowing for next time:
 Status: NOT VERIFIED LIVE (Rule 14). Not compiled either - Rule 17, builds run
 on CI. Needs the server-blob rebake (see below) and then a real remote.
 2026-08-23 — TMUX organization: workspace-scoped session lists + attach-only
-================================================================================
 Branch: claude/tmux-workspace-scope
 
 TASK (Yossi, Hebrew): now that folders can be opened under a workspace, put
@@ -6127,6 +6016,87 @@ vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
 Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
+2026-08-23 | Phase 87: every keyboard shortcut is recordable, not typed
+Trigger: the voice (push-to-talk) hotkey in Settings -> AI was a FREE-TEXT box.
+The accelerator had to be typed by hand, and a typo produced a hotkey that
+silently never fired (parseShortcut returns null, nothing reports it). Yossi
+asked for click-to-record there and across all shortcuts; when told the
+Shortcuts tab already records and only the voice field did not, he chose the
+larger scope: make the ~20 hardcoded bindings configurable too.
+
+What changed
+- 20 new accelerators moved out of App.tsx's hardcoded if-chain into
+  settings.shortcuts: command_palette, toggle_sidebar, toggle_sidebar_soft,
+  toggle_maximize, focus_zoom, reset_terminal, distribute_evenly,
+  split_horizontal/_vertical, close_pane, split_or_move_{l,r,u,d},
+  quadrant_{tl,tr,bl,br}, tab_next, tab_prev. 8 -> 28 configurable rows.
+- App.tsx handleKey: ~250 lines of sequential ifs -> one ordered keyBindings
+  table, first-match-wins. Two semantics preserved on purpose: `when` false
+  means SKIP-AND-KEEP-SCANNING (plain Ctrl+B must reach the PTY, tmux prefix),
+  and `run` owns its own preventDefault (copy must not consume the event when
+  the terminal had no selection).
+- Ctrl+1..9 and bare Escape stay hardcoded (numeric family; contextual
+  dismissal) but are now LISTED read-only in Settings, which is what Yossi
+  asked for when told they exist. Editor/browser-pane keys listed too.
+- Voice hotkey: free-text input -> ShortcutRow. Stayed in settings.stt per
+  Yossi's choice (no migration); conflictingAccels() is fed it explicitly so a
+  clash with a table binding is still reported across the two schemas.
+- Conflict detection: canonicalAccel + conflictingAccels in shortcuts.ts,
+  red outline + tooltip in the tab. This is the class of bug that made
+  Focus/Zoom move off Ctrl+Shift+M by hand in Phase 65 (bug V).
+- shortcuts.ts now OWNS ShortcutsSettings/DEFAULT_SHORTCUTS/SHORTCUT_ACTION_IDS
+  /SHORTCUT_GROUPS and has ZERO imports, so it is testable under bare
+  `node --test`; settings.ts re-exports them (and needed its own local import,
+  since `export ... from` creates no local binding). Event-reading fns take a
+  structural KeyLike instead of KeyboardEvent for the same reason.
+- Rust: Shortcuts got container-level #[serde(default)] backed by the existing
+  impl Default, so 20 new fields needed ZERO new default fns and old
+  settings.json files still load. bindings/Shortcuts.ts hand-written to match
+  the ts-rs emit (Rule #17 - cannot run cargo test locally); CI regenerates it,
+  DIFF IT against the run and correct if it drifted.
+- Dropped the `e.key === "+" || e.code === "Equal"` hack for Ctrl+Alt+=:
+  matches() already falls back to the physical key, which is what it worked
+  around. Covered by a test.
+
+Deliberate behaviour tightenings (matches() is exact on all four modifiers,
+four old branches were looser) - say so if a bug report arrives:
+  Ctrl+Alt+Shift+P no longer opens the palette (old branch had no !alt/!meta)
+  Ctrl+Alt+Shift+= no longer distributes evenly
+  Ctrl+Enter and Ctrl+Alt+I/O/K/L no longer fire with Meta held
+
+Bug found and fixed en route: ShortcutRow never called stopPropagation, so the
+combination being RECORDED also fired the action bound to it. Harmless-ish
+before (recording Ctrl+Shift+N toggled notes); with the table grown it means
+recording Ctrl+Shift+W closes the active pane. One line.
+
+Test infrastructure: app/src/*.test.ts (9 files, since Phase 80) had NO runner
+- no npm script, no CI step, nothing ever executed them. Added `npm test`
+(node --test) and a ci-windows step. New shortcuts.test.ts: 23 cases incl. the
+Hebrew-layout physical-key path, the four tightenings, formatEvent<->parse
+round-trip, "the shipped defaults contain no conflicts" (the Phase-65-bug-V
+regression guard), and SHORTCUT_GROUPS covering every id exactly once.
+
+Files: app/src/{shortcuts.ts,shortcuts.test.ts(new),settings.ts,App.tsx,
+SettingsModal.tsx,App.css,bindings/Shortcuts.ts}, app/src/i18n/{en,he,ar,ru}.json
+(+32 keys each, all four still in lockstep at 1251 lines),
+app/src-tauri/src/settings.rs, app/package.json, .github/workflows/ci-windows.yml
+
+Vault: frontend-lib, frontend-flows, frontend-shell, backend-wizards, build-glue
+updated + re-stamped. The lock was re-stamped SELECTIVELY - only the six source
+files this change touched. The six pages that were already stale on main
+(insights_local.rs, lib.rs, workspace_browser.rs, Cargo.toml, BrowserWindow.tsx
++ InsightsWindow.tsx, the Go insights files) were left flagged rather than
+masked by a blanket --write. Logged P1 in FOLLOWUPS: that pre-existing drift
+fails ci-windows on EVERY pr, this one included.
+
+Status: NOT VERIFIED LIVE, and not even compiled - Rule #17, no local tsc/cargo,
+and this worktree has no node_modules. shortcuts.test.ts DID run (23/23 pass);
+the other 174 frontend tests pass too, the 2 "failures" are bidi-js missing from
+this worktree only. Everything else is CI's job, and green CI is still only
+"compiles" per Rule #14. Live smoke list is in the plan file; the ones most
+likely to be wrong are Ctrl+B inside vs outside a terminal (tmux prefix must
+still reach the PTY), copy with and without a terminal selection, and D/E/W in
+tabs mode vs split mode.
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
 ================================================================================
 2026-08-24 — TMUX picker: mark the sessions that belong to another folder

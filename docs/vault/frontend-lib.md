@@ -115,7 +115,7 @@ are what components use to reason about a pane.
 ts-rs never sees them and nothing regenerates them for you. A field added on the Rust
 side is silently missing here until someone types it — update both in the same commit.
 
-**`settings.ts` (738)** — the typed settings mirror plus load/save and the CSS-variable
+**`settings.ts` (728)** — the typed settings mirror plus load/save and the CSS-variable
 apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it.
 
 ## Small modules
@@ -138,10 +138,27 @@ apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it.
   purpose**: per-machine, high-churn session state, the same class as window rects and
   sidebar width. Losing it costs one click, never data, and it keeps Rule #7's
   atomic-write surface small.
-- **`shortcuts.ts` (200)** — parses accelerators like `Ctrl+Shift+C` from
-  `settings.shortcuts.<name>` once on settings load, and exposes
+- **`shortcuts.ts` (380)** — the accelerator registry, not just a parser. It owns
+  `ShortcutsSettings`, `DEFAULT_SHORTCUTS`, `SHORTCUT_ACTION_IDS` and
+  `SHORTCUT_GROUPS` (the Settings tab's row order), parses
+  `settings.shortcuts.<name>` into a table on settings load, and exposes
   `matches(event, accelerator)`. Same vocabulary in the hand-editable JSON and the
-  click-to-record picker.
+  click-to-record picker. **Phase 87: the defaults live HERE, not in `settings.ts`,
+  on purpose** — this module has zero imports, so `shortcuts.test.ts` can run under
+  bare `node --test`; `settings.ts` pulls in the Tauri bridge and the terminal and
+  would drag them into the test. `settings.ts` re-exports them for old call sites.
+  Every event-reading function takes a structural `KeyLike`, not `KeyboardEvent`, for
+  the same reason. `matches()` compares the logical `event.key` OR the physical
+  `event.code` (`physicalKey`), which is what makes letter and punctuation bindings
+  fire on a Hebrew layout — and why the dispatcher needs no `event.code` special
+  cases. `conflictingAccels()` reports accelerators claimed by more than one action:
+  dispatch is first-match-wins, so a duplicate leaves the loser silently dead. It
+  takes an `extra` map because the STT push-to-talk hotkey lives under
+  `settings.stt`, not `settings.shortcuts`, and a clash across those two schemas is
+  exactly the bug that made Focus/Zoom move off `Ctrl+Shift+M`.
+- **`shortcuts.test.ts`** — and it actually runs now: `npm test` (a plain
+  `node --test` over `src/*.test.ts`) is a ci-windows step as of Phase 87. The nine
+  test files that predate it had never been executed by anything.
 - **`stt.ts` (262)** — one recorder interface over two backends: `webspeech` uses
   `window.SpeechRecognition` directly (WebView2 ships it, but Chrome streams to Google's
   servers behind the scenes — which is exactly why the Local option exists), and `local`
