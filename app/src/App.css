@@ -3527,6 +3527,27 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   background: var(--w-surface-hi);
   color: var(--w-text);
 }
+/* Phase 87: two actions bound to the same combination. First-match-wins
+   means the loser never fires, so both rows are marked rather than one. */
+.settings-shortcut-input--conflict {
+  border-color: var(--w-error);
+}
+/* Phase 87: the read-only "fixed shortcuts" reference rows - same grid as a
+   recordable row, but nothing to click. */
+.settings-shortcut-fixed {
+  color: var(--w-text-dim);
+  font-family: var(--w-font-mono);
+  font-size: var(--w-fs-sm);
+  text-align: center;
+  padding: 4px 8px;
+}
+.settings-shortcut-group {
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 16px 0 8px;
+}
 
 /* ─── Phase 12.C: local PTY wizard mode tabs ─── */
 

@@ -198,29 +198,19 @@ export interface UpdatesSettings {
   channel: string;
 }
 
-export interface ShortcutsSettings {
-  copy: string;
-  paste: string;
-  select_all: string;
-  find: string;
-  new_workspace: string;
-  toggle_notes: string;
-  toggle_settings: string;
-  summarize_claude: string;
-  copy_on_select_with_ctrl_c: boolean;
-}
-
-export const DEFAULT_SHORTCUTS: ShortcutsSettings = {
-  copy: "Ctrl+Shift+C",
-  paste: "Ctrl+Shift+V",
-  select_all: "Ctrl+Shift+A",
-  find: "Ctrl+F",
-  new_workspace: "Ctrl+N",
-  toggle_notes: "Ctrl+Shift+N",
-  toggle_settings: "Ctrl+,",
-  summarize_claude: "Ctrl+Alt+B",
-  copy_on_select_with_ctrl_c: true,
-};
+// Phase 87: the shortcut schema + defaults live in `shortcuts.ts`, which
+// has NO imports — this file pulls in the Tauri bridge and the terminal,
+// so anything defined here is unreachable from a plain `node --test`.
+// Re-exported so existing `from "./settings"` call sites keep working.
+// `export ... from` creates no LOCAL binding, so the Settings interface
+// below needs its own import of the type it references.
+import type { ShortcutsSettings as ShortcutsSettingsLocal } from "./shortcuts";
+export {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_ACTION_IDS,
+  type ShortcutActionId,
+  type ShortcutsSettings,
+} from "./shortcuts";
 
 export interface ClaudeSettings {
   auto_summarize_on_stop: boolean;
@@ -298,7 +288,7 @@ export interface Settings {
   hook_notifications?: HookNotificationSettings;
   updates: UpdatesSettings;
   i18n: I18nSettings;
-  shortcuts?: ShortcutsSettings;
+  shortcuts?: ShortcutsSettingsLocal;
   claude?: ClaudeSettings;
   // Phase 78: Claude usage % indicator display + auto-refresh.
   claude_usage?: ClaudeUsageSettings;

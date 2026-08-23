@@ -29,7 +29,7 @@ covers:
 **SolidJS**, not React. Signals and `createEffect`, no virtual DOM, no hooks rules.
 `index.tsx` (108 lines) mounts `<App/>`; everything else hangs off it.
 
-## `App.tsx` (4,722) — one component, ~50 signals
+## `App.tsx` (4,710) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -37,6 +37,32 @@ application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
 `notes`, `paneStatus`, `agentRuns`, `portForwards`, `detectedPorts`, `sidebarWidth`,
 `zoomFactor`, the pending-credential signals (`pendingPwFor`, `pendingPassphraseFor`,
 `pendingHostTrust`), and the various modal/window toggles.
+
+**Keyboard dispatch is one ordered table, not a chain of `if`s.** `keyBindings`
+is a `KeyBinding[]` of `{ id, when?, run }` built once; `handleKey` walks it and the
+first entry whose accelerator matches wins. Two rules in it are load-bearing and easy
+to break:
+
+- **`when` returning false means "skip and keep scanning", never "swallow".** That is
+  how plain `Ctrl+B` (`toggle_sidebar_soft`) toggles the sidebar outside a terminal but
+  reaches the PTY inside one — `Ctrl+b` is tmux's prefix, and stealing it would break
+  every tmux binding.
+- **`run` owns its own `preventDefault()`.** `copy` deliberately does not call it until
+  `copyTerminalSelection()` resolves true, so a native text-selection copy still works
+  in a non-terminal pane. A central `preventDefault` in the loop would kill that.
+
+Accelerators come from `settings.shortcuts` via `shortcutTable()`, rebuilt on every
+`settings:changed`, so a rebind in Settings takes effect without a relaunch. Before
+Phase 87 roughly twenty of these were hardcoded `if` branches with no UI at all.
+
+**Three things stay out of the table deliberately.** `Ctrl+1..9` (jump to tab N) is a
+numeric family where 9 means *last*, and a `ParsedShortcut` holds exactly one key.
+Bare `Escape` is a contextual *dismissal* — it acts only when a fullscreen panel or a
+maximized pane exists and otherwise falls through so the escape sequence reaches the
+PTY; making it rebindable would let a user strand themselves in a maximized pane. Both
+run before the table so no rebind can shadow them. STT push-to-talk runs after it,
+because it is stored in `settings.stt` rather than `settings.shortcuts`. All three are
+listed read-only in Settings → Shortcuts so they are at least visible.
 
 **State lives here and flows down as props.** Child components are mostly
 presentational; when a child needs to mutate, it calls a handler App passed it. The two
