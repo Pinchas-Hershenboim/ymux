@@ -6581,45 +6581,6 @@ likely to be wrong are Ctrl+B inside vs outside a terminal (tmux prefix must
 still reach the PTY), copy with and without a terminal selection, and D/E/W in
 tabs mode vs split mode.
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
-
-
-2026-08-23 | Merge of origin/main, and a PHASE NUMBER COLLISION to be aware of
-Files: FOLLOWUPS.md, PROGRESS.txt, app/src/App.css (auto-merged)
-
-CLAUDE.md says phase numbers are stable and never reused. One got reused, by
-two sessions working in parallel, and this records it rather than pretending
-otherwise:
-
-  d201023 on main  "Phase 84.F: restore the pane tab strip's CSS, deleted by
-                    a merge"          <- landed on main FIRST, keeps 84.F
-  ffc25d3 here     "fix(pty): a pane title could inject a command into its own
-                    shell"            <- its PROGRESS entry also said 84.F
-
-The other session's commit reached main first, so 84.F is theirs. This
-session's three are re-designated in the record as 84.J (pane title / session
-name), 84.K (workspaces schema gate) and 84.L (font uninstall). The commit
-SUBJECTS are unchanged and are the reliable way to find them - git history is
-not being rewritten for a numbering label, and Rule #15 would forbid it on a
-pushed branch anyway. Sub-numbers G and H were also used by this session and
-do not appear to collide, but they are folded into the same re-designation so
-the three stay contiguous.
-
-The lesson is the same one the worktree sweep taught earlier today: parallel
-sessions do not see each other's numbering, and PROGRESS.txt is append-only
-precisely because two of them will write at once. Check `git log --all
---grep='Phase 84'` before claiming a sub-number.
-
-MERGE CONFLICTS, both in append-only files:
-  FOLLOWUPS.md - both sessions had independently filed the SAME P0 about the
-    red vault gate (a0a3598 on main vs the one filed here). Merged into one
-    entry, which was then closed, because this session fixed it.
-  PROGRESS.txt - two sessions appending at once, kept both.
-
-Vault re-checked after the merge: still up to date. Their App.css change is
-not in any vault's covers list.
-
-
-================================================================================
 2026-08-23 | Third merge of origin/main (Phase 87), and the "should the vault be
              Obsidian-style?" question, measured
 Files: docs/vault/frontend-{flows,lib}.md, .vault-lock.json, PROGRESS, FOLLOWUPS
@@ -6658,3 +6619,98 @@ references machine-checkable so a rename cannot rot them, without splitting
 files or adopting wikilink syntax. Filed as P3 alongside the cite-rot entry,
 since it is the same class of problem - a pointer in prose that nothing
 verifies - and the same fix pass should do both.
+=======
+[2026-08-23 21:31] Phase 84.G — top-center overlay lanes (session ticker vs. toasts)
+  Report: the Claude-usage pill sits top-center and every app message was
+  rendering underneath it — enabling sound or hitting an error showed nothing.
+  Cause: .claude-usage-pill is position:fixed top:8px left:50% z-index:9000;
+  .summary-toast is top:12px left:50% z-index:230 — same pixels, pill wins by
+  39x. That toast is the app's ONLY global message surface (~20
+  flashSummaryToast call sites, every ad-hoc error included). .connecting-pill
+  (top:14px z:9000) lost the same way: equal z, earlier in the DOM.
+  Fix (app/src/App.css, CSS only):
+    - .summary-toast   z 230 -> 9200
+    - .reconnect-toast z 231 -> 9201
+    - .connecting-pill z 9000 -> 9100
+    - new lane block: .app:has(.claude-usage-pill) pushes summary-toast +
+      connecting-pill to top:44px and reconnect-toast to top:88px, so pill and
+      message are both readable. :has() and not a fixed offset because the pill
+      only mounts for a live workspace with usage data.
+  Files: app/src/App.css (+44/-4). No vault page covers App.css (checked
+  .vault-lock.json); Rule #19 sweep of origin/main...HEAD lists only
+  PROGRESS.txt + App.css, neither covered.
+  Status: compiles-only reasoning; NOT run live (Rule #17 - no local builds).
+
+
+
+2026-08-23 | Merge of origin/main, and a PHASE NUMBER COLLISION to be aware of
+Files: FOLLOWUPS.md, PROGRESS.txt, app/src/App.css (auto-merged)
+
+CLAUDE.md says phase numbers are stable and never reused. One got reused, by
+two sessions working in parallel, and this records it rather than pretending
+otherwise:
+
+  d201023 on main  "Phase 84.F: restore the pane tab strip's CSS, deleted by
+                    a merge"          <- landed on main FIRST, keeps 84.F
+  ffc25d3 here     "fix(pty): a pane title could inject a command into its own
+                    shell"            <- its PROGRESS entry also said 84.F
+
+The other session's commit reached main first, so 84.F is theirs. This
+session's three are re-designated in the record as 84.J (pane title / session
+name), 84.K (workspaces schema gate) and 84.L (font uninstall). The commit
+SUBJECTS are unchanged and are the reliable way to find them - git history is
+not being rewritten for a numbering label, and Rule #15 would forbid it on a
+pushed branch anyway. Sub-numbers G and H were also used by this session and
+do not appear to collide, but they are folded into the same re-designation so
+the three stay contiguous.
+
+The lesson is the same one the worktree sweep taught earlier today: parallel
+sessions do not see each other's numbering, and PROGRESS.txt is append-only
+precisely because two of them will write at once. Check `git log --all
+--grep='Phase 84'` before claiming a sub-number.
+
+MERGE CONFLICTS, both in append-only files:
+  FOLLOWUPS.md - both sessions had independently filed the SAME P0 about the
+    red vault gate (a0a3598 on main vs the one filed here). Merged into one
+    entry, which was then closed, because this session fixed it.
+  PROGRESS.txt - two sessions appending at once, kept both.
+
+Vault re-checked after the merge: still up to date. Their App.css change is
+not in any vault's covers list.
+
+
+
+================================================================================
+2026-08-23 | Fourth merge of origin/main; the same P0 had now been filed 3x
+Files: PROGRESS.txt, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
+
+PR #27 (session-ticker positioning) landed. One conflict, PROGRESS.txt, which
+is append-only - two sessions appending at once, both kept, theirs first
+because it reached main first. App.css auto-merged. Vault untouched and still
+green on both halves (hash + --diff-base origin/main).
+
+The merge brought back a P0 that is the THIRD independent filing of the red
+vault gate - one from this session, one from the vaults-update session
+(a0a3598), one from the session-ticker session. All three describe the same
+incident; it was already fixed here hours earlier.
+
+Archived rather than deleted, because the third one carries the best account of
+the CAUSE that anyone wrote: PR #20 IS the vault (Phase 85, the commit that
+introduced .vault-lock.json) and it merged at 17:16:35 inside a NINETY-SECOND
+window with #23 (17:16:18), #21 (17:13:55) and #22 (17:17:28) - all three
+branched before the lock existed and landed covered code it had never hashed.
+A merge-order accident. No amount of reviewing any single PR would have caught
+it.
+
+THE META-COST IS THE REAL FINDING, and it is larger than the bug: three
+sessions independently spent effort discovering one red build, TWO of them
+wrote prose for the same nine vault pages, and reconciling those two versions
+then cost two further merges of hand-resolution (including a duplicated section
+in backend-core, a duplicated section in frontend-lib, and five duplicated
+covers: entries that git reported as a clean auto-merge). Prevention is cheap
+and belongs in the process, not the code: land a repo-wide gate on a quiet
+tree, or ship it warn-only for one cycle and flip it to blocking after.
+
+Also worth stating plainly: this branch has now merged origin/main FOUR times
+in one session and is racing a tree that four other sessions are pushing to.
+Every extra hour open is another merge. It is green and reviewable now.
