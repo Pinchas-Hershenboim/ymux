@@ -1,0 +1,109 @@
+// Unit tests for the pane traffic light (Phase 84.B). Run:
+//   cd app && node --experimental-strip-types --test src/paneAgentState.test.ts
+// (Excluded from the app tsconfig -- node tests, not browser code.)
+//
+// The thesis these guard: a WRONG light is worse than no light. Every
+// case below is one where painting a colour would be a lie.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  trafficLight,
+  trafficLightKey,
+  elapsedLabel,
+  STALE_AFTER_MS,
+  type AgentLightInput,
+} from "./paneAgentState.ts";
+
+const NOW = 1_700_000_000_000;
+
+const input = (over: Partial<AgentLightInput> = {}): AgentLightInput => ({
+  state: "unknown",
+  stateSince: NOW,
+  waitingOnPermission: false,
+  connected: true,
+  nowMs: NOW,
+  ...over,
+});
+
+test("a pane with no agent gets no light", () => {
+  // A plain shell pane must not sprout a status dot just because the
+  // workspace happens to be in tabs mode.
+  assert.equal(trafficLight(input({ state: "unknown" })), null);
+  assert.equal(trafficLight(input({ state: "idle" })), null);
+});
+
+test("the three colours map to the three states", () => {
+  assert.equal(trafficLight(input({ state: "running" })), "green");
+  assert.equal(trafficLight(input({ state: "done" })), "yellow");
+  assert.equal(trafficLight(input({ state: "needs-input" })), "red");
+});
+
+test("a disconnected pane shows nothing, whatever it last said", () => {
+  // Otherwise a pane keeps displaying the state it had when its session
+  // died, which reads as a live agent that is simply never finishing.
+  for (const state of ["running", "done", "needs-input"] as const) {
+    assert.equal(trafficLight(input({ state, connected: false })), null);
+  }
+});
+
+test("state older than the staleness cutoff stops being evidence", () => {
+  // A SIGKILLed Claude emits no SessionEnd, so its last state sits in
+  // memory forever. Without this the pane is green until the app restarts.
+  const stale = input({
+    state: "running",
+    stateSince: NOW - STALE_AFTER_MS - 1,
+  });
+  assert.equal(trafficLight(stale), null);
+
+  const fresh = input({
+    state: "running",
+    stateSince: NOW - STALE_AFTER_MS + 1000,
+  });
+  assert.equal(trafficLight(fresh), "green");
+});
+
+test("a pending permission card outranks everything and never goes stale", () => {
+  // The card is on screen right now waiting for a click; its own presence
+  // is the evidence, so the age of the last hook is irrelevant.
+  const old = input({
+    state: "running",
+    stateSince: NOW - STALE_AFTER_MS * 10,
+    waitingOnPermission: true,
+  });
+  assert.equal(trafficLight(old), "red");
+  // ...but a card on a pane with no session still shows nothing.
+  assert.equal(
+    trafficLight(input({ waitingOnPermission: true, connected: false })),
+    null,
+  );
+});
+
+test("a state with no timestamp is trusted rather than dropped", () => {
+  // stateSince is null only before the first real transition. Treating
+  // that as stale would blank a light that just arrived.
+  assert.equal(
+    trafficLight(input({ state: "running", stateSince: null })),
+    "green",
+  );
+});
+
+test("the tooltip key distinguishes our card from the agent's own ask", () => {
+  // "Waiting for your approval" (a ymux card you can click) is a different
+  // instruction to the user than "Claude needs your input" (go type).
+  assert.equal(
+    trafficLightKey("red", true),
+    "pane.agent.state.waiting_approval",
+  );
+  assert.equal(trafficLightKey("red", false), "pane.agent.state.needs_input");
+  assert.equal(trafficLightKey("green", false), "pane.agent.state.running");
+  assert.equal(trafficLightKey("yellow", false), "pane.agent.state.done");
+});
+
+test("elapsed renders M:SS and never counts backwards", () => {
+  assert.equal(elapsedLabel(NOW - 65_000, NOW), "1:05");
+  assert.equal(elapsedLabel(NOW - 5_000, NOW), "0:05");
+  assert.equal(elapsedLabel(null, NOW), "");
+  // Clock skew between the backend's stamp and the frontend's tick must
+  // not produce "-1:-1".
+  assert.equal(elapsedLabel(NOW + 5_000, NOW), "0:00");
+});

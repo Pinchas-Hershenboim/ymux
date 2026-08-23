@@ -1380,16 +1380,54 @@ async fn dispatch(
             // pane:agent-run, and returns before any FeedItem/toast is made.
             // `stop`/`session-end` update the timing too but fall through to
             // their existing handling below.
-            if let Some(pane) = pane_id.as_deref() {
+            // Phase 84.B: resolve the pane ONCE, up front, and key all the
+            // per-pane state off the result.
+            //
+            // `pane_id` comes from YMUX_PANE_ID, an env var the shell
+            // inherited when it was spawned. Phase 81.G established that a
+            // multiplexer session outliving its creating pane pushes an id
+            // the desktop no longer has, and added resolve_hook_pane to
+            // recover it from the session name — but only wired it into the
+            // auto-title path. agent_runs kept using the raw value, which
+            // for the Ticker meant a timer on a dead key. For a traffic
+            // light it means the wrong pane lights up, which is worse:
+            // a wrong light is worse than no light.
+            let resolved_pane = crate::resolve_hook_pane(
+                state,
+                pane_id.as_deref(),
+                params.get("tmux_session").and_then(|v| v.as_str()),
+            );
+            // Notification type, read here so the state machine below and
+            // the early return share one source. The CLI sends nothing but
+            // the type in this payload — see the sanitised dispatch there.
+            let notification_type = params
+                .get("payload")
+                .and_then(|p| p.get("notification_type"))
+                .and_then(|v| v.as_str());
+            if let Some(pane) = resolved_pane.as_deref() {
+                // Phase 84.B: fold the hook into the effective agent state
+                // and emit, for the subkinds that carry no turn timing.
+                // `stop` / `user-prompt-submit` / `session-end` do their own
+                // emit below because they also move the timer.
+                if matches!(subkind.as_str(), "pre-tool-use" | "notification") {
+                    let snap = {
+                        let mut runs = state.agent_runs.lock().unwrap();
+                        let e = runs.entry(pane.to_string()).or_default();
+                        e.apply_hook(&subkind, notification_type);
+                        (e.started_at_ms(), e.avg_ms(), e.state, e.state_since_ms(), e.seq)
+                    };
+                    crate::emit_agent_run_event(app, pane, snap.0, snap.1, snap.2, snap.3, snap.4);
+                }
                 match subkind.as_str() {
                     "user-prompt-submit" => {
-                        let (started, avg) = {
+                        let (started, avg, st, since, seq) = {
                             let mut runs = state.agent_runs.lock().unwrap();
                             let e = runs.entry(pane.to_string()).or_default();
                             e.turn_started_at = Some(SystemTime::now());
-                            (e.started_at_ms(), e.avg_ms())
+                            e.apply_hook(&subkind, None);
+                            (e.started_at_ms(), e.avg_ms(), e.state, e.state_since_ms(), e.seq)
                         };
-                        crate::emit_agent_run_event(app, pane, started, avg);
+                        crate::emit_agent_run_event(app, pane, started, avg, st, since, seq);
                         // Session auto-name: the CLI derives it from the
                         // first prompt and sends it under the existing
                         // `claude_title` param, so the header carries it
@@ -1399,21 +1437,17 @@ async fn dispatch(
                         if let Some(new_t) = params.get("claude_title").and_then(|v| v.as_str()) {
                             let new_t = new_t.trim();
                             if !new_t.is_empty() {
-                                // Phase 81.G: `pane` comes from a stale-prone
-                                // env var — resolve against the tmux name.
-                                if let Some(target) = crate::resolve_hook_pane(
-                                    state,
-                                    Some(pane),
-                                    params.get("tmux_session").and_then(|v| v.as_str()),
-                                ) {
-                                    crate::update_pane_auto_title(state, app, &target, new_t);
-                                }
+                                // Phase 81.G resolved the stale-prone env var
+                                // here; Phase 84.B hoisted that resolution to
+                                // the top of the block, so `pane` is already
+                                // the recovered id.
+                                crate::update_pane_auto_title(state, app, pane, new_t);
                             }
                         }
                         return Ok(json!({ "request_id": req_id, "decision": "passive" }));
                     }
                     "stop" => {
-                        let avg = {
+                        let (avg, st, since, seq) = {
                             let mut runs = state.agent_runs.lock().unwrap();
                             let e = runs.entry(pane.to_string()).or_default();
                             if let Some(start) = e.turn_started_at.take() {
@@ -1421,17 +1455,57 @@ async fn dispatch(
                                     e.record_turn(d.as_millis());
                                 }
                             }
-                            e.avg_ms()
+                            e.apply_hook(&subkind, None);
+                            (e.avg_ms(), e.state, e.state_since_ms(), e.seq)
                         };
                         // started_at = None clears the live timer; avg persists.
-                        crate::emit_agent_run_event(app, pane, None, avg);
+                        crate::emit_agent_run_event(app, pane, None, avg, st, since, seq);
                     }
                     "session-end" => {
-                        state.agent_runs.lock().unwrap().remove(pane);
-                        crate::emit_agent_run_event(app, pane, None, None);
+                        // The session is gone, so the pane has no agent
+                        // state at all — Unknown, which renders no light.
+                        // Emitting the cleared state is what actually turns
+                        // it off in a frontend that is already listening.
+                        //
+                        // Carry the removed entry's seq + 1 rather than 0:
+                        // the frontend drops any event whose seq is not
+                        // newer than what it holds, so a zero here would be
+                        // discarded as stale and the light would never go out.
+                        let seq = state
+                            .agent_runs
+                            .lock()
+                            .unwrap()
+                            .remove(pane)
+                            .map(|e| e.seq.saturating_add(1))
+                            .unwrap_or(0);
+                        crate::emit_agent_run_event(
+                            app,
+                            pane,
+                            None,
+                            None,
+                            crate::PaneAgentState::Unknown,
+                            None,
+                            seq,
+                        );
                     }
                     _ => {}
                 }
+            }
+
+            // A notification is a state signal ONLY, and this return is
+            // load-bearing rather than tidiness: fall through and it builds
+            // a FeedItem, lands in the FeedStore, emits feed:item-added and
+            // can reach a toast — exactly the noise v0.4.4 removed
+            // Notification to stop. Do not "simplify" this away.
+            //
+            // OUTSIDE the `if let Some(pane)` above, deliberately. Inside it,
+            // a notification whose pane could not be resolved — no live
+            // session for the id, no multiplexer name to recover it from —
+            // would skip the return and reinstate the noise on exactly the
+            // path nobody would think to test. There is nothing useful to do
+            // with an unattributable notification anyway.
+            if subkind == "notification" {
+                return Ok(json!({ "request_id": req_id, "decision": "passive" }));
             }
 
             let blocking = matches!(kind.as_str(), "permission_request");

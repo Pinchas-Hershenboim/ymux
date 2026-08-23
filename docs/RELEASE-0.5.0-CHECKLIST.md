@@ -33,6 +33,7 @@ on that branch and predates Phase 81.F, so it omitted `auto_name` from the
 | 0.2 | **Release notes must order the steps:** install YMUX → launch once and confirm workspaces are there (first launch renames `%APPDATA%\winmux` → `ymux`) → *then* uninstall old winmux. Uninstalling first is harmless; **running both at once is not** (see 11.2). | ⛔ blocks publish |
 | 0.3 | **`manifest.json` is still on `0.4.5-beta.1`** and still points at `github.com/yyhezkel/winmux/...`. Per RELEASING.md step 5 this is edited *last* — until then existing installs stay on 0.4.5, which is the safe default. | ⛔ blocks publish |
 | 0.4 | **Rename shims stay in for this release**, retired one release *after* 0.5.0, as a set: `WINMUX-CHALLENGE` wire tag, `%APPDATA%` + `~/.winmux` migrations, dual env-var spellings, legacy named pipe. Do not "finish the rename" during testing. | ⛔ FOLLOWUPS P1 |
+| 0.4b | **If Phase 84.B ships in this cut, `manifest.json` → `hooks.claude-code.version` must go `1.1.0` → `1.5.0`** in the same edit as 0.3. It is stale at 1.1.0 today while the spec is already 1.5.0. The desktop's outdated-hooks banner (`updater.rs check_remote_hooks`) compares the stamped `ymux_meta.hooks_version` against the **manifest**, so until it moves nobody is ever told to re-run `setup-hooks` — and without that re-run the `Notification` hook is never registered, which means the traffic light's **red state never appears for anyone**. Green and yellow ride hooks that are already installed, so the failure is silent and partial: the feature looks like it works. Bumping it *earlier*, in the feature commit, is wrong for the mirror-image reason — it banners every current 0.4.5 user before a CLI exists that can honour 1.5.0. | \u26D4 FOLLOWUPS P2 |
 | 0.5 | **tmux sessions vanish server-side after an abrupt client loss** (laptop unplugged). Confirmed by Yossi, `tmux ls` empty *before* his reboot. Every `tmux kill-session` path in the repo was read and excluded — **no mechanism found**. Not caused by this release; decide whether it ships as a known issue. | ⛔ FOLLOWUPS P0, unexplained |
 
 ---
@@ -295,6 +296,35 @@ fitter ignored padding.
 |---|---|---|---|
 | 13.1 | Split to 6–8 panes, shrink the window | buttons move into the chevron menu **and the menu opens** | 🔴 |
 | 13.2 | Same, with Hebrew UI | same | 🔴 |
+
+---
+
+## 13b. Phase 84 — panes as tabs + the Claude traffic light
+
+Per-workspace toggle between the split grid and a tab strip (one pane fills
+the area, the rest keep running), plus a green/yellow/red light on each tab
+and pane header. **Requires re-running `setup-hooks`** — see blocker 0.4b;
+without it green and yellow work and red never appears.
+
+None of this has run live (Rule #14). Full smoke steps are in FOLLOWUPS P1;
+the short version:
+
+| # | Test | Pass condition | Status |
+|---|---|---|---|
+| 13b.1 | Toggle a 3-pane workspace to tabs | each tab fills the area; `tail -f` in a background tab is still moving when you return | \U0001F534 |
+| 13b.2 | `Ctrl+Tab`, `Ctrl+1..9`, `+`, middle-click | cycle / jump / open-and-focus / close | \U0001F534 |
+| 13b.3 | Close the middle tab | focus lands on the right neighbour, not nowhere | \U0001F534 |
+| 13b.4 | Drag one tab onto another | they swap | \U0001F534 |
+| 13b.5 | Flip back to split | original layout AND ratios restored | \U0001F534 |
+| 13b.6 | Restart the app | `tabs_mode` remembered per workspace | \U0001F534 |
+| 13b.7 | Switch UI to Hebrew | the strip does **not** mirror; the labels do | \U0001F534 |
+| 13b.8 | `setup-hooks` on a pre-rename machine | `Notification` written **and** `Stop`/`UserPromptSubmit` re-pointed at a path that exists | \U0001F534 |
+| 13b.9 | Prompt → tool call → finish | green → green → yellow | \U0001F534 |
+| 13b.10 | Wait ~60s after a turn ends | yellow → red via `idle_prompt` | \U0001F534 |
+| 13b.11 | Trigger a ymux Gate card | red while the card is pending | \U0001F534 |
+| 13b.12 | F5 the window | lights come back (proves `pane_agent_states`) | \U0001F534 |
+| 13b.13 | `ymux dev debug-log-tail` | `type=` / `pane=` only — **never** `notification_text` (Rule #1) | \U0001F534 |
+| 13b.14 | Ctrl-C a running agent | shows yellow — **known lie**, `StopFailure` unregistered (FOLLOWUPS P2) | \U0001F7E0 known |
 
 ---
 

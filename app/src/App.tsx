@@ -9,6 +9,9 @@ import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { NotificationCenter, NotifHeaderActions, type NotifItem } from "./NotificationCenter";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { LayoutView } from "./LayoutView";
+import { PaneTabs } from "./PaneTabs";
+import { trafficLight, type PaneAgentState, type TrafficLight } from "./paneAgentState";
+import type { PaneAgentSnapshot } from "./bindings/PaneAgentSnapshot";
 import { setPaneSwapHandler } from "./paneDrag";
 import {
   allPaneSessions,
@@ -30,6 +33,8 @@ import {
   IconActivity,
   IconBug,
   IconGitCompare,
+  IconColumns,
+  IconRows,
 } from "./icons";
 import { createNarrow } from "./useNarrow";
 import { AddonsWindow } from "./AddonsWindow";
@@ -271,6 +276,11 @@ function App() {
   // pane in the workspace after enter/exit so xterm geometry catches
   // up to the new available area.
   const [maximizedPaneId, setMaximizedPaneId] = createSignal<string | null>(null);
+  // Which tab was last active in each workspace, so switching away and
+  // back doesn't dump you on tab 1. In-memory only: persisting it would
+  // mean a workspaces.json write per focus change, and the cost of
+  // getting it wrong is one click.
+  const lastPaneByWs = new Map<string, string>();
   // Unshipped-fivefer (#4): pane_ids currently living in their own pop-out OS
   // window. They're pruned from the grid render tree (siblings reflow to fill),
   // and returned to their slot on `popout:closed`.
@@ -295,7 +305,18 @@ function App() {
   // backend emits pane:agent-run only on turn start/end; the label ticks
   // locally off `pulseTick` (see agentRunLabel). startedAt=null → no live turn.
   const [agentRuns, setAgentRuns] = createSignal<
-    Record<string, { startedAt: number | null; avgMs: number | null }>
+    Record<
+      string,
+      {
+        startedAt: number | null;
+        avgMs: number | null;
+        // Phase 84.B: the effective agent state behind the traffic light,
+        // plus when it last changed and the backend's per-pane sequence.
+        state: PaneAgentState;
+        stateSince: number | null;
+        seq: number;
+      }
+    >
   >({});
   // cmux-A A1: pane_ids that received an OSC 9/99/777 notification and
   // haven't been focused since. Drives the amber pulse ring on the pane
@@ -857,6 +878,22 @@ function App() {
   const activeWs = (): Workspace | null =>
     file().workspaces.find((w) => w.id === file().active_workspace_id) ?? null;
 
+  // Phase 84.A: tabs mode. No signal — the flag is persisted on the
+  // workspace and `file()` is already reactive, so this reads through.
+  const tabsMode = (): boolean => activeWs()?.tabs_mode === true;
+
+  // Phase 84.A: focusing a pane, extracted from LayoutView's onFocus so
+  // the tab strip goes through exactly the same path. Switching tabs and
+  // clicking a pane must not drift apart.
+  const focusPane = (paneId: string) => {
+    setActivePaneId(paneId);
+    // cmux-A A1: focusing a pane clears its pulse.
+    clearPaneNotified(paneId);
+    const wsId = activeWs()?.id;
+    if (wsId) lastPaneByWs.set(wsId, paneId);
+    terms.get(paneId)?.focus();
+  };
+
   // Phase 35 (#1.3): cycle focus through the active workspace's panes.
   const focusAdjacentPane = (delta: number) => {
     const ws = activeWs();
@@ -866,7 +903,9 @@ function App() {
     const cur = activePaneId();
     const idx = cur ? panes.indexOf(cur) : -1;
     const next = panes[(idx + delta + panes.length) % panes.length];
-    if (next) setActivePaneId(next);
+    // In tabs mode this is the Ctrl+Tab handler, so it must actually move
+    // focus into the terminal — setActivePaneId alone only repaints.
+    if (next) focusPane(next);
   };
 
   // Phase 48-E: find the pane that's the nearest neighbor of `paneId`
@@ -952,6 +991,8 @@ function App() {
       { id: "pane.focus.prev", label: t("cmd.pane.focus.prev"), enabled: () => hasPane, handler: () => focusAdjacentPane(-1) },
       // Phase 55-A: maximize toggle (Ctrl+Enter / double-click pane content).
       { id: "pane.maximize", label: t("cmd.pane.maximize"), enabled: () => hasPane, handler: () => toggleMaximize() },
+      // Phase 84.A: split ⇄ tabs for the active workspace.
+      { id: "pane.viewMode.toggle", label: t("cmd.pane.viewMode.toggle"), enabled: () => !!activeWs(), handler: () => void setTabsMode(!tabsMode()) },
       // Phase 55-B: distribute splits evenly (Ctrl+Alt+=).
       { id: "pane.distributeEvenly", label: t("cmd.pane.distributeEvenly"), enabled: () => hasPane, handler: () => void distributeEvenly() },
       { id: "pane.rename", label: t("cmd.pane.rename"), enabled: () => hasPane, handler: () => { if (pid) window.dispatchEvent(new CustomEvent("ymux:pane-rename", { detail: pid })); } },
@@ -1006,6 +1047,36 @@ function App() {
 
   // Phase 26: pane_ids with a pending blocking feed item — these get
   // the notification ring. Recomputed reactively as feedItems changes.
+  // Phase 84.B: the traffic light for every pane in the active workspace.
+  // Computed here rather than inside PaneTabs so the strip and the pane
+  // header go through the same trafficLight() with the same inputs — two
+  // call sites deriving a colour independently is how they drift.
+  const paneAgentLights = (): Record<string, TrafficLight | null> => {
+    const runs = agentRuns();
+    const waiting = waitingPaneIds();
+    const connected = connectedPanes();
+    const now = agentClockMs();
+    const out: Record<string, TrafficLight | null> = {};
+    const layout = activeWs()?.layout;
+    for (const pid of layout ? collectPanes(layout) : []) {
+      const run = runs[pid];
+      out[pid] = trafficLight({
+        state: run?.state ?? "unknown",
+        stateSince: run?.stateSince ?? null,
+        waitingOnPermission: waiting.has(pid),
+        connected: connected.has(pid),
+        nowMs: now,
+      });
+    }
+    return out;
+  };
+  const paneAgentStateSince = (): Record<string, number | null> => {
+    const runs = agentRuns();
+    const out: Record<string, number | null> = {};
+    for (const [pid, r] of Object.entries(runs)) out[pid] = r.stateSince;
+    return out;
+  };
+
   const waitingPaneIds = (): Set<string> => {
     const s = new Set<string>();
     for (const it of feedItems()) {
@@ -1353,8 +1424,14 @@ function App() {
       updateFile(f);
       const ws = f.workspaces.find((w) => w.id === id);
       if (ws?.layout) {
-        const firstPane = collectPanes(ws.layout)[0];
-        if (firstPane) setActivePaneId(firstPane);
+        const panes = collectPanes(ws.layout);
+        // Phase 84.A: come back to the tab you left. Falls through to the
+        // first pane when this workspace hasn't been visited yet, or when
+        // the remembered pane has since been closed.
+        const remembered = lastPaneByWs.get(id);
+        const pick =
+          remembered && panes.includes(remembered) ? remembered : panes[0];
+        if (pick) setActivePaneId(pick);
       }
     } catch (e) {
       log.error("workspace_set_active failed", e);
@@ -1542,6 +1619,72 @@ function App() {
     } catch (e) {
       log.error("split failed", e);
     }
+  };
+
+  // Phase 84.A: flip the active workspace between the split grid and the
+  // tab strip. The layout tree is untouched — see workspace_set_tabs_mode.
+  const setTabsMode = async (enabled: boolean) => {
+    const ws = activeWs();
+    if (!ws) return;
+    try {
+      const f = await invoke<WorkspacesFile>("workspace_set_tabs_mode", {
+        workspaceId: ws.id,
+        tabsMode: enabled,
+      });
+      updateFile(f);
+    } catch (e) {
+      log.error("workspace_set_tabs_mode failed", e);
+      return;
+    }
+    // Maximize is meaningless in tabs mode; clear it so flipping back to
+    // split doesn't land in a stale zoom.
+    setMaximizedPaneId(null);
+    // Same fan-out as toggleMaximize: every pane's available area just
+    // changed, so xterm has to catch up.
+    queueMicrotask(() => {
+      const cur = activeWs();
+      if (!cur?.layout) return;
+      for (const pid of collectPanes(cur.layout)) {
+        terms.get(pid)?.fitAndResize();
+      }
+    });
+  };
+
+  // Phase 84.A: open a tab. workspace_split still builds a Split node —
+  // that is deliberate, it's the tree we render again if the user flips
+  // back to split mode. Splitting from the ACTIVE pane and focusing the
+  // result makes collectPanes' in-order DFS walk match creation order, so
+  // new tabs append instead of landing in the middle.
+  //
+  // workspace_split returns the whole WorkspacesFile rather than the new
+  // pane_id, so diff the pane sets instead of changing a signature that
+  // half a dozen call sites depend on.
+  const newTab = async () => {
+    const ws = activeWs();
+    const pid = activePaneId();
+    if (!ws?.layout || !pid) return;
+    const before = new Set(collectPanes(ws.layout));
+    await splitPane(pid, "horizontal");
+    const after = activeWs()?.layout;
+    if (!after) return;
+    const added = collectPanes(after).find((p) => !before.has(p));
+    if (added) focusPane(added);
+  };
+
+  // Phase 84.A: close a tab and land on a sensible neighbour. The
+  // successor is picked from the order BEFORE the close, because after it
+  // the index is gone.
+  const closeTab = async (paneId: string) => {
+    const layout = activeWs()?.layout;
+    const idx = layout ? collectPanes(layout).indexOf(paneId) : -1;
+    await closePane(paneId);
+    if (activePaneId() !== paneId) return;
+    const after = activeWs()?.layout;
+    const next = after ? collectPanes(after) : [];
+    // Closing the last pane leaves layout null; the Show around the strip
+    // hides it, so there is nothing to focus.
+    const pick = next[Math.min(Math.max(idx, 0), next.length - 1)];
+    if (pick) focusPane(pick);
   };
 
   // beta.3 (pane-dragdrop): swap two panes' positions in the active
@@ -2434,6 +2577,11 @@ function App() {
   // leaf; fit+resize fires for every pane in the workspace after the
   // signal flips so xterm catches up to the new available area.
   const toggleMaximize = (paneId?: string) => {
+    // Phase 84.A: in tabs mode every pane is already full-screen, so
+    // maximize has nothing to do. One guard here disables Ctrl+Enter,
+    // Ctrl+Shift+Z, the Esc restore, the double-click gesture and the
+    // ymux:pane-maximize event in a single place.
+    if (tabsMode()) return;
     const cur = maximizedPaneId();
     if (cur) {
       setMaximizedPaneId(null);
@@ -2454,6 +2602,31 @@ function App() {
   // ─── keyboard shortcuts ─────────────────────────────────────────────────
 
   const handleKey = (e: KeyboardEvent) => {
+    // ── Phase 84.A: tab navigation ────────────────────────────────────
+    // All of it gated on tabsMode() so split-mode workspaces — and the
+    // terminal apps running in them — keep every key they have today.
+    // Placed before the shortcut table so Ctrl+Tab can't be swallowed.
+    // Deliberately NOT binding Ctrl+T: readline uses it (transpose-chars).
+    if (tabsMode() && !e.altKey && !e.metaKey) {
+      if (e.ctrlKey && e.key === "Tab") {
+        e.preventDefault();
+        focusAdjacentPane(e.shiftKey ? -1 : 1);
+        return;
+      }
+      if (e.ctrlKey && !e.shiftKey) {
+        for (let n = 1; n <= 9; n++) {
+          if (!keyEq(e, String(n))) continue;
+          e.preventDefault();
+          const layout = activeWs()?.layout;
+          const panes = layout ? collectPanes(layout) : [];
+          // 9 means "last", the way browsers do it, so the shortcut is
+          // useful in a workspace with more than nine tabs.
+          const pick = n === 9 ? panes[panes.length - 1] : panes[n - 1];
+          if (pick) focusPane(pick);
+          return;
+        }
+      }
+    }
     // Phase 55-A: Ctrl+Enter toggles maximize for the active pane.
     // Esc restores ONLY when something is maximized (otherwise we
     // step on terminal escape sequences). Hardcoded (not in the
@@ -2656,15 +2829,21 @@ function App() {
     const target = activePaneId();
     if (!target) return;
     // Phase 62.B (item G): keyEq → physical-key match (Hebrew layout).
+    // Phase 84.A: in tabs mode both split keys mean "new tab" (there is
+    // no visible split to aim at) and close routes through closeTab so
+    // focus lands on a neighbour instead of nowhere.
     if (keyEq(e, "d")) {
       e.preventDefault();
-      splitPane(target, "horizontal");
+      if (tabsMode()) void newTab();
+      else splitPane(target, "horizontal");
     } else if (keyEq(e, "e")) {
       e.preventDefault();
-      splitPane(target, "vertical");
+      if (tabsMode()) void newTab();
+      else splitPane(target, "vertical");
     } else if (keyEq(e, "w")) {
       e.preventDefault();
-      closePane(target);
+      if (tabsMode()) void closeTab(target);
+      else closePane(target);
     }
   };
 
@@ -2771,6 +2950,31 @@ function App() {
     if (ws0?.layout) {
       const p0 = collectPanes(ws0.layout)[0];
       if (p0) setActivePaneId(p0);
+    }
+
+    // Phase 84.B: seed the traffic lights from the backend's live state.
+    // Without this every webview reload (F5, devtools, an HMR round in
+    // dev) blanks every light until the next hook fires — and for an agent
+    // sitting idle waiting on the user, that could be never. The backend
+    // keeps this in memory only, so an app restart legitimately starts
+    // empty; it is a reload we are covering, which is far more common.
+    try {
+      const snaps = await invoke<Record<string, PaneAgentSnapshot>>(
+        "pane_agent_states",
+      );
+      const seeded: ReturnType<typeof agentRuns> = {};
+      for (const [pid, s2] of Object.entries(snaps)) {
+        seeded[pid] = {
+          startedAt: s2.started_at,
+          avgMs: s2.avg_ms,
+          state: s2.state as PaneAgentState,
+          stateSince: s2.state_since,
+          seq: s2.seq,
+        };
+      }
+      setAgentRuns(seeded);
+    } catch (e) {
+      log.warn("pane_agent_states failed", e);
     }
 
     const unlistens: UnlistenFn[] = [];
@@ -3143,15 +3347,33 @@ function App() {
         started_at: number | null;
         avg_ms: number | null;
         running: boolean;
+        state?: PaneAgentState;
+        state_since?: number | null;
+        seq?: number;
       }>("pane:agent-run", (e) => {
+        const pid = e.payload.pane_id;
+        const prev = agentRuns()[pid];
+        const seq = e.payload.seq ?? 0;
+        // Phase 84.B: hooks are separate processes racing over a socket,
+        // so events can arrive out of order. Drop anything not newer than
+        // what we hold. Cheap, and a partial answer to the stale-hook
+        // thread in docs/DECISIONS.md — a floor, not the fix.
+        if (prev && e.payload.seq != null && seq <= prev.seq) return;
         const next = { ...agentRuns() };
-        if (!e.payload.running && e.payload.avg_ms == null) {
-          // session-end / full clear
-          delete next[e.payload.pane_id];
+        // The clear signal is `state: "unknown"` (session-end), NOT the
+        // old `!running && avg_ms == null`. That test also matches a
+        // perfectly normal `stop` on a pane whose turns have all been
+        // shorter than the ticker's 2s minimum, which would delete the
+        // entry and take the yellow light down with it.
+        if (e.payload.state === "unknown") {
+          delete next[pid];
         } else {
-          next[e.payload.pane_id] = {
+          next[pid] = {
             startedAt: e.payload.running ? e.payload.started_at : null,
             avgMs: e.payload.avg_ms,
+            state: e.payload.state ?? "unknown",
+            stateSince: e.payload.state_since ?? null,
+            seq,
           };
         }
         setAgentRuns(next);
@@ -3599,6 +3821,23 @@ function App() {
                 <IconGitCompare />
                 <span class="ws-header-btn-label">{t("ws_header.add_diff")}</span>
               </button>
+              {/* Phase 84.A: split ⇄ tabs. Per-workspace, persisted; the
+                  layout tree is untouched either way, so this is a safe
+                  toggle rather than a conversion. */}
+              <button
+                class="ws-header-btn"
+                title={t("ws_header.view_mode.tooltip")}
+                onClick={() => void setTabsMode(!tabsMode())}
+              >
+                <Show when={tabsMode()} fallback={<IconRows />}>
+                  <IconColumns />
+                </Show>
+                <span class="ws-header-btn-label">
+                  {tabsMode()
+                    ? t("ws_header.view_mode.split")
+                    : t("ws_header.view_mode.tabs")}
+                </span>
+              </button>
               {/* Phase 60 (smoke-test 2a): Browser + Files buttons
                   live HERE, next to + diff — they're workspace-scoped
                   tools, so they belong in the workspace header, not
@@ -3680,6 +3919,50 @@ function App() {
           </div>
         </Show>
 
+        {/* Phase 84.A: the tab strip, a sibling of .layout-root inside the
+            flex-column .main. Built from the PRUNED tree, not ws.layout —
+            a pane popped out into its own OS window must not leave a tab
+            behind that selects nothing. */}
+        <Show when={tabsMode() ? activeWs() : null}>
+          {(ws) => {
+            // Callback form, not an IIFE: Show's children must stay lazy or
+            // this body runs before `when` is even evaluated, and dereferences
+            // a workspace that isn't there.
+            const base = (): LayoutNode | null => {
+              const layout = ws().layout;
+              if (!layout) return null;
+              const hidden = poppedOut();
+              return hidden.size > 0 ? pruneLayout(layout, hidden) ?? layout : layout;
+            };
+            return (
+              <Show when={base()}>
+                {(tree) => (
+                  <PaneTabs
+                    panes={collectPanes(tree())
+                      .map((id) => findPane(tree(), id))
+                      .filter((n): n is Extract<LayoutNode, { kind: "pane" }> => n !== null)}
+                    activePaneId={activePaneId()}
+                    connectedPaneIds={connectedPanes()}
+                    waitingPaneIds={waitingPaneIds()}
+                    notifiedPaneIds={paneNotified()}
+                    panePulseEnabled={settings()?.notifications?.pane_pulse_on_activity ?? true}
+                    workspaceName={ws().name}
+                    workspaceColor={ws().color ?? undefined}
+                    workspaceEmoji={ws().emoji ?? undefined}
+                    workspaceConnection={ws().connection ?? undefined}
+                    agentLights={paneAgentLights()}
+                    agentStateSince={paneAgentStateSince()}
+                    agentNowMs={agentClockMs()}
+                    onSelect={focusPane}
+                    onClose={(pid) => void closeTab(pid)}
+                    onNew={() => void newTab()}
+                  />
+                )}
+              </Show>
+            );
+          }}
+        </Show>
+
         <Show when={activeWs()?.layout}>
           {/* Phase 62.B (item H): workspace color frames the whole pane
               area (outer border). Pane colors frame each pane inside. */}
@@ -3734,8 +4017,6 @@ function App() {
                         hidden.size > 0
                           ? pruneLayout(ws.layout!, hidden) ?? ws.layout!
                           : ws.layout!;
-                      const max = maximizedPaneId();
-                      if (!max) return base;
                       // Phase 55-A: when a pane is maximized, swap
                       // the tree for that one leaf so it fills the
                       // workspace area. Splits + the other panes are
@@ -3743,8 +4024,25 @@ function App() {
                       // straight back without re-creating any
                       // TerminalInstance (those are keyed by pane_id
                       // in the `terms` map, surviving the DOM detach).
-                      const node = findPane(base, max);
-                      return node ?? base;
+                      //
+                      // Phase 84.A: tabs mode is the same swap with the
+                      // target always set — the active tab. That is the
+                      // entire rendering story for tabs; the strip is
+                      // just a control surface over `activePaneId`.
+                      const target = tabsMode()
+                        ? activePaneId() ?? collectPanes(base)[0] ?? null
+                        : maximizedPaneId();
+                      if (!target) return base;
+                      const node = findPane(base, target);
+                      if (node) return node;
+                      // Falling back to `base` here would render the whole
+                      // split grid, which in tabs mode is never right: the
+                      // active pane can legitimately be missing (popped out
+                      // into its own window, or left over from another
+                      // workspace). Land on the first surviving leaf.
+                      if (!tabsMode()) return base;
+                      const first = collectPanes(base)[0];
+                      return (first ? findPane(base, first) : null) ?? base;
                     })()}
                     activePaneId={activePaneId()}
                     connectedPaneIds={connectedPanes()}
@@ -3757,6 +4055,7 @@ function App() {
                     workspaceColor={activeWs()?.color ?? undefined}
                     workspaceEmoji={activeWs()?.emoji ?? undefined}
                     maximizedPaneId={maximizedPaneId()}
+                    tabsMode={tabsMode()}
                     workspacePaneCount={(() => {
                       const l = activeWs()?.layout;
                       return l ? collectPanes(l).length : 0;
@@ -3781,12 +4080,7 @@ function App() {
                     agentClockMs={agentClockMs}
                     panePersistence={panePersistence()}
                     ensureTerm={ensureTerm}
-                    onFocus={(pid) => {
-                      setActivePaneId(pid);
-                      // cmux-A A1: focusing a pane clears its pulse.
-                      clearPaneNotified(pid);
-                      terms.get(pid)?.focus();
-                    }}
+                    onFocus={focusPane}
                     onConnect={(pid, opts) => connectPane(pid, opts)}
                     onSplit={splitPane}
                     onClose={closePane}

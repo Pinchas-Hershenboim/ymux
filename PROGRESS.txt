@@ -5238,6 +5238,122 @@ Two rules earned:
      command that mutates git state, not before it.
 
 
+2026-08-23 | Phase 84 | panes as tabs (84.A) + Claude traffic light (84.B)
+branch claude/pane-tabs-status-indicator-57b38c | PR #18
+
+REQUEST (Yossi): users want to open panes as TABS instead of splitting the
+screen -- always full-screen, nicer to look at -- and a "traffic light" on the
+tab itself: green "Claude running", yellow "finished", red "waiting for
+input / NEEDS INPUT". Explicitly: check the current Claude Code docs if unsure.
+
+WHAT THE EXPLORATION CHANGED ABOUT THE PLAN
+Both halves were ~90% built already, which is the whole reason this is small:
+  - Phase 55-A/65.T "maximize" has been swapping the split tree for one leaf
+    since it shipped, with the hidden panes' PTYs alive in the terms registry.
+    Tabs mode = that same swap with the target always set. No new render path.
+  - The per-pane turn state machine (issue #4) already runs hook -> CLI -> RPC
+    -> Rust -> Tauri event -> Solid signal -> pane header, painted as the
+    "clock M:SS . avg Ns" ticker. Green and yellow needed NO new hooks at all.
+  - Red needed Notification, which v0.4.4 had deliberately deleted.
+Fetched the live Claude Code hook docs rather than guessing: Notification
+carries notification_type with permission_prompt / idle_prompt /
+agent_needs_input / elicitation_* -- exactly the red signal.
+
+84.A -- PANES AS TABS
+  ymux-types/src/lib.rs   Workspace.tabs_mode: bool, skip_serializing_if
+  src/lib.rs              workspace_set_tabs_mode command
+  PaneTabs.tsx (new)      the strip; owns no state
+  App.tsx                 tabsMode() / setTabsMode / focusPane / newTab /
+                          closeTab / Ctrl+Tab / Ctrl+1..9 / render-site swap
+  LayoutView, PaneView    tabsMode prop (drops the dead maximize button)
+  App.css + i18n x4       ~90 lines of CSS cloned from the browser tab strip
+
+Model choice: a bool, NOT a LayoutNode::Tabs variant. The variant makes every
+match on LayoutNode non-exhaustive (~44 sites in the app crate alone), is lossy
+both ways (ratios cannot come back), and an older ymux cannot render a Tabs
+node out of workspaces.json -- which is what workspaces_merge exists to survive.
+
+84.B -- THE TRAFFIC LIGHT
+  cli/src/hooks.rs        ymux_entry_is_runnable (the P1 dead-hook fix) +
+                          Notification in the bundled spec + v1.5.0
+  cli/src/main.rs         notification branch: filter by type, push the TYPE
+                          ALONE, return before the shared feed dispatch
+  hooks/claude-code.json  Notification registered, empty matcher, 1.5.0
+  src/lib.rs              PaneAgentState + apply_hook transition table + 9
+                          unit tests + pane_agent_states hydration command
+  src/rpc_server.rs       state machine arms; notification returns EARLY
+  paneAgentState.ts (new) pure trafficLight(); 8 node tests, all passing
+  AgentLight.tsx (new)    disc / ring / triangle -- shape, not just hue
+
+THREE BUGS FOUND AND FIXED ALONG THE WAY (none of them the assigned task):
+ 1. P1 dead hook. is_ymux_entry matches on command TEXT, so a settings.json
+    entry naming the pre-rename binary still counted as "already present" and
+    setup-hooks skipped it forever. Notification is a NEW event with no entry,
+    so it would have installed while Stop/UserPromptSubmit stayed dead --
+    shipping a light that can only ever show red. Worse than the silence.
+ 2. Stale pane id. Phase 81.G established that YMUX_PANE_ID goes stale and
+    added resolve_hook_pane, but wired it only into the auto-title path.
+    agent_runs kept the raw value: for the Ticker that is a timer on a dead
+    key, for a light it is the WRONG PANE lighting up.
+ 3. Frontend clear condition. `!running && avg_ms == null` was read as
+    session-end, but an ordinary `stop` on a pane whose turns are all under
+    the 2s ticker minimum produces exactly that -- it deleted the entry and
+    would have taken the yellow light down on short interactive turns, the
+    ones where "your turn" matters most. Clear is now state === "unknown".
+
+Also fixed in passing: .pane-agent-run used margin-left (physical), pinning
+the ticker to the visual LEFT in he/ar while the rest of the header mirrored.
+
+DELIBERATE NON-DECISIONS (full reasoning in docs/DECISIONS.md):
+  - No PTY-output scraping fallback. No documented stdout marker exists;
+    scraping TUI chrome is locale/theme/version dependent and its failure mode
+    is the light STICKING ON GREEN with no error. A wrong light is worse than
+    no light -- that is the whole thesis.
+  - Yellow does not decay on a timer. idle_prompt promotes it to red when
+    Claude is actually waiting. Yellow does not clear on focus either.
+  - PermissionRequest not registered: total overlap, and it is a BLOCKING hook
+    on the tool-call critical path.
+  - manifest.json hooks version NOT bumped here (would banner 0.4.5 users
+    before a CLI that can honour 1.5.0 exists) -> FOLLOWUPS, release checklist.
+
+KNOWN LIE, STATED: a turn that dies on an API error shows yellow "your turn",
+because StopFailure is not registered. FOLLOWUPS P2.
+
+STATUS: ci-windows GREEN on 84.A and on the 84.B backend (cargo test + tsc +
+vite + go). NOT VERIFIED LIVE -- Rule #14. Smoke steps in FOLLOWUPS P1.
+
+--- Phase 84 addendum: what CI actually caught, and one review catch ---
+
+CI earned its keep twice, both on things Rule #17 makes unverifiable locally:
+
+ 1. ts-rs maps u128 -> `bigint`, not `number`. app/src/bindings/
+    PaneAgentSnapshot.ts was hand-written (Rule #17 bans running the
+    generator), and the guess was wrong. CI regenerated the file, tsc read
+    the real one, three type errors. Fixed with #[ts(type = "number | null")]
+    -- the idiom FeedItem::created_ms already uses. It mattered beyond the
+    type error: the pane:agent-run event carries the same values as plain
+    JSON numbers and the frontend compares the two, so bigint on one side
+    would have been a silent runtime comparison bug.
+
+ 2. Caught reading the diff back, not by CI: the early return that keeps
+    notifications off the feed sat INSIDE `if let Some(pane) = resolved_pane`.
+    Reads naturally, wrong -- the guard is about whether there is per-pane
+    state to update, the return is about what a notification may BECOME. On
+    an unresolvable pane the code skipped both and fell through to the feed,
+    reinstating the v0.4.4 noise on the one path nobody would test. Hoisted
+    out, with a comment saying why it is outside so it doesn't get tidied
+    back in.
+
+Also noted: app/src/bidi.test.ts fails in this worktree with
+ERR_MODULE_NOT_FOUND for `bidi-js` -- a missing dep in this checkout's
+node_modules, pre-existing and unrelated to Phase 84 (which adds no deps).
+sessionRestore (15) and fmPaths (20) pass, as do the 8 new paneAgentState
+tests.
+
+FINAL CI: ci-windows GREEN on the final HEAD (cargo test incl. 14 new Rust
+tests, tsc, vite, go). build-macos-intel GREEN. PR #18 ready for review.
+STILL NOT VERIFIED LIVE -- Rule #14. Smoke matrix: FOLLOWUPS P1 and
+docs/RELEASE-0.5.0-CHECKLIST.md section 13b.
 --- CI result, same day ---
 PR #17. BOTH gates green on the first run:
   ci-windows   32648007254  success  6m15s
@@ -5264,10 +5380,8 @@ Also seen on ci-windows, unchanged by this branch: the annotation
 committed one". No CLI source was touched here; it is the known rebake
 churn CLAUDE.md calls cosmetic, and the run is green.
 
-================================================================================
 2026-08-23 | CI: off the deprecated node20 runtime, and three pins that were
              never being watched
-================================================================================
 Trigger was the runner warning that checkout@v4 / setup-go@v5 / setup-node@v4
 are being force-migrated to Node 24. The warning was the smaller half of the
 problem: all four workflows also pinned `node-version: 20`, and **Node 20 hit
