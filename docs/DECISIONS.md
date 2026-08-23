@@ -25,15 +25,6 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
-### 2026-08-23 — Mac builds are ad-hoc signed: pay Apple, or ship the xattr workaround forever?
-- **Context:** The two-arch mac matrix is green (run 32639916194) and produces a `.dmg` per architecture, but with no Developer ID secrets on the repo every build takes the ad-hoc path: `codesign -dvvv` reports `Signature=adhoc` / `TeamIdentifier=not set`, and `spctl` **rejects** both bundles. The dmgs build and run locally; a user who *downloads* one gets a Gatekeeper block. This is not a bug left behind — the workflow's signed path is written and waiting on five secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID` + `APPLE_PASSWORD`, `APPLE_TEAM_ID`), and those need an Apple Developer Program membership.
-- **Options:**
-  - **A — Join the program (~$99/yr) and set the secrets.** Downloads open cleanly. Also unlocks notarisation, which is the part that actually clears Gatekeeper — signing alone is not enough for a downloaded app.
-  - **B — Stay ad-hoc, document the workaround.** Zero cost; every mac user must run an `xattr` command before first launch, and the README carries that note. Acceptable for a beta with a handful of testers, corrosive for a public release.
-  - **C — No mac distribution at all; contributors build from source.** Cheapest, and the honest option if macOS is not really a shipping target.
-- **Status:** OPEN, Yossi's call — it is a spend decision, not a code decision. Nothing is blocked meanwhile: the workflow already warns rather than fails in the ad-hoc path, and errors only if a *Developer ID* build somehow fails Gatekeeper.
-- **Note if A is chosen:** the signed path has **never executed**. notarytool, stapling, and the `spctl rejected a Developer ID signed build` error branch all run for the first time on whichever build follows the secrets landing — budget a failed run or two, and do not schedule it against a release cut.
-
 ### 2026-08-18 — Project folders v4: a project folder IS a workspace (SUPERSEDES v2 and v1)
 - **What changed and why.** v2 and v3 were both rejected on sight for the same reason, which took four rounds to hear correctly. Yossi: *"it pins the whole workspace to a folder inside it, instead of opening a **sub-workspace** of that folder — and then it would let you open panes in that environment, directly on that folder."* The `ProjectFolder` entity is gone. What it modelled — a directory on a host you keep coming back to — is a workspace with a `cwd`; the only field genuinely missing from the schema was a parent.
 - **Decided (Yossi's calls, 2026-08-18):**
@@ -225,6 +216,14 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 ---
 
 ## Decided
+
+### 2026-08-23 — Mac builds stay ad-hoc signed: no Apple Developer membership for now
+- **Context:** With no Developer ID secrets on the repo every mac build takes the ad-hoc path — `codesign -dvvv` reports `Signature=adhoc` / `TeamIdentifier=not set`, and `spctl` **rejects** both bundles. The dmgs run locally; a user who *downloads* one is blocked by Gatekeeper with "ymux is damaged and can't be opened", a message that is misleading but is what they will actually see. The workflow's signed path is written and waiting on five secrets, which require a paid membership (~$99/yr).
+- **Options considered:** (A) join the programme and notarise — downloads open cleanly; (B) stay ad-hoc and document the `xattr` step; (C) drop mac distribution entirely and let contributors build from source.
+- **Decision (Yossi, 2026-08-23): B — not paying right now.** So the `xattr -dr com.apple.quarantine` step is not a temporary workaround any more, it IS the macOS install procedure, and the README was reworded to say so plainly instead of implying notarisation was imminent. Users who will not run that command are pointed at building from source, where the quarantine flag never appears.
+- **What this costs, stated honestly:** the step asks a user to disable the check that would warn them about a tampered download, on an app that also asks for SSH access. That is a real ask, and it is why the README keeps the "only for builds from this project's releases page" caveat rather than presenting the command as routine.
+- **Revisit when:** mac stops being a tester-only platform — a public release, an install count worth the friction, or the first support thread that turns out to be a Gatekeeper block rather than a bug. It is a spend decision, so it does not expire on its own; someone has to raise it.
+- **If it is ever reversed, the warning that matters:** the developer-id path has **never executed once**. notarytool, stapling, and the `spctl rejected a Developer ID signed build` error branch all run for the first time on whichever build follows the secrets landing — budget a failed run or two, and do not schedule it against a release cut.
 
 ### 2026-08-23 — main and the 0.5.0 line are one tree again; the two multiplexers are a deliberate split
 - **Context:** `v0.5.0-beta.1` was tagged from `claude/worktrees-clean-build-988849`, not from `main`, and the two then diverged architecturally — 64 commits on the branch (zellij replaces WSL, the RTL chain, the build work) against 24 on `main` (all of Phase 82, the macOS unification). Yossi asked to "align main to the released version" and to clear out every branch and worktree.
