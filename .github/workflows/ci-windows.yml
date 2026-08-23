@@ -1,8 +1,14 @@
 # Windows CI — the checks that used to be run by hand on every merge.
 #
-# Deliberately NOT a build: this job proves the tree is healthy, in the
-# ~8 minutes you are willing to wait on a PR. Producing installers is
-# build-windows.yml's job, on demand.
+# Deliberately NOT a DESKTOP build: this job proves the tree is healthy,
+# in the ~8 minutes you are willing to wait on a PR. Producing installers
+# is build-windows.yml's job, on demand.
+#
+# The Go control-plane server IS built here, for linux/amd64 + arm64.
+# That is not an inconsistency: those two binaries are the entire
+# artifact (src/addons.rs embeds them with include_bytes!), the build is
+# CGO-free and takes ~30s, and nothing else in CI compiles the server for
+# the platform it actually runs on.
 #
 # Ordering note that is easy to get wrong: `build:linux-cli` MUST run
 # before anything that touches cargo. It is what stages
@@ -134,9 +140,130 @@ jobs:
         working-directory: app
         run: npm run build:frontend
 
+      # ---------------------------------------------------------------
+      # Go control-plane server (app/src-tauri/server).
+      #
+      # `go test` alone was the whole Go story here until now, and it is
+      # not enough: this runner is Windows, so it compiles the server for
+      # GOOS=windows — while the only thing that ever ships is the two
+      # Linux binaries embedded by src/addons.rs. A linux-only break (a
+      # syscall arm, a //go:build tag, a dep without windows/linux parity)
+      # was invisible until someone rebaked by hand at release time.
+      # ---------------------------------------------------------------
+
+      - name: go vet
+        working-directory: app/src-tauri/server
+        run: go vet ./...
+
       - name: go test
         working-directory: app/src-tauri/server
         run: go test ./...
+
+      # Same flags as docs/ymux-server/README.md § Build, so this is the
+      # release cross-build and not an approximation of it. `-o <dir>/`
+      # covers every package, not just ./cmd — packages nothing imports
+      # would otherwise never be compiled for linux at all. CGO-free
+      # (modernc.org/sqlite), so no cross toolchain is needed; ~30s cold.
+      - name: go build (linux/amd64 + linux/arm64)
+        working-directory: app/src-tauri/server
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+        run: |
+          set -euo pipefail
+          # RUNNER_TEMP is a Windows path. Git Bash's own utilities do not
+          # path-convert their arguments, so run it through cygpath before
+          # mkdir/ls see it — `go build` would accept either form, mkdir
+          # would silently create a garbage directory named after the drive.
+          tmp="$(cygpath -u "$RUNNER_TEMP")"
+          out="$tmp/server-out"
+          mkdir -p "$out"
+          for pair in amd64:x64 arm64:arm64; do
+            goarch="${pair%%:*}"
+            name="${pair##*:}"
+            echo "--- linux/$goarch"
+            # `-o <dir>/ ./...` rather than just ./cmd, so packages that
+            # main does not import are compiled for linux too. Go requires
+            # the output directory to already exist.
+            mkdir -p "$tmp/gobuild-$goarch"
+            GOARCH="$goarch" go build -trimpath -ldflags="-s -w" -o "$tmp/gobuild-$goarch/" ./...
+            GOARCH="$goarch" go build -trimpath -ldflags="-s -w" -o "$out/ymux-server-linux-$name" ./cmd/ymux-server
+          done
+          ls -l "$out"
+
+      # Uploaded so a rebake (see the drift gate below) is "download this
+      # artifact, drop the two files into src-tauri/resources/, commit" —
+      # no Go toolchain on the dev box, and the binary that lands in the
+      # repo is the one CI built from the reviewed source.
+      - name: Upload cross-built server binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ymux-server-linux
+          path: ${{ runner.temp }}/server-out/ymux-server-linux-*
+          if-no-files-found: error
+
+      # THE STALENESS GATE. resources/ymux-server-linux-{x64,arm64} are
+      # committed blobs baked by hand (docs/ymux-server/README.md §Build,
+      # docs/DECISIONS.md:298). Nothing in the desktop build reads the Go
+      # source — src/addons.rs `include_bytes!`s the blobs — so a change
+      # under server/ that skips the rebake is green in every job and
+      # ships the OLD server to every remote. This is the only thing that
+      # says so.
+      #
+      # Deliberately NOT a byte-compare against the fresh cross-build
+      # above: Go output is reproducible only for a fixed toolchain patch
+      # version, and setup-go resolves `go 1.26` to whatever 1.26.x is
+      # current — that check would go red on a Go point release for a
+      # reason that has nothing to do with the change.
+      #
+      # Test files are excluded: they do not reach the binary.
+      - name: Assert the embedded server binaries were rebaked
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable base commit (new branch / force-push) — nothing to diff against"
+            exit 0
+          fi
+          # The checkout is shallow; fetch just the base commit so a
+          # two-dot diff has both trees. Three-dot would need the merge
+          # base, i.e. real history — and on a PR the checked-out ref is
+          # already base-merged, so two-dot IS the PR diff.
+          git fetch --no-tags --depth=1 origin "$base"
+          changed=$(git diff --name-only "$base" HEAD)
+          src=$(printf '%s\n' "$changed" | grep -E '^app/src-tauri/server/.*\.(go|mod|sum)$' | grep -v '_test\.go$' || true)
+          baked=$(printf '%s\n' "$changed" | grep -E '^app/src-tauri/resources/ymux-server-linux-(x64|arm64)$' || true)
+          if [ -n "$src" ] && [ -z "$baked" ]; then
+            echo "::error::Go server source changed but resources/ymux-server-linux-{x64,arm64} did not. The desktop embeds those blobs (src/addons.rs), so this change would ship the OLD server. Rebake: download the 'ymux-server-linux' artifact from this run into app/src-tauri/resources/ and commit, or build locally per docs/ymux-server/README.md § Build."
+            printf '%s\n' "$src" | sed 's/^/  changed: /'
+            exit 1
+          fi
+          if [ -n "$src" ]; then
+            echo "server source changed and the embedded binaries were rebaked alongside it — OK"
+          else
+            echo "no shipping Go source changed — nothing to rebake"
+          fi
+
+      # The SDK drift-guard: sdk-gen/ci-check.mjs regenerates the OpenAPI
+      # spec straight out of the server (`go run ./cmd/ymux-server openapi`)
+      # plus the TS/Kotlin clients, and fails if the committed output
+      # moved. Not running it here is exactly how ~670 lines of already-
+      # stale generated output rode into the rename commit unnoticed
+      # (FOLLOWUPS P2, 2026-08-18) — same "server changed, derived
+      # artifact didn't" family as the gate above.
+      - name: Install sdk-gen deps
+        working-directory: sdk-gen
+        run: npm ci
+
+      - name: SDK drift-guard
+        run: node sdk-gen/ci-check.mjs
 
       # The staging script rewrites remote-manifest.json with a fresh
       # built_at every run. Per CLAUDE.md #12 that churn is cosmetic — but

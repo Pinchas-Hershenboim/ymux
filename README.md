@@ -169,11 +169,14 @@ temporary path, and the app cannot see its own bundle or write beside it.
 For ymux that shows up as the bundled host CLI not being found, so hooks
 and the MCP server silently do nothing.
 
-> The macOS builds are **not notarised yet**, so Gatekeeper blocks them on
-> first launch with "ymux is damaged and can't be opened" — the message is
-> misleading; nothing is damaged, the app simply carries no Developer ID
-> signature. Until notarisation is switched on, clear the quarantine flag
-> after copying it to Applications:
+> The macOS builds are **ad-hoc signed and not notarised**, so Gatekeeper
+> blocks them on first launch with "ymux is damaged and can't be opened".
+> The message is misleading — nothing is damaged; the app simply carries
+> no Developer ID signature. That is a deliberate current state, not an
+> oversight: notarisation requires a paid Apple Developer membership, and
+> ymux does not have one. Treat the step below as **the** macOS install
+> procedure rather than a temporary workaround. Clear the quarantine flag
+> after copying the app to Applications:
 >
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/ymux.app
@@ -181,7 +184,8 @@ and the MCP server silently do nothing.
 >
 > Only run that on a build you downloaded from this project's releases
 > page — it disables the check that would otherwise warn you about a
-> tampered download.
+> tampered download. If that trade is not one you want to make, build from
+> source instead: a locally built app never carries the quarantine flag.
 
 
 ## Quick start
