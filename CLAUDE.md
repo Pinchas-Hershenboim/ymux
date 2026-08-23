@@ -33,7 +33,7 @@ When starting a new session, scan the **Open** section. Don't let threads die si
 
 ## Pinned deps
 
-- `tauri = "=2.10.3"` with `features = ["unstable"]` (app/src-tauri/Cargo.toml). The unstable feature gates `Window::add_child`, which Phase 53 uses to mount per-workspace browser webviews inside the main window. Bumping tauri requires verifying `Window::add_child`'s signature hasn't changed and the multi-webview shape still compiles. Run `cargo check --workspace` after any bump and smoke-test the workspace Browser window (sidebar 🌐 → open / hide via a modal / navigate / close).
+- `tauri = "=2.10.3"` with `features = ["unstable"]` (app/src-tauri/Cargo.toml). The unstable feature gates `Window::add_child`, which Phase 53 uses to mount per-workspace browser webviews inside the main window. Bumping tauri requires verifying `Window::add_child`'s signature hasn't changed and the multi-webview shape still compiles. Push the bump and let CI type-check it (Rule #17 — no local `cargo check`), then smoke-test the workspace Browser window (sidebar 🌐 → open / hide via a modal / navigate / close).
 
 ## Off-limits paths
 
@@ -49,6 +49,30 @@ When starting a new session, scan the **Open** section. Don't let threads die si
 - Build through the Tauri CLI, never plain `cargo build --release` — see Rule #13.
 - `app.exe` running on the user's machine causes `os error 32` during NSIS bundler cleanup — cosmetic; the binary + bundles produced fine. A running `app.exe` also blocks the link step outright (`failed to remove file … Access is denied`); ask Yossi to close it rather than retrying.
 - v0.2.3+: updater uses native `ureq` + `rustls` (no more PowerShell).
+
+## Platforms
+
+Windows and macOS (Intel, 13+) are both supported desktop targets; the real
+work happens on remote Linux. macOS lives on `main` behind
+`cfg(target_os = ...)` — there is no separate branch. It had one until
+Phase 82 (2026-08-20), and it drifted 65 commits behind in two months,
+which is the reason there isn't one now. When you add a local-machine
+feature (shell spawn, a wizard step, a path join, a file location),
+write the non-Windows arm in the same commit — `build-macos-intel.yml` is
+the only thing that will tell you, and only if it is wired to run.
+
+Local-pane **persistence is the one place the two genuinely differ**, and
+it is deliberate: Windows wraps a native pane in zellij, macOS in tmux.
+`spawn_local_pty` takes a single `persist_session: Option<String>` and
+picks the backend with `cfg`; `pane_kill_session` mirrors it with
+`KillTarget::Zellij` / `KillTarget::LocalUnix`. The setup wizard shows a
+persistence group only on macOS — on Windows zellij is an ordinary tool
+row, so a group would offer the same install twice. WSL left that wizard
+on 2026-08-19: existing `Connection::Wsl` workspaces still load and run,
+nothing creates new ones.
+
+Known not to work on macOS: in-app update, code signing / notarization.
+See FOLLOWUPS.
 
 ## The winmux → YMUX rename (2026-08-18)
 
@@ -76,7 +100,7 @@ such. Do not "finish the rename" by deleting them; the removal is scheduled
 - `ci-windows.yml` — cargo test + tsc + vite + go test on every push/PR to `main` (~5 min warm).
 - `build-windows.yml` — installers + exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded, and Rule #2's spirit by asserting the `$USERNAME` scrub landed. A tag gets MSI **and** NSIS (the published `manifest.json` advertises both); a `workflow_dispatch` gets NSIS only. Publishing stays manual (`docs/RELEASING.md`).
 - `warm-rust-cache.yml` — **the reason release builds are ~7 min and not ~15.** GitHub scopes cache *reads* to the current branch plus the default branch, and `build-windows.yml` never runs on `main`, so a build dispatched from a fresh branch used to compile all ~740 lockfile packages from scratch (measured: 813s cold vs 420s warm, same workflow, same week). This job keeps that release-profile cache alive on `main` under `shared-key: windows-release`, on Cargo.lock changes and twice weekly. If release builds suddenly go slow again, check this workflow first.
-- `build-macos-intel.yml` — the collaborator's macOS build, on `workflow_dispatch` or push to `macos-build`.
+- `build-macos-intel.yml` — the macOS Intel build, on `workflow_dispatch` or push/PR to `main`. Since Phase 82 it runs the same gates ci-windows does (cargo test + tsc + frontend build) and asserts the embedded frontend, because it is the **only** job that compiles the `cfg(target_os = "macos")` / `cfg(not(windows))` arms at all. It also stages a native `resources/ymux-cli` — the mac counterpart of `build:linux-cli`, which is PowerShell-only.
 - Steps that shell out to Windows PowerShell need `shell: cmd`. The default `run:` shell is pwsh, which rewrites `PSModulePath` for its children, so the 5.1 instance `build:linux-cli` spawns loses `Get-FileHash`.
 - `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `ymux-cli.exe` the Tauri build script requires. It stages by **sha256, not mtime**: everything in `resources/` is pulled into the app crate with `include_bytes!`/`include_str!`, and Cargo's staleness check is mtime-based, so re-copying a byte-identical file used to force a full rebuild of the 9.4k-line lib.
 - **A `.ps1` in this repo must keep non-ASCII out of code lines.** Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI, so an em-dash inside a string literal decodes to a smart quote that the tokenizer accepts as a string delimiter — the file then fails to parse with a cascade of errors pointing at innocent lines. Em-dashes in `#` comments are fine (already all over `build-linux-cli.ps1`); inside `"..."` they are a build-breaker.
@@ -105,3 +129,4 @@ such. Do not "finish the rename" by deleting them; the removal is scheduled
 14. **A build that compiles is not a build that runs.** Launch it and confirm the UI comes up before saying "built" or "verified" — this is Rule #13's parent, and the reason that one shipped twice.
 15. **Never push without fetching first, and never force-push a shared branch.** Several machines push to this repo. `git fetch origin` immediately before any merge or push; if `origin/main` moved, integrate and re-run the checks before pushing. Rewriting published history costs a collaborator their work.
 16. **One session, one worktree — never two sessions in the same working copy.** Dispatched code tasks use `isolation: "worktree"`. The main checkout stays on `main` and clean, for reading and integration only. Commit before the session ends and remove the worktree by hand: git only auto-cleans worktrees that are *unchanged*, which is why 13 of them accumulated by 2026-08-03. Weekly: `git worktree prune` + delete branches with `ahead=0`. Two sessions sharing one tree is how commits land on the wrong branch.
+17. **Builds and tests run on CI only — never locally.** No `cargo build`, `cargo check`, `cargo test`, `npm run build`, `vite build`, `tsc`, or `npm run tauri build` on a dev box or in an agent session. Push the branch and let GitHub Actions do it (see the CI section above); read the result with `gh run watch` / `gh run view <id> --log-failed`. Local runs are banned because they occupy the machine for many minutes, they cannot reproduce the real matrix (a Linux box type-checks none of the `cfg(windows)` / `cfg(target_os = "macos")` code that actually ships), and a fresh checkout can't build at all without the gitignored `ymux-cli.exe` (or `ymux-cli` on mac). This overrides any "verify before you commit" instinct: the verification step IS the CI run. Rule #14 still holds — a green CI run is "compiles, untested" until it runs live on a real machine.

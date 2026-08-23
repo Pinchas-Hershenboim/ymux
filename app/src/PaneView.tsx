@@ -2,11 +2,13 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show }
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openNativeDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Connection, KillSessionOutcome, LayoutNode, TmuxSessionInfo, RtlProfileKind } from "./types";
-import { describeConnection, effectiveIdentity, isRemoteConn, isRemoteEffective, paneCaps, profileFor } from "./types";
+import { describeConnection, effectiveIdentity, isLocalConn, isRemoteConn, isRemoteEffective, paneCaps, profileFor } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
+import { isMac } from "./platform";
 import { createLogger } from "./logger";
 
 const log = createLogger("PANE");
@@ -231,6 +233,13 @@ export function PaneView(p: Props) {
   // has no WSL backend yet. Do not reach for this to answer "does it have
   // tmux" or "can I exec there"; that is what `caps()` is for.
   const isSsh = () => isRemoteEffective(p.pane, p.workspaceConnection);
+  // macOS port: a LOCAL workspace on mac has a local tmux server too —
+  // `caps().tmuxPersistence` says so (capsOf branches on the host OS), so
+  // the Connect probe → picker and the tmux/regular toggle apply there.
+  // These two only pick platform-specific copy / the native folder dialog;
+  // SSH-only commands (ensure_connected, SFTP, ports) keep isSsh().
+  const isLocalPane = () => isLocalConn(p.pane.connection ?? p.workspaceConnection);
+  const isMacLocal = () => isMac() && isLocalPane();
   const isTmux = () => !!p.tmuxSession;
   // Phase 12.B Smart Connect — the "open in directory" text-input fallback
   // (local panes) still uses this small prompt.
@@ -415,8 +424,16 @@ export function PaneView(p: Props) {
   };
   const openDirPicker = async () => {
     setRecentDirs(loadRecentDirs());
+    if (isLocalPane()) {
+      // Local pane: the host's native folder dialog (Finder sheet on
+      // macOS, Explorer on Windows) — the SFTP tree needs an SSH session.
+      const dir = await pickLocalFolder();
+      if (dir) chooseDir(dir);
+      return;
+    }
     if (!isSsh()) {
-      // Local pane: no SFTP — fall back to the text input.
+      // WSL pane: no SFTP and a host dialog would hand back a Windows
+      // path the distro can't cd to — keep the text input.
       setSmartInput("");
       setSmartModal("cwd");
       return;
@@ -481,6 +498,11 @@ export function PaneView(p: Props) {
   // Validation: directory is OPTIONAL (empty = the user's $HOME root, the
   // backend default — fill it only to run elsewhere). custom needs text;
   // "choose from list" needs a session pick. --resume/--continue are plain runs.
+  // A resumable session's cwd — POSIX (`/…`) or Windows (`C:\…`) absolute.
+  // Anything else is the encoded `~/.claude/projects/<dir>` name, which is
+  // display-only (never `cd` to it).
+  const isAbsolutePath = (s: string | undefined | null): s is string =>
+    !!s && (s.startsWith("/") || /^[A-Za-z]:[\\/]/.test(s));
   const newConnValid = (): boolean => {
     if (ncCmd() === "custom" && !ncCustom().trim()) return false;
     if (ncCmd() === "from-list" && !ncPickedSession()) return false;
@@ -488,7 +510,33 @@ export function PaneView(p: Props) {
   };
   // v0.4.4-beta.2: browse is now an INLINE view within the same modal (not a
   // separate popup). Load the tree into dirPicker() and switch the body.
+  // Native folder chooser for LOCAL panes. Returns null on cancel/error;
+  // the dialog itself is the UI, so no inline browse view is needed.
+  const pickLocalFolder = async (): Promise<string | null> => {
+    try {
+      const picked = await openNativeDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: ncDir().trim() || undefined,
+      });
+      return typeof picked === "string" && picked ? picked : null;
+    } catch (e) {
+      log.warn("native folder dialog failed", e);
+      return null;
+    }
+  };
   const browseNewConnDir = () => {
+    if (isLocalPane()) {
+      // Local: native dialog straight into ncDir — the modal stays on
+      // the form view (no SFTP tree to render).
+      void pickLocalFolder().then((dir) => {
+        if (dir) {
+          pushRecentDir(dir);
+          setNcDir(dir);
+        }
+      });
+      return;
+    }
     setDirPickForNewConn(true);
     setNcView("browse");
     void openDirPicker();
@@ -515,7 +563,9 @@ export function PaneView(p: Props) {
     try {
       // Idempotent, PTY-free, tmux-free; no-ops on password-auth (can't prompt
       // headlessly) — those simply yield an empty list and connect regular.
-      try { await invoke("workspace_ensure_connected", { workspaceId: p.workspaceId }); } catch { /* fall through */ }
+      if (isSsh()) {
+        try { await invoke("workspace_ensure_connected", { workspaceId: p.workspaceId }); } catch { /* fall through */ }
+      }
       let list: TmuxSessionInfo[] = [];
       try {
         list = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", { workspaceId: p.workspaceId });
@@ -561,7 +611,9 @@ export function PaneView(p: Props) {
     // it, so the override is skipped rather than fought.
     const anchor = folderAnchor();
     let dir = anchor ?? ncDir().trim();
-    if (!anchor && picked && picked.project_path?.startsWith("/")) {
+    // `isAbsolutePath`, not `startsWith("/")`: a Windows project path
+    // (`C:\...`) is absolute too and failed the old test by accident.
+    if (!anchor && picked && isAbsolutePath(picked.project_path)) {
       dir = picked.project_path;
     }
     // Empty stays empty: no cwdOverride → the backend lands in the user's $HOME
@@ -723,9 +775,15 @@ export function PaneView(p: Props) {
             setDropping(false);
             return;
           }
-          const dpr = window.devicePixelRatio || 1;
-          const x = payload.position.x / dpr;
-          const y = payload.position.y / dpr;
+          // Windows (WebView2) reports the drop position in physical
+          // pixels, so it has to be scaled down to compare against
+          // CSS-pixel rects. macOS (wry/wkwebview) passes NSDraggingInfo's
+          // draggingLocation through unscaled — logical points already —
+          // so dividing there halved every coordinate on a Retina screen
+          // and the pane hit-test silently missed.
+          const scale = isMac() ? 1 : window.devicePixelRatio || 1;
+          const x = payload.position.x / scale;
+          const y = payload.position.y / scale;
           const inside = pointInPane(x, y);
           if (payload.type === "enter" || payload.type === "over") {
             setDropping(inside);
@@ -1591,7 +1649,7 @@ export function PaneView(p: Props) {
                 <button class="feed-x" title={t("common.close")} onClick={() => setTmuxPick(null)}><IconClose size={14} /></button>
               </div>
               <div class="nc-body">
-                <p class="nc-hint">{t("connect.tmuxPick.hint")}</p>
+                <p class="nc-hint">{t(isMacLocal() ? "connect.tmuxPick.hintLocal" : "connect.tmuxPick.hint")}</p>
                 <div class="nc-resume-list">
                   <For each={tmuxPick()!}>
                     {(s) => {
@@ -1741,8 +1799,8 @@ export function PaneView(p: Props) {
                     </div>
                     <p class="nc-hint">
                       {ncType() === "tmux"
-                        ? t("connect.newConn.typeTmux.hint")
-                        : t("connect.newConn.typeRegular.hint")}
+                        ? t(isMacLocal() ? "connect.newConn.typeTmux.hintLocal" : "connect.newConn.typeTmux.hint")
+                        : t(isMacLocal() ? "connect.newConn.typeRegular.hintLocal" : "connect.newConn.typeRegular.hint")}
                     </p>
                   </div>
 
@@ -1773,7 +1831,7 @@ export function PaneView(p: Props) {
                           value={ncDir()}
                           onInput={(e) => setNcDir(e.currentTarget.value)}
                         />
-                        <Show when={isSsh()}>
+                        <Show when={isSsh() || isLocalPane()}>
                           <button class="nc-browse" onClick={browseNewConnDir}>
                             {t("connect.newConn.browse")}
                           </button>

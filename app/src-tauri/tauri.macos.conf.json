@@ -6,6 +6,7 @@
   "bundle": {
     "targets": ["app"],
     "resources": [
+      "resources/ymux-cli",
       "resources/ymux-linux-x64",
       "resources/remote-manifest.json",
       "resources/ymux-tmux.conf"

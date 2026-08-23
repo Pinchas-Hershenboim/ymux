@@ -80,10 +80,12 @@ export function ClaudeUsageIndicator(p: Props) {
     on(
       () => [p.workspaceId, p.live, p.refreshMinutes] as const,
       ([ws, live, mins]) => {
-        if (!ws || !live) {
-          setUsage(null);
-          return;
-        }
+        // Every (workspace, live) change starts from a blank pill: the
+        // numbers belong to ONE workspace's account (the remote's, the
+        // distro's, or the local login), so a failed fetch after a
+        // switch must show nothing rather than the previous host's quota.
+        setUsage(null);
+        if (!ws || !live) return;
         void fetchUsage();
         if (!mins || mins <= 0) return;
         const id = setInterval(() => void fetchUsage(), mins * 60_000);

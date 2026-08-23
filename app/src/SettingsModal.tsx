@@ -33,6 +33,7 @@ import {
 } from "./settings";
 import { applyI18nSettings, LANGUAGES, t } from "./i18n";
 import { isFontAvailableAsync } from "./fontProbe";
+import { isWindows } from "./platform";
 import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
 import { formatEvent } from "./shortcuts";
@@ -610,14 +611,24 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.fmRememberPath.label")}</span>
                   </label>
-                  {/* Unshipped-fivefer (#3): browser session persistence. */}
-                  <label class="settings-checkbox">
+                  {/* Unshipped-fivefer (#3): browser session persistence.
+                      WebView2-only — WKWebView and WebKitGTK ignore the
+                      profile-folder env var, so off Windows this would be a
+                      switch that does nothing. Disable rather than lie. */}
+                  <label class="settings-checkbox" title={isWindows() ? undefined : t("settings.windowsOnly")}>
                     <input
                       type="checkbox"
-                      checked={p.settings.persist_browser_sessions !== false}
+                      disabled={!isWindows()}
+                      checked={isWindows() && p.settings.persist_browser_sessions !== false}
                       onChange={(e) => update("persist_browser_sessions", e.currentTarget.checked)}
                     />
-                    <span>{t("settings.persistBrowser.label")}</span>
+                    <span>
+                      {t("settings.persistBrowser.label")}
+                      <Show when={!isWindows()}>
+                        {" "}
+                        <span class="nc-optional">{t("settings.windowsOnly")}</span>
+                      </Show>
+                    </span>
                   </label>
                   <label>
                     <span>{t("settings.autoDestroy.label")}</span>

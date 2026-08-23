@@ -485,26 +485,44 @@ pub(crate) fn file_create_local(path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn file_home_local() -> String {
+/// Last-resort root when neither USERPROFILE nor HOME is set. Both are
+/// effectively always present; this only decides which nonsense we show if
+/// they aren't, and `C:\` is nonsense everywhere but Windows.
+#[cfg(windows)]
+const FALLBACK_ROOT: &str = "C:\\";
+#[cfg(not(windows))]
+const FALLBACK_ROOT: &str = "/";
+
+fn home_dir() -> Option<String> {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| "C:\\".to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+#[tauri::command]
+pub(crate) fn file_home_local() -> String {
+    home_dir().unwrap_or_else(|| FALLBACK_ROOT.to_string())
 }
 
 fn expand_path(s: &str) -> String {
     let s = s.trim();
     if s.is_empty() {
-        return std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| "C:\\".to_string());
+        return file_home_local();
     }
     if let Some(rest) = s.strip_prefix('~') {
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_default();
-        let r = rest.trim_start_matches(['/', '\\']);
-        return format!("{home}\\{r}");
+        let home = home_dir().unwrap_or_default();
+        // Join with the HOST separator, not a literal `\`. The old
+        // `format!("{home}\\{r}")` turned `~/Documents` into
+        // `/Users/yossi\Documents` on macOS — one bogus path component
+        // instead of a directory — and every `~`-relative caller failed.
+        // Interior separators are normalized too, so `~/a/b` works on
+        // Windows and `~\a\b` works on Unix.
+        let mut p = PathBuf::from(home);
+        for part in rest.split(['/', '\\']).filter(|c| !c.is_empty()) {
+            p.push(part);
+        }
+        return p.to_string_lossy().into_owned();
     }
     s.to_string()
 }
@@ -929,9 +947,11 @@ pub(crate) async fn download_remote_file_via_osc(
             .find(|s| !s.is_empty())
             .unwrap_or("download")
             .to_string();
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .map_err(|_| "cannot resolve home directory".to_string())?;
+        // Merge note: main added transfer id/cancel + emit_done here while the
+        // macOS branch replaced the inline USERPROFILE/HOME lookup with the
+        // shared `home_dir()` helper. Keep both — progress tracking from main,
+        // the helper from macOS (on mac only HOME is set).
+        let home = home_dir().ok_or_else(|| "cannot resolve home directory".to_string())?;
         let downloads = std::path::Path::new(&home).join("Downloads");
         std::fs::create_dir_all(&downloads).map_err(|e| format!("mkdir Downloads: {e}"))?;
         let local = downloads.join(&base);

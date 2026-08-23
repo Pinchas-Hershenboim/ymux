@@ -2190,9 +2190,80 @@ fn strip_style_suffix(name: &str) -> Option<String> {
     }
 }
 
+/// Unix counterpart of the registry sweep above. There is no font registry
+/// here, so scan the per-user and system font directories and read each
+/// face's `name` table — reusing `fonts::full_font_name`, the same parser
+/// the installer already uses to label what it writes.
+///
+/// Returning `None` (the old behaviour) means "enumeration is impossible",
+/// and the caller responds by assuming every baseline family is installed.
+/// So on macOS the picker only ever offered the hardcoded list and could
+/// not see a single font the user actually had.
+///
+/// Non-recursive and capped: this runs on a settings-panel open, and a
+/// deep walk of /System/Library/Fonts is not worth the latency. `None` on
+/// a total miss keeps the old "assume installed" fallback rather than
+/// badging every family as missing on the strength of an empty scan.
 #[cfg(not(target_os = "windows"))]
 fn enumerate_windows_fonts() -> Option<Vec<String>> {
-    None
+    const MAX_FACES: usize = 2000;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(target_os = "macos")]
+        roots.push(home.join("Library").join("Fonts"));
+        #[cfg(not(target_os = "macos"))]
+        roots.push(home.join(".local").join("share").join("fonts"));
+        #[cfg(not(target_os = "macos"))]
+        roots.push(home.join(".fonts"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        roots.push(PathBuf::from("/Library/Fonts"));
+        roots.push(PathBuf::from("/System/Library/Fonts"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        roots.push(PathBuf::from("/usr/share/fonts"));
+        roots.push(PathBuf::from("/usr/local/share/fonts"));
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if names.len() >= MAX_FACES {
+                break;
+            }
+            let path = entry.path();
+            let is_font = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| {
+                    let e = e.to_ascii_lowercase();
+                    e == "ttf" || e == "otf" || e == "ttc"
+                })
+                .unwrap_or(false);
+            if !is_font {
+                continue;
+            }
+            // Only the head of the file is needed for the name table, but
+            // font files are small enough that a full read is simpler than
+            // a seeking parser — and `full_font_name` wants a slice.
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if let Some(name) = crate::fonts::full_font_name(&bytes) {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    }
 }
 
 // ─── helpers exposed to RPC dispatch ───────────────────────────────────────
