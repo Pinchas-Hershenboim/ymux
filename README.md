@@ -127,6 +127,8 @@ preset/export/import`) for scripting it all.
 
 ## Install
 
+### Windows
+
 Download the latest [release](https://github.com/yyhezkel/ymux/releases/latest)
 and run the MSI:
 
@@ -152,6 +154,35 @@ WebView2 is already present on Windows 10 21H2+ / Windows 11.
 > The MSI is **not code-signed yet** — SmartScreen will warn on first
 > launch. Click "More info" → "Run anyway". Code signing is on the
 > v0.2 roadmap.
+
+### macOS
+
+Download the `.dmg` that matches your Mac — `ymux_arm64_macos13.dmg` for
+Apple Silicon (M1 and later), `ymux_x64_macos13.dmg` for Intel. Both need
+macOS 13 Ventura or newer. If you are unsure which you have: Apple menu
+→ About This Mac → the "Chip" line.
+
+**Drag ymux to your Applications folder before launching it.** Do not run
+it straight from the mounted disk image. macOS puts an app launched from a
+read-only image under **App Translocation**: it is copied to a randomised
+temporary path, and the app cannot see its own bundle or write beside it.
+For ymux that shows up as the bundled host CLI not being found, so hooks
+and the MCP server silently do nothing.
+
+> The macOS builds are **not notarised yet**, so Gatekeeper blocks them on
+> first launch with "ymux is damaged and can't be opened" — the message is
+> misleading; nothing is damaged, the app simply carries no Developer ID
+> signature. Until notarisation is switched on, clear the quarantine flag
+> after copying it to Applications:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/ymux.app
+> ```
+>
+> Only run that on a build you downloaded from this project's releases
+> page — it disables the check that would otherwise warn you about a
+> tampered download.
+
 
 ## Quick start
 
