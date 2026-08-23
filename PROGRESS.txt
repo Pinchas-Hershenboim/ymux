@@ -6085,9 +6085,19 @@ thing that exercises cache@v6 and the rust-toolchain SHA on the release
 path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
-================================================================================
+[2026-08-23 ~17:40] vault: re-sync after the four-PR merge train (#20/#21/#22/#23)
+  Task: main's ci-windows was red — the vault gate fired on 7 pages. PR #20 landed
+        the gate and stamped its lock on its own branch; #22 (Phase 84.C-E Monitor
+        Analytics + Claude usage/cost) and #23 (Phase 82.E macOS browser JS probe)
+        then landed 1.8k lines of covered code under it. Nothing after step 5 of
+        ci-windows had run since, so main was UNTYPE-CHECKED, not just undocumented.
+  Files: docs/vault/{INDEX,server-go,backend-claude,backend-core,backend-panes,
+         build-glue,frontend-panes,frontend-shell,frontend-lib}.md + .vault-lock.json
+  Result: prose written for /analytics + /claude-usage (both halves), claude_usage_local.rs,
+          the Phase 82.E beacon probe + devtools opt-in/opt-out pair, and the four pure
+          Monitor support modules. Coverage 93% -> 95% (226 files). vault-check clean.
+          Docs only — no code touched.
 2026-08-23 — Phase 84.F: the tab strip's CSS came back from the dead
-================================================================================
 Task: Yossi reported the pane tabs render as a vertical "card" stacked on the
 left instead of a horizontal strip, and that clicking a tab does nothing.
 
