@@ -85,6 +85,54 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      # THE VAULT GATE. docs/vault/*.md explain the code so an agent can read
+      # ~3k lines of prose instead of ~90k lines of source. That trade only
+      # works while the prose is true — docs/MODULES.md claimed lib.rs was
+      # ~1760 lines long after it had grown to 12,475, and nothing said so.
+      #
+      # Two checks, both in scripts/vault-check.mjs: sha256 of every covered
+      # file against docs/vault/.vault-lock.json (catches drift that arrived
+      # via a merge or another worktree, not just via this PR), plus "if you
+      # touched covered code, the vault file must have moved too" (which
+      # `--write` alone cannot satisfy).
+      #
+      # Placed here on purpose: it needs nothing but node + git, runs in under
+      # a second, and there is no reason to find out about it eight minutes
+      # into a cargo build. The PR title and commit message go through `env:`
+      # rather than `${{ }}` inline — they are attacker-controlled text on a
+      # fork PR, and inline interpolation would run them as shell.
+      - name: Vault freshness gate
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          base=""
+          if [ "$EVENT" = "pull_request" ]; then
+            base="${BASE_SHA:-}"
+          elif [ "$EVENT" = "push" ]; then
+            base="${BEFORE_SHA:-}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable base commit (dispatch / new branch / force-push) — hash check only"
+            node scripts/vault-check.mjs
+            exit 0
+          fi
+          # Shallow checkout: fetch just the base commit so a two-dot diff has
+          # both trees. On a PR the checked-out ref is already base-merged, so
+          # two-dot IS the PR diff.
+          git fetch --no-tags --depth=1 origin "$base"
+          if printf '%s\n%s' "${PR_TITLE:-}" "${HEAD_MSG:-}" | grep -qF '[vault-skip]'; then
+            echo "::notice::[vault-skip] present — vault diff check skipped for this run. The hash check still runs."
+            node scripts/vault-check.mjs
+          else
+            node scripts/vault-check.mjs --diff-base "$base"
+          fi
+
       # SHA of the `stable` BRANCH, not a tag. The only tag in that repo
       # (v1) points at `master`, where `toolchain` is a required input with
       # no default -- so a dependabot bump onto it would break this job.

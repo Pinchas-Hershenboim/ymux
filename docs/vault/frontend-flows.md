@@ -1,0 +1,120 @@
+---
+vault: frontend-flows
+covers:
+  - app/src/SetupWizard.tsx
+  - app/src/LocalSetupFlow.tsx
+  - app/src/QuickLocalCreateFlow.tsx
+  - app/src/ProvisionNewServerFlow.tsx
+  - app/src/ConnectExistingFlow.tsx
+  - app/src/QuickSshCreateFlow.tsx
+  - app/src/CreateWorkspaceModal.tsx
+  - app/src/SshConnectionFields.tsx
+  - app/src/SshKeyOfferModal.tsx
+  - app/src/WorkspaceExtrasFields.tsx
+  - app/src/ProjectFolderModal.tsx
+  - app/src/ConfirmDeleteWorkspace.tsx
+  - app/src/NotesModal.tsx
+  - app/src/DirPicker.tsx
+  - app/src/SettingsModal.tsx
+  - app/src/VersionManager.tsx
+  - app/src/provisioningTypes.ts
+---
+
+# Wizards, modals, settings
+
+Everything with an OK button. ~5,900 lines, and the shape is set by **Phase 80's unified
+setup wizard**: one "+ new workspace" button opens `SetupWizard`, which is a mode tree,
+and each leaf is its own flow component.
+
+## The mode tree
+
+```
+SetupWizard  (318)
+├── local  → new       → LocalSetupFlow        (651)  detect + install, then create
+│         → existing   → QuickLocalCreateFlow  (247)  plain cmd/PowerShell/Git-Bash shell
+└── server → new       → ProvisionNewServerFlow(628)  provision a fresh box
+          → existing   → ConnectExistingFlow   (406)  multi-machine SSH onboarding
+                      → QuickSshCreateFlow     (106)  "I already have a key"
+```
+
+`SetupWizard` owns the mode picker. That is a **move**, not a duplication:
+`ProvisionNewServerFlow` is the former ProvisioningWizard with the picker stripped out,
+and it no longer hosts the "existing" flows at all.
+
+- **`LocalSetupFlow`** — detects git / node / Claude Code / codex / gemini plus the
+  platform's multiplexer, offers to install what is missing (winget / Homebrew /
+  official installers / `npm -g`), installs ymux hooks for local Claude Code, and
+  finishes by creating a local workspace to land in. Progress arrives as
+  `local-setup:progress` events from `local_setup.rs`.
+- **`ProvisionNewServerFlow`** — same step-card UI, fed by `provisioning:progress` from
+  `provisioning.rs`. Per-step retry/skip; a failed step does not abort the run.
+- **`ConnectExistingFlow`** — auth → discover → choose. The Rust side
+  (`connect_existing_discover` / `connect_existing_execute`) does the work; this is the
+  chooser.
+- **`QuickSshCreateFlow`** — records connection details (ssh-config import, key picker,
+  permissions fix, test connection) and creates the workspace. It **does not touch the
+  remote host.**
+
+`provisioningTypes.ts` (38) mirrors the Rust step/progress shapes.
+
+## `CreateWorkspaceModal.tsx` (451) — **edit-only**
+
+Creation moved to `SetupWizard`. This modal is what the sidebar's edit action and the
+palette rename open. The SSH form and the extras block are **shared** with the wizard
+rather than duplicated:
+
+- **`SshConnectionFields.tsx` (492)** — the SSH form. **The parent owns the form state**
+  (via `createSshFormState`) so it can hydrate from an existing workspace or read the
+  built `Connection` on submit; everything transient stays inside the component.
+- **`WorkspaceExtrasFields.tsx` (91)** — the setup/teardown/env block, same ownership
+  split.
+
+## Dialogs
+
+- **`SshKeyOfferModal.tsx` (172)** — when the user authenticates by password, the backend
+  emits `ssh-key-offer`; this asks whether to generate an ed25519 pair and install the
+  public half into the remote's `~/.ssh/authorized_keys`.
+- **`ProjectFolderModal.tsx` (261)** — two dialogs over one chrome: `pin` (type a repo
+  path) and `worktree` (create a worktree inside a pinned folder).
+- **`ConfirmDeleteWorkspace.tsx` (123)** — deleting a workspace takes its **whole
+  subtree**: pinned project folders, the worktree workspaces under them, and any live
+  remote sessions. `window.confirm` was carrying that danger in an unstyled grey OS box
+  nobody reads. This spells out what is about to go.
+- **`DirPicker.tsx` (176)** — remote directory browser over the workspace's live SSH
+  session. Its markup, CSS classes (`dir-picker-*`), i18n keys (`connect.dirPicker.*`)
+  and localStorage recents were lifted out of `PaneView`, where the dialog had been
+  sitting unreachable.
+- **`NotesModal.tsx` (273)** — notes CRUD against `notes.rs`.
+
+## `SettingsModal.tsx` (1,715)
+
+The whole settings surface in tabs — theme, fonts, terminal, RTL profiles, hooks,
+notifications, logs, Claude, updates, shortcuts. Reads and writes through
+`settings.ts` (the typed mirror; `src-tauri/src/settings.rs` owns the canonical schema)
+and reacts to `settings:changed`, so a `ymux settings set` from the CLI updates the open
+modal.
+
+Two tabs are deliberately **separate components** so they do not bloat this file:
+`AddonsTab` and `YmuxToolsTab` (see `frontend-panes.md`).
+
+**`VersionManager.tsx` (228)** is the Updates tab's list: every published release,
+install any of them (including a downgrade, with a warning), and pick a release channel.
+Backed by `updater_list_versions` / `updater_install_version`.
+
+## Invariants
+
+- **Rule #5** — no `any`; `invoke` return types explicit.
+- **The parent owns form state.** Every shared field block follows the
+  `SshConnectionFields` pattern, so hydration and submit both live in one place.
+- A wizard step that shells out reaches the backend through a Tauri command — the
+  frontend never builds a command line.
+- **Rule #2** — a password or passphrase typed in a flow is passed to the backend and
+  not retained in a signal after submit.
+- Every new field added to the SSH form must also be handled by the edit modal, since
+  both render the same component. That is the reason it is a component.
+
+## Read the source when
+
+You need the exact settings tab layout, an install step's label copy, or the i18n keys.
+The engines behind these flows are in `backend-wizards.md` and `backend-remote.md`; the
+user-facing config surface is documented in `docs/CONFIG.md`.

@@ -5638,6 +5638,153 @@ BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
 STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
+2026-08-23 — Phase 85 (+85.A/B/C/D): the vault + its CI freshness gate
+
+TASK
+Yossi: add a "כספת" of MD files explaining the code so agents stop burning
+tokens re-reading source — and make it MANDATORY to diff/verify the vault is
+up to date before merging from a branch or a separate worktree.
+
+WHAT WAS ALREADY THERE (and why it wasn't enough)
+docs/MODULES.md is the same idea, written once in 2025 and never checked. On
+2026-08-23 it claimed lib.rs (~1760 lines) / rpc_server.rs (~487) /
+remote_bootstrap.rs (~285) against real values of 12,475 / 2,559 / 83. It
+covered 11 of 153 frontend files, none of the 8 ymux-* crates, none of the Go
+server. The writing was fine; nothing existed to notice when it stopped being
+true. That is the whole problem this phase solves.
+
+FILES
+  NEW  scripts/vault-check.mjs                    (230 lines, zero deps)
+  NEW  docs/vault/INDEX.md + 15 area pages        (~3,000 lines of prose)
+  NEW  docs/vault/.vault-lock.json                (machine-owned, per-file sha256)
+  MOD  .github/workflows/ci-windows.yml           (+1 step, before the cargo work)
+  MOD  CLAUDE.md                                  (vault first under "Where to start"; Rule #18)
+  MOD  docs/CONTRIBUTING.md                       (reading order; § Updating the vault)
+  MOD  docs/MODULES.md                            (replaced by a pointer stub)
+  MOD  docs/DECISIONS.md                          (Decided entry)
+  MOD  README.md                                  (doc index)
+
+THE GATE — two checks, both must pass
+  1. HASH  sha256 every file a page `covers:` vs .vault-lock.json. Catches drift
+           however it arrived: an old commit, a merge, another worktree.
+  2. DIFF  (--diff-base <sha>) if a covered file moved in this change, the
+           owning .md must have moved too. The hash check alone can be satisfied
+           by running --write and changing nothing; this one cannot.
+  Escape:  [vault-skip] in the PR title or head commit → skips the DIFF half
+           only, with a ::notice:: in the log. Included on purpose: unlike the
+           server-rebake gate, a docs gate trips on every typo fix inside a
+           covered file, and a gate people route around is worse than one they
+           use. The PR title/commit message reach bash via `env:`, never `${{ }}`
+           inline — attacker-controlled text on a fork PR.
+  Local:   `node scripts/vault-check.mjs` is the pre-merge command. No deps, so
+           it runs on a fresh checkout, which is exactly when it matters.
+
+COVERAGE
+  88,558 of 92,568 tracked .rs/.ts/.tsx/.go/.mjs lines = 96%, 210 files, 16 pages.
+  Uncovered, by design: generated SDK (1,706), generated ts-rs bindings (1,063),
+  test files (1,239), app/src/vite-env.d.ts (2). A test edit must not trip the
+  gate, and where the tests ARE the spec (the four RTL modules) the vault says
+  to read them rather than paraphrase them.
+
+RESULT — verified locally, all four failure modes exercised
+  clean tree                       → exit 0, prints coverage
+  append a comment to lib.rs       → exit 1, names
+                                     "app/src-tauri/src/lib.rs (changed since the
+                                     vault file was written)" under backend-core.md
+  commit that + --diff-base HEAD~1 → exit 1 on BOTH checks, with the "update it,
+                                     run --write, commit both — or [vault-skip]"
+                                     message and `changed: app/src-tauri/src/lib.rs`
+  restore + --write                → exit 0
+
+NOT YET VERIFIED (Rule #14)
+The CI step itself has not run — the [vault-skip] branch and the base-sha
+handling are shell logic that has only been reasoned about, not executed. Push
+and read the ci-windows run before treating this as done.
+
+The gate proves a page CHANGED, not that it became CORRECT. Nothing automated
+can prove the latter. The acceptance test is human: answer a real question
+("where is the SSH auth chain", "what writes workspaces.json") from
+docs/vault/INDEX.md alone without opening a .rs file. If you cannot, the page
+is too thin — fix the page, not the gate.
+
+--------------------------------------------------------------------------------
+2026-08-23 (same session) — merge origin/main: THE GATE'S FIRST LIVE CATCH
+--------------------------------------------------------------------------------
+
+PR #20 came back CONFLICTING and with ZERO checks. Both had one cause: PR #19
+(node20 deprecation) landed on main mid-session, touching ci-windows.yml,
+CLAUDE.md, PROGRESS.txt and app/package.json — the same files this branch
+touched. GitHub could not compute the merge ref, so no `pull_request` workflow
+ever triggered. Exactly the CLAUDE.md "git fetch before every merge" scenario;
+noticed here only because the PR's check list was empty.
+
+Conflicts resolved:
+  ci-windows.yml  keep the vault gate step, take main's SHA-pinned
+                  dtolnay/rust-toolchain block that replaced `@stable`
+  PROGRESS.txt    both entries kept, main's first
+  CLAUDE.md       auto-merged clean; Rule #18 + the "Where to start" line intact
+
+THEN — and this is the point — `node scripts/vault-check.mjs` on the merged tree
+came back RED:
+
+  ERROR: docs/vault/build-glue.md is stale — the code it explains moved:
+    ~ app/package.json (changed since the vault file was written)
+
+main had added `"engines": { "node": ">=22" }` and moved CI to node 24 /
+setup-node@v7. Nothing in this branch touched package.json; the drift arrived
+through the merge. That is precisely the case a diff-only gate cannot see and
+the reason the hash half exists — the FIRST thing it caught was real, and it
+caught it before the merge landed rather than months later like MODULES.md.
+
+build-glue.md now records the engines pin, the node-24 runners and the
+SHA-pinning of third-party actions. Re-stamped; gate green; 96% coverage
+unchanged.
+
+--------------------------------------------------------------------------------
+2026-08-23 (same session) — merge PR #18: the gate's second catch, 8 files
+--------------------------------------------------------------------------------
+
+CI-monitor flagged PR #20 as conflicting again. PR #18 (panes as tabs + the
+per-pane Claude traffic light) had landed on main — 14 commits, touching 8
+files this vault covers plus 3 new frontend files.
+
+Conflicts (docs only): docs/DECISIONS.md kept both Decided entries, theirs
+first. docs/MODULES.md kept the stub — but PR #18 had ADDED sections to the old
+MODULES.md describing PaneTabs.tsx and AgentLight.tsx/paneAgentState.ts, so
+that content was moved into the vault rather than dropped. That is the merge
+where the stub could have quietly eaten a colleague's documentation, and the
+conflict is what forced the question.
+
+The gate then named all eight drifted files, and each was updated for real —
+NOT re-stamped:
+
+  backend-core.md    PaneAgentState / PaneAgentSnapshot, apply_hook as the
+                     single owner of the transition table, the pane:agent-run
+                     event and its (started, avg, state, since, seq) payload,
+                     workspace_set_tabs_mode
+  backend-rpc.md     Notification is a registered hook again, reversing half of
+                     the v0.4.4 decision; pre-tool-use + notification fold and
+                     emit on their own path because they carry no turn timing
+  cli.md             Notification back at hooks v1.5.0; the dead-hook check
+                     (ymux_entry_is_runnable) and why it is deliberately narrow
+  crates.md          Workspace.tabs_mode, and why it is a flag and not a
+                     LayoutNode::Tabs variant (~44 non-exhaustive matches, lossy
+                     both ways, unreadable by an older ymux)
+  frontend-shell.md  new section for PaneTabs / paneAgentState / AgentLight;
+                     line counts refreshed; pane:agent-run added to the App.tsx
+                     event list; the three new files added to `covers:`
+
+Coverage 89,874 / 93,998 (96%), 213 files. Gate green.
+
+PHASE NUMBER COLLISION — RESOLVED. PR #18 also numbered itself Phase 84 / 84.A /
+84.B, which is what this branch used, and CLAUDE.md says phase numbers are
+stable and never reused. Theirs landed on main first, so this work was
+renumbered to Phase 85 / 85.A / 85.B / 85.C / 85.D on Yossi's explicit
+instruction. That required rewriting the commit subjects and force-pushing the
+branch — the one exception to Rule #15 here, taken deliberately, on a branch
+nobody else has based work on. Content was byte-identical before and after
+(`git diff vault-pre-renumber HEAD` empty); only messages changed. Anyone who
+fetched this branch before beb87da has the old subjects.
 
 
 --------------------------------------------------------------------------------
