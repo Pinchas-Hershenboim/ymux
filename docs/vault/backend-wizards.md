@@ -39,6 +39,14 @@ consult per hook. `list_system_fonts` reads the HKCU font hive — the same hive
 Presets (`settings.preset`, `settings.get-presets`) are exposed over RPC as well as
 Tauri.
 
+**`Shortcuts` is the one struct with container-level `#[serde(default)]`.** It carries
+28 accelerator fields as of Phase 87 (it was 8 — the rest were hardcoded in the
+frontend), and per-field `#[serde(default = "...")]` would have meant twenty
+near-identical helper fns. The container attribute makes `impl Default for Shortcuts`
+the single source of truth instead, so a `settings.json` written by an older build
+simply lacks the new keys and picks them up. Add a field there and to the `Default`
+impl, nothing else. The frontend parses these strings; Rust never validates them.
+
 ## `local_setup.rs` (2,534) — the local install engine
 
 The detect-and-install engine behind "local → new", **and** the home of the shared

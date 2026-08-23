@@ -2033,13 +2033,16 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .note-tag-todo { background: rgba(224, 175, 104, 0.15); color: var(--w-warning); }
 .note-tag-summary { background: rgba(187, 154, 247, 0.18); color: var(--w-purple); }
 
-/* Phase 17: ephemeral toast for "Claude summary saved as note". */
+/* Phase 17: ephemeral toast for "Claude summary saved as note" — and, since,
+   the app's ONLY global message surface (~20 `flashSummaryToast` call sites,
+   every one-off error among them). See the top-center lane block below for
+   why z-index is 9200 and not 230. */
 .summary-toast {
   position: fixed;
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 230;
+  z-index: 9200;
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -2078,7 +2081,7 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   top: 56px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 231;
+  z-index: 9201;
   display: inline-flex;
   align-items: center;
   gap: 14px;
@@ -3526,6 +3529,27 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .settings-shortcut-reset:hover {
   background: var(--w-surface-hi);
   color: var(--w-text);
+}
+/* Phase 87: two actions bound to the same combination. First-match-wins
+   means the loser never fires, so both rows are marked rather than one. */
+.settings-shortcut-input--conflict {
+  border-color: var(--w-error);
+}
+/* Phase 87: the read-only "fixed shortcuts" reference rows - same grid as a
+   recordable row, but nothing to click. */
+.settings-shortcut-fixed {
+  color: var(--w-text-dim);
+  font-family: var(--w-font-mono);
+  font-size: var(--w-fs-sm);
+  text-align: center;
+  padding: 4px 8px;
+}
+.settings-shortcut-group {
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 16px 0 8px;
 }
 
 /* ─── Phase 12.C: local PTY wizard mode tabs ─── */
@@ -6089,7 +6113,7 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   top: 14px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9000;
+  z-index: 9100;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -6150,6 +6174,43 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   overflow: hidden;
 }
 .cu-bar-fill { display: block; height: 100%; transition: width 0.3s; }
+
+/* ───────────────────────────────────────────────────────────────
+   Phase 84.G: top-center overlay LANES.
+
+   Everything that floats at the top middle of the window is
+   `position: fixed; left: 50%; translateX(-50%)`, so they all land on
+   the same pixels and only z-index decides who is readable. The usage
+   pill (top: 8px, z 9000) was outranking `.summary-toast` (top: 12px,
+   z 230) by a factor of 39 — and that toast is the app's only global
+   message surface. Net effect: with the pill on screen, every
+   confirmation and every error rendered *underneath* it and was never
+   seen. `.connecting-pill` lost the same way (equal z, earlier in the
+   DOM, so the pill painted over it).
+
+   Two halves to the fix, both needed:
+   1. z-index — a transient message always outranks the pill. The pill
+      is a passive readout you can re-read any time; a toast is gone in
+      4.5s and may be the only report of a failure.
+   2. these rules — when the pill is actually mounted, the messages drop
+      into the lane below it so you get BOTH, not one hiding the other.
+      `:has()` and not a fixed offset, because the pill only renders for
+      a live workspace with usage data; without it the messages keep
+      their original top and leave no dead gap.
+
+   Lanes (pill height is stable: 14px glyph + 4px padding + border):
+     0   top:  8px   .claude-usage-pill      z 9000
+     1   top: 44px   .summary-toast          z 9200
+         top: 44px   .connecting-pill        z 9100
+     2   top: 88px   .reconnect-toast        z 9201
+
+   Lane 1 is deliberately shared: "connecting…" and a toast are both
+   ephemeral and rarely coincide, and when they do the toast is the one
+   you have to read — hence the higher z. Don't add a lane 3 for it.
+   ─────────────────────────────────────────────────────────────── */
+.app:has(.claude-usage-pill) .summary-toast   { top: 44px; }
+.app:has(.claude-usage-pill) .connecting-pill { top: 44px; }
+.app:has(.claude-usage-pill) .reconnect-toast { top: 88px; }
 
 /* Phase 78: Monitor → Claude Usage tab + settings row. */
 .ins-claude { display: flex; flex-direction: column; gap: 10px; }
