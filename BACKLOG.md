@@ -69,6 +69,8 @@ Format:
   `browser-dev-mode-tickets`). Do not merge it wholesale — 4/5 of it is already
   in `main` and a full rebase would replay landed work.
 
+- [ ] 2026-08-23 | manual | Extend `.github/dependabot.yml` to the `npm` and `cargo` ecosystems — enabled for `github-actions` only so far, because turning on the other two opens a wave of PRs against dependency trees nobody has reviewed. `app/package-lock.json` also carries a stale root `version` (0.4.5 vs package.json 0.5.0) worth fixing in the same pass.
+
 ## workspace_fs — one exec/filesystem layer instead of six copies
 
 Found while putting tickets on the remote (2026-08-12). There is no

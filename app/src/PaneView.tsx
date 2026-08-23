@@ -4,7 +4,7 @@ import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openNativeDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { Connection, KillSessionOutcome, LayoutNode, TmuxSessionInfo, RtlProfileKind } from "./types";
+import type { Connection, KillSessionOutcome, LayoutNode, TargetSessionState, TmuxSessionInfo, RtlProfileKind } from "./types";
 import { describeConnection, effectiveIdentity, isLocalConn, isRemoteConn, isRemoteEffective, paneCaps, profileFor } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
 import { t } from "./i18n";
@@ -305,6 +305,33 @@ export function PaneView(p: Props) {
   // lives here, not in the wizard, so the common case is one click.
   const [connectProbing, setConnectProbing] = createSignal(false);
   const [tmuxPick, setTmuxPick] = createSignal<TmuxSessionInfo[] | null>(null);
+  // 2026-08-23: which slice of the host's sessions the picker shows.
+  // "workspace" = this folder's sessions (owned by this workspace, or living
+  // under its directory); "server" = everything the host is running. The
+  // backend annotates every row with `owned` / `in_cwd` and never filters, so
+  // flipping this is a pure client-side view change — no second round trip,
+  // and a session outside the scope is one click away rather than gone.
+  type TmuxScope = "workspace" | "server";
+  const [tmuxScope, setTmuxScope] = createSignal<TmuxScope>("workspace");
+  const inWorkspaceScope = (s: TmuxSessionInfo): boolean => s.owned || s.in_cwd;
+  const tmuxPickVisible = (): TmuxSessionInfo[] => {
+    const all = tmuxPick() ?? [];
+    return tmuxScope() === "server" ? all : all.filter(inWorkspaceScope);
+  };
+  // Open on "this folder" only when that view can actually say something —
+  // otherwise the picker greets the user with an empty list and a toggle they
+  // have to discover in order to see their own sessions.
+  const pickScopeDefault = (list: TmuxSessionInfo[]): TmuxScope =>
+    list.some(inWorkspaceScope) ? "workspace" : "server";
+  // 2026-08-23: the session this pane will land on, and whether it is already
+  // running. Drives the wizard's attach-only banner. `null` = not asked yet.
+  const [targetState, setTargetState] = createSignal<TargetSessionState | null>(null);
+  // A live session is one we must NOT type into. `reachable` matters: when the
+  // host could not be asked, `exists` is meaningless and we do not claim it.
+  const targetIsLive = (): boolean => {
+    const st = targetState();
+    return !!st && st.reachable && st.exists;
+  };
   const fmtSessionAge = (mt: number): string => {
     if (!mt) return "—";
     const sec = Math.max(1, Math.floor(Date.now() / 1000 - mt));
@@ -495,7 +522,12 @@ export function PaneView(p: Props) {
   // v0.4.4-beta.2: open the unified new-connection modal with defaults.
   const openNewConnModal = () => {
     setNcView("form");
-    setNcType("tmux");
+    // 2026-08-23: reflect the pane instead of hard-coding "tmux". A pane
+    // already mounted on a multiplexer session opens on TMUX because that IS
+    // its state; one without persistence available should not be told it has
+    // it. The old unconditional setNcType("tmux") is the first link in the
+    // chain that ended with a command being typed into a live session.
+    setNcType(isTmux() || caps().sessionPersistence ? "tmux" : "regular");
     setNcDir("");
     setNcCmd("plain");
     setNcCustom("");
@@ -504,8 +536,33 @@ export function PaneView(p: Props) {
     setNcPickedSession(null);
     setNcSessions([]);
     setNcSessionsErr(null);
+    setTargetState(null);
     setNewConnModal(true);
+    // Ask BEFORE the user picks a command, so the banner is a warning rather
+    // than an explanation of something that already went wrong. Arming the
+    // SSH handle first is what makes the answer trustworthy — without it an
+    // SSH workspace reports `reachable: false` and we would have to say
+    // nothing at all.
+    void (async () => {
+      if (isSsh()) {
+        try { await invoke("workspace_ensure_connected", { workspaceId: p.workspaceId }); } catch { /* fall through */ }
+      }
+      try {
+        setTargetState(await invoke<TargetSessionState>("pane_target_session_state", {
+          workspaceId: p.workspaceId,
+          paneId: p.pane.pane_id,
+          tmuxSessionName: p.tmuxSession ?? null,
+        }));
+      } catch (e) {
+        log.warn("pane_target_session_state failed", e);
+        setTargetState(null);
+      }
+    })();
   };
+  // 2026-08-23: a command cannot be delivered when we are joining a session
+  // that is already running — see the attach-only guard in pane_connect. The
+  // command controls are disabled rather than hidden so the reason is visible.
+  const attachOnly = (): boolean => ncType() === "tmux" && targetIsLive();
   // Validation: directory is OPTIONAL (empty = the user's $HOME root, the
   // backend default — fill it only to run elsewhere). custom needs text;
   // "choose from list" needs a session pick. --resume/--continue are plain runs.
@@ -515,6 +572,10 @@ export function PaneView(p: Props) {
   const isAbsolutePath = (s: string | undefined | null): s is string =>
     !!s && (s.startsWith("/") || /^[A-Za-z]:[\\/]/.test(s));
   const newConnValid = (): boolean => {
+    // 2026-08-23: under attach-only the command is not sent at all, so its
+    // requirements are moot — demanding a session pick for a `--resume` that
+    // will be discarded would just block Connect for no reason.
+    if (attachOnly()) return true;
     if (ncCmd() === "custom" && !ncCustom().trim()) return false;
     if (ncCmd() === "from-list" && !ncPickedSession()) return false;
     return true;
@@ -579,9 +640,18 @@ export function PaneView(p: Props) {
       }
       let list: TmuxSessionInfo[] = [];
       try {
-        list = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", { workspaceId: p.workspaceId });
+        // 2026-08-23: hand the backend the folder anchor so it can stamp
+        // `in_cwd`. It still returns EVERY session — the scope toggle below
+        // decides what is shown — which is why the emptiness test stays on
+        // the full list: opening straight into a regular shell because this
+        // folder has no sessions would hide the ones that do exist.
+        list = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", {
+          workspaceId: p.workspaceId,
+          projectPath: folderAnchor(),
+        });
       } catch { list = []; }
       if (list.length > 0) {
+        setTmuxScope(pickScopeDefault(list));
         setTmuxPick(list);
       } else {
         // Omit `persistent` rather than forcing false: the backend applies
@@ -604,10 +674,35 @@ export function PaneView(p: Props) {
     // smartConnect above.
     else p.onConnect(p.pane.pane_id, {});
   };
+  // 2026-08-23: the explicit way OUT of attach-only. Rather than typing into
+  // the running session, make a NEW one beside it — `<name>-2`, `-3`, … — so
+  // `tmux new-session -A` creates instead of joining and the user's command
+  // runs in a shell of its own. The free suffix is chosen against the live
+  // list because guessing one that is already taken would just land us back
+  // in attach-only, silently.
+  const connectAsNewSession = async () => {
+    const base = targetState()?.name ?? p.pane.pane_id;
+    let taken: string[] = [];
+    try {
+      const list = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", {
+        workspaceId: p.workspaceId,
+        projectPath: null,
+      });
+      taken = list.map((s) => s.name);
+    } catch { /* an empty list only risks a retry, never a wrong write */ }
+    let name = base;
+    for (let n = 2; taken.includes(name); n++) name = `${base}-${n}`;
+    setNewConnModal(false);
+    p.onConnect(p.pane.pane_id, buildNewConnOpts({ tmuxSession: name }));
+  };
   // Translate the modal's choices into a single ConnectOpts and connect.
   const submitNewConn = () => {
     if (!newConnValid()) return;
-    const opts: ConnectOpts = {};
+    setNewConnModal(false);
+    p.onConnect(p.pane.pane_id, buildNewConnOpts({}));
+  };
+  const buildNewConnOpts = (extra: Partial<ConnectOpts>): ConnectOpts => {
+    const opts: ConnectOpts = { ...extra };
     // Connection type → persistent flag (tmux=true, regular=false). We do NOT
     // use mode="tmux"/"plain" here: those force the persistence, which would
     // fight the toggle (e.g. a bare-shell command inside a tmux session). The
@@ -631,6 +726,15 @@ export function PaneView(p: Props) {
     // root (default). Only send an override when the user actually typed a path
     // (or a picked session supplied its project dir).
     if (dir) opts.cwdOverride = dir;
+    // 2026-08-23: joining a session that is already running means NOTHING is
+    // typed into it — not the command, and not the `cd` either. `cd /srv/app`
+    // landing in a live `claude` is the same bug with a shorter payload. The
+    // backend enforces this too (the attach-only guard in pane_connect); doing
+    // it here as well keeps the request honest about what it is asking for.
+    if (attachOnly() && !extra.tmuxSession) {
+      delete opts.cwdOverride;
+      return opts;
+    }
     if (c === "plain") {
       // Bare shell — inject nothing; mode stays undefined so the persistent
       // flag alone decides tmux vs regular.
@@ -644,8 +748,7 @@ export function PaneView(p: Props) {
       else if (c === "claude-resume") opts.claudeArgs = "--resume";
       else if (c === "claude-skip") opts.claudeArgs = "--dangerously-skip-permissions";
     }
-    setNewConnModal(false);
-    p.onConnect(p.pane.pane_id, opts);
+    return opts;
   };
   const openMeta = () => {
     setTitleDraft(p.pane.title ?? "");
@@ -1677,8 +1780,39 @@ export function PaneView(p: Props) {
               </div>
               <div class="nc-body">
                 <p class="nc-hint">{t(isMacLocal() ? "connect.tmuxPick.hintLocal" : "connect.tmuxPick.hint")}</p>
+                {/* 2026-08-23: workspace vs server scope. A folder-anchored
+                    workspace opens on its own sessions; the count line below
+                    keeps the hidden ones visible as a number, so a filtered
+                    list can never be mistaken for an empty server. */}
+                <div class="nc-segmented nc-filter" role="tablist">
+                  <button
+                    role="tab"
+                    aria-selected={tmuxScope() === "workspace"}
+                    class={`nc-seg ${tmuxScope() === "workspace" ? "active" : ""}`}
+                    onClick={() => setTmuxScope("workspace")}
+                  >
+                    <IconFolder size={13} /> {t("connect.tmuxPick.scope.workspace")}
+                  </button>
+                  <button
+                    role="tab"
+                    aria-selected={tmuxScope() === "server"}
+                    class={`nc-seg ${tmuxScope() === "server" ? "active" : ""}`}
+                    onClick={() => setTmuxScope("server")}
+                  >
+                    <IconTerminal size={13} /> {t("connect.tmuxPick.scope.server")}
+                  </button>
+                </div>
+                <p class="nc-muted">
+                  {t("connect.tmuxPick.scope.count", {
+                    shown: String(tmuxPickVisible().length),
+                    total: String((tmuxPick() ?? []).length),
+                  })}
+                </p>
+                <Show when={tmuxPickVisible().length === 0}>
+                  <p class="nc-muted">{t("connect.tmuxPick.scope.empty")}</p>
+                </Show>
                 <div class="nc-resume-list">
-                  <For each={tmuxPick()!}>
+                  <For each={tmuxPickVisible()}>
                     {(s) => {
                       // Phase 81: friendly name from the server-side
                       // session-meta map — manual label beats the stable
@@ -1735,7 +1869,8 @@ export function PaneView(p: Props) {
                                   // did not take.
                                   try {
                                     setTmuxPick(await invoke<TmuxSessionInfo[]>(
-                                      "pane_list_tmux_sessions", { workspaceId: p.workspaceId },
+                                      "pane_list_tmux_sessions",
+                                      { workspaceId: p.workspaceId, projectPath: folderAnchor() },
                                     ));
                                   } catch { /* leave the list as it was */ }
                                 }}
@@ -1829,6 +1964,22 @@ export function PaneView(p: Props) {
                         ? t(isMacLocal() ? "connect.newConn.typeTmux.hintLocal" : "connect.newConn.typeTmux.hint")
                         : t(isMacLocal() ? "connect.newConn.typeRegular.hintLocal" : "connect.newConn.typeRegular.hint")}
                     </p>
+                    {/* 2026-08-23: the attach-only warning, shown BEFORE the
+                        command list so the user reads it while choosing rather
+                        than after their `--resume` was dropped. Its escape
+                        hatch makes a NEW session instead of typing into the
+                        live one. */}
+                    <Show when={attachOnly()}>
+                      <div class="nc-attach-only">
+                        <p class="nc-muted">
+                          <IconWarning size={13} />{" "}
+                          {t("connect.newConn.attachOnly.banner", { name: targetState()!.name })}
+                        </p>
+                        <button class="nc-browse" onClick={() => void connectAsNewSession()}>
+                          {t("connect.newConn.attachOnly.newSession")}
+                        </button>
+                      </div>
+                    </Show>
                   </div>
 
                   {/* 2. Directory. Anchored workspaces show it read-only:
@@ -1867,11 +2018,15 @@ export function PaneView(p: Props) {
                     </div>
                   </Show>
 
-                  {/* 3. Command (dropdown; custom field only when chosen) */}
-                  <div class="nc-section">
+                  {/* 3. Command (dropdown; custom field only when chosen).
+                         Disabled, not hidden, under attach-only: a control
+                         that vanishes reads as a bug, one that is greyed out
+                         next to the banner reads as a reason. */}
+                  <div class="nc-section" classList={{ "nc-disabled": attachOnly() }}>
                     <label class="nc-label">{t("connect.newConn.command")}</label>
                     <select
                       class="nc-select"
+                      disabled={attachOnly()}
                       value={ncCmd()}
                       onChange={(e) => { setNcCmd(e.currentTarget.value as NcCmd); setNcPickedSession(null); }}
                     >
@@ -1887,14 +2042,18 @@ export function PaneView(p: Props) {
                       <input
                         class="nc-input nc-custom"
                         placeholder="npm run dev"
+                        disabled={attachOnly()}
                         value={ncCustom()}
                         onInput={(e) => setNcCustom(e.currentTarget.value)}
                       />
                     </Show>
+                    <Show when={attachOnly()}>
+                      <p class="nc-hint">{t("connect.newConn.attachOnly.hint")}</p>
+                    </Show>
                   </div>
 
                   {/* 4. Session list — only for the "choose from list" command */}
-                  <Show when={ncShowsList()}>
+                  <Show when={ncShowsList() && !attachOnly()}>
                     <div class="nc-section">
                       <label class="nc-label">
                         {t("connect.newConn.resumeTitle")} <span class="nc-req">*</span>

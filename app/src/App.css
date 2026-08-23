@@ -6563,143 +6563,19 @@ body.ymux-dragging .pane-conn {
 /* Host prefix on a remote destination — "srv-01:/home/y/proj/…" */
 .ticket-modal-host { color: var(--w-accent, #58a6ff); font-weight: 600; }
 
-/* ───────────────────────────────────────────────────────────────
-   Phase 84.A: pane tab strip
-   Sits between the workspace header and .layout-root when a
-   workspace is in tabs mode. Cloned from the browser window's
-   `.bw-*` strip above, including the `direction: ltr` on the list —
-   tabs read left-to-right in every language so their positions stay
-   put when the app flips to RTL, while each label carries dir="auto".
-   ─────────────────────────────────────────────────────────────── */
-.pane-tabs {
-  height: 28px;
-  flex: 0 0 28px;
-  display: flex;
-  align-items: stretch;
-  background: var(--w-surface, #161b22);
-  border-bottom: 1px solid var(--w-border, #21262d);
-  overflow: hidden;
-}
-.pane-tabs-list {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  align-items: stretch;
-  gap: 2px;
-  padding: 3px 4px 0 4px;
-  overflow-x: auto;
-  direction: ltr;
-}
-.pane-tabs-list::-webkit-scrollbar { height: 0; }
-.pane-tab {
+/* 2026-08-23: the connect wizard's attach-only state. The pane is joining a
+   multiplexer session that is already running, so nothing can be typed into
+   it — the command controls grey out and the banner explains why, with the
+   "new session beside it" escape hatch right next to the explanation. */
+.nc-attach-only {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  min-width: 70px;
-  max-width: 240px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  color: var(--w-text-dim, #7d8590);
-  cursor: pointer;
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  user-select: none;
-}
-.pane-tab:hover {
-  background: var(--w-surface-hi, #1c232c);
-  color: var(--w-text, #e6edf3);
-}
-.pane-tab-active {
-  background: var(--w-surface-hi, #1c232c);
-  color: var(--w-text, #e6edf3);
-  border-color: var(--w-border, #21262d);
-}
-/* Drop target during a tab drag. Reuses the pane drag store, so this
-   lights up for a tab-onto-tab drag and for a tab dragged onto the
-   visible pane body. */
-.pane-tab-drop {
-  background: var(--w-surface-hi, #1c232c);
-  border-color: var(--w-accent, #7aa2f7);
-}
-.pane-tab-label {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pane-tab-emoji { flex: 0 0 auto; }
-/* Connection / activity dot. Fixed-size slot so a state change never
-   shifts the label — same reason the sidebar has a `.ws-meta` column
-   instead of letting flex place its markers. */
-.pane-tab-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--w-border, #21262d);
-}
-.pane-tab-dot-connected {
-  background: var(--w-success, #4ec9b0);
-  box-shadow: none;
-}
-.pane-tab-dot-activity {
-  background: var(--w-warning, #e0af68);
-  box-shadow: none;
-  animation: ymux-attn-dot 1.6s ease-in-out infinite;
-}
-.pane-tab-dot-waiting {
-  background: var(--w-error, #f7768e);
-  box-shadow: none;
-  animation: ymux-attn-dot 1.6s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .pane-tab-dot-activity,
-  .pane-tab-dot-waiting { animation: none; }
-}
-.pane-tab-close {
-  flex: 0 0 auto;
-  background: transparent;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  opacity: 0.6;
-}
-.pane-tab-close:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.1);
-}
-.pane-tab-new {
-  flex: 0 0 auto;
-  background: transparent;
-  border: none;
-  color: var(--w-text-dim, #7d8590);
-  cursor: pointer;
-  width: 28px;
-  font-size: 16px;
-  padding: 0;
-  line-height: 1;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--w-warning);
   border-radius: 4px;
-  margin-inline: 2px;
 }
-.pane-tab-new:hover {
-  color: var(--w-text, #e6edf3);
-  background: var(--w-surface-hi, #1c232c);
-}
-
-/* Phase 84.B: the same light inside a tab. Only the spacing differs —
-   the tab already has its own gap, and the connection dot sits beside it. */
-.pane-tab .pane-agent-light {
-  margin-inline: 0;
-}
+.nc-attach-only .nc-muted { padding: 0; flex: 1; min-width: 200px; }
+.nc-disabled { opacity: 0.55; }

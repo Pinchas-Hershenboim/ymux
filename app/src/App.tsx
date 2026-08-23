@@ -2329,8 +2329,12 @@ function App() {
       }
       let sessions: TmuxSessionInfo[] = [];
       try {
+        // No projectPath: restore must see EVERY session on the host.
+        // A pane whose session sits outside the workspace's folder still has
+        // to come back — scoping this call would silently strand it.
         sessions = await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", {
           workspaceId: ws.id,
+          projectPath: null,
         });
       } catch (e) {
         restoreLog(`abort: list_tmux_sessions failed — ${String(e)}`);
@@ -2400,7 +2404,8 @@ function App() {
         // scoped, no SSH arming — `workspace_ensure_connected` is SSH-only).
         // The answer is authoritative: [] really means "no live sessions".
         const list = isMac() && isLocalConn(conn)
-          ? await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", { workspaceId: wsId })
+          // projectPath: null — restore is unscoped, see above.
+          ? await invoke<TmuxSessionInfo[]>("pane_list_tmux_sessions", { workspaceId: wsId, projectPath: null })
           : await invoke<TmuxSessionInfo[] | null>(
               "pane_probe_tmux_sessions",
               { workspaceId: wsId, paneId },
@@ -3296,6 +3301,25 @@ function App() {
           );
         },
       ),
+    );
+    // 2026-08-23: the attach-only notice. `pane_connect` refuses to type a
+    // command into a multiplexer session that was already running, and this is
+    // how the user finds out — a command they chose must never disappear in
+    // silence. Only raised when there WAS a command; a plain attach is the
+    // normal case and needs no announcement.
+    unlistens.push(
+      await listen<{
+        pane_id: string;
+        session_name: string;
+        skipped: string;
+        had_command: boolean;
+      }>("pane-connect-notice", (e) => {
+        if (e.payload.skipped !== "attach-only" || !e.payload.had_command) return;
+        flashSummaryToast(
+          "err",
+          t("connect.attachOnly.toast", { name: e.payload.session_name }),
+        );
+      })
     );
     // Phase 7.B: notes
     await refreshNotes();
