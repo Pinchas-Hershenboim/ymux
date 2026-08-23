@@ -1797,6 +1797,41 @@ pub(crate) fn sanitize_tmux_session_name_for_title(title: &str) -> Option<String
     }
 }
 
+/// Phase 23.I's session-name precedence, extracted 2026-08-23:
+///   1. Caller-supplied name (the picker chose an explicit existing session)
+///   2. Sanitized pane title (the pane title IS the session name —
+///      Hebrew/Arabic/CJK titles supported)
+///   3. `None` — the spawn paths then fall back to
+///      `sanitize_tmux_session_name(&pane_id)`, the legacy `ymux-<paneid>`.
+///
+/// Extracted rather than copied because `pane_target_session_state` has to
+/// answer "does the session this pane is ABOUT to attach to already exist?",
+/// and a second hand-written copy of this precedence that drifted from the
+/// first would reintroduce exactly the bug that command exists to prevent:
+/// the guard would check one name while the attach used another.
+fn resolve_effective_session_name(
+    explicit: Option<&str>,
+    pane_title: Option<&str>,
+) -> Option<String> {
+    explicit
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .or_else(|| pane_title.and_then(sanitize_tmux_session_name_for_title))
+}
+
+/// The name a pane will actually land on, with rung 3 resolved. Only the
+/// existence probe needs this — the spawn paths apply the fallback themselves
+/// and must keep doing so, since `None` also carries "no explicit choice" to
+/// code between here and there.
+fn session_name_for_pane(
+    explicit: Option<&str>,
+    pane_title: Option<&str>,
+    pane_id: &str,
+) -> String {
+    resolve_effective_session_name(explicit, pane_title)
+        .unwrap_or_else(|| sanitize_tmux_session_name(pane_id))
+}
+
 fn schedule_setup_injection(
     sessions: SessionMap,
     session_id: String,
@@ -2745,6 +2780,13 @@ fn parse_zellij_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             auto_name: None,
             claude_session_id: None,
             origin: None,
+            // 2026-08-23: `zellij list-sessions -n` reports name, age and the
+            // EXITED/current markers — no working directory in any form. This
+            // is precisely why workspace scope cannot be cwd-only: on Windows
+            // the ONLY signal is `owned`, from session-owners.json.
+            cwd: None,
+            owned: false,
+            in_cwd: false,
         });
     }
     // Newest first, matching parse_tmux_sessions' ordering contract.
@@ -7452,23 +7494,66 @@ async fn pane_connect(
         )
     };
 
-    // Phase 23.I: resolve the effective tmux session name BEFORE we
-    // hand off to spawn_ssh. Precedence:
-    //   1. Caller-supplied tmux_session_name (picker chose explicit
-    //      existing-session attach)
-    //   2. Sanitized pane title (pane title IS the tmux session name —
-    //      Hebrew/Arabic/CJK titles supported)
-    //   3. None — spawn_ssh's tmux_name derivation falls back to
-    //      `sanitize_tmux_session_name(&pane_id)` (the legacy
-    //      "ymux-<paneid>" auto-name)
-    let effective_tmux_name: Option<String> = tmux_session_name
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            pane_title
-                .as_deref()
-                .and_then(sanitize_tmux_session_name_for_title)
-        });
+    let effective_tmux_name: Option<String> =
+        resolve_effective_session_name(tmux_session_name.as_deref(), pane_title.as_deref());
+
+    // 2026-08-23 — THE ATTACH-ONLY GUARD. Ask BEFORE spawning anything,
+    // because the spawn is what creates the session: 200ms later the answer
+    // is "yes, it exists" for every pane and the question becomes useless.
+    //
+    // What it prevents: `build_tmux_attach_script` runs `new-session -A -s`,
+    // attach-OR-create. On a name that is already live the pane joins a
+    // running session, and the smart-connect injection then types the
+    // wizard's command into whatever holds that session's foreground — a
+    // shell that gets restarted, or a live `claude` that receives
+    // `cd … && claude --resume …` as a chat message. Yossi's report, exactly.
+    //
+    // WHEN THE HOST CANNOT BE ASKED the fallback is deliberately asymmetric,
+    // and the asymmetry is the whole design:
+    //   - an EXPLICIT `tmux_session_name` came from the picker, which only
+    //     ever lists sessions that exist → live, no question asked;
+    //   - a DERIVED name (pane title / `ymux-<paneid>`) on an unreachable host
+    //     falls back to "not live", i.e. today's behaviour. Assuming "live"
+    //     instead would silently drop the command on every FIRST connect to an
+    //     SSH workspace, where there is no handle yet by definition — trading
+    //     a real bug for a worse one.
+    // The frontend closes that residual gap: the wizard asks
+    // `pane_target_session_state` (after `workspace_ensure_connected`) and
+    // simply does not send a command when the session already exists.
+    let target_name = session_name_for_pane(
+        tmux_session_name.as_deref(),
+        pane_title.as_deref(),
+        &pane_id,
+    );
+    let explicit_pick = tmux_session_name
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
+    // Only ask when the answer can change what we do. A plain connect injects
+    // nothing either way, and this probe is a `tmux list-sessions` over SSH or
+    // a `zellij list-sessions` subprocess — real latency on the critical path
+    // between the user's click and a visible shell.
+    let would_inject = matches!(mode.as_deref(), Some("cmd") | Some("claude"))
+        || cwd_override.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let target_was_live = if !would_inject {
+        false
+    } else if explicit_pick {
+        true
+    } else if workspace_sessions_reachable(&state, &workspace_id) {
+        list_workspace_tmux_sessions(&state, &workspace_id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|s| s.name == target_name)
+    } else {
+        log_debug(
+            "PTY",
+            &format!(
+                "attach-guard: cannot reach ws={workspace_id} to check '{target_name}'; \
+                 assuming it is not live (first-connect case)"
+            ),
+        );
+        false
+    };
 
     // Resolve shell kind for env-line formatting (need this BEFORE we move `conn`).
     let shell_kind = match &conn {
@@ -7624,7 +7709,43 @@ async fn pane_connect(
         .pane_sessions
         .lock()
         .unwrap()
-        .insert(pane_id, session_id.clone());
+        .insert(pane_id.clone(), session_id.clone());
+
+    // 2026-08-23: is this pane actually multiplexer-wrapped? Read it off the
+    // session the spawn arms just built rather than re-deriving
+    // `effective_persistent` here — that value is computed independently in
+    // three cfg-split arms, and a fourth copy of the rule is a fourth chance
+    // to disagree with the other three.
+    let pane_is_persistent = {
+        let sessions = state.core.sessions.lock().unwrap();
+        match sessions.get(&session_id) {
+            Some(Session::Local(l)) => l.tmux_session.is_some(),
+            Some(Session::Ssh(s)) => s.tmux_session.is_some(),
+            None => false,
+        }
+    };
+
+    // 2026-08-23: record which workspace this session belongs to. Done for a
+    // picker attach as much as for a fresh session — choosing a session by
+    // hand is just as much a statement of "this is mine" as creating one —
+    // and it is the ONLY workspace signal available on Windows, where zellij
+    // reports no working directory at all.
+    if pane_is_persistent {
+        let (host_key, ws_cwd) = {
+            let file = state.workspaces.lock().unwrap();
+            let ws = file.workspaces.iter().find(|w| w.id == workspace_id);
+            (
+                session_owner_host_key(ws.and_then(|w| w.connection.as_ref())),
+                ws.and_then(|w| w.cwd.clone()),
+            )
+        };
+        claim_session_owner(
+            &host_key,
+            &target_name,
+            &workspace_id,
+            cwd_override.as_deref().or(ws_cwd.as_deref()),
+        );
+    }
 
     // Phase 7.C: inject env exports + setup_command after a 500ms grace period.
     schedule_setup_injection(
@@ -7648,6 +7769,38 @@ async fn pane_connect(
         .as_deref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+
+    // 2026-08-23 — ATTACH-ONLY. A persistent pane joining a session that was
+    // ALREADY running gets nothing typed into it: not the command, and not
+    // the `cd` either. The `cd` is not the lesser evil — `cd /srv/app` landing
+    // in a live `claude` is the same bug with a shorter payload.
+    //
+    // Only persistence makes this dangerous. A plain shell is this pane's own
+    // fresh process, so injecting there is correct even if some tmux session
+    // elsewhere happens to share the name.
+    if pane_is_persistent && target_was_live {
+        log_info(
+            "PTY",
+            &format!(
+                "attach-only: pane {pane_id} joined existing session '{target_name}' — \
+                 nothing injected (mode={:?}, cwd_override={})",
+                smart_mode.as_deref().unwrap_or("none"),
+                if has_cwd { "yes" } else { "no" }
+            ),
+        );
+        // Tell the UI, so a command the user chose is never silently dropped.
+        let _ = app.emit(
+            "pane-connect-notice",
+            serde_json::json!({
+                "pane_id": pane_id,
+                "session_name": target_name,
+                "skipped": "attach-only",
+                "had_command": matches!(smart_mode.as_deref(), Some("cmd") | Some("claude")),
+            }),
+        );
+        return Ok(session_id);
+    }
+
     if matches!(smart_mode.as_deref(), Some("cmd") | Some("claude")) || has_cwd {
         let script = build_smart_connect_script(
             shell_kind,
@@ -7660,6 +7813,16 @@ async fn pane_connect(
             let sessions_clone = state.core.sessions.clone();
             let session_id_clone = session_id.clone();
             let zellij_target = zellij_target.clone();
+            // 2026-08-23: the tmux counterpart of `zellij_target` — the name
+            // to wait for before typing, so the command cannot land in the
+            // outer shell that is still busy running `tmux new-session`.
+            let tmux_target: Option<String> = if pane_is_persistent && zellij_target.is_none() {
+                Some(target_name.clone())
+            } else {
+                None
+            };
+            let app_for_poll = app.clone();
+            let ws_for_poll = workspace_id.clone();
             tokio::spawn(async move {
                 // 2026-08-19: a persistent local pane runs its shell INSIDE
                 // zellij, and the attach line is typed at 900ms while this
@@ -7701,6 +7864,44 @@ async fn pane_connect(
                             "smart-connect: zellij delivery unavailable (appeared={appeared}), typing into the pane"
                         ),
                     );
+                } else if let Some(name) = tmux_target {
+                    // 2026-08-23: the same "address the session, don't race
+                    // it" fix zellij got, applied to tmux. The old code slept
+                    // a flat 1100ms while the attach line was typed at 900ms
+                    // — a 200ms margin for `command -v tmux` plus a
+                    // new-session over an SSH channel, which the comment above
+                    // already describes as "no margin at all".
+                    //
+                    // Unlike zellij there is no out-of-band `write-chars`
+                    // verb here, so the pane's own PTY stays the delivery
+                    // path; waiting for the session to EXIST is what makes
+                    // that PTY point inside tmux rather than at the shell in
+                    // front of it. Bounded at 900ms + 8×400ms; on timeout we
+                    // type anyway, because dropping the user's command is
+                    // worse than typing it at a prompt.
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    let mut appeared = false;
+                    for _ in 0..8 {
+                        let st = app_for_poll.state::<AppState>();
+                        if list_workspace_tmux_sessions(st.inner(), &ws_for_poll)
+                            .await
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|s| s.name == name)
+                        {
+                            appeared = true;
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    }
+                    if !appeared {
+                        log_debug(
+                            "PTY",
+                            &format!(
+                                "smart-connect: tmux session '{name}' never appeared; typing into the pane anyway"
+                            ),
+                        );
+                    }
                 } else {
                     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
                 }
@@ -7752,6 +7953,22 @@ pub(crate) struct TmuxSessionInfo {
     /// Machine id that created the session (see `machine_id()`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// 2026-08-23: the session's working directory, from tmux's
+    /// `#{session_path}`. `None` on zellij (its `list-sessions` reports no
+    /// cwd at all) and on a tmux old enough that the 6th field is missing —
+    /// both are "unknown", never "elsewhere", so the picker must not treat a
+    /// `None` as evidence that a session belongs to some other folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// 2026-08-23: ymux created or attached this session for the workspace
+    /// the caller asked about (`session-owners.json`). This is the half of
+    /// the workspace scope that works on Windows, where zellij gives no cwd.
+    #[serde(default)]
+    pub owned: bool,
+    /// 2026-08-23: `cwd` is the caller's `project_path`, or lives under it.
+    /// False whenever `cwd` is unknown — see the note on `cwd`.
+    #[serde(default)]
+    pub in_cwd: bool,
 }
 
 /// Phase 81: deserialization mirror of the Linux CLI's session-meta file
@@ -7828,6 +8045,10 @@ async fn zellij_delete_session(name: String) -> Result<KillSessionOutcome, Strin
     if name.is_empty() {
         return Err("no session name".into());
     }
+    // 2026-08-23: zellij is always the LOCAL multiplexer, so the ownership
+    // claim can be released without knowing which workspace asked — there is
+    // only one host key it could be under.
+    release_session_owner("local", &name);
     // Argv only (Rule #3) — the name goes into one slot and is never reparsed.
     Ok(
         match zellij_try(&zellij_args_delete_force(&name), "delete-session -f").await {
@@ -7851,10 +8072,19 @@ async fn zellij_delete_session(name: String) -> Result<KillSessionOutcome, Strin
     )
 }
 
-#[tauri::command]
-async fn pane_list_tmux_sessions(
-    state: State<'_, AppState>,
-    workspace_id: String,
+/// 2026-08-23: the host-side list, with no scoping and no visibility filter.
+///
+/// Split out of `pane_list_tmux_sessions` because two callers now need the
+/// UNFILTERED truth and would be wrong with anything less:
+///   - the picker, which applies both filters itself afterwards;
+///   - `pane_target_session_state`, whose whole job is "does this session
+///     already exist?". Running that question through the visibility filter
+///     would answer "no" for a session another machine created, and the
+///     caller would then type a command straight into it — the exact bug the
+///     guard exists to prevent.
+async fn list_workspace_tmux_sessions(
+    state: &AppState,
+    workspace_id: &str,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
     // Phase 80: WSL workspaces list their sessions via wsl.exe — no SSH
     // handle involved, and it works before any pane has connected (the
@@ -7870,7 +8100,7 @@ async fn pane_list_tmux_sessions(
             })
     };
     if let Some(distro) = wsl_distro {
-        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, TMUX_LIST_SCRIPT)
+        let (_code, text) = local_setup::wsl_exec(distro.as_deref(), None, &tmux_list_script())
             .await
             .unwrap_or((-1, String::new()));
         return Ok(parse_tmux_sessions(&text));
@@ -7879,16 +8109,27 @@ async fn pane_list_tmux_sessions(
     // 2026-08-19: native Windows workspaces answer from zellij. Without this
     // arm a local workspace fell through to the SSH branch below and got a
     // silent Ok([]), which is why the picker never appeared for local panes.
-    let is_local = {
-        let file = state.workspaces.lock().unwrap();
-        file.workspaces
-            .iter()
-            .find(|w| w.id == workspace_id)
-            .map(|w| matches!(w.connection, None | Some(Connection::Local { .. })))
-            .unwrap_or(false)
-    };
-    if is_local {
-        return Ok(list_zellij_sessions().await);
+    //
+    // 2026-08-23: `cfg(windows)` ADDED. This arm shipped ungated, and since
+    // it returns unconditionally for any local workspace it shadowed the
+    // `cfg(not(windows))` macOS branch further down — so a Mac asked ZELLIJ
+    // for its sessions, got an empty list (no zellij there), and never
+    // reached its own tmux server. Found while extracting this function;
+    // fixed here rather than filed, because the workspace-scoped picker is
+    // built on this call and would have been silently empty on macOS.
+    #[cfg(windows)]
+    {
+        let is_local = {
+            let file = state.workspaces.lock().unwrap();
+            file.workspaces
+                .iter()
+                .find(|w| w.id == workspace_id)
+                .map(|w| matches!(w.connection, None | Some(Connection::Local { .. })))
+                .unwrap_or(false)
+        };
+        if is_local {
+            return Ok(list_zellij_sessions().await);
+        }
     }
 
     // Phase 23.H: silent Ok([]) fallback when no live SSH handle.
@@ -7901,6 +8142,11 @@ async fn pane_list_tmux_sessions(
     // surfacing a red error for the most common access pattern. Once a
     // terminal pane authenticates, re-opening the picker will list the
     // real sessions over the now-live handle.
+    //
+    // 2026-08-23 CAUTION for the attach-only guard: this empty answer means
+    // "we could not ask", NOT "no session exists". `pane_target_session_state`
+    // reports `reachable: false` in that case and the caller must treat an
+    // unreachable host as "might already be live", never as "safe to inject".
     let handle = {
         let sessions = state.core.sessions.lock().unwrap();
         sessions
@@ -7932,12 +8178,74 @@ async fn pane_list_tmux_sessions(
                 }
             }
             log_debug("SSH", &format!(
-                "pane_list_tmux_sessions: no live SSH handle for ws={workspace_id}, returning empty list"
+                "list_workspace_tmux_sessions: no live SSH handle for ws={workspace_id}, returning empty list"
             ));
             return Ok(vec![]);
         }
     };
-    let mut out = list_tmux_sessions_via_handle(&handle).await?;
+    list_tmux_sessions_via_handle(&handle).await
+}
+
+/// Can we currently ask this workspace's host anything at all?
+///
+/// The distinction matters only to the attach-only guard: a local or WSL host
+/// is always reachable, but an SSH workspace with no live handle yields an
+/// empty list that means "unknown", not "empty".
+fn workspace_sessions_reachable(state: &AppState, workspace_id: &str) -> bool {
+    let needs_handle = {
+        let file = state.workspaces.lock().unwrap();
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| matches!(w.connection, Some(Connection::Ssh { .. })))
+            .unwrap_or(false)
+    };
+    if !needs_handle {
+        return true;
+    }
+    let sessions = state.core.sessions.lock().unwrap();
+    sessions
+        .iter()
+        .any(|(_sid, sess)| matches!(sess, Session::Ssh(s) if s.workspace_id == workspace_id))
+}
+
+#[tauri::command]
+async fn pane_list_tmux_sessions(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    project_path: Option<String>,
+) -> Result<Vec<TmuxSessionInfo>, String> {
+    // 2026-08-23: `project_path` mirrors the parameter of the same name on
+    // `pane_list_claude_sessions` rather than inventing a second spelling for
+    // the same idea — that command has scoped its list to a folder since
+    // project-folders v4, and the tmux list was the one thing in the same
+    // wizard that never got it.
+    //
+    // It is OPTIONAL and `None` means "no scope", which matters more than it
+    // looks: session restore (App.tsx) and `pane_probe_tmux_sessions` share
+    // these list paths and MUST see every session. A pane whose session sits
+    // outside the current folder still has to come back on the next boot.
+    // Scope is a picker concern, exactly like `session_visibility` below.
+    let project_path = project_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    // The annotate step needs the workspace's host to key ownership by, and
+    // its cwd as the scope root when the caller did not name one.
+    let (host_key, ws_cwd) = {
+        let file = state.workspaces.lock().unwrap();
+        let ws = file.workspaces.iter().find(|w| w.id == workspace_id);
+        (
+            session_owner_host_key(ws.and_then(|w| w.connection.as_ref())),
+            ws.and_then(|w| w.cwd.clone()),
+        )
+    };
+    // The wizard passes the folder anchor explicitly; a caller that does not
+    // still gets scoping when the workspace itself is folder-anchored.
+    let scope_path = project_path.or(ws_cwd);
+    let scope_path = scope_path.as_deref().filter(|p| !p.trim().is_empty());
+
+    let mut out = list_workspace_tmux_sessions(&state, &workspace_id).await?;
+
     // Phase 81: visibility scope (picker-only). "shared" (default) = every
     // session on the server; "local" = only sessions this machine created.
     // Origin-less sessions (pre-81, or an old CLI) stay visible — fail-open so
@@ -7952,7 +8260,69 @@ async fn pane_list_tmux_sessions(
         let my_id = machine_id();
         out.retain(|s| s.origin.as_deref().map_or(true, |o| o.is_empty() || o == my_id));
     }
+    // 2026-08-23: the workspace scope is a SECOND, independent axis, and the
+    // two do not know about each other. It is applied as annotation, not as a
+    // retain, so the picker's toggle switches views without another round trip
+    // to the host — and so a session outside the scope stays one click away
+    // instead of vanishing.
+    annotate_session_scope(&mut out, &host_key, &workspace_id, scope_path);
     Ok(out)
+}
+
+/// 2026-08-23: "what will this pane land on, and is it already live?"
+///
+/// THE BUG THIS EXISTS FOR: the connect wizard let you pick TMUX + a command,
+/// and `build_tmux_attach_script` types `tmux new-session -A -s <name>` —
+/// attach-OR-create. When the name already existed, the pane joined a running
+/// session and the smart-connect injection 200ms later typed the command into
+/// whatever that session had in the foreground: a restarted shell, or a live
+/// `claude` receiving `cd … && claude --resume …` as a chat prompt.
+///
+/// `reachable` is not decoration. An SSH workspace with no live handle cannot
+/// answer, and "cannot answer" must never be read as "nothing is running".
+#[derive(Clone, Serialize)]
+pub(crate) struct TargetSessionState {
+    /// The name resolved through the same precedence `pane_connect` uses.
+    pub name: String,
+    pub exists: bool,
+    /// A client is already attached to it (tmux `#{session_attached}`).
+    pub attached: bool,
+    /// False when the host could not be asked; `exists` is then meaningless.
+    pub reachable: bool,
+}
+
+#[tauri::command]
+async fn pane_target_session_state(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+    tmux_session_name: Option<String>,
+) -> Result<TargetSessionState, String> {
+    let pane_title = {
+        let file = state.workspaces.lock().unwrap();
+        file.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .and_then(|w| w.layout.as_ref())
+            .and_then(|layout| find_pane_title(layout, &pane_id))
+    };
+    let name = session_name_for_pane(
+        tmux_session_name.as_deref(),
+        pane_title.as_deref(),
+        &pane_id,
+    );
+    let reachable = workspace_sessions_reachable(&state, &workspace_id);
+    // Unfiltered on purpose — see list_workspace_tmux_sessions' doc comment.
+    let sessions = list_workspace_tmux_sessions(&state, &workspace_id)
+        .await
+        .unwrap_or_default();
+    let hit = sessions.iter().find(|s| s.name == name);
+    Ok(TargetSessionState {
+        exists: hit.is_some(),
+        attached: hit.is_some_and(|s| s.attached),
+        reachable,
+        name,
+    })
 }
 
 /// The `tmux list-sessions` half of `pane_list_tmux_sessions`, split out so the
@@ -7992,12 +8362,22 @@ fn clipboard_read_text() -> Result<String, String> {
 /// carry its own copy WITHOUT the meta segment, so a WSL tmux picker showed
 /// bare session names while an SSH one showed Claude titles — a difference
 /// nobody chose. One const means the format string cannot drift again.
-const TMUX_LIST_SCRIPT: &str = "tmux list-sessions -F '#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}' 2>/dev/null; printf '\\n<<<YMUX_META>>>\\n'; cat \"$HOME/.ymux/session-meta.json\" 2>/dev/null; true";
+///
+/// 2026-08-23: built from `TMUX_LIST_FORMAT` rather than repeating it. The
+/// paragraph above already claimed the format string "cannot drift again"
+/// while this very function carried a hand-typed second copy of it — and the
+/// two DID drift the moment `#{session_path}` was added. One allocation per
+/// list call removes the failure mode.
+fn tmux_list_script() -> String {
+    format!(
+        "tmux list-sessions -F '{TMUX_LIST_FORMAT}' 2>/dev/null; printf '\\n{TMUX_META_MARKER}\\n'; cat \"$HOME/.ymux/session-meta.json\" 2>/dev/null; true"
+    )
+}
 
 async fn list_tmux_sessions_via_handle(
     handle: &client::Handle<SshClient>,
 ) -> Result<Vec<TmuxSessionInfo>, String> {
-    let script = TMUX_LIST_SCRIPT;
+    let script = tmux_list_script();
     use russh::ChannelMsg;
     let mut ch = handle
         .channel_open_session()
@@ -8028,7 +8408,7 @@ async fn list_tmux_sessions_via_handle(
 /// `tmux list-sessions -F` format shared by every list path (SSH, WSL,
 /// local unix) — one line per session, parsed by `parse_tmux_sessions`.
 const TMUX_LIST_FORMAT: &str =
-    "#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}";
+    "#{session_name}|#{session_created}|#{session_attached}|#{session_windows}|#{session_last_attached}|#{session_path}";
 /// Separator between the session list and the appended session-meta JSON.
 const TMUX_META_MARKER: &str = "<<<YMUX_META>>>";
 
@@ -8130,6 +8510,21 @@ fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             auto_name: m.and_then(|m| m.auto_name.clone()),
             claude_session_id: m.and_then(|m| m.claude_session_id.clone()),
             origin: m.and_then(|m| m.origin.clone()),
+            // 2026-08-23: the 6th field. `get(5)` rather than `parts[5]`
+            // deliberately — a tmux old enough to predate this change (or a
+            // remote that has not been re-bootstrapped) emits five fields,
+            // and the length guard above still admits that line. Unknown cwd
+            // must stay `None`; see the field doc for why that is not the
+            // same as "this session is somewhere else".
+            cwd: parts
+                .get(5)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            // Scope bits are stamped by the caller that knows which workspace
+            // is asking (`annotate_session_scope`); the parser has no idea.
+            owned: false,
+            in_cwd: false,
         });
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
@@ -8217,7 +8612,7 @@ async fn pane_probe_tmux_sessions(
         // inside a connection-less workspace could never restore.
         Some(Connection::Wsl { distro }) => {
             let (_code, text) =
-                local_setup::wsl_exec(distro.as_deref(), None, TMUX_LIST_SCRIPT)
+                local_setup::wsl_exec(distro.as_deref(), None, &tmux_list_script())
                     .await
                     .unwrap_or((-1, String::new()));
             return Ok(Some(parse_tmux_sessions(&text)));
@@ -8226,8 +8621,21 @@ async fn pane_probe_tmux_sessions(
         // no handle, no auth. Previously it fell into the `_` arm below and
         // returned None ("couldn't ask"), so boot-time session restore
         // skipped local panes entirely.
+        //
+        // 2026-08-23: cfg-split, same fix as in `list_workspace_tmux_sessions`
+        // and for the same reason — this arm asked ZELLIJ on every platform,
+        // so a macOS local pane (whose persistence is tmux, by the deliberate
+        // split in CLAUDE.md § Platforms) was told "no sessions" and its
+        // restore was skipped. One multiplexer per platform, everywhere.
         None | Some(Connection::Local { .. }) => {
-            return Ok(Some(list_zellij_sessions().await));
+            #[cfg(windows)]
+            {
+                return Ok(Some(list_zellij_sessions().await));
+            }
+            #[cfg(not(windows))]
+            {
+                return Ok(Some(list_local_tmux_sessions().await));
+            }
         }
         _ => return Ok(None),
     };
@@ -8363,6 +8771,203 @@ fn tmux_label_set(
     }
     set_tmux_label_internal(&workspace_id, &session_name, label.as_deref().unwrap_or(""));
     Ok(())
+}
+
+// ─── 2026-08-23: session ownership ───────────────────────────────────────────
+// File: %APPDATA%/ymux/session-owners.json
+// Schema: { version: 1, owners: { host_key: { session_name: SessionOwner } } }
+//
+// WHY THIS EXISTS AT ALL, given tmux reports `#{session_path}`: zellij does
+// not. `zellij list-sessions -n` emits a name, an age and the EXITED/current
+// markers, full stop — so on Windows, where every local pane is a zellij
+// session, a cwd-based scope would match nothing and the picker's "this
+// folder" view would always be empty. This is the other half of the answer,
+// and it is the half that also covers a tmux session whose cwd has moved.
+//
+// Keyed by host FIRST because a session name is only unique per tmux/zellij
+// server: two boxes each running a session called `dev` are two sessions, and
+// collapsing them would let one workspace claim the other's.
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+pub(crate) struct SessionOwner {
+    pub workspace_id: String,
+    /// The workspace cwd at the time of the claim. Recorded for diagnostics
+    /// and for a future "the folder moved" repair; the scope check does not
+    /// read it (it uses the LIVE `#{session_path}` instead, which cannot go
+    /// stale the way a cached copy can).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub ts: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+pub(crate) struct SessionOwnersFile {
+    #[serde(default = "default_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub owners: HashMap<String, HashMap<String, SessionOwner>>,
+}
+
+fn session_owners_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("session-owners.json"))
+}
+
+fn load_session_owners() -> SessionOwnersFile {
+    let path = match session_owners_path() {
+        Ok(p) => p,
+        Err(_) => return SessionOwnersFile::default(),
+    };
+    if !path.exists() {
+        return SessionOwnersFile::default();
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            log_warn("WORKSPACE", &format!("session-owners: read failed: {e}"));
+            return SessionOwnersFile::default();
+        }
+    };
+    // A corrupt file degrades to "nothing is owned", which costs the user a
+    // wider picker list — never a lost session.
+    serde_json::from_str(&text).unwrap_or_else(|e| {
+        log_warn("WORKSPACE", &format!("session-owners: parse failed: {e}"));
+        SessionOwnersFile::default()
+    })
+}
+
+/// Rule #7: write to `<file>.tmp`, fsync, rename. Same shape as
+/// `save_tmux_labels` — deliberately, so the two files cannot acquire
+/// different durability behaviour by accident.
+fn save_session_owners(file: &SessionOwnersFile) -> Result<(), String> {
+    use std::io::Write as _;
+    let path = session_owners_path()?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "no parent dir".to_string())?
+        .to_path_buf();
+    let tmp = dir.join(format!("session-owners.{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)
+            .map_err(|e| format!("open tmp {:?}: {e}", tmp))?;
+        f.write_all(text.as_bytes())
+            .map_err(|e| format!("write tmp: {e}"))?;
+        f.sync_all().map_err(|e| format!("fsync: {e}"))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    Ok(())
+}
+
+/// The host a workspace's sessions live on, as a stable key. `"local"` covers
+/// both `Connection::Local` and the codebase's "no connection = local"
+/// default; WSL is keyed by distro because two distros are two tmux servers.
+fn session_owner_host_key(conn: Option<&Connection>) -> String {
+    match conn {
+        Some(Connection::Ssh {
+            user, host, port, ..
+        }) => bootstrap_guard::host_key(user, host, *port),
+        Some(Connection::Wsl { distro }) => {
+            format!("wsl:{}", distro.as_deref().unwrap_or("default"))
+        }
+        Some(Connection::Local { .. }) | None => "local".to_string(),
+    }
+}
+
+/// Record that `workspace_id` created or attached `session_name` on `host_key`.
+/// Idempotent; the newest claim wins. Called from `pane_connect` for BOTH a
+/// fresh session and an explicit picker attach — picking a session by hand is
+/// exactly as much a statement of "this belongs to my workspace" as making one.
+fn claim_session_owner(host_key: &str, session_name: &str, workspace_id: &str, cwd: Option<&str>) {
+    if session_name.is_empty() || workspace_id.is_empty() {
+        return;
+    }
+    let mut file = load_session_owners();
+    file.owners
+        .entry(host_key.to_string())
+        .or_default()
+        .insert(
+            session_name.to_string(),
+            SessionOwner {
+                workspace_id: workspace_id.to_string(),
+                cwd: cwd.map(|s| s.to_string()).filter(|s| !s.is_empty()),
+                ts: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+            },
+        );
+    if let Err(e) = save_session_owners(&file) {
+        log_warn("WORKSPACE", &format!("session-owners: save failed: {e}"));
+    }
+}
+
+/// Drop a claim — a killed session must not keep colouring the picker.
+fn release_session_owner(host_key: &str, session_name: &str) {
+    let mut file = load_session_owners();
+    let Some(host) = file.owners.get_mut(host_key) else {
+        return;
+    };
+    if host.remove(session_name).is_none() {
+        return;
+    }
+    if host.is_empty() {
+        file.owners.remove(host_key);
+    }
+    if let Err(e) = save_session_owners(&file) {
+        log_warn("WORKSPACE", &format!("session-owners: save failed: {e}"));
+    }
+}
+
+/// Is `path` the same directory as `root`, or inside it?
+///
+/// A bare `starts_with` gets this wrong in the way that matters: `/srv/app2`
+/// starts with `/srv/app`, and a user with `app` and `app2` side by side would
+/// see one folder's sessions leak into the other's. The boundary has to be a
+/// separator. Trailing separators are trimmed first so `/srv/app/` and
+/// `/srv/app` are one directory, and both separators are accepted because the
+/// same comparison runs against Windows paths from zellij-era ownership rows.
+fn path_is_within(path: &str, root: &str) -> bool {
+    let trim = |s: &str| s.trim().trim_end_matches(['/', '\\']).to_string();
+    let (path, root) = (trim(path), trim(root));
+    if root.is_empty() || path.is_empty() {
+        return false;
+    }
+    if path == root {
+        return true;
+    }
+    path.strip_prefix(&root)
+        .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+}
+
+/// Stamp `owned` / `in_cwd` on a freshly listed set of sessions.
+///
+/// Annotating rather than filtering is deliberate: the picker's scope toggle
+/// then flips between two views of ONE response instead of re-querying the
+/// host, and a session that falls outside the scope is still one click away
+/// rather than gone.
+fn annotate_session_scope(
+    sessions: &mut [TmuxSessionInfo],
+    host_key: &str,
+    workspace_id: &str,
+    project_path: Option<&str>,
+) {
+    let owners = load_session_owners();
+    let host = owners.owners.get(host_key);
+    for s in sessions.iter_mut() {
+        s.owned = host
+            .and_then(|h| h.get(&s.name))
+            .is_some_and(|o| o.workspace_id == workspace_id);
+        s.in_cwd = match (s.cwd.as_deref(), project_path) {
+            (Some(cwd), Some(root)) => path_is_within(cwd, root),
+            // Unknown cwd is not evidence of anything. See TmuxSessionInfo::cwd.
+            _ => false,
+        };
+    }
 }
 
 /// Phase 23.G: rename a tmux session over the workspace's SSH
@@ -9163,6 +9768,29 @@ pub(crate) async fn kill_pane_session_inner(
     if let Some(sid) = sid {
         if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {
             kill_session_inner(&mut s);
+        }
+    }
+    // 2026-08-23: drop the ownership claim. Released on `already_gone` too —
+    // the session is not there either way, and a claim on a name that no
+    // longer exists would keep colouring the picker for a session the user
+    // can never see again. `failed` deliberately keeps the claim: the session
+    // is still alive and still this workspace's.
+    if matches!(outcome.result.as_str(), "killed" | "already_gone") {
+        if let Some(name) = outcome.session.as_deref() {
+            let host_key = {
+                let file = state.workspaces.lock().unwrap();
+                let conn = file
+                    .workspaces
+                    .iter()
+                    .find(|w| {
+                        w.layout
+                            .as_ref()
+                            .is_some_and(|l| pane_id_exists_in(l, pane_id))
+                    })
+                    .and_then(|w| w.connection.clone());
+                session_owner_host_key(conn.as_ref())
+            };
+            release_session_owner(&host_key, name);
         }
     }
     outcome
@@ -10004,6 +10632,7 @@ pub fn run() {
             claude_usage::claude_usage_fetch,
             pane_list_tmux_sessions,
             pane_probe_tmux_sessions,
+            pane_target_session_state,
             tmux_rename_session,
             tmux_labels_get,
             tmux_label_set,
@@ -10878,7 +11507,41 @@ mod smart_connect_tests {
     // hands off to a fresh interactive shell (`; exec "${SHELL:-bash}"`) so
     // the SSH channel survives Claude exiting. The other two shells must not
     // contain `exec` (it doesn't exist there).
-    use super::{build_smart_connect_script, ShellKind};
+    use super::{
+        build_smart_connect_script, resolve_effective_session_name, session_name_for_pane,
+        ShellKind,
+    };
+
+    // 2026-08-23: the attach-only guard checks one name and the attach uses
+    // another the moment these two disagree, which is the failure mode the
+    // extraction was done to remove. Pin the precedence.
+    #[test]
+    fn session_name_precedence_is_explicit_then_title_then_pane_id() {
+        assert_eq!(
+            resolve_effective_session_name(Some("picked"), Some("My Title")).as_deref(),
+            Some("picked")
+        );
+        assert_eq!(
+            resolve_effective_session_name(None, Some("My Title")).as_deref(),
+            Some("My_Title")
+        );
+        assert_eq!(resolve_effective_session_name(None, None), None);
+        // An empty explicit name is "no choice", not a session called "".
+        assert_eq!(
+            resolve_effective_session_name(Some(""), Some("My Title")).as_deref(),
+            Some("My_Title")
+        );
+    }
+
+    #[test]
+    fn pane_fallback_name_matches_the_legacy_auto_name() {
+        assert_eq!(session_name_for_pane(None, None, "p_1a2b"), "ymux-p_1a2b");
+        assert_eq!(
+            session_name_for_pane(None, Some("  "), "p_1a2b"),
+            "ymux-p_1a2b"
+        );
+        assert_eq!(session_name_for_pane(Some("picked"), None, "p_1a2b"), "picked");
+    }
 
     #[test]
     fn posix_claude_hands_off_to_fresh_shell() {
@@ -10958,12 +11621,27 @@ mod tmux_list_parse_tests {
     // Shared parser for every `tmux list-sessions -F` path (SSH, WSL and
     // the macOS local server). Sample lines are exactly what tmux prints
     // for TMUX_LIST_FORMAT.
-    use super::{parse_tmux_sessions, TMUX_LIST_FORMAT, TMUX_META_MARKER};
+    use super::{
+        parse_tmux_sessions, path_is_within, tmux_list_script, TMUX_LIST_FORMAT, TMUX_META_MARKER,
+    };
 
     #[test]
-    fn format_has_five_pipe_separated_fields() {
-        assert_eq!(TMUX_LIST_FORMAT.split('|').count(), 5);
+    fn format_has_six_pipe_separated_fields() {
+        // 2026-08-23: six, not five — `#{session_path}` was appended so the
+        // picker can scope a list to a project folder.
+        assert_eq!(TMUX_LIST_FORMAT.split('|').count(), 6);
         assert!(TMUX_LIST_FORMAT.starts_with("#{session_name}"));
+        assert!(TMUX_LIST_FORMAT.ends_with("#{session_path}"));
+    }
+
+    #[test]
+    fn list_script_is_built_from_the_format_const() {
+        // The two used to be independent copies of the same string, and they
+        // drifted the moment a field was added. This is the guard against a
+        // third copy appearing.
+        let script = tmux_list_script();
+        assert!(script.contains(TMUX_LIST_FORMAT), "script: {script}");
+        assert!(script.contains(TMUX_META_MARKER));
     }
 
     #[test]
@@ -10986,6 +11664,52 @@ mod tmux_list_parse_tests {
         assert_eq!(out[1].name, "winmux-a1b2");
         assert!(!out[1].attached);
         assert!(out[1].label.is_none());
+    }
+
+    #[test]
+    fn sixth_field_is_the_session_cwd() {
+        let out = parse_tmux_sessions("main|1|0|1|2|/srv/app\n");
+        assert_eq!(out[0].cwd.as_deref(), Some("/srv/app"));
+        // The parser never decides scope; that is annotate_session_scope's job.
+        assert!(!out[0].owned);
+        assert!(!out[0].in_cwd);
+    }
+
+    #[test]
+    fn five_field_lines_still_parse_with_unknown_cwd() {
+        // A remote that has not been re-bootstrapped, or any tmux answering
+        // the OLD format, emits five fields. Dropping those lines would empty
+        // the picker on exactly the servers that need it most.
+        let out = parse_tmux_sessions("main|1|0|1|2\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "main");
+        assert!(out[0].cwd.is_none());
+    }
+
+    #[test]
+    fn empty_sixth_field_reads_as_unknown_not_root() {
+        let out = parse_tmux_sessions("main|1|0|1|2|\n");
+        assert_eq!(out.len(), 1);
+        assert!(out[0].cwd.is_none());
+    }
+
+    #[test]
+    fn folder_scope_stops_at_a_separator() {
+        // The whole reason path_is_within exists: `/srv/app2` starts with
+        // `/srv/app`, and a plain starts_with would leak one project folder's
+        // sessions into its neighbour's list.
+        assert!(path_is_within("/srv/app", "/srv/app"));
+        assert!(path_is_within("/srv/app/sub", "/srv/app"));
+        assert!(path_is_within("/srv/app/", "/srv/app"));
+        assert!(!path_is_within("/srv/app2", "/srv/app"));
+        assert!(!path_is_within("/srv", "/srv/app"));
+        assert!(!path_is_within("/other", "/srv/app"));
+        // Windows paths reach this via zellij-era ownership rows.
+        assert!(path_is_within(r"C:\src\app\sub", r"C:\src\app"));
+        assert!(!path_is_within(r"C:\src\app2", r"C:\src\app"));
+        // An empty root would otherwise match everything.
+        assert!(!path_is_within("/srv/app", ""));
+        assert!(!path_is_within("", "/srv/app"));
     }
 
     #[test]

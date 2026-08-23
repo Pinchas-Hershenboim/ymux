@@ -97,6 +97,29 @@ export interface TmuxSessionInfo {
   claude_session_id?: string;
   /** machine-id of the ymux install that created the session. */
   origin?: string;
+  /** 2026-08-23: the session's working directory, from tmux's
+   *  `#{session_path}`. Absent on zellij (its list-sessions reports no cwd
+   *  at all) and on a tmux answering the pre-2026-08-23 five-field format.
+   *  Absent means UNKNOWN — never "somewhere else". */
+  cwd?: string;
+  /** ymux created or attached this session for the workspace that asked
+   *  (`session-owners.json`). The only workspace signal available on
+   *  Windows, where zellij reports no directory. */
+  owned: boolean;
+  /** `cwd` is the workspace's folder, or lives under it. False whenever
+   *  `cwd` is unknown. */
+  in_cwd: boolean;
+}
+
+/** 2026-08-23: what `pane_target_session_state` answers — "which multiplexer
+ *  session will this pane land on, and is something already running there?"
+ *  `reachable: false` means the host could not be asked, so `exists` carries
+ *  no information. */
+export interface TargetSessionState {
+  name: string;
+  exists: boolean;
+  attached: boolean;
+  reachable: boolean;
 }
 
 // Phase 24.D: ChatRole / MessageStatus / ChatMessage / ClaudeChatState
