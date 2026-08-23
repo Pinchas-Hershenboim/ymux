@@ -86,13 +86,21 @@ rather than duplicated:
   sitting unreachable.
 - **`NotesModal.tsx` (273)** — notes CRUD against `notes.rs`.
 
-## `SettingsModal.tsx` (1,868)
+## `SettingsModal.tsx` (1,869)
 
 The whole settings surface in tabs — theme, fonts, terminal, RTL profiles, hooks,
 notifications, logs, Claude, updates, shortcuts. Reads and writes through
 `settings.ts` (the typed mirror; `src-tauri/src/settings.rs` owns the canonical schema)
 and reacts to `settings:changed`, so a `ymux settings set` from the CLI updates the open
 modal.
+
+The RTL block is the one worth knowing: a `local` / `remote` profile pill, then the
+`rtl_mode` radios — `auto_per_line`, `force_rtl`, `bidi_reorder`, `off` — over the
+`auto_direction` / `mirror_arrows_rtl` / `tui_owns_bidi` / `direction_policy` knobs.
+`setRtlField` writes a **complete** profile object rather than a partial: Rust's
+per-field `serde(default)` would otherwise resurrect type-defaults instead of
+profile-defaults. `RTL_FIELD_DEFAULTS` holds `auto_per_line` for both profiles and
+did not move when `force_rtl` was added (2026-08-23) — the new mode is opt-in.
 
 Two tabs are deliberately **separate components** so they do not bloat this file:
 `AddonsTab` and `YmuxToolsTab` (see `frontend-panes.md`).

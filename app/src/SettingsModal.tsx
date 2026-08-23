@@ -964,6 +964,7 @@ export function SettingsModal(p: Props) {
                   <p class="settings-hint">{t(`settings.terminal.rtl.profile.${rtlProfile()}.hint`)}</p>
                   <For each={[
                     ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
+                    ["force_rtl", "settings.terminal.rtl.force.label", "settings.terminal.rtl.force.desc"],
                     ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
                     ["off", "settings.terminal.rtl.off.label", "settings.terminal.rtl.off.desc"],
                   ] as const}>

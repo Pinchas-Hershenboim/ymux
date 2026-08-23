@@ -563,6 +563,8 @@
   "settings.terminal.rtl.hint": "איך להציג שורות שמכילות טקסט מימין-לשמאל. החלפת המצב משפיעה מיד על פאנלים חדשים; פאנלים פתוחים מעדכנים את ה-pipeline בלייב אבל שומרים על ה-renderer הקיים.",
   "settings.terminal.rtl.auto.label": "אוטומטי לכל שורה (סגנון Termius)",
   "settings.terminal.rtl.auto.desc": "DOM renderer; כל שורה מקבלת dir=\"auto\" והדפדפן בוחר כיוון לפי האות החזקה הראשונה. ברירת מחדל מומלצת ל-SSH prompts שמדפיסים מדי פעם עברית.",
+  "settings.terminal.rtl.force.label": "RTL מלא (פאנלים מרוחקים)",
+  "settings.terminal.rtl.force.desc": "DOM renderer; כל שורה מקבלת dir=\"rtl\" בכפייה, בלי זיהוי — בלי הצבעת dominance ובלי זיהוי טבלאות. טרמינל שהוא ימין-לשמאל תמיד. מילים לטיניות בתוך שורה עדיין נקראות נכון. נבנה לפאנלים מרוחקים (SSH/WSL): מסכי TUI מלאים כמו tmux, vim או htop ייראו ממוראים, כי הפריסה שלהם פוזיציונית.",
   "settings.terminal.rtl.bidi.label": "סידור BiDi מלא (legacy)",
   "settings.terminal.rtl.bidi.desc": "WebGL renderer + bidi-js עם סידור logical→visual. ציור מהיר יותר, אבל משכתב את זרם הבייטים — שורות עריכה עלולות להפתיע.",
   "settings.terminal.rtl.off.label": "כבוי",

@@ -563,6 +563,8 @@
   "settings.terminal.rtl.hint": "Как отображать строки с текстом справа налево. Смена режима сразу влияет на новые панели; открытые панели обновляют pipeline записи, но сохраняют свой renderer.",
   "settings.terminal.rtl.auto.label": "Авто по строке (стиль Termius)",
   "settings.terminal.rtl.auto.desc": "DOM renderer; каждая строка получает dir=\"auto\", и браузер выбирает направление по первому сильному символу. Лучший выбор для SSH prompts с эпизодическим ивритом.",
+  "settings.terminal.rtl.force.label": "Полный RTL (удалённые панели)",
+  "settings.terminal.rtl.force.desc": "DOM renderer; КАЖДАЯ строка принудительно получает dir=\"rtl\" без какого-либо определения — без голосования dominance и без группировки таблиц. Терминал, который всегда справа налево. Латинские слова внутри строки по-прежнему читаются верно. Сделано для удалённых панелей (SSH/WSL): полноэкранные TUI вроде tmux, vim или htop БУДУТ выглядеть зеркально, так как их вёрстка позиционная.",
   "settings.terminal.rtl.bidi.label": "Полный BiDi reorder (legacy)",
   "settings.terminal.rtl.bidi.desc": "WebGL renderer + bidi-js (логический→визуальный порядок). Быстрее, но переписывает поток байтов — может удивить в редактируемых строках.",
   "settings.terminal.rtl.off.label": "Выкл",

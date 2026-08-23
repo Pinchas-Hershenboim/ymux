@@ -13,6 +13,7 @@ import {
   strongCounts,
   RTL_DOMINANCE,
   stripPaneFrame,
+  rowDirections,
 } from "./textDirection.ts";
 
 const LTR = "ltr";
@@ -498,4 +499,81 @@ test("tuiOwnsBidi: full lifecycle start -> topic -> exit", () => {
   assert.equal(s, true);
   s = nextTuiOwnsBidi(s, "");                  // clean exit
   assert.equal(s, false);
+});
+
+// -- rowDirections: the whole-pane decision ----------------------------------
+//
+// `force_rtl` (2026-08-23) exists because Yossi wanted the per-line decision
+// GONE on remote panes: "RTL מלא, ולא שורה שורה". The contract these tests pin
+// is not "Hebrew comes out RTL" — auto_per_line already does that — it is that
+// NOTHING about the text or the settings can produce an "ltr" row. Every
+// heuristic in this file is deliberately unreachable in that mode, so a future
+// change to detectRowDirections cannot leak into it.
+
+const ALL_KNOBS = { auto: true, suppress: false, dominance: false };
+
+test("force_rtl: every row is rtl, whatever the text", () => {
+  const rows = [
+    "ls -la /opt/wa",             // pure Latin
+    "שלום עולם",                  // pure Hebrew
+    "2. /opt/wa/.shared.env - הערה", // mixed, Latin-first
+    "|-------|-------|",          // ASCII table border
+    "─────────────",              // box drawing
+    "```ts",                      // code fence
+    "   ",                        // whitespace only
+    "",                           // empty
+    "12345 !!! ???",              // digits + neutrals
+  ];
+  assert.deepEqual(
+    rowDirections("force_rtl", rows, ALL_KNOBS),
+    rows.map(() => RTL),
+  );
+});
+
+test("force_rtl: ignores auto_direction, suppress and dominance", () => {
+  // A row that auto_per_line resolves to LTR under every one of these knobs,
+  // so if any of them were still consulted the assertion would catch it.
+  const rows = ["Update available! Run winget upgrade to get 0.5.0 — צבר"];
+  for (const auto of [true, false]) {
+    for (const suppress of [true, false]) {
+      for (const dominance of [true, false]) {
+        assert.deepEqual(
+          rowDirections("force_rtl", rows, { auto, suppress, dominance }),
+          [RTL],
+          `auto=${auto} suppress=${suppress} dominance=${dominance}`,
+        );
+      }
+    }
+  }
+});
+
+test("force_rtl: an empty viewport stays empty", () => {
+  assert.deepEqual(rowDirections("force_rtl", [], ALL_KNOBS), []);
+});
+
+test("auto_per_line: unchanged — still delegates to detectRowDirections", () => {
+  const rows = ["ls -la", "שלום", "| שם | ערך |", "|-----|-----|"];
+  for (const dominance of [true, false]) {
+    assert.deepEqual(
+      rowDirections("auto_per_line", rows, { ...ALL_KNOBS, dominance }),
+      detectRowDirections(rows, dominance),
+      `dominance=${dominance}`,
+    );
+  }
+});
+
+test("auto_per_line: auto off or suppress on forces every row ltr", () => {
+  const rows = ["שלום עולם", "ls -la", "| שם |"];
+  const allLtr = rows.map(() => LTR);
+  assert.deepEqual(rowDirections("auto_per_line", rows, { ...ALL_KNOBS, auto: false }), allLtr);
+  assert.deepEqual(rowDirections("auto_per_line", rows, { ...ALL_KNOBS, suppress: true }), allLtr);
+});
+
+test("force_rtl outranks the suppress path that would blank auto_per_line", () => {
+  // Same input, same knobs, opposite answers — this is the whole point of the
+  // mode being a separate branch rather than a flag on the existing one.
+  const rows = ["שלום עולם"];
+  const knobs = { auto: false, suppress: true, dominance: true };
+  assert.deepEqual(rowDirections("auto_per_line", rows, knobs), [LTR]);
+  assert.deepEqual(rowDirections("force_rtl", rows, knobs), [RTL]);
 });

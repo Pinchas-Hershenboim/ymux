@@ -563,6 +563,8 @@
   "settings.terminal.rtl.hint": "كيفية عرض السطور التي تحتوي على نص من اليمين إلى اليسار. تبديل الوضع يؤثر على اللوحات المفتوحة حديثًا فورًا؛ اللوحات الحالية تحدّث pipeline الكتابة مباشرة لكنها تحتفظ بـ renderer الأصلي.",
   "settings.terminal.rtl.auto.label": "تلقائي لكل سطر (بأسلوب Termius)",
   "settings.terminal.rtl.auto.desc": "DOM renderer؛ كل سطر يحصل على dir=\"auto\" والمتصفح يختار الاتجاه حسب أول حرف اتجاهي قوي. أفضل افتراض لـ SSH prompts التي تطبع أحيانًا نصًا بالعبرية.",
+  "settings.terminal.rtl.force.label": "RTL كامل (اللوحات البعيدة)",
+  "settings.terminal.rtl.force.desc": "DOM renderer؛ كل سطر يُجبر على dir=\"rtl\" بدون أي كشف — بدون تصويت dominance وبدون تجميع الجداول. طرفية من اليمين إلى اليسار دائمًا. الكلمات اللاتينية داخل السطر تبقى مقروءة بشكل صحيح. مُصمَّم للوحات البعيدة (SSH/WSL): واجهات TUI كاملة الشاشة مثل tmux أو vim أو htop ستبدو معكوسة، لأن تخطيطها موضعي.",
   "settings.terminal.rtl.bidi.label": "إعادة ترتيب BiDi كاملة (قديم)",
   "settings.terminal.rtl.bidi.desc": "WebGL renderer + bidi-js لإعادة الترتيب من المنطقي إلى المرئي. رسم أسرع، لكنه يعيد كتابة تيار البايتات — قد يفاجئ السطور القابلة للتحرير.",
   "settings.terminal.rtl.off.label": "إيقاف",
