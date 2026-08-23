@@ -11,6 +11,10 @@
 //   - line is pure Latin                     -> LTR
 //   - digits / symbols / whitespace only     -> LTR   (safe default)
 //
+// 2026-08-19 amendment: "ANY Hebrew" is now "Hebrew unless massively
+// outnumbered" -- see RTL_DOMINANCE. A TUI status bar is a positional row,
+// and flipping its paragraph direction mirrors layout the TUI already placed.
+//
 // v0.4.4-beta.3 (Approach C+): pure per-line detection breaks TABLES and BOXES.
 // Claude Code drawing a Hebrew table produces:
 //     | שם | ערך |     <- Hebrew content, per-line rule -> RTL
@@ -33,12 +37,70 @@
 
 const HEBREW = /[֐-׿]/; // Hebrew block
 const ARABIC = /[؀-ۿݐ-ݿ]/; // Arabic + Arabic Supplement
-const LATIN = /[A-Za-z]/;
+// Global twins of the above, for COUNTING rather than testing.
+const HEBREW_G = /[֐-׿]/g;
+const ARABIC_G = /[؀-ۿݐ-ݿ]/g;
+const LATIN_G = /[A-Za-z]/g;
 
-export function detectDirection(text: string): "ltr" | "rtl" {
-  if (HEBREW.test(text) || ARABIC.test(text)) return "rtl"; // mixed or pure RTL
-  if (LATIN.test(text)) return "ltr"; // pure Latin
-  return "ltr"; // digits / symbols / whitespace / empty -> safe LTR default
+/**
+ * 2026-08-19: how much Latin it takes to OUTVOTE the Hebrew on one row.
+ *
+ * The rule used to be "any Hebrew char anywhere -> the whole row is RTL",
+ * which is right for prose and catastrophic for a TUI status bar. Claude
+ * Code's footer is a single terminal row carrying ~60 Latin characters of
+ * layout plus the cwd -- and when that cwd is `צבר`, three Hebrew letters
+ * flipped the row's paragraph direction and UAX #9 rule L2 mirrored every
+ * Latin run inside it. From Yossi's screenshot, "Update available! Run winget
+ * upgrade ..." came out as "winget upgrade ... :Update available! Run" -- with
+ * the Hebrew itself rendering perfectly. Such a row is POSITIONAL: the TUI
+ * already chose the column of every glyph, and bidi has no way to reconstruct
+ * a layout it just mirrored.
+ *
+ * So Hebrew still wins by default, and loses only when the row is
+ * overwhelmingly Latin -- the signature of TUI chrome, not of a sentence.
+ *
+ * SCOPE, and this part was learned the hard way. Shipped unconditionally, the
+ * rule reached ordinary shell output too: `ls` with one Hebrew filename, a
+ * long path with a short Hebrew note. Yossi's report was immediate and
+ * covered both panes -- "עכשוו זה מיושר לשמאל - וגם במרוחקים זה מיושר לשמאל" --
+ * and the SSH side had been working. So the vote is gated: it applies only
+ * while a full-screen TUI owns the pane (`nextTuiOwnsBidi` below, which is
+ * how we already know Claude Code is in front). A shell line is text, and
+ * text keeps the pre-2026-08-19 rule: any Hebrew takes the row.
+ *
+ * The discriminator was never the ratio -- it is whether something PLACED the
+ * glyphs. The ratio is just how a placed row is recognised once we know we
+ * are looking at one.
+ *
+ * This moves the PARAGRAPH direction only. An LTR row still has its RTL runs
+ * reversed by the browser, so `צבר` reads correctly either way; what changes
+ * is the alignment and which end the neutrals land on.
+ *
+ * 4 is calibrated, not derived. It has to keep `2. /opt/wa/.shared.env -
+ * הערה` (4 Hebrew, 14 Latin) RTL while letting the status bar (3 Hebrew,
+ * ~64 Latin) go LTR; anything from ~3.6 to ~20 separates those two, and 4
+ * leaves the margin on the Hebrew side, which is the side users notice.
+ */
+export const RTL_DOMINANCE = 4;
+
+/**
+ * Count strong directional characters. Neutrals -- digits, punctuation,
+ * box-drawing, whitespace -- deliberately count for neither side, so a
+ * progress bar or a table border cannot outvote a Hebrew word.
+ */
+export function strongCounts(text: string): { rtl: number; ltr: number } {
+  const heb = text.match(HEBREW_G)?.length ?? 0;
+  const ara = text.match(ARABIC_G)?.length ?? 0;
+  return { rtl: heb + ara, ltr: text.match(LATIN_G)?.length ?? 0 };
+}
+
+export function detectDirection(text: string, dominance = false): "ltr" | "rtl" {
+  const { rtl, ltr } = strongCounts(text);
+  if (rtl === 0) return "ltr"; // pure Latin / digits / symbols / empty
+  // Off a TUI-painted screen, ANY Hebrew still takes the row -- see the
+  // `dominance` note on detectRowDirections for why the two differ.
+  if (!dominance) return "rtl";
+  return rtl * RTL_DOMINANCE >= ltr ? "rtl" : "ltr";
 }
 
 // -- Approach C+ (block-aware direction) -------------------------------------
@@ -60,6 +122,60 @@ const FENCE_START = /^\s*```/;
 // A content row that "belongs" to an adjacent table block -- it has a column
 // separator (Unicode U+2502 or ASCII |).
 const HAS_TABLE_BAR = /[│|]/;
+
+/**
+ * A pane frame is not a table. Strip it before anything classifies rows.
+ *
+ * 2026-08-19, reproduced offline before this was written: zellij draws a frame
+ * around every pane, so EVERY row carries a vertical bar at both edges —
+ * including Claude Code's status line, the row that holds the cwd. classifyRow
+ * then calls every row a border, detectRowDirections merges the whole pane
+ * into ONE block, and three Hebrew letters in the cwd paint the entire screen
+ * RTL. 13 of 15 rows flipped in the repro, which is exactly what Yossi's
+ * screenshot showed: English banner text mirrored run by run, the frame bars
+ * landing on the wrong side.
+ *
+ * It is NOT a local-vs-remote problem and it is not new. An SSH pane under
+ * tmux has no per-pane frame, which is why remote never showed it, and the
+ * behaviour is the same on main — zellij going in front of local panes is only
+ * what made it visible.
+ *
+ * The block rule exists so a Hebrew TABLE keeps its columns. A frame wraps the
+ * whole viewport, which is how the two are told apart here: when most rows are
+ * bar-delimited at BOTH edges, those outer bars are a frame. Removing just
+ * them leaves any real table inside the frame still grouped by its inner bars.
+ *
+ * Returns the rows unchanged when no frame is detected, so the common case
+ * costs one scan and nothing else.
+ */
+const FRAME_BAR = /[\u2502|]/;
+export function stripPaneFrame(rows: string[]): string[] {
+  const n = rows.length;
+  // Below this a "frame" cannot be told from a short table with an outer
+  // border, and getting it wrong there costs more than the frame does.
+  if (n < 6) return rows;
+  const framed: boolean[] = rows.map((r) => {
+    const t = r.trim();
+    return t.length >= 2 && FRAME_BAR.test(t[0]) && FRAME_BAR.test(t[t.length - 1]);
+  });
+  let count = 0;
+  for (const f of framed) if (f) count++;
+  // A frame surrounds the pane, so the only rows outside it are chrome the
+  // terminal draws around the pane (zellij's tab bar and status bar).
+  if (count < Math.max(5, Math.ceil(n * 0.7))) return rows;
+  return rows.map((r, i) => {
+    if (!framed[i]) return r;
+    const lead = r.length - r.trimStart().length;
+    const trail = r.length - r.trimEnd().length;
+    const body = r.slice(lead, r.length - trail);
+    // Keep the original padding: column positions still matter to classifyRow
+    // (a border row is recognised by how many box glyphs it holds) and to
+    // anything downstream that indexes by column.
+    return (
+      r.slice(0, lead) + " " + body.slice(1, -1) + " " + r.slice(r.length - trail)
+    );
+  });
+}
 
 /**
  * Classify a single row by shape (not by direction). See detectRowDirections
@@ -86,9 +202,15 @@ export function classifyRow(text: string): BlockRole {
  *     include adjacent "content" rows that carry a column separator.
  *   - Standalone rows: everything else, resolved per-row via detectDirection.
  *
+ * `dominance` is passed straight through to detectDirection: true only while
+ * a full-screen TUI owns the pane, where rows are positional. See
+ * RTL_DOMINANCE.
+ *
  * Direction for a block:
- *   - Any Hebrew/Arabic char anywhere in the block   -> whole block RTL
- *   - Otherwise inherit direction from the nearest resolved row BEFORE the block
+ *   - Block holds Hebrew/Arabic  -> detectDirection over the block's joined
+ *     text, so the RTL_DOMINANCE rule sees the whole block at once
+ *   - No RTL at all              -> inherit from the nearest resolved row
+ *                                   BEFORE the block
  *   - Otherwise LTR (safe default)
  *
  * The block heuristic keeps tables coherent: a table with a single Hebrew cell
@@ -96,10 +218,18 @@ export function classifyRow(text: string): BlockRole {
  * pure-ASCII code fence stays LTR even if it happens to sit between Hebrew
  * paragraphs; a pure-ASCII BOX between Hebrew paragraphs flips RTL to match.
  */
-export function detectRowDirections(rows: string[]): ("ltr" | "rtl")[] {
+export function detectRowDirections(
+  rows: string[],
+  dominance = false,
+): ("ltr" | "rtl")[] {
   const n = rows.length;
   if (n === 0) return [];
   const result: (("ltr" | "rtl") | null)[] = new Array(n).fill(null);
+
+  // A pane frame would otherwise make every row a "border" and merge the whole
+  // screen into one block — see stripPaneFrame. Everything below reads `rows`,
+  // which from here on is the framed content without its outer bars.
+  rows = stripPaneFrame(rows);
 
   const roles: BlockRole[] = rows.map(classifyRow);
   const hasRtl: boolean[] = rows.map((t) => HEBREW.test(t) || ARABIC.test(t));
@@ -159,17 +289,22 @@ export function detectRowDirections(rows: string[]): ("ltr" | "rtl")[] {
     for (let k = b.start; k <= b.end; k++) {
       if (hasRtl[k]) { anyRtl = true; break; }
     }
-    if (anyRtl) {
-      for (let k = b.start; k <= b.end; k++) result[k] = "rtl";
-    } else {
+    if (!anyRtl) {
       unresolved.push(b);
+      continue;
     }
+    // 2026-08-19: the dominance rule (see RTL_DOMINANCE) is applied to the
+    // block AS A WHOLE, not per row -- so one Hebrew word inside a wall of
+    // Latin (Claude's bordered input box under its status bar) no longer
+    // mirrors the box's columns, while a Hebrew table still flips entire.
+    const dir = detectDirection(rows.slice(b.start, b.end + 1).join(" "), dominance);
+    for (let k = b.start; k <= b.end; k++) result[k] = dir;
   }
 
   // 3. Standalone (non-block) rows: classic per-row detection.
   for (let k = 0; k < n; k++) {
     if (!inBlock[k] && result[k] === null) {
-      result[k] = detectDirection(rows[k]);
+      result[k] = detectDirection(rows[k], dominance);
     }
   }
 
@@ -210,6 +345,33 @@ export function detectRowDirections(rows: string[]): ("ltr" | "rtl")[] {
 //     is the off signal. Shells set path-like titles, never empty ones.
 // The machine is deliberately conservative: ON only on a title containing
 // "claude", OFF only on an empty title, hold otherwise.
+/**
+ * Fold the two sources of "a self-reordering TUI is in front of this pane".
+ *
+ * 2026-08-19. The title-only machine below turned out never to turn ON in
+ * practice: inside zellij the title reaching ymux is zellij's own, and Claude's
+ * never matched. Yossi's debug.log has `tui=0` on every direction pass, on
+ * every pane, both profiles.
+ *
+ * So a second source was added that does not travel in-band at all:
+ *   - the connect wizard, when ymux itself launches Claude (mode="claude"), and
+ *   - the Claude hooks, which already carry YMUX_PANE_ID and fire
+ *     session-start / session-end (cli/src/main.rs, rpc_server.rs).
+ * Both survive any multiplexer, and the hooks work over SSH too.
+ *
+ * Precedence is explicit-wins: an out-of-band signal KNOWS, while the title is
+ * an inference. `null` means "nobody told us", and only then does the title
+ * decide. session-end clears back to null rather than asserting false, so a
+ * later manually-typed `claude` can still be picked up by the title if the
+ * title ever starts arriving.
+ */
+export function foldTuiOwnsBidi(
+  explicit: boolean | null,
+  fromTitle: boolean,
+): boolean {
+  return explicit ?? fromTitle;
+}
+
 export function nextTuiOwnsBidi(prev: boolean, title: string): boolean {
   if (/claude/i.test(title)) return true;
   if (title.trim() === "") return false;

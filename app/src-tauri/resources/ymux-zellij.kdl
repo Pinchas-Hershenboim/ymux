@@ -1,0 +1,124 @@
+// ymux's zellij configuration.
+//
+// Companion to ymux-tmux.conf, which does the same job for the other
+// multiplexer. Pointed at by the ZELLIJ_CONFIG_FILE env var that
+// spawn_local_pty sets on the pane's shell — and its DIRECTORY by
+// ZELLIJ_CONFIG_DIR, which is what makes `default_layout` below resolve. Env
+// vars rather than flags so nothing has to be quoted into a command line, and
+// the user's own zellij config is left untouched.
+//
+// SMALL, BUT NO LONGER ONE LINE (2026-08-20). The header here used to say
+// "KEEP THIS SMALL — deliberately one option", and that was written when the
+// file held only `pane_frames false`. The bar has not been lowered, it has
+// been named: every key below buys one piece of a single invariant.
+//
+//     1 ymux pane == 1 zellij session == 1 tab == exactly 1 zellij pane,
+//     with zero zellij chrome.
+//
+// Zellij is a PERSISTENCE LAYER underneath a ymux pane, not a multiplexer the
+// user drives. ymux owns tabs, splits and the window; zellij owns the pane's
+// scrollback and — since it holds the alt screen — the wheel that reaches it.
+// A key earns its place here only if the invariant breaks without it — and
+// note this file REPLACES the user's own config, it does not merge with it.
+
+// A ymux pane already draws its own header, and each zellij session sits
+// inside exactly one of them — so the frame duplicates the title, costs two
+// columns on every side, and adds a SCROLL counter nobody reads.
+//
+// It also actively broke RTL. The frame puts a vertical bar at both edges of
+// EVERY row, which makes every row look like a table row to the per-row
+// direction pass: the whole screen merged into one direction block, and three
+// Hebrew letters in Claude Code's cwd flipped 13 of 15 rows to RTL — the
+// mirrored-English screenshot from 2026-08-19. `stripPaneFrame` in
+// app/src/textDirection.ts defends against that for any framed TUI; this
+// removes ymux's own contribution to it at the source.
+pane_frames false
+
+// `pane_frames false` above removes the border AROUND a pane. It does NOT
+// remove the two PLUGIN ROWS that zellij's default layout puts above and
+// below it — captured with `zellij setup --dump-layout default`:
+//
+//     layout {
+//         pane size=1 borderless=true { plugin location="tab-bar" }
+//         pane
+//         pane size=1 borderless=true { plugin location="status-bar" }
+//     }
+//
+// That is why "the frame is still there" survived the line above for a day.
+// layouts/ymux.kdl is a bare `pane`; this key is what selects it.
+//
+// By NAME, never by path: the layout is looked up in
+// <ZELLIJ_CONFIG_DIR>/layouts, and a bundled file cannot know its own install
+// path. (Requires restart — i.e. read when the session is CREATED, which is
+// the moment ymux creates it.)
+default_layout "ymux"
+
+// Zero keybinds. Not fewer — zero.
+//
+// Every zellij default is a key STOLEN from the program running inside the
+// pane: Ctrl-o, Ctrl-p, Ctrl-n, Ctrl-t, Ctrl-h, Ctrl-s, Ctrl-g. In a pane
+// that is one shell and nothing else, every one of them is a bug — Ctrl-o
+// alone is bash's operate-and-get-next, and Ctrl-s/Ctrl-t matter to readline
+// and to Claude Code. It also closes the split: Ctrl-p n used to open a
+// second pane with no frame to separate it from the first.
+//
+// Nothing in ymux needs a zellij key. Detach kills the PTY (the zellij CLIENT
+// dies, the session survives); Kill runs a child process; the connect wizard
+// uses `action write-chars`, which is IPC to the server and bypasses input
+// modes entirely.
+//
+// This is why `mouse_mode` below is TRUE. With no keybinds there is no scroll
+// mode, so the wheel is the only way left to reach zellij's scrollback — and
+// zellij holds the alt screen, so xterm.js's own wheel reaches nothing.
+//
+// The empty body is REQUIRED, not decoration: `keybinds clear-defaults=true`
+// with no children fails to parse — "keybindings with no children", caught by
+// `zellij setup --check` on 2026-08-20 before this ever reached a pane.
+keybinds clear-defaults=true {
+}
+
+// Second lock on the same door. With keybinds cleared there is nothing left
+// to intercept, but locked mode means a binding a future zellij ships as
+// un-clearable still does not fire. It changes nothing on screen: the mode
+// indicator is drawn by the status-bar plugin, which this layout never loads.
+//
+// NOT marked "(Requires restart)" upstream — it applies per client attach.
+default_mode "locked"
+
+// zellij owns the wheel, because it owns the only scrollback this pane has.
+//
+// This key has now been argued both ways in one day, so here is the whole
+// reasoning in one place.
+//
+// It was first set to `false` on the theory that xterm.js owns the wheel and
+// the selection. Half right: xterm.js does own selection, but its wheel scrolls
+// its NORMAL buffer, and zellij holds the alt screen — so with keybinds cleared
+// (no scroll mode) and the mouse withheld, a zellij pane had no way to scroll
+// back at all. That is not a trade, it is a missing feature.
+//
+// `true` is also what the tmux side already does: ymux appends
+// `set -g mouse on` to the tmux attach for exactly this, decision O-3 in
+// docs/MOUSE-DEBUG.md. Same bet, already taken, already surviving in the field.
+//
+// What it costs, and why each cost is covered:
+//   - zellij captures drag-select, so a plain drag copies through
+//     `copy_on_select` (default true) and OSC 52. With keybinds cleared that is
+//     the ONLY way to copy inside the pane, so leaving copy_on_select alone is
+//     load-bearing, not laziness.
+//   - a native xterm.js selection still works with SHIFT held.
+//   - mouse-tracking escapes can leak into the bare shell when the multiplexer
+//     exits uncleanly. Already handled, transport-agnostically: `resetMouseModes()`
+//     runs on connect and on pty:exit (docs/MOUSE-DEBUG.md).
+//
+// The Hebrew that OSC 52 hands back is VISUAL order in a Claude pane; it is
+// un-reversed on the way to the clipboard by app/src/copyBidi.ts. Owning the
+// mouse was never the blocker for that — ClipboardAddon has always routed
+// OSC 52 through our own provider.
+// (Requires restart.)
+mouse_mode true
+
+// Both of these can put content in a fresh session that ymux never asked for.
+// The release-notes pane on the first run after a zellij upgrade breaks
+// "exactly one pane" outright.
+show_release_notes false
+show_startup_tips false

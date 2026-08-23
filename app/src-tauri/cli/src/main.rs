@@ -794,17 +794,20 @@ enum Cmd {
         op: SettingsOp,
     },
 
-    /// Phase 11.A: disconnect a pane. For tmux-persistent panes, --kill also
-    /// terminates the remote tmux session (otherwise it just detaches).
+    /// Phase 11.A: disconnect a pane. For persistent panes, --kill also
+    /// destroys the multiplexer session (otherwise it just detaches).
     PaneDisconnect {
         #[arg(long)]
         pane: String,
-        /// Also `tmux kill-session` on the remote (no resume possible).
+        /// Also destroy the pane's multiplexer session — tmux over SSH/WSL,
+        /// zellij on a native Windows pane — INCLUDING zellij's saved copy.
+        /// No resume, no resurrect.
         #[arg(long)]
         kill: bool,
     },
 
-    /// Phase 11.A: hard-kill the tmux session bound to a pane (no resume).
+    /// Phase 11.A: destroy the multiplexer session bound to a pane, and its
+    /// saved copy. No resume, no resurrect.
     /// Convenience alias for `pane-disconnect --pane <id> --kill`.
     PaneKillSession {
         #[arg(long)]
@@ -2492,14 +2495,11 @@ async fn real_main() -> ExitCode {
 
             // Multi-machine sync: on every `stop` (fires each turn) record
             // this pane's tmux-session → Claude-session mapping + title in
-            // the server-side `~/.winmux/session-meta.json`; `session-end`
+            // the server-side `~/.ymux/session-meta.json`; `session-end`
             // prunes dead sessions. `user-prompt-submit` seeds the stable
             // `auto_name` from the session's FIRST prompt (see
             // session_meta::handle_hook) and returns it as the display
             // title from then on. Best-effort — a failure never blocks
-            // the hook. Runs only for winmux panes (env-gate above).
-            // the server-side `~/.ymux/session-meta.json`; `session-end`
-            // prunes dead sessions. Best-effort — a failure never blocks
             // the hook. Runs only for ymux panes (env-gate above).
             // Rule #1: log the error KIND only, never the title text.
             let (meta_claude_title, meta_tmux_session) =

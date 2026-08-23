@@ -1869,54 +1869,24 @@ async fn dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or("missing pane_id")?
                 .to_string();
-            // Same flow as the Tauri command — open a fresh exec channel,
-            // run `tmux kill-session`, then close.
-            let sid_opt = state.core.pane_sessions.lock().unwrap().get(&pane_id).cloned();
-            if let Some(sid) = sid_opt {
-                let (handle_arc, tmux_name) = {
-                    let sessions = state.core.sessions.lock().unwrap();
-                    match sessions.get(&sid) {
-                        Some(crate::Session::Ssh(s)) => {
-                            (Some(s.handle.clone()), s.tmux_session.clone())
-                        }
-                        _ => (None, None),
-                    }
-                };
-                if let (Some(handle), Some(name)) = (handle_arc, tmux_name) {
-                    let cmd = format!(
-                        "tmux kill-session -t {} 2>&1 || true",
-                        crate::shell_quote(&name)
-                    );
-                    if let Ok(mut ch) = handle.channel_open_session().await {
-                        let _ = ch.exec(true, cmd.as_bytes()).await;
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_millis(800),
-                            async {
-                                while let Some(msg) = ch.wait().await {
-                                    use russh::ChannelMsg;
-                                    if matches!(
-                                        msg,
-                                        ChannelMsg::ExitStatus { .. }
-                                            | ChannelMsg::Eof
-                                            | ChannelMsg::Close
-                                    ) {
-                                        break;
-                                    }
-                                }
-                            },
-                        )
-                        .await;
-                        let _ = ch.close().await;
-                    }
-                }
-                let sid = state.core.pane_sessions.lock().unwrap().remove(&pane_id);
-                if let Some(sid) = sid {
-                    if let Some(mut s) = state.core.sessions.lock().unwrap().remove(&sid) {
-                        crate::kill_session_inner(&mut s);
-                    }
-                }
+            // ONE definition of "kill", shared with the Tauri command.
+            //
+            // This used to be a hand-rolled copy that matched only
+            // `Session::Ssh`. A zellij or WSL pane fell through it, no
+            // multiplexer verb ran at all, the shell was killed — and it still
+            // answered `killed: true`. So `ymux pane-disconnect --kill`
+            // reported a kill it had never performed, on every native Windows
+            // pane. The drift was the bug; there is no second copy now.
+            let out = crate::kill_pane_session_inner(state, &pane_id).await;
+            // `ok` and `killed` stay for wire compatibility, but `killed` is
+            // now derived instead of hardcoded. `result` carries the detail.
+            let mut v = serde_json::to_value(&out).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("ok".into(), json!(true));
+                o.insert("pane_id".into(), json!(pane_id));
+                o.insert("killed".into(), json!(out.is_gone()));
             }
-            Ok(json!({ "ok": true, "pane_id": pane_id, "killed": true }))
+            Ok(v)
         }
         // ─── Phase 12.B: smart connect + claude session browser ─────────
         "claude.sessions.list" => {

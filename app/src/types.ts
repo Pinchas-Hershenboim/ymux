@@ -51,13 +51,40 @@ export interface CreateWorkspaceInput {
 // the Connect (tmux) picker.
 // Phase 81: optional fields joined from the server-side
 // ~/.ymux/session-meta.json (absent on old-CLI servers). Display
-// precedence: label > claude_title > name.
+// precedence: label > auto_name > claude_title > name.
+/** What `pane_kill_session` achieved. Mirrors `KillSessionOutcome` in lib.rs.
+ *
+ *  Before 2026-08-20 the command returned nothing and the frontend inferred
+ *  success from "the invoke did not throw" — so a Kill on a machine with no
+ *  multiplexer installed destroyed nothing and reported that it worked. */
+export type KillResult =
+  | "killed"
+  | "already_gone"
+  | "no_session"
+  | "multiplexer_missing"
+  | "failed"
+  /** SSH/tmux: the verb was sent, but `|| true` in the remote command means
+   *  its exit status is not yet readable. Honest placeholder, not a claim. */
+  | "attempted";
+
+export interface KillSessionOutcome {
+  result: KillResult;
+  backend: "zellij" | "tmux" | "none";
+  session?: string;
+  /** The multiplexer's own stderr, truncated. Never PTY content. */
+  detail?: string;
+}
+
 export interface TmuxSessionInfo {
   name: string;
   created: number;
   attached: boolean;
   windows: number;
   last_attached: number;
+  /** zellij only: the session's shell has exited but zellij still holds a
+   *  serialized copy, so attaching RESURRECTS it — across a reboot too.
+   *  Always false on tmux, which does not keep dead sessions. */
+  exited: boolean;
   /** Manual label the user gave the pane (shared across machines). */
   label?: string;
   /** Claude session title extracted from the transcript — rewritten as
@@ -343,8 +370,10 @@ export interface ConnCaps {
   posixExec: boolean;
   /** A POSIX filesystem can be listed / read / written. */
   fileTransfer: boolean;
-  /** tmux sessions outlive the app, so panes can re-attach on boot. */
-  tmuxPersistence: boolean;
+  /** Multiplexer sessions outlive the app, so panes can re-attach on boot.
+   *  tmux over SSH, zellij on a native Windows pane (2026-08-19). Renamed
+   *  from `tmuxPersistence` when it stopped being tmux-only. */
+  sessionPersistence: boolean;
   /** A control-plane server (ymux-server / insights) can serve it. */
   controlServer: boolean;
   portForward: PortForwardKind;
@@ -358,7 +387,10 @@ export interface ConnCaps {
 const LOCAL_CAPS: ConnCaps = {
   posixExec: false,
   fileTransfer: false,
-  tmuxPersistence: false,
+  // 2026-08-19: native Windows panes gained persistence via zellij, which
+  // is what makes WSL unnecessary. Not a user setting — a local pane is
+  // persistent the same way an SSH pane is.
+  sessionPersistence: true,
   controlServer: true, // native insights_local
   portForward: "none",
   sessionBound: false,
@@ -372,13 +404,13 @@ const LOCAL_CAPS: ConnCaps = {
 const LOCAL_UNIX_CAPS: ConnCaps = {
   ...LOCAL_CAPS,
   posixExec: true,
-  tmuxPersistence: true,
+  sessionPersistence: true,
 };
 
 const SSH_CAPS: ConnCaps = {
   posixExec: true,
   fileTransfer: true,
-  tmuxPersistence: true,
+  sessionPersistence: true,
   controlServer: true,
   portForward: "ssh",
   sessionBound: true,
@@ -394,7 +426,7 @@ const WSL_CAPS: ConnCaps = {
   // session". Flip it in the same commit that lands the WSL file backend;
   // a capability table that lies is worse than the boolean it replaced.
   fileTransfer: false,
-  tmuxPersistence: true,
+  sessionPersistence: true,
   controlServer: true,
   portForward: "sharedLoopback",
   sessionBound: false,
@@ -421,6 +453,28 @@ export function capsOf(c: Connection | null | undefined): ConnCaps {
     default:
       return assertNever(c, "unhandled Connection variant in capsOf");
   }
+}
+
+/** Which RTL settings profile a pane uses. See `profileFor`. */
+export type RtlProfileKind = "local" | "remote";
+
+/**
+ * 2026-08-19: pick the RTL profile for a connection.
+ *
+ * Measured live, both directions, same build and session: a native Windows
+ * pane (ConPTY) delivers Hebrew ALREADY in visual order — the Windows console
+ * keeps RTL text visually ordered in its screen buffer and ConPTY re-emits
+ * that buffer — so `bidi_reorder` renders it correctly and a browser bidi pass
+ * reverses it. An SSH pane delivers logical order, where `auto_per_line` is
+ * correct and `off` comes out reversed. Opposite modes, not different tuning,
+ * which is why one global setting could never serve both.
+ *
+ * The axis is `posixExec`, deliberately NOT a local/remote boolean — see the
+ * commentary above `capsOf`. **WSL is "remote"**: it is Linux with tmux and a
+ * Linux Claude, and is local only geographically.
+ */
+export function profileFor(c: Connection | null | undefined): RtlProfileKind {
+  return capsOf(c).posixExec ? "remote" : "local";
 }
 
 /**

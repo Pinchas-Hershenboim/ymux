@@ -1,6 +1,6 @@
 {
   "name": "app",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "description": "",
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
     "build:linux-cli": "powershell -ExecutionPolicy Bypass -File ./scripts/build-linux-cli.ps1",
     "build": "npm run build:linux-cli && npm run build:frontend",
     "build:frontend": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "serve": "vite preview",
     "tauri": "tauri"
   },

@@ -45,6 +45,26 @@ proves nothing on its own.
 And per CLAUDE.md: a build that compiles is not a build that runs. Launch it and
 confirm the UI actually comes up before calling it verified.
 
+### Building from a worktree
+
+A fresh worktree has no `target/`, so the first build there compiles all ~740
+lockfile packages -- 12-15 minutes. Point it at the main checkout's cache
+instead (a junction, not `CARGO_TARGET_DIR`, because every script and workflow
+here hardcodes `app/src-tauri/target/...`):
+
+```
+mklink /J "<worktree>pp\src-tauri	arget" "<main checkout>pp\src-tauri	arget"
+```
+
+Junctions are resolved below the Win32 file API, so Cargo sees a plain
+directory. Registry dependencies share fingerprints verbatim; workspace crates
+get a different `-C metadata` per worktree path and coexist rather than
+thrashing. Two worktrees building the same profile at once will serialize on
+Cargo's build lock -- correct, just slower.
+
+**One footgun:** `git clean -xdf` inside the worktree follows the junction and
+deletes the shared target directory. So does `rm -rf` of the worktree itself.
+
 ## Recipes
 
 ### Add a new RPC method

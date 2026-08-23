@@ -3,4 +3,9 @@ import type { MacInspect } from "./MacInspect";
 import type { ToolStatus } from "./ToolStatus";
 import type { WslInspect } from "./WslInspect";
 
-export type LocalSetupInspect = { winget: ToolStatus, git: ToolStatus, node: ToolStatus, npm: ToolStatus, claude: ToolStatus, codex: ToolStatus, gemini: ToolStatus, wsl: WslInspect, local_hooks_version: string | null, local_claude_dir: boolean, mac: MacInspect | null, };
+export type LocalSetupInspect = { winget: ToolStatus, git: ToolStatus, node: ToolStatus, npm: ToolStatus, claude: ToolStatus, codex: ToolStatus, gemini: ToolStatus, 
+/**
+ * 2026-08-19: the multiplexer that gives native Windows panes session
+ * persistence ג€” the job WSL used to do here.
+ */
+zellij: ToolStatus, wsl: WslInspect, local_hooks_version: string | null, local_claude_dir: boolean, mac: MacInspect | null, };

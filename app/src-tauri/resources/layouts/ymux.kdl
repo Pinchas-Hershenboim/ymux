@@ -1,0 +1,36 @@
+// The layout every ymux pane's zellij session is created with.
+//
+// Selected BY NAME from ymux-zellij.kdl (`default_layout "ymux"`), and found
+// in <ZELLIJ_CONFIG_DIR>/layouts. Verified with `zellij setup --check` on
+// 0.44.3 (2026-08-20): setting ZELLIJ_CONFIG_DIR=<dir> makes [LAYOUT DIR]
+// resolve to <dir>\layouts, and leaves [DATA DIR] / [PLUGIN DIR] where they
+// were under %APPDATA%\Zellij.
+//
+// That indirection is the whole point. A bundled resource ships the same
+// bytes to every machine, so it cannot contain an absolute install path —
+// and `zellij attach` has no --layout flag to pass one on the command line.
+//
+// Zellij's own default, for comparison (`zellij setup --dump-layout default`):
+//
+//     layout {
+//         pane size=1 borderless=true { plugin location="tab-bar" }
+//         pane
+//         pane size=1 borderless=true { plugin location="status-bar" }
+//     }
+//
+// Two plugin rows, one at each edge. THOSE are what "the frame is still
+// there" actually was: `pane_frames false` removes the border AROUND a pane
+// and never touched them. This file removes them by not asking for them,
+// which gives every ymux pane back two rows.
+//
+// ONE pane. No tab node (zellij wraps a bare pane list in one tab, exactly as
+// the default above does), no plugins, no swap layouts.
+//
+// Do not add a second pane. ymux owns splitting, and a second zellij pane
+// would be chrome the user cannot see, focus or close — and with keybinds
+// cleared it could not be escaped either. It also keeps
+// `zellij -s <name> action write-chars` (the connect wizard, lib.rs) honest:
+// it targets the FOCUSED pane, and there is exactly one.
+layout {
+    pane
+}

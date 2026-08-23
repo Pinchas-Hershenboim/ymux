@@ -8,6 +8,7 @@ This file is read at the start of every Claude session working on ymux. Keep it 
 - `docs/CONTRIBUTING.md` — recipes, style, commit conventions
 - `docs/RELEASING.md` — version cut process
 - `docs/DECISIONS.md` — **READ FIRST**: open threads + decisions log
+- `docs/ZELLIJ.md` — zellij's CLI + config surface as our 0.44.3 binary reports it; read before adding a verb, don't guess from zellij.dev
 - `docs/COMPETITIVE-SCAN.md` — survey of the 8 GitHub projects named `winmux`, ideas inventory, Secrets Vault design (pre-rename doc, kept verbatim: it is about *other people's* repos and is what motivated the move to YMUX)
 - `docs/IDEAS-RANKING.md` — decision table for the ideas inventory (MUST / SHOULD / COULD)
 
@@ -60,6 +61,16 @@ feature (shell spawn, a wizard step, a path join, a file location),
 write the non-Windows arm in the same commit — `build-macos-intel.yml` is
 the only thing that will tell you, and only if it is wired to run.
 
+Local-pane **persistence is the one place the two genuinely differ**, and
+it is deliberate: Windows wraps a native pane in zellij, macOS in tmux.
+`spawn_local_pty` takes a single `persist_session: Option<String>` and
+picks the backend with `cfg`; `pane_kill_session` mirrors it with
+`KillTarget::Zellij` / `KillTarget::LocalUnix`. The setup wizard shows a
+persistence group only on macOS — on Windows zellij is an ordinary tool
+row, so a group would offer the same install twice. WSL left that wizard
+on 2026-08-19: existing `Connection::Wsl` workspaces still load and run,
+nothing creates new ones.
+
 Known not to work on macOS: in-app update, code signing / notarization.
 See FOLLOWUPS.
 
@@ -94,10 +105,12 @@ such. Do not "finish the rename" by deleting them; the removal is scheduled
   compiles them. It also runs `sdk-gen/ci-check.mjs` (SDK/OpenAPI drift) and
   fails the build if `server/**` changed without rebaking
   `resources/ymux-server-linux-{x64,arm64}` — see "Rebaking the server" below.
-- `build-windows.yml` — MSI/NSIS/exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded. Publishing stays manual (`docs/RELEASING.md`).
+- `build-windows.yml` — installers + exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded, and Rule #2's spirit by asserting the `$USERNAME` scrub landed. A tag gets MSI **and** NSIS (the published `manifest.json` advertises both); a `workflow_dispatch` gets NSIS only. Publishing stays manual (`docs/RELEASING.md`).
+- `warm-rust-cache.yml` — **the reason release builds are ~7 min and not ~15.** GitHub scopes cache *reads* to the current branch plus the default branch, and `build-windows.yml` never runs on `main`, so a build dispatched from a fresh branch used to compile all ~740 lockfile packages from scratch (measured: 813s cold vs 420s warm, same workflow, same week). This job keeps that release-profile cache alive on `main` under `shared-key: windows-release`, on Cargo.lock changes and twice weekly. If release builds suddenly go slow again, check this workflow first.
 - `build-macos-intel.yml` — the macOS Intel build, on `workflow_dispatch` or push/PR to `main`. Since Phase 82 it runs the same gates ci-windows does (cargo test + tsc + frontend build) and asserts the embedded frontend, because it is the **only** job that compiles the `cfg(target_os = "macos")` / `cfg(not(windows))` arms at all. It also stages a native `resources/ymux-cli` — the mac counterpart of `build:linux-cli`, which is PowerShell-only.
 - Steps that shell out to Windows PowerShell need `shell: cmd`. The default `run:` shell is pwsh, which rewrites `PSModulePath` for its children, so the 5.1 instance `build:linux-cli` spawns loses `Get-FileHash`.
-- `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `ymux-cli.exe` the Tauri build script requires.
+- `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `ymux-cli.exe` the Tauri build script requires. It stages by **sha256, not mtime**: everything in `resources/` is pulled into the app crate with `include_bytes!`/`include_str!`, and Cargo's staleness check is mtime-based, so re-copying a byte-identical file used to force a full rebuild of the 9.4k-line lib.
+- **A `.ps1` in this repo must keep non-ASCII out of code lines.** Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI, so an em-dash inside a string literal decodes to a smart quote that the tokenizer accepts as a string delimiter — the file then fails to parse with a cascade of errors pointing at innocent lines. Em-dashes in `#` comments are fine (already all over `build-linux-cli.ps1`); inside `"..."` they are a build-breaker.
 
 ### Rebaking the server
 
