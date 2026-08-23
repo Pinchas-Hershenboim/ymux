@@ -6367,3 +6367,32 @@ step, and CI could not even be reached this session - `git fetch` failed on a
 network timeout, so the branch is unpushed and NOTHING here has compiled.
 Rule #14 after that: install a font, remove it, confirm the picker flips back
 to the warning row and that the files and HKCU values are really gone.
+
+================================================================================
+2026-08-23 | CI: main is red, and the three fixes above are UNCOMPILED
+Files: FOLLOWUPS.md (new P0)
+
+Pushed yos/folow-ufp-review-fbbfda and dispatched ci-windows (run
+32656549376) to verify Phase 84.F/G/H per Rule #17. It failed in 24s on
+"Vault freshness gate" - the Phase 85 gate, which runs BEFORE cargo test,
+tsc, the frontend build and the entire Go half. Every one of them shows as
+skipped.
+
+NOT MINE, AND NOT A FLAKE. main is failing the same way: runs 32654312291
+(PR #20) and 32654357741 (PR #22), both dead in under a minute on the same
+step. The last green run on main is 32652717148, PR #18. The gate landed as
+Phase 85 while four PRs were in flight (#20 #21 #22 #23); they merged code
+without updating the prose that explains it and the lock went stale. Nine
+vaults flagged: backend-claude, backend-core, backend-panes, build-glue,
+frontend-flows, frontend-lib, frontend-panes, frontend-shell, server-go.
+
+Deliberately did NOT run `node scripts/vault-check.mjs --write` to go green.
+The script's own header says a bare re-stamp makes the gate theatre, and its
+error text asks for the prose to be fixed first and both committed together.
+`[vault-skip]` would not have helped either: it only skips the DIFF check,
+and the HASH check is the half that is failing - which is also why a
+workflow_dispatch (hash-check-only path) still fails.
+
+CONSEQUENCE, STATED PLAINLY: Phase 84.F, 84.G and 84.H have NOT compiled.
+Not "compiles, untested" - not compiled at all. Rule #17 makes CI the
+verification step and CI is unavailable. Filed as P0.
