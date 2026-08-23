@@ -902,19 +902,19 @@ mod tests {
 
     #[test]
     fn entry_without_spec_timeout_is_stale() {
-        let old = vec![hook_entry("Bash", "x claude-hook pre-tool-use", None)];
+        let old = vec![hook_entry("Bash", "/home/u/.ymux/bin/ymux claude-hook pre-tool-use", None)];
         assert!(!ymux_entry_has_timeout(&old, Some(600)));
-        let new = vec![hook_entry("Bash", "x claude-hook pre-tool-use", Some(600))];
+        let new = vec![hook_entry("Bash", "/home/u/.ymux/bin/ymux claude-hook pre-tool-use", Some(600))];
         assert!(ymux_entry_has_timeout(&new, Some(600)));
         assert!(ymux_entry_has_timeout(&old, None));
     }
 
     #[test]
     fn timeout_is_written_only_when_the_spec_has_one() {
-        let with = hook_entry("Bash", "x claude-hook pre-tool-use", Some(600));
+        let with = hook_entry("Bash", "/home/u/.ymux/bin/ymux claude-hook pre-tool-use", Some(600));
         assert_eq!(with["hooks"][0]["timeout"], json!(600));
         assert!(is_ymux_entry(&with));
-        let without = hook_entry("", "x claude-hook stop", None);
+        let without = hook_entry("", "/home/u/.ymux/bin/ymux claude-hook stop", None);
         assert!(without["hooks"][0].get("timeout").is_none());
         // The bundled spec carries it on PreToolUse alone.
         let spec = bundled_claude_spec();
