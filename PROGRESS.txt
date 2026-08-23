@@ -5234,3 +5234,45 @@ Two rules earned:
      back to another directory. Verify the working directory INSIDE the
      command that mutates git state, not before it.
 
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 84.A - "Copy for Claude" on the Analytics tab
+--------------------------------------------------------------------------------
+Yossi's follow-up, and the right question: if everything is already stored, is
+there a simple place to hand it to Claude and ask what happened? There is now -
+one button, top-right of the Analytics tab.
+
+  NEW app/src/insightsReport.ts       - PURE, DOM-free. Owns the /analytics wire
+      types (moved out of the .tsx, which now imports them) and flattens a
+      report into fixed-width plain text: header + totals + the full bucketed
+      series + the three rollups.
+  NEW app/src/insightsReport.test.ts  - 12 node:test cases, ALL RUN AND PASSING
+      locally (a sub-second pure-function test, not a build - Rule 17 is about
+      cargo/vite/tsc occupying the machine and faking the matrix).
+  NEW app/src/clipboardText.ts        - copyText(): navigator.clipboard with the
+      execCommand fallback older WebView2 needs.
+  MOD InsightsAnalytics.tsx / InsightsWindow.tsx / App.css / i18n x4 (+5 keys
+      each, all four now at 1173).
+
+THE TESTS EARNED THEIR KEEP IMMEDIATELY. First run, 3 failures, and one was a
+real defect rather than a wrong expectation: the report was calling the UI's
+`fmtPct`, which rounds away the decimal above 10% so live columns stop jittering
+between refreshes. Correct on screen; in a report meant to be REASONED about,
+"23%" instead of "23.4%" is precision thrown away for nothing. The report now
+has its own one-decimal `pct()` and the comment says why it is not shared.
+
+Deliberate choices:
+  * WYSIWYG. The button copies the range you are looking at and does not
+    quietly fetch a different one.
+  * Absolute `YYYY-MM-DD HH:MM` stamps, hand-rolled rather than Intl - the
+    string is machine-read as much as human-read, so it must not change shape
+    with the UI language. The header says out loud that they are the LOCAL time
+    of the DESKTOP, not the server; without that line every spike gets misdated.
+  * The whole series ships (120 rows ~ a few KB). The shape over time IS the
+    question; summarising it here would be answering it for the reader.
+  * The report states what is NOT in it - no command output, no file contents,
+    no credentials - so nobody has to guess whether pasting it leaks a terminal.
+    Rule 1 holds by construction: this path only ever sees machine metrics.
+
+Status: report formatting VERIFIED by unit test. The button itself is NOT
+verified live - clipboard-write inside WebView2 for this panel is exactly the
+kind of thing that only a real run settles. Rolled into the FOLLOWUPS P1.

@@ -1,10 +1,13 @@
-import { createSignal, createMemo, createEffect, on, For, Show } from "solid-js";
+import { createSignal, createMemo, createEffect, on, onCleanup, For, Show } from "solid-js";
 import { createNarrow } from "./useNarrow";
 import { invoke } from "@tauri-apps/api/core";
-import { IconRefresh } from "./icons";
+import { IconClipboard, IconRefresh } from "./icons";
 import { t, currentLanguage } from "./i18n";
 import { fmtBytes, fmtBps, fmtPct, fmtSpan } from "./insightsFmt";
 import { createLogger } from "./logger";
+import { buildAnalyticsReport } from "./insightsReport";
+import type { AnPoint, AnReport } from "./insightsReport";
+import { copyText } from "./clipboardText";
 
 // InsightsAnalytics — the Monitor's Analytics tab: what the server has been
 // DOING, as opposed to the Metrics tab's what-it-is-doing-right-now.
@@ -27,76 +30,6 @@ import { createLogger } from "./logger";
 //    into a rainbow where nothing stands out.
 
 const log = createLogger("MONITOR");
-
-interface AnPoint {
-  t: number;
-  n: number;
-  cpu: number;
-  cpu_max: number;
-  mem_pct: number;
-  load: number;
-  rx_bps: number;
-  tx_bps: number;
-}
-interface AnTotals {
-  samples: number;
-  first_ts: number;
-  last_ts: number;
-  cpu_avg: number;
-  cpu_max: number;
-  busy_pct: number;
-  mem_pct_avg: number;
-  mem_pct_max: number;
-  mem_used_max: number;
-  mem_total: number;
-  swap_max: number;
-  load_avg: number;
-  load_max: number;
-  rx_avg_bps: number;
-  tx_avg_bps: number;
-  rx_bytes: number;
-  tx_bytes: number;
-}
-interface AnPeriod {
-  t: number;
-  n: number;
-  cpu_avg: number;
-  cpu_max: number;
-  mem_pct_avg: number;
-  load_avg: number;
-}
-interface AnDisk {
-  mount: string;
-  used_avg: number;
-  used_last: number;
-  total: number;
-  pct_last: number;
-  growth_bytes: number;
-  n: number;
-}
-interface AnContainer {
-  name: string;
-  cpu_avg: number;
-  cpu_max: number;
-  mem_avg: number;
-  mem_max: number;
-  uptime_pct: number;
-  n: number;
-}
-interface AnReport {
-  bucketed?: boolean;
-  /** Set by the local-workspace shim: there is no metrics store to roll up. */
-  unavailable?: string;
-  since: number;
-  until: number;
-  bucket_s: number;
-  period_s: number;
-  totals: AnTotals;
-  series: AnPoint[];
-  by_period: AnPeriod[];
-  by_disk: AnDisk[];
-  by_container: AnContainer[];
-}
 
 type RangeId = "1h" | "6h" | "24h" | "7d";
 const RANGES: { id: RangeId; seconds: number }[] = [
@@ -136,6 +69,8 @@ const UPTIME_WARN_PCT = 95;
 
 interface Props {
   workspaceId?: string;
+  /** Used to title the copyable report; the panel header shows it separately. */
+  workspaceName?: string;
 }
 
 export function InsightsAnalytics(p: Props) {
@@ -151,7 +86,11 @@ export function InsightsAnalytics(p: Props) {
   const [loading, setLoading] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
   const [hover, setHover] = createSignal<number | null>(null);
+  // null = idle, true = copied, false = the clipboard refused us.
+  const [copied, setCopied] = createSignal<boolean | null>(null);
   let svgRef: SVGSVGElement | undefined;
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(copiedTimer));
 
   const rangeSeconds = () => RANGES.find((r) => r.id === range())?.seconds ?? 86400;
 
@@ -281,6 +220,28 @@ export function InsightsAnalytics(p: Props) {
     });
   };
 
+  // ── Copy for Claude ──────────────────────────────────────────────────
+
+  // The point of storing seven days of metrics is being able to ask what
+  // happened. This flattens exactly what is on screen into pasteable text —
+  // WYSIWYG on purpose: the button copies the range you are looking at, it
+  // does not quietly fetch a different one.
+  const copyForClaude = async () => {
+    const r = rep();
+    if (!r || localOnly()) return;
+    const ok = await copyText(
+      buildAnalyticsReport(r, {
+        intro: t("insights.an.copy_intro"),
+        name: p.workspaceName ?? "",
+        rangeLabel: t(`insights.an.range.${range()}`),
+      }),
+    );
+    setCopied(ok);
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => setCopied(null), 2500);
+    log.debug(`analytics report copied=${ok} range=${range()}`);
+  };
+
   // ── Bits ─────────────────────────────────────────────────────────────
 
   const tile = (label: string, value: string, sub: string, warn = false) => (
@@ -321,9 +282,26 @@ export function InsightsAnalytics(p: Props) {
             )}
           </For>
         </div>
-        <button class="ins-refresh" onClick={() => void load()} title={t("insights.refresh")}>
-          {loading() ? "…" : <IconRefresh />}
-        </button>
+        <div class="ins-an-actions">
+          <button
+            class="ins-an-copy"
+            disabled={!hasData()}
+            title={t("insights.an.copy_hint")}
+            onClick={() => void copyForClaude()}
+          >
+            <IconClipboard />
+            <span>
+              {copied() === true
+                ? t("insights.an.copied")
+                : copied() === false
+                ? t("insights.an.copy_failed")
+                : t("insights.an.copy")}
+            </span>
+          </button>
+          <button class="ins-refresh" onClick={() => void load()} title={t("insights.refresh")}>
+            {loading() ? "…" : <IconRefresh />}
+          </button>
+        </div>
       </div>
 
       <Show when={err()}>

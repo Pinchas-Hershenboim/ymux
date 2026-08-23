@@ -312,7 +312,7 @@ export function InsightsWindow(p: Props) {
   const bodyContent = () => (
     <>
       <Show when={view() === "analytics"}>
-            <InsightsAnalytics workspaceId={p.workspaceId} />
+            <InsightsAnalytics workspaceId={p.workspaceId} workspaceName={p.workspaceName} />
           </Show>
           <Show when={view() === "mobile"}>
             <MobilePairing workspaceId={p.workspaceId} />

@@ -5751,6 +5751,15 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   background: var(--w-accent, #7aa2f7); color: #0b0d16;
   border-color: var(--w-accent, #7aa2f7);
 }
+.ins-an-actions { display: flex; gap: 6px; align-items: center; }
+.ins-an-copy {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px solid var(--w-border, #2a2e44);
+  color: var(--w-text, #e6edf3); border-radius: 5px; padding: 3px 9px;
+  font-size: 12px; cursor: pointer;
+}
+.ins-an-copy:hover:not(:disabled) { border-color: var(--w-accent, #7aa2f7); }
+.ins-an-copy:disabled { opacity: .45; cursor: default; }
 .ins-an-num { font-family: var(--w-font-mono, monospace); direction: ltr; }
 .ins-an-dim { color: var(--w-text-dim, #9aa5ce); }
 .ins-an-warn { border-color: var(--w-warning, #e0af68); }
