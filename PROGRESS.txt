@@ -6127,9 +6127,6 @@ thing that exercises cache@v6 and the rust-toolchain SHA on the release
 path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
-
-
-================================================================================
 2026-08-23 | Both P0s closed; FOLLOWUPS split into open list + archive
 Files: FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md (new), CLAUDE.md, PROGRESS.txt
 
@@ -6449,3 +6446,74 @@ STATUS: this unblocks CI for every branch, not just this one - the gate runs
 before cargo test, tsc, the frontend build and the whole Go half, so nothing
 real has been checked on main since PR #18. Phase 84.F/G/H still have not
 compiled; that is what the next CI run is for.
+=======
+================================================================================
+2026-08-23 — Phase 84.F: the tab strip's CSS came back from the dead
+================================================================================
+Task: Yossi reported the pane tabs render as a vertical "card" stacked on the
+left instead of a horizontal strip, and that clicking a tab does nothing.
+
+Root cause: ONE bad merge. Commit 417da22 ("Merge branch 'main' into
+claude/pane-tabs-status-indicator-…") resolved app/src/App.css by taking the
+other side wholesale and deleted the entire 136-line `.pane-tab*` block that
+84.A added and 84.B extended. Nothing else was lost — `git diff ddda7c97
+417da22 -- app/src/App.css` is 136 deletions and they are exactly that block.
+PaneTabs.tsx, the App.tsx wiring and all four i18n files survived intact.
+
+Both symptoms are that one deletion:
+  - Vertical "card": with no rules, `.pane-tabs` / `.pane-tabs-list` /
+    `.pane-tab` are plain block divs, so the tabs stack down the page at the
+    left margin instead of laying out in a 28px flex row.
+  - "Clicking does nothing": the click DOES work — focusPane sets
+    activePaneId and LayoutView swaps the rendered leaf. But `.pane-tab-active`
+    had no styling either, so with two same-looking shells there was no
+    feedback at all that anything had changed.
+
+Fix: restored the block verbatim from ddda7c97 (the pre-merge parent that had
+it), including 84.B's `.pane-tab .pane-agent-light { margin-inline: 0 }`.
+No behaviour change, no new rules invented.
+
+Files: app/src/App.css (+141)
+Vault: App.css is not covered by docs/vault — no page to update. The staleness
+vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
+Status: compiles-only claim not even applicable — CSS. Needs a real launch to
+confirm the strip lays out horizontally and the active tab is visibly active.
+
+
+
+
+================================================================================
+2026-08-23 | Merge of origin/main, and a PHASE NUMBER COLLISION to be aware of
+Files: FOLLOWUPS.md, PROGRESS.txt, app/src/App.css (auto-merged)
+
+CLAUDE.md says phase numbers are stable and never reused. One got reused, by
+two sessions working in parallel, and this records it rather than pretending
+otherwise:
+
+  d201023 on main  "Phase 84.F: restore the pane tab strip's CSS, deleted by
+                    a merge"          <- landed on main FIRST, keeps 84.F
+  ffc25d3 here     "fix(pty): a pane title could inject a command into its own
+                    shell"            <- its PROGRESS entry also said 84.F
+
+The other session's commit reached main first, so 84.F is theirs. This
+session's three are re-designated in the record as 84.J (pane title / session
+name), 84.K (workspaces schema gate) and 84.L (font uninstall). The commit
+SUBJECTS are unchanged and are the reliable way to find them - git history is
+not being rewritten for a numbering label, and Rule #15 would forbid it on a
+pushed branch anyway. Sub-numbers G and H were also used by this session and
+do not appear to collide, but they are folded into the same re-designation so
+the three stay contiguous.
+
+The lesson is the same one the worktree sweep taught earlier today: parallel
+sessions do not see each other's numbering, and PROGRESS.txt is append-only
+precisely because two of them will write at once. Check `git log --all
+--grep='Phase 84'` before claiming a sub-number.
+
+MERGE CONFLICTS, both in append-only files:
+  FOLLOWUPS.md - both sessions had independently filed the SAME P0 about the
+    red vault gate (a0a3598 on main vs the one filed here). Merged into one
+    entry, which was then closed, because this session fixed it.
+  PROGRESS.txt - two sessions appending at once, kept both.
+
+Vault re-checked after the merge: still up to date. Their App.css change is
+not in any vault's covers list.
