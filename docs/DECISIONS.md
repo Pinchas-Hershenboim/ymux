@@ -25,6 +25,66 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-23 - macOS: the site's JS is dead in the in-app Browser (diagnostic build)
+- **Symptom.** On macOS the workspace Browser loads a page and renders HTML/CSS,
+  but the site's own JavaScript never runs. Windows is fine, and
+  `workspace_browser.rs` has no `cfg(target_os)` arms at all - every line of it
+  was written against WebView2 and runs unchanged under WKWebView.
+- **Ruled out before writing any code.** Entitlements: `Entitlements.plist`
+  already carries `allow-jit` + `allow-unsigned-executable-memory` (they landed
+  in the same commit as `hardenedRuntime`, `048f1b2`), and the app's MAIN window
+  is itself a WKWebView that renders - so JavaScriptCore works in-process. CSP:
+  `tauri.conf.json` sets `"csp": null`, and Tauri's CSP does not apply to an
+  external URL regardless. `javascript_disabled` defaults to `false` in
+  tauri-runtime, so it is not a Tauri toggle.
+- **What shipped is a DIAGNOSTIC, not a fix.** Rule #17 means no local mac build,
+  so the probe is baked into the binary: `browser_diag.js` runs at document start
+  and reports through `document.title` -> `on_document_title_changed`, plus an
+  `on_page_load` line and a Rust-side `eval` probe that together separate three
+  hypotheses in one launch (engine dead / site scripts never executed - including
+  an ATS block on cross-origin `http://` script sources / a WebKit-vs-Chromium
+  SyntaxError that is not our bug at all).
+- **Why `document.title` and not the existing `ymux-ticket:` navigation bridge.**
+  Read out of wry 0.54.4: `fetch`/`<img>` cannot reach `on_navigation` (it is the
+  `decidePolicyForNavigationAction` delegate - frame navigations only); an iframe
+  beacon works on mac but is silently dead on Windows (`webview2/mod.rs` hooks
+  `NavigationStarting`, never `FrameNavigationStarting`), which would destroy the
+  Windows control run; and `location.href` is a main-frame navigation fired in
+  the exact window we are trying to measure. Title change is the one hook wry
+  implements symmetrically on both platforms.
+- **The probe is NOT cfg-gated to macOS, deliberately.** If it first executed on
+  the one machine we cannot debug, "no beacon in the log" would be ambiguous
+  between "the JS engine is dead" and "my probe is broken". Windows runs it first
+  as the control.
+- **DECIDED (Yossi, 2026-08-23) - DevTools stays, scoped to the Browser webview,
+  on BOTH platforms, with a button.** He asked for it directly: "so we can see
+  everything including errors." The `.devtools(cfg!(target_os = "macos"))` that
+  shipped first is now `.devtools(true)` - a Windows control run you cannot
+  inspect is worth much less than one you can - plus a
+  `workspace_browser_open_devtools` command and a terminal-icon button next to
+  the Dev Mode toggle in the Browser header. That is the only entry point that
+  exists on Windows (F12 is not wired up for a child webview) and it saves a
+  trip through Safari -> Develop -> machine -> webview on macOS.
+  - **The main window and popouts stay OUT, and this is the line to hold.**
+    Enabling the `devtools` feature makes tauri-runtime-wry read
+    `devtools.unwrap_or(true)`, so every webview is inspectable unless it says
+    otherwise. The two explicit `.devtools(false)` calls in lib.rs are what keep
+    ymux's own UI - which renders live PTY output - out of an inspector, and the
+    deliberate F12 / Ctrl+Shift+I blocker at `App.tsx:3184` stays. Anyone adding
+    a webview later inherits `true` by default: opt it out at the builder.
+  - Scope justification: the Browser child webview shows a tunneled third-party
+    service, not ymux's own surface, so an inspector attached there exposes
+    nothing of ours. On macOS `isInspectable` only means the app shows up in
+    Safari's Develop menu on the same machine, for a user who already enabled
+    that menu - it is not a remote surface.
+- **Also corrected on the way.** The comment at `workspace_browser.rs` claiming no
+  Tauri IPC is injected into the child webview is factually wrong for 2.10.3 -
+  `__TAURI_INTERNALS__` is prepended to every webview including external URLs.
+  What actually denies the tunneled page is the capability layer (`Origin::Remote`
+  vs the `Local` execution context every capability declares). Left as a comment
+  because `capabilities/default.json` is scoped to `windows: ["main"]` and this
+  webview lives in the `main` window - a `remote` context added there would expose
+  it.
 ### 2026-08-23 — TMUX organization: workspace scope, and "attach means attach"
 - **Context:** Two complaints, one root. (1) With project folders now being child workspaces with their own `cwd`, the tmux picker still listed every session on the host — `pane_list_claude_sessions` had been folder-scoped since v4 and the tmux list next to it in the same wizard never was. (2) Opening the connect wizard on a pane already mounted on a tmux session restarted it, or typed the chosen command into whatever it was running.
 - **The mechanism for (2), for the record:** `openNewConnModal` hard-set `ncType("tmux")`; `submitNewConn` sent `persistent:true` + `mode:"claude"`; `build_tmux_attach_script` runs `new-session -A -s <name>` — attach-OR-create — so the pane JOINED the live session at T+900ms, and the smart-connect injection typed `cd … && claude --resume …\r\n` into its foreground at T+1100ms. No `$TMUX` check existed anywhere in the codebase, and the only guard was a comment on `pickTmuxSession` saying it injects nothing.
