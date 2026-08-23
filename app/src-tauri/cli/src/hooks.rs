@@ -380,7 +380,10 @@ fn apply_to_settings(
             .cloned()
             .unwrap_or_default();
         let has_ymux = entries.iter().any(is_ymux_entry);
-        if has_ymux && !force {
+        // Phase 84.B: "present" is not enough — the command has to still
+        // exist, or a rename leaves a permanently dead hook that
+        // setup-hooks refuses to repair. See ymux_entry_is_runnable.
+        if has_ymux && !force && ymux_entry_is_runnable(&entries) {
             already_present.push(event.clone());
             continue;
         }
@@ -584,6 +587,71 @@ fn is_ymux_entry(entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Phase 84.B: is the ymux entry for this event actually runnable?
+///
+/// `is_ymux_entry` matches on the command *text*, so an entry naming a
+/// binary that no longer exists still counts as "already present" and
+/// `setup-hooks` skips it forever. That is not hypothetical: the
+/// winmux → ymux rename moved the binary, and every settings.json written
+/// before it kept pointing at the old absolute path. The hook then fails
+/// silently on every invocation — Claude Code does not surface a missing
+/// hook binary — so the desktop simply never hears from that agent again.
+///
+/// Deliberately conservative. Only a ROOTED path that provably is not on
+/// disk counts as dead. A bare command name resolves through PATH, a
+/// relative path resolves against a working directory we don't know, and
+/// an unexpanded `${VAR}` resolves at run time; none can be checked here,
+/// and guessing wrong would rewrite a working hook on every single run.
+///
+/// `is_absolute() || has_root()` rather than `is_absolute()` alone: on
+/// Windows a POSIX-style `/home/y/.winmux/bin/winmux` is NOT absolute
+/// (no drive prefix) but is rooted, and settings.json written under WSL
+/// or copied between machines carries exactly that shape.
+fn ymux_entry_is_runnable(entries: &[Value]) -> bool {
+    entries.iter().filter(|e| is_ymux_entry(e)).all(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .map(|hooks| {
+                hooks.iter().all(|h| {
+                    let Some(cmd) = h.get("command").and_then(|c| c.as_str()) else {
+                        return true;
+                    };
+                    match executable_token(cmd) {
+                        Some(exe) => {
+                            let p = std::path::Path::new(&exe);
+                            let rooted = p.is_absolute() || p.has_root();
+                            !rooted || p.exists()
+                        }
+                        None => true,
+                    }
+                })
+            })
+            .unwrap_or(true)
+    })
+}
+
+/// The executable token of a shell command line: the leading quoted path
+/// if there is one, otherwise everything up to the first space. Returns
+/// None for anything containing a shell variable, since the real target
+/// is only known at run time.
+fn executable_token(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    if let Some(rest) = cmd.strip_prefix('"') {
+        let (exe, _) = rest.split_once('"')?;
+        return if exe.contains('$') || exe.contains('%') {
+            None
+        } else {
+            Some(exe.to_string())
+        };
+    }
+    let exe = cmd.split(' ').next()?;
+    if exe.is_empty() || exe.contains('$') || exe.contains('%') {
+        return None;
+    }
+    Some(exe.to_string())
+}
+
 pub struct Stub {
     pub label: &'static str,
 }
@@ -726,5 +794,85 @@ mod tests {
             expand_command("${WINMUX_BIN} claude-hook stop", exe),
             "/home/y/.ymux/bin/ymux claude-hook stop"
         );
+    }
+
+    // ── Phase 84.B: the dead-hook check ──────────────────────────────
+
+    // Built from temp_dir so the path is genuinely absolute on the host
+    // running the test. A literal "/nonexistent/..." is NOT absolute on
+    // Windows — no drive prefix — so it would sail through the check and
+    // pass this test for the wrong reason on the one platform CI gates on.
+    fn dead_path(tail: &str) -> String {
+        std::env::temp_dir()
+            .join("ymux-nonexistent-hook-test")
+            .join(tail)
+            .display()
+            .to_string()
+    }
+
+    #[test]
+    fn an_absolute_path_that_is_gone_is_not_runnable() {
+        // The winmux -> ymux rename in one line: the entry still reads as
+        // ours, so the old skip path called it "already present" and never
+        // repaired it. This directory has never existed.
+        let dead = entry(&format!("{} claude-hook stop", dead_path("bin/winmux")));
+        assert!(is_ymux_entry(&dead), "precondition: still recognised as ours");
+        assert!(!ymux_entry_is_runnable(&[dead]));
+    }
+
+    #[test]
+    fn a_rooted_posix_path_is_checked_even_on_windows() {
+        // Path::is_absolute() is false for this shape on Windows, but a
+        // settings.json written under WSL or copied off a Linux box carries
+        // exactly it — hence the has_root() arm.
+        let dead = entry("/ymux-nonexistent-hook-test/bin/winmux claude-hook stop");
+        assert!(!ymux_entry_is_runnable(&[dead]));
+    }
+
+    #[test]
+    fn an_absolute_path_that_exists_is_runnable() {
+        // Any real file will do; the check is existence, not executability.
+        let me = std::env::current_exe().expect("test binary path");
+        let cmd = format!("{} claude-hook stop", me.display());
+        assert!(ymux_entry_is_runnable(&[entry(&cmd)]));
+    }
+
+    #[test]
+    fn unresolvable_commands_are_left_alone() {
+        // A bare name resolves through PATH and a placeholder resolves at
+        // run time. Neither can be checked here, and treating them as dead
+        // would rewrite a working hook on every single run.
+        assert!(ymux_entry_is_runnable(&[entry("ymux claude-hook stop")]));
+        assert!(ymux_entry_is_runnable(&[entry("${YMUX_BIN} claude-hook stop")]));
+        assert!(ymux_entry_is_runnable(&[entry("%YMUX_BIN% claude-hook stop")]));
+    }
+
+    #[test]
+    fn a_quoted_path_with_spaces_is_read_whole() {
+        // Splitting on the first space would test "C:\Program" and call a
+        // perfectly good Windows install dead.
+        let quoted = entry(&format!(
+            "\"{}\" claude-hook stop",
+            dead_path("with space/bin/ymux")
+        ));
+        assert!(!ymux_entry_is_runnable(&[quoted]));
+        // The converse: a real path with a space must still read as live.
+        let me = std::env::current_exe().expect("test binary path");
+        let live = entry(&format!("\"{}\" claude-hook stop", me.display()));
+        assert!(ymux_entry_is_runnable(&[live]));
+    }
+
+    #[test]
+    fn entries_that_are_not_ours_do_not_make_us_dead() {
+        // Someone else's broken hook sitting in the same event array must
+        // not drag our live entry into a rewrite.
+        let me = std::env::current_exe().expect("test binary path");
+        let ours = entry(&format!("{} claude-hook stop", me.display()));
+        // The crate is named `ymux`, so the test binary path contains it —
+        // without this the filter yields nothing and the assert is vacuous.
+        assert!(is_ymux_entry(&ours), "precondition: recognised as ours");
+        let theirs = entry(&format!("{} run", dead_path("other-tool/bin/thing")));
+        assert!(!is_ymux_entry(&theirs), "precondition: not ours");
+        assert!(ymux_entry_is_runnable(&[theirs, ours]));
     }
 }
