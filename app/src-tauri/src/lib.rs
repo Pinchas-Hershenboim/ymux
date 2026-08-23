@@ -3073,6 +3073,7 @@ fn parse_zellij_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             cwd: None,
             owned: false,
             in_cwd: false,
+            foreign: None,
         });
     }
     // Newest first, matching parse_tmux_sessions' ordering contract.
@@ -8290,6 +8291,55 @@ pub(crate) struct TmuxSessionInfo {
     /// False whenever `cwd` is unknown — see the note on `cwd`.
     #[serde(default)]
     pub in_cwd: bool,
+    /// 2026-08-24: we can positively place this session somewhere that is NOT
+    /// the asking workspace. This is the "Whole server" view's mess-guard —
+    /// a row nobody can place is free to attach, a row we CAN place already
+    /// belongs to someone.
+    ///
+    /// `None` means "no evidence", and an unknown `cwd` with no ownership row
+    /// is ALWAYS no evidence (zellij reports no directory at all). Unknown
+    /// must never render as "elsewhere" — see the note on `cwd`.
+    ///
+    /// Invariant, enforced in `annotate_scope_with` and asserted in the tests:
+    /// never `Some` while `owned || in_cwd`. The picker's "This folder" view is
+    /// exactly the complement of this field, so the badge cannot appear there
+    /// by construction and the frontend needs no scope conditional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<ForeignScope>,
+}
+
+/// 2026-08-24: where a session belongs, when it is not here.
+///
+/// Carries facts rather than a ready-made sentence because every string the
+/// picker shows is i18n'd in four languages — the backend supplies the facts,
+/// `PaneView.tsx` composes the words. `kind` is what lets it pick between
+/// "belongs to workspace X" and "runs in folder Y", which are different
+/// warnings.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ForeignKind {
+    /// A different workspace claimed this session in `session-owners.json`.
+    /// The only signal that survives on Windows, where zellij has no cwd.
+    Workspace,
+    /// Nobody claimed it, but its live `cwd` is demonstrably outside the
+    /// caller's folder.
+    Folder,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct ForeignScope {
+    pub kind: ForeignKind,
+    /// The owning workspace's name, or the folder's last path segment. Never a
+    /// user-facing sentence. `None` is reachable and real: nothing prunes
+    /// `session-owners.json` when a workspace is deleted, so a stale row can
+    /// name a workspace that no longer exists AND have recorded no cwd. That
+    /// still warrants a warning — the picker just words it generically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Full path for the row tooltip: the live `#{session_path}` when known,
+    /// else the cwd recorded at claim time (which may be stale).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Phase 81: deserialization mirror of the Linux CLI's session-meta file
@@ -8550,14 +8600,21 @@ async fn pane_list_tmux_sessions(
     let project_path = project_path
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty());
-    // The annotate step needs the workspace's host to key ownership by, and
-    // its cwd as the scope root when the caller did not name one.
-    let (host_key, ws_cwd) = {
+    // The annotate step needs the workspace's host to key ownership by, its cwd
+    // as the scope root when the caller did not name one, and — 2026-08-24 —
+    // every workspace's display name, so a session claimed by a DIFFERENT
+    // workspace can say whose it is instead of just "not yours". All three come
+    // off the one lock this block already takes.
+    let (host_key, ws_cwd, ws_names) = {
         let file = state.workspaces.lock().unwrap();
         let ws = file.workspaces.iter().find(|w| w.id == workspace_id);
         (
             session_owner_host_key(ws.and_then(|w| w.connection.as_ref())),
             ws.and_then(|w| w.cwd.clone()),
+            file.workspaces
+                .iter()
+                .map(|w| (w.id.clone(), w.name.clone()))
+                .collect::<HashMap<_, _>>(),
         )
     };
     // The wizard passes the folder anchor explicitly; a caller that does not
@@ -8586,7 +8643,7 @@ async fn pane_list_tmux_sessions(
     // retain, so the picker's toggle switches views without another round trip
     // to the host — and so a session outside the scope stays one click away
     // instead of vanishing.
-    annotate_session_scope(&mut out, &host_key, &workspace_id, scope_path);
+    annotate_session_scope(&mut out, &host_key, &workspace_id, scope_path, &ws_names);
     Ok(out)
 }
 
@@ -8846,6 +8903,7 @@ fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             // is asking (`annotate_session_scope`); the parser has no idea.
             owned: false,
             in_cwd: false,
+            foreign: None,
         });
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
@@ -9265,28 +9323,114 @@ fn path_is_within(path: &str, root: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
 }
 
-/// Stamp `owned` / `in_cwd` on a freshly listed set of sessions.
+/// The last segment of a path, accepting BOTH separators.
+///
+/// One picker list mixes POSIX paths straight off a Linux host with Windows
+/// paths recorded by a zellij-era ownership row, so `Path::file_name` (which
+/// is `cfg`-dependent about `/`) is the wrong tool. Trailing separators are
+/// trimmed first, so `/srv/app/` names `app` and not the empty string.
+fn last_path_segment(p: &str) -> Option<&str> {
+    let p = p.trim().trim_end_matches(['/', '\\']);
+    if p.is_empty() {
+        // A bare root ("/", "C:\\") trims to nothing and has no segment to name.
+        return None;
+    }
+    p.rsplit(['/', '\\']).next().filter(|seg| !seg.is_empty())
+}
+
+/// Stamp `owned` / `in_cwd` / `foreign` on a freshly listed set of sessions.
 ///
 /// Annotating rather than filtering is deliberate: the picker's scope toggle
 /// then flips between two views of ONE response instead of re-querying the
 /// host, and a session that falls outside the scope is still one click away
 /// rather than gone.
+///
+/// Loads `session-owners.json` and hands off to `annotate_scope_with`, which
+/// holds the actual verdicts and is the thing the tests exercise.
 fn annotate_session_scope(
     sessions: &mut [TmuxSessionInfo],
     host_key: &str,
     workspace_id: &str,
     project_path: Option<&str>,
+    ws_names: &HashMap<String, String>,
 ) {
     let owners = load_session_owners();
-    let host = owners.owners.get(host_key);
+    annotate_scope_with(
+        sessions,
+        owners.owners.get(host_key),
+        workspace_id,
+        project_path,
+        ws_names,
+    );
+}
+
+/// The scope verdicts, with the owners map injected — no file I/O, so the
+/// rules below are unit-testable.
+///
+/// `foreign` answers "do we KNOW this belongs somewhere else?", in this order:
+///
+/// 1. Anything inside our own scope (`owned || in_cwd`) is never foreign — the
+///    badge is therefore structurally impossible in the picker's "This folder"
+///    view, which is exactly the complement of that predicate.
+/// 2. An ownership row naming a DIFFERENT workspace. This is the only signal
+///    that survives on Windows, where zellij reports no directory at all.
+/// 3. A live `cwd` that is not under the caller's `project_path`.
+/// 4. Otherwise not foreign — which includes "no cwd, no owner", i.e. we have
+///    nothing to say. Silence, never a guess: `cwd: None` is unknown, and the
+///    picker must not paint an unclaimed session as another project's.
+fn annotate_scope_with(
+    sessions: &mut [TmuxSessionInfo],
+    host: Option<&HashMap<String, SessionOwner>>,
+    workspace_id: &str,
+    project_path: Option<&str>,
+    ws_names: &HashMap<String, String>,
+) {
     for s in sessions.iter_mut() {
-        s.owned = host
-            .and_then(|h| h.get(&s.name))
-            .is_some_and(|o| o.workspace_id == workspace_id);
+        let owner = host.and_then(|h| h.get(&s.name));
+        s.owned = owner.is_some_and(|o| o.workspace_id == workspace_id);
         s.in_cwd = match (s.cwd.as_deref(), project_path) {
             (Some(cwd), Some(root)) => path_is_within(cwd, root),
             // Unknown cwd is not evidence of anything. See TmuxSessionInfo::cwd.
             _ => false,
+        };
+        s.foreign = if s.owned || s.in_cwd {
+            // Inside the workspace's own scope. Two workspaces pinned to the
+            // same folder both belong there; warning about that would be a lie,
+            // and it would put the badge in the "This folder" view.
+            None
+        } else if let Some(o) = owner {
+            // Claimed by a DIFFERENT workspace — the same-id case is `owned`,
+            // which the arm above already took.
+            Some(ForeignScope {
+                kind: ForeignKind::Workspace,
+                // The workspace name is the most useful thing we can say. When
+                // it has since been deleted we still know WHERE it was, so fall
+                // through to the folder before giving up on a name.
+                label: ws_names
+                    .get(&o.workspace_id)
+                    .map(|n| n.trim())
+                    .filter(|n| !n.is_empty())
+                    .map(|n| n.to_string())
+                    .or_else(|| {
+                        o.cwd
+                            .as_deref()
+                            .and_then(last_path_segment)
+                            .map(|seg| seg.to_string())
+                    }),
+                path: s.cwd.clone().or_else(|| o.cwd.clone()),
+            })
+        } else if let (Some(cwd), Some(_root)) = (s.cwd.as_deref(), project_path) {
+            // Unclaimed, but demonstrably somewhere else. Only reachable with a
+            // KNOWN cwd and a root to compare it against: `in_cwd` was already
+            // false above, and with no root the "no evidence" arm below wins.
+            Some(ForeignScope {
+                kind: ForeignKind::Folder,
+                label: last_path_segment(cwd).map(|seg| seg.to_string()),
+                path: Some(cwd.to_string()),
+            })
+        } else {
+            // Unknown cwd, nobody claimed it. We have nothing to say.
+            None
         };
     }
 }
@@ -11955,8 +12099,44 @@ mod tmux_list_parse_tests {
     // the macOS local server). Sample lines are exactly what tmux prints
     // for TMUX_LIST_FORMAT.
     use super::{
-        parse_tmux_sessions, path_is_within, tmux_list_script, TMUX_LIST_FORMAT, TMUX_META_MARKER,
+        annotate_scope_with, last_path_segment, parse_tmux_sessions, path_is_within,
+        tmux_list_script, ForeignKind, SessionOwner, TmuxSessionInfo, TMUX_LIST_FORMAT,
+        TMUX_META_MARKER,
     };
+    use std::collections::HashMap;
+
+    // ── 2026-08-24 scope-annotation fixtures ───────────────────────────────
+    // Sessions are built through the real parser so a format change breaks
+    // these tests too, rather than leaving them asserting against a shape
+    // tmux no longer emits.
+
+    fn session(name: &str, cwd: Option<&str>) -> TmuxSessionInfo {
+        let line = match cwd {
+            Some(c) => format!("{name}|1|0|1|2|{c}\n"),
+            None => format!("{name}|1|0|1|2\n"),
+        };
+        parse_tmux_sessions(&line).pop().expect("one session")
+    }
+
+    fn owner(workspace_id: &str, cwd: Option<&str>) -> SessionOwner {
+        SessionOwner {
+            workspace_id: workspace_id.to_string(),
+            cwd: cwd.map(|c| c.to_string()),
+            ts: 0,
+        }
+    }
+
+    fn owners(rows: &[(&str, SessionOwner)]) -> HashMap<String, SessionOwner> {
+        rows.iter()
+            .map(|(n, o)| (n.to_string(), o.clone()))
+            .collect()
+    }
+
+    fn names(rows: &[(&str, &str)]) -> HashMap<String, String> {
+        rows.iter()
+            .map(|(id, n)| (id.to_string(), n.to_string()))
+            .collect()
+    }
 
     #[test]
     fn format_has_six_pipe_separated_fields() {
@@ -12065,6 +12245,146 @@ mod tmux_list_parse_tests {
         let out = parse_tmux_sessions(&text);
         assert_eq!(out.len(), 1);
         assert!(out[0].label.is_none());
+    }
+
+    // ── 2026-08-24: "this session belongs to another folder" ───────────────
+
+    #[test]
+    fn basename_stops_at_either_separator() {
+        // Sibling of folder_scope_stops_at_a_separator: one picker list mixes
+        // POSIX paths off a Linux host with Windows paths from zellij-era
+        // ownership rows, so both separators have to work.
+        assert_eq!(last_path_segment("/srv/app"), Some("app"));
+        assert_eq!(last_path_segment("/srv/app/"), Some("app"));
+        assert_eq!(last_path_segment("  /srv/app  "), Some("app"));
+        assert_eq!(last_path_segment(r"C:\src\app"), Some("app"));
+        assert_eq!(last_path_segment(r"C:\src\app\"), Some("app"));
+        assert_eq!(last_path_segment("app"), Some("app"));
+        // A bare root names nothing, and neither does an empty string.
+        assert_eq!(last_path_segment("/"), None);
+        assert_eq!(last_path_segment(""), None);
+        assert_eq!(last_path_segment("   "), None);
+    }
+
+    #[test]
+    fn a_foreign_badge_is_impossible_inside_the_workspace_view() {
+        // THE invariant the picker leans on: "This folder" is exactly the
+        // complement of `foreign`, so the frontend needs no scope conditional
+        // on the badge. Every way a session can be in scope, checked.
+        let mut sessions = vec![
+            session("owned-and-in-cwd", Some("/srv/app")),
+            session("owned-only", Some("/elsewhere")),
+            session("in-cwd-only", Some("/srv/app/sub")),
+        ];
+        let host = owners(&[
+            ("owned-and-in-cwd", owner("ws-a", Some("/srv/app"))),
+            ("owned-only", owner("ws-a", None)),
+        ]);
+        annotate_scope_with(
+            &mut sessions,
+            Some(&host),
+            "ws-a",
+            Some("/srv/app"),
+            &names(&[("ws-a", "Mine")]),
+        );
+        for s in &sessions {
+            assert!(s.owned || s.in_cwd, "{} should be in scope", s.name);
+            assert!(s.foreign.is_none(), "{} must not be foreign", s.name);
+        }
+    }
+
+    #[test]
+    fn a_claim_by_another_workspace_names_that_workspace() {
+        let mut sessions = vec![session("theirs", Some("/srv/other"))];
+        let host = owners(&[("theirs", owner("ws-b", Some("/srv/other")))]);
+        annotate_scope_with(
+            &mut sessions,
+            Some(&host),
+            "ws-a",
+            Some("/srv/app"),
+            &names(&[("ws-a", "Mine"), ("ws-b", "Server API")]),
+        );
+        let f = sessions[0].foreign.as_ref().expect("foreign");
+        assert!(matches!(f.kind, ForeignKind::Workspace));
+        assert_eq!(f.label.as_deref(), Some("Server API"));
+        // The tooltip gets the LIVE path, not the one recorded at claim time.
+        assert_eq!(f.path.as_deref(), Some("/srv/other"));
+    }
+
+    #[test]
+    fn a_claim_survives_on_windows_where_there_is_no_cwd_at_all() {
+        // The zellij case, and the reason ownership exists as a second signal:
+        // no session cwd anywhere, so the claim is the ONLY thing that can
+        // place this session. It must still warn, and the tooltip falls back
+        // to the folder recorded when the claim was made.
+        let mut sessions = vec![session("zj", None)];
+        let host = owners(&[("zj", owner("ws-b", Some(r"C:\src\other")))]);
+        annotate_scope_with(
+            &mut sessions,
+            Some(&host),
+            "ws-a",
+            None,
+            &names(&[("ws-b", "Other")]),
+        );
+        let f = sessions[0].foreign.as_ref().expect("foreign");
+        assert!(matches!(f.kind, ForeignKind::Workspace));
+        assert_eq!(f.label.as_deref(), Some("Other"));
+        assert_eq!(f.path.as_deref(), Some(r"C:\src\other"));
+    }
+
+    #[test]
+    fn a_claim_by_a_deleted_workspace_still_warns() {
+        // Nothing prunes session-owners.json when a workspace is deleted, so a
+        // row can name an id that resolves to nothing. Fall back to the folder
+        // it recorded; and when it recorded none, warn anyway with no label —
+        // the picker words that case generically rather than staying silent.
+        let mut sessions = vec![session("orphan", None), session("nameless", None)];
+        let host = owners(&[
+            ("orphan", owner("ws-gone", Some("/srv/other"))),
+            ("nameless", owner("ws-gone", None)),
+        ]);
+        annotate_scope_with(&mut sessions, Some(&host), "ws-a", None, &names(&[]));
+        let orphan = sessions[0].foreign.as_ref().expect("orphan foreign");
+        assert_eq!(orphan.label.as_deref(), Some("other"));
+        let nameless = sessions[1].foreign.as_ref().expect("nameless foreign");
+        assert!(nameless.label.is_none());
+        assert!(nameless.path.is_none());
+    }
+
+    #[test]
+    fn an_unclaimed_session_outside_the_root_is_flagged_by_folder() {
+        let mut sessions = vec![
+            session("elsewhere", Some("/srv/other")),
+            // The neighbour case: the badge inherits path_is_within's
+            // separator boundary instead of re-deriving containment.
+            session("neighbour", Some("/srv/app2")),
+        ];
+        annotate_scope_with(&mut sessions, None, "ws-a", Some("/srv/app"), &names(&[]));
+        for (s, want) in sessions.iter().zip(["other", "app2"]) {
+            let f = s.foreign.as_ref().expect("foreign");
+            assert!(matches!(f.kind, ForeignKind::Folder));
+            assert_eq!(f.label.as_deref(), Some(want));
+        }
+    }
+
+    #[test]
+    fn an_unknown_cwd_is_never_evidence_of_elsewhere() {
+        // The direct guard on the 2026-08-23 rule. A five-field tmux and every
+        // zellij session land here; painting them as another project's would
+        // be a fabrication, and it is the regression that matters most.
+        let mut sessions = vec![session("mystery", None)];
+        annotate_scope_with(&mut sessions, None, "ws-a", Some("/srv/app"), &names(&[]));
+        assert!(sessions[0].foreign.is_none());
+    }
+
+    #[test]
+    fn no_root_means_no_folder_verdict() {
+        // A workspace that is not folder-anchored, and the `projectPath: null`
+        // call shape session restore uses. Without a root there is nothing to
+        // be outside of, so an unclaimed session must not light up.
+        let mut sessions = vec![session("somewhere", Some("/srv/other"))];
+        annotate_scope_with(&mut sessions, None, "ws-a", None, &names(&[]));
+        assert!(sessions[0].foreign.is_none());
     }
 }
 

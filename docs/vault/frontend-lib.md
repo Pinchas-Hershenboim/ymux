@@ -105,6 +105,11 @@ nullable key, not `T?` — so helpers such as `effectiveIdentity` widen their pa
 `describeConnection`, `isLocalConn`, `isRemoteEffective`, `collectPanes`, `findPane`)
 are what components use to reason about a pane.
 
+**Not everything here is generated.** `TmuxSessionInfo` and `ForeignScope` are
+**hand-written mirrors** of structs that live in `lib.rs` rather than `ymux-types`, so
+ts-rs never sees them and nothing regenerates them for you. A field added on the Rust
+side is silently missing here until someone types it — update both in the same commit.
+
 **`settings.ts` (738)** — the typed settings mirror plus load/save and the CSS-variable
 apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it.
 

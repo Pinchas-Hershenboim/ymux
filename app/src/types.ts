@@ -109,6 +109,32 @@ export interface TmuxSessionInfo {
   /** `cwd` is the workspace's folder, or lives under it. False whenever
    *  `cwd` is unknown. */
   in_cwd: boolean;
+  /** 2026-08-24: we can positively place this session somewhere that is NOT
+   *  this workspace. Absent means "no evidence" — which an unknown `cwd` with
+   *  no ownership row always is.
+   *
+   *  Invariant from the backend (`annotate_scope_with`): never set while
+   *  `owned || in_cwd`. "This folder" is exactly the complement of this field,
+   *  so the badge cannot show up there and needs no scope conditional. */
+  foreign?: ForeignScope;
+}
+
+/** 2026-08-24: where a tmux/zellij session belongs, when it is not here.
+ *
+ *  Facts, not a sentence — the picker composes the wording from i18n. `kind`
+ *  is what picks between "belongs to workspace X" and "runs in folder Y". */
+export interface ForeignScope {
+  /** `workspace` — another workspace claimed it in `session-owners.json`
+   *  (the only signal on Windows, where zellij reports no cwd).
+   *  `folder` — unclaimed, but its live cwd is outside this folder. */
+  kind: "workspace" | "folder";
+  /** The owning workspace's name, or the folder's last path segment. Absent
+   *  when the claiming workspace was deleted and recorded no cwd — still a
+   *  real warning, just an unnameable one. */
+  label?: string;
+  /** Full path for the tooltip: the live `#{session_path}` when known, else
+   *  the cwd recorded at claim time (which may be stale). */
+  path?: string;
 }
 
 /** 2026-08-23: what `pane_target_session_state` answers — "which multiplexer
