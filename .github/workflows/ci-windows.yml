@@ -195,6 +195,16 @@ jobs:
         working-directory: app
         run: npx tsc --noEmit -p tsconfig.json
 
+      # Phase 87: src/*.test.ts are plain `node --test` files (no vitest, no
+      # jsdom) over the pure-logic modules — bidi, RTL, pricing, shortcuts.
+      # They existed since Phase 80 but nothing ever ran them, so they were a
+      # graveyard: `shortcuts.test.ts` is the regression guard for the
+      # accelerator table and has to actually execute. tsconfig excludes
+      # src/**/*.test.ts, so the type-check above does not cover these.
+      - name: Frontend unit tests
+        working-directory: app
+        run: npm test
+
       # esbuild strips types without checking them, so this is a bundling
       # check, not a type check — it catches bad imports and dead assets.
       - name: Frontend build
