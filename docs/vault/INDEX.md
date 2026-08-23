@@ -16,7 +16,18 @@ did. Details in `docs/CONTRIBUTING.md` § Updating the vault.
 
 ## Routing table
 
-*(populated as each area lands — see `docs/vault/*.md` for what exists now)*
+**Rust backend** (`app/src-tauri/`)
+
+| Read this | When you want |
+|---|---|
+| [backend-core.md](backend-core.md) | `AppState`, the workspace model, `workspaces.json` persistence, `spawn_local_pty` / `spawn_ssh`, the layout tree, zellij/tmux wrappers, `run()` |
+| [backend-rpc.md](backend-rpc.md) | the named-pipe / Unix-socket JSON-RPC endpoint, the full method catalog, hook→toast, the MCP bridge |
+| [backend-sessions.md](backend-sessions.md) | UTF-8 chunk reassembly, the RTL bidi filter, OSC notifications, remote log sync, reverse-tunnel sticky ports |
+| [backend-remote.md](backend-remote.md) | CLI bootstrap onto a server, the bootstrap storm guard, the provisioning wizard, add-ons, mobile pairing |
+| [backend-wizards.md](backend-wizards.md) | settings.json, the local install engine, shell/key detection, the update checker |
+| [backend-panes.md](backend-panes.md) | Diff / File Manager / Browser panes, git worktrees, the workspaces three-way merge, notes, tickets, skills, STT, fonts, tray |
+| [backend-claude.md](backend-claude.md) | session summaries, `/usage` quota, transcript mirroring, local Insights |
+| [crates.md](crates.md) | the eight `ymux-*` crates and why each thing lives where it does |
 
 ## What the vault is not
 
