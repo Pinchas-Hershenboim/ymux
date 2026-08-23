@@ -205,11 +205,81 @@ pub(crate) struct AppState {
 /// UserPromptSubmit hook, cleared on Stop). `sum_ms`/`count` accumulate the
 /// durations of completed non-trivial turns for the rolling average. Turns
 /// shorter than `AGENT_RUN_MIN_TURN_MS` (text-only) are excluded from the mean.
+/// Phase 84.B: the effective state of the agent holding a pane — what the
+/// traffic light in the pane header and the tab strip renders.
+///
+/// Derived here rather than in the frontend for three reasons. The
+/// frontend can infer running/done from the turn timing above, but it
+/// cannot infer `NeedsInput` from the Notification hook: that hook is
+/// deliberately kept off the feed (it was removed entirely in v0.4.4 for
+/// being noise there), so nothing about it reaches the UI unless a state
+/// machine on this side interprets it. Second, the open thread in
+/// docs/DECISIONS.md asks for *effective* state rather than raw hook
+/// arrival order, which needs a single writer and a monotonic sequence.
+/// Third, a transition table here is unit-testable; a pile of derived
+/// signals is not.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PaneAgentState {
+    /// No hook has ever arrived for this pane. Renders nothing — a pane
+    /// running a plain shell must not sprout a status light.
+    #[default]
+    Unknown,
+    /// The agent is working on a turn.
+    Running,
+    /// The agent finished its turn. Your move.
+    ///
+    /// This does NOT expire on a timer. "Claude finished and you haven't
+    /// dealt with it" is a lasting fact, and the whole point of the light
+    /// is glancing at a strip of tabs to see who is done. The decay that
+    /// does exist is semantic, not cosmetic: Claude Code fires
+    /// Notification/idle_prompt once it has been waiting on you, which
+    /// promotes Done → NeedsInput on its own.
+    Done,
+    /// The agent is blocked on you — a permission prompt, an elicitation
+    /// dialog, or it has gone idle waiting for a reply.
+    NeedsInput,
+}
+
+impl PaneAgentState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PaneAgentState::Unknown => "unknown",
+            PaneAgentState::Running => "running",
+            PaneAgentState::Done => "done",
+            PaneAgentState::NeedsInput => "needs-input",
+        }
+    }
+}
+
+/// Notification types that mean "the agent is blocked on the human".
+/// Names come from Claude Code's documented `notification_type` matcher
+/// values. Anything not listed — `auth_success`, or a type added upstream
+/// after this shipped — produces NO transition at all, so an unknown
+/// value can never strand a pane in the wrong colour.
+const NEEDS_INPUT_NOTIFICATIONS: &[&str] = &[
+    "permission_prompt",
+    "idle_prompt",
+    "agent_needs_input",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+];
+
+/// Notification types that mean the human answered and work resumed.
+const RESUMED_NOTIFICATIONS: &[&str] = &["elicitation_complete", "elicitation_response"];
+
 #[derive(Default, Clone)]
 pub(crate) struct AgentRunState {
     pub(crate) turn_started_at: Option<std::time::SystemTime>,
     pub(crate) sum_ms: u128,
     pub(crate) count: u32,
+    /// Phase 84.B: effective agent state, plus when it last actually
+    /// changed and a per-pane monotonic counter.
+    pub(crate) state: PaneAgentState,
+    pub(crate) state_since: Option<std::time::SystemTime>,
+    // u32, not u64: ts-rs maps u64 to `bigint` while the Tauri event
+    // carries a plain JSON number, and the frontend compares the two.
+    // Four billion hooks on a single pane is not a scenario.
+    pub(crate) seq: u32,
 }
 
 impl AgentRunState {
@@ -238,6 +308,55 @@ impl AgentRunState {
             self.count = self.count.saturating_add(1);
         }
     }
+
+    /// `state_since` as epoch-ms, for the frontend's staleness check.
+    pub(crate) fn state_since_ms(&self) -> Option<u128> {
+        self.state_since
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis())
+    }
+
+    /// Phase 84.B: fold one hook into the effective agent state.
+    ///
+    /// Returns true when the state actually changed, so the caller can
+    /// skip an emit for a no-op. `seq` bumps on every applied transition
+    /// (including a no-op one, so the frontend's ordering guard still
+    /// advances), while `state_since` is stamped only on a real change —
+    /// otherwise a long turn full of tool calls would keep resetting its
+    /// own clock and "running for three minutes" would never be true.
+    ///
+    /// Note `pre-tool-use` is a bonus source of Running, not a reliable
+    /// one: the CLI short-circuits that hook in acceptEdits/bypass modes
+    /// and never dials the desktop at all. `user-prompt-submit` is the
+    /// dependable turn boundary — that is why it exists.
+    pub(crate) fn apply_hook(
+        &mut self,
+        subkind: &str,
+        notification_type: Option<&str>,
+    ) -> bool {
+        let next = match subkind {
+            "user-prompt-submit" | "pre-tool-use" => PaneAgentState::Running,
+            "stop" => PaneAgentState::Done,
+            "notification" => match notification_type {
+                Some(t) if NEEDS_INPUT_NOTIFICATIONS.contains(&t) => {
+                    PaneAgentState::NeedsInput
+                }
+                Some(t) if RESUMED_NOTIFICATIONS.contains(&t) => PaneAgentState::Running,
+                // Unmapped or absent: no opinion. Leaving the state alone
+                // is the honest answer, and it means a notification type
+                // added upstream can never freeze a pane on a stale colour.
+                _ => return false,
+            },
+            _ => return false,
+        };
+        self.seq = self.seq.saturating_add(1);
+        if self.state == next {
+            return false;
+        }
+        self.state = next;
+        self.state_since = Some(std::time::SystemTime::now());
+        true
+    }
 }
 
 #[cfg(test)]
@@ -265,6 +384,111 @@ mod agent_run_tests {
         assert_eq!(r.started_at_ms(), None);
         r.turn_started_at = Some(std::time::SystemTime::UNIX_EPOCH);
         assert_eq!(r.started_at_ms(), Some(0));
+    }
+
+    // ── Phase 84.B: the traffic-light transition table ────────────────
+
+    use super::PaneAgentState;
+
+    #[test]
+    fn a_pane_with_no_hooks_has_no_state() {
+        // Unknown renders nothing. A plain shell pane must not sprout a
+        // status light just because the workspace is in tabs mode.
+        assert_eq!(AgentRunState::default().state, PaneAgentState::Unknown);
+    }
+
+    #[test]
+    fn the_turn_cycle_walks_running_then_done() {
+        let mut r = AgentRunState::default();
+        assert!(r.apply_hook("user-prompt-submit", None));
+        assert_eq!(r.state, PaneAgentState::Running);
+        assert!(r.apply_hook("stop", None));
+        assert_eq!(r.state, PaneAgentState::Done);
+    }
+
+    #[test]
+    fn idle_prompt_promotes_done_to_needs_input() {
+        // This is the decay for yellow, and it is semantic rather than a
+        // timer: Claude Code tells us it is waiting, we do not guess.
+        let mut r = AgentRunState::default();
+        r.apply_hook("stop", None);
+        assert!(r.apply_hook("notification", Some("idle_prompt")));
+        assert_eq!(r.state, PaneAgentState::NeedsInput);
+    }
+
+    #[test]
+    fn every_documented_blocking_notification_means_needs_input() {
+        for t in [
+            "permission_prompt",
+            "idle_prompt",
+            "agent_needs_input",
+            "elicitation_dialog",
+            "elicitation_url_dialog",
+        ] {
+            let mut r = AgentRunState::default();
+            r.apply_hook("user-prompt-submit", None);
+            assert!(r.apply_hook("notification", Some(t)), "{t} must transition");
+            assert_eq!(r.state, PaneAgentState::NeedsInput, "{t}");
+        }
+    }
+
+    #[test]
+    fn answering_an_elicitation_resumes_running() {
+        let mut r = AgentRunState::default();
+        r.apply_hook("notification", Some("elicitation_dialog"));
+        assert!(r.apply_hook("notification", Some("elicitation_response")));
+        assert_eq!(r.state, PaneAgentState::Running);
+    }
+
+    #[test]
+    fn an_unmapped_notification_changes_nothing() {
+        // The load-bearing case: a notification type added upstream after
+        // this shipped must leave the light alone rather than freeze it.
+        let mut r = AgentRunState::default();
+        r.apply_hook("stop", None);
+        let seq_before = r.seq;
+        for t in [Some("auth_success"), Some("something_invented_in_2027"), None] {
+            assert!(!r.apply_hook("notification", t));
+        }
+        assert_eq!(r.state, PaneAgentState::Done, "state must be untouched");
+        assert_eq!(r.seq, seq_before, "a no-op must not bump seq either");
+    }
+
+    #[test]
+    fn a_stop_arriving_after_a_notification_still_wins() {
+        // Hooks are separate processes racing over a socket; ordering is
+        // not guaranteed. Last-writer-wins is the documented behaviour —
+        // `seq` is what lets the frontend drop a genuinely stale event.
+        let mut r = AgentRunState::default();
+        r.apply_hook("notification", Some("permission_prompt"));
+        r.apply_hook("stop", None);
+        assert_eq!(r.state, PaneAgentState::Done);
+        assert_eq!(r.seq, 2);
+    }
+
+    #[test]
+    fn a_long_turn_does_not_keep_resetting_its_own_clock() {
+        // state_since must survive repeated pre-tool-use inside one turn,
+        // or "running for three minutes" is never true and the staleness
+        // cutoff can never fire.
+        let mut r = AgentRunState::default();
+        assert!(r.apply_hook("user-prompt-submit", None));
+        let first = r.state_since;
+        assert!(first.is_some());
+        for _ in 0..5 {
+            assert!(!r.apply_hook("pre-tool-use", None), "already Running");
+        }
+        assert_eq!(r.state_since, first, "state_since must not move");
+        assert_eq!(r.seq, 6, "but every applied hook still advances seq");
+    }
+
+    #[test]
+    fn unrelated_subkinds_are_ignored() {
+        let mut r = AgentRunState::default();
+        r.apply_hook("user-prompt-submit", None);
+        assert!(!r.apply_hook("session-start", None));
+        assert!(!r.apply_hook("post-tool-use", None));
+        assert_eq!(r.state, PaneAgentState::Running);
     }
 }
 
@@ -2051,11 +2275,19 @@ pub(crate) fn set_cli_alignment(
 /// `started_at_ms` = None clears the live timer (turn ended); `avg_ms` = None
 /// means no completed turns yet. The frontend ticks `M:SS` locally from
 /// `started_at`, so this fires only on turn start / end — never per second.
+///
+/// Phase 84.B added `state` / `state_since` / `seq` for the traffic
+/// light. The four original keys are unchanged on purpose: the Ticker
+/// reads them as-is, and a frontend that predates this degrades to the
+/// old behaviour instead of breaking.
 pub(crate) fn emit_agent_run_event(
     app: &AppHandle,
     pane_id: &str,
     started_at_ms: Option<u128>,
     avg_ms: Option<u128>,
+    state: PaneAgentState,
+    state_since_ms: Option<u128>,
+    seq: u32,
 ) {
     let _ = app.emit(
         "pane:agent-run",
@@ -2064,8 +2296,58 @@ pub(crate) fn emit_agent_run_event(
             "started_at": started_at_ms,
             "avg_ms": avg_ms,
             "running": started_at_ms.is_some(),
+            "state": state.as_str(),
+            "state_since": state_since_ms,
+            "seq": seq,
         }),
     );
+}
+
+/// Phase 84.B: one pane's agent state, for the hydration command below.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub(crate) struct PaneAgentSnapshot {
+    pub(crate) state: String,
+    // ts-rs maps u128 to bigint; these are epoch-ms and fit in f64 fine,
+    // but keeping them as the same shape the event uses avoids two
+    // parallel representations of the same value on the frontend.
+    pub(crate) state_since: Option<u128>,
+    pub(crate) started_at: Option<u128>,
+    pub(crate) avg_ms: Option<u128>,
+    pub(crate) seq: u32,
+}
+
+/// Phase 84.B: every pane's agent state at once.
+///
+/// Exists for the webview reload (F5, devtools reload, an HMR round in
+/// dev) — far more common than an app restart, and without this every
+/// light goes dark until the next hook happens to fire, which for an idle
+/// agent could be never. Deliberately NOT persisted to disk: restoring an
+/// eight-hour-old "running" after an app restart would be a lie, and the
+/// first hook restores the truth anyway.
+#[tauri::command]
+fn pane_agent_states(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, PaneAgentSnapshot>, String> {
+    let runs = state
+        .agent_runs
+        .lock()
+        .map_err(|e| format!("agent_runs lock poisoned: {e}"))?;
+    Ok(runs
+        .iter()
+        .map(|(pane_id, r)| {
+            (
+                pane_id.clone(),
+                PaneAgentSnapshot {
+                    state: r.state.as_str().to_string(),
+                    state_since: r.state_since_ms(),
+                    started_at: r.started_at_ms(),
+                    avg_ms: r.avg_ms(),
+                    seq: r.seq,
+                },
+            )
+        })
+        .collect())
 }
 
 /// Spawns a tokio task that clears a pane's status text after `secs` seconds.
@@ -10021,6 +10303,7 @@ pub fn run() {
             workspace_set_collapsed,
             workspace_set_project_root,
             workspace_set_tabs_mode,
+            pane_agent_states,
             worktrees::git_probe_worktrees,
             worktrees::workspace_list_worktrees,
             worktrees::workspace_create_project_worktree,

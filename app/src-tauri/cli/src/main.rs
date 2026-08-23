@@ -2489,7 +2489,89 @@ async fn real_main() -> ExitCode {
             // meaningful lifecycle signals (Stop = "your turn", SessionEnd =
             // "session closed") still dispatch below. errors/timeouts are on
             // the pre-tool-use path and are unaffected.
-            if matches!(subcommand.as_str(), "session-start" | "notification") {
+            if matches!(subcommand.as_str(), "session-start") {
+                return ExitCode::SUCCESS;
+            }
+
+            // ── Phase 84.B: Notification, back — but as pane STATE only ──
+            //
+            // This reverses half of the v0.4.4 decision above, and the
+            // distinction matters: Notification was noise as a FEED ITEM
+            // (a card nobody acted on, per event, forever). It is the only
+            // signal there is for "the agent is blocked on the human",
+            // which is the red light on a pane tab.
+            //
+            // It gets its own branch and returns before the shared dispatch
+            // below, for two reasons. First, derive_hook_summary falls back
+            // to serialising the whole payload, and `notification_text` is
+            // agent- or user-authored prose — Rule #1 territory, and it
+            // would land in the FeedStore and possibly a toast. So the push
+            // carries the TYPE and nothing else. Second, everything after
+            // this point exists to build a feed item, which is precisely
+            // what a notification must not become.
+            if subcommand == "notification" {
+                let ntype = payload
+                    .get("notification_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                // Types that mean "blocked on the human". Kept in sync with
+                // NEEDS_INPUT_NOTIFICATIONS / RESUMED_NOTIFICATIONS in the
+                // desktop's lib.rs — the desktop is the authority on what
+                // each one means; this list only decides whether it is worth
+                // a socket round-trip at all.
+                const RELEVANT: &[&str] = &[
+                    "permission_prompt",
+                    "idle_prompt",
+                    "agent_needs_input",
+                    "elicitation_dialog",
+                    "elicitation_url_dialog",
+                    "elicitation_complete",
+                    "elicitation_response",
+                ];
+                if !RELEVANT.contains(&ntype) {
+                    // auth_success, or a type Claude Code added after this
+                    // shipped. Exit before any network call — an unknown
+                    // type is not an error, it is simply not our business.
+                    hook_vlog(&format!(
+                        "claude-hook notification type={} — not a state signal, ignored",
+                        if ntype.is_empty() { "(absent)" } else { ntype }
+                    ));
+                    return ExitCode::SUCCESS;
+                }
+                let request_id = format!(
+                    "req_{:x}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                );
+                let pane_id = std::env::var("YMUX_PANE_ID").ok();
+                // Rule #1: the type is a fixed enum value from Claude Code.
+                // notification_text never appears here or in the push.
+                hook_dlog(&format!(
+                    "notification type={ntype} pane={} req_id={request_id}",
+                    pane_id.as_deref().unwrap_or("(none)")
+                ));
+                let mut push = json!({
+                    "request_id": request_id,
+                    "kind": "passive",
+                    "subkind": "notification",
+                    "pane_id": pane_id,
+                    "title": format!("claude notification: {ntype}"),
+                    "summary": "",
+                    "payload": { "notification_type": ntype },
+                    // Nothing blocks on this; keep the desktop's thread for
+                    // as short a time as the clamp allows.
+                    "wait_timeout_seconds": 5,
+                });
+                // The pane id above rides a stale-prone env var (Phase
+                // 81.G). Send the multiplexer session name so the desktop
+                // can recover the real pane — otherwise the light lands on
+                // whichever pane connected last.
+                if let Some(s) = session_meta::resolve_session_name() {
+                    push["tmux_session"] = json!(s);
+                }
+                let _ = rpc_call("feed.push", push).await;
                 return ExitCode::SUCCESS;
             }
 

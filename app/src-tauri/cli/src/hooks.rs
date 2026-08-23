@@ -88,7 +88,7 @@ pub struct HookEvent {
 /// `source=bundled` AND as the version recorded when no fetched spec
 /// was applied. Bump whenever you ship a new hook in a release with a
 /// matching `hooks/claude-code.json` change.
-const BUNDLED_CLAUDE_VERSION: &str = "1.4.0";
+const BUNDLED_CLAUDE_VERSION: &str = "1.5.0";
 
 /// The bundled fallback spec for Claude Code. Mirrors what
 /// `hooks/claude-code.json` carries at the same `ymux_hooks_version`
@@ -104,17 +104,22 @@ fn bundled_claude_spec() -> HookSpec {
             command: "${YMUX_BIN} claude-hook pre-tool-use".into(),
         },
     );
-    // v0.4.4: no longer register Notification / SessionStart — they were
-    // observability-only noise (the agent is driven by the main session, not
-    // by these alerts). Only the actionable lifecycle signals remain: Stop
-    // ("your turn") and SessionEnd ("session closed"). Any stale settings.json
-    // that still calls `claude-hook notification|session-start` is silent-acked
-    // by the CLI, so dropping them here is safe on already-set-up machines.
+    // v0.4.4 dropped Notification and SessionStart as observability-only
+    // noise. SessionStart stays dropped; a stale settings.json still
+    // calling `claude-hook session-start` is silent-acked by the CLI.
+    //
+    // v1.5.0 (Phase 84.B) brings Notification BACK, with a different job.
+    // It was noise as a feed item — a card per event that nobody acted on
+    // — but it is the only signal Claude Code emits for "the agent is
+    // blocked on the human", which is the red light on a pane. The CLI
+    // filters on notification_type and pushes the type alone; the desktop
+    // routes it to per-pane state and never to the feed or a toast.
     // UserPromptSubmit (v1.3.0, issue #4): turn-start signal for the
     // ymux-tools chrome Ticker. Fires in every permission mode (unlike
     // pre-tool-use, which the CLI short-circuits in acceptEdits/bypass).
     // The desktop keeps it off the feed — it only stamps per-pane turn timing.
     for (ev, sub) in [
+        ("Notification", "notification"),
         ("SessionEnd", "session-end"),
         ("Stop", "stop"),
         ("UserPromptSubmit", "user-prompt-submit"),
