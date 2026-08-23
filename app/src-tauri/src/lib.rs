@@ -7169,6 +7169,10 @@ fn teardown_workspace_runtime(
     if let Some(w) = webview {
         let _ = w.close();
     }
+    // Phase 85.C: and the OS window it may have been popped out into,
+    // which would otherwise outlive the workspace it belongs to. Its
+    // `Destroyed` handler does the rest of the cleanup.
+    workspace_browser::close_popout_window(app, workspace_id);
     workspace_browser::cleanup_workspace_sessions(workspace_id);
     // Drop the CLI-alignment verdict with the workspace it described.
     // Deliberately NOT dropped on mere disconnect: an unresolved skew should
@@ -11277,6 +11281,7 @@ pub fn run() {
             workspace_browser::workspace_browser_open_devtools,
             workspace_browser::workspace_browser_close,
             workspace_browser::workspace_browser_resize,
+            workspace_browser::browser_popout_open,
             tickets::tickets_list,
             tickets::tickets_resolve_project,
             tickets::tickets_dir_path,

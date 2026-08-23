@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "browser-popout",
+  "description": "Popped-out workspace Browser windows (browser-popout-*). Needs its own file rather than riding popout.json: glob matching is prefix-anchored, so 'browser-popout-w_1' does not match 'popout-*'. Mirrors the main window's capability so the webview bootstraps its IPC identically, plus window close/focus/title for self-management. The tunneled page itself lives in a CHILD webview whose origin is Remote, and every capability here declares a Local execution context — so the page cannot reach any of this.",
+  "windows": ["browser-popout-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-set-title",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "opener:default"
+  ]
+}

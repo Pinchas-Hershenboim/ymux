@@ -13,12 +13,23 @@ covers:
 The local-machine half of the app: what it detects on this box, what it installs here,
 what it remembers, and how it learns there is a new version. ~7,500 lines.
 
-## `settings.rs` (2,845) — `%APPDATA%\ymux\settings.json`
+## `settings.rs` (2,897) — `%APPDATA%\ymux\settings.json`
 
 Theme, fonts, terminal, hooks, notifications, updates, Claude, logs. Same discipline as
 `workspaces.json`: **atomic write + load-poison gate**. Every mutation emits
 `settings:changed` to the frontend, which is why a `ymux settings set` from the CLI
 re-themes the running app with no reload.
+
+**`settings_save` REPLACES the whole document, so any field the UI doesn't round-trip
+is a wipe waiting to happen.** That is not hypothetical: a client holding a copy from
+before `terminal.rtl` existed sent it back absent and erased the block, costing most of a
+day of RTL testing against settings that were not in force. Two fields are therefore
+carried over from the stored copy rather than taken from the client — `terminal.rtl` (the
+UI can only ever ADD it, so `None` cannot mean "delete"), and `floating_windows`, which is
+**Rust-owned**: its only writer is `set_browser_popout`, driven by the Browser pop-out
+window opening and closing (Phase 85.C). No UI surface edits `floating_windows`, so a
+value arriving from a client can only be a stale echo. If you add a field the backend
+writes on its own, add it to that carry list.
 
 `HookType` is the canonical enum of Claude Code hook types, serialized in the settings
 file, and it is what `rpc_server`'s `hook_toast_enabled` / `hook_toast_should_sound`

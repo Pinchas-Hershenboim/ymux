@@ -38,7 +38,7 @@ already-authenticated SSH session and open **a fresh SFTP channel per call**. Se
 are deliberately *not* cached: a new SFTP subsystem on an existing handle is cheap, and
 caching would mean chasing teardown semantics when the terminal pane disconnects.
 
-**`workspace_browser.rs` (851)** — **at most one child Webview per workspace**, attached
+**`workspace_browser.rs` (1,063)** — **at most one child Webview per workspace**, attached
 to the main window via `Window::add_child` (this is what pins `tauri = "=2.10.3"` with
 `features = ["unstable"]`). `workspace_browser_show(workspace_id, url, x, y, w, h)`
 creates or reveals it. All browser webviews share the **process-default WebView2
@@ -47,6 +47,52 @@ workspace and WebView2 does not support multiple environments in one process —
 surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_lock` for
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
+
+**Pop-out: a child Webview CANNOT be re-parented.** `add_child` binds it to its host
+window for life, so `browser_popout_open` (Phase 85.C) does destroy-and-respawn, not
+move: it drops the child under `main`, builds a `browser-popout-<ws>` OS window loading
+ymux's own `index.html`, and that window's frontend calls `workspace_browser_show` with
+its own label to spawn a fresh child underneath itself. **The page reloads.** That is
+inherent to the shape, not an oversight. `workspace_browser_show` therefore takes a
+`window_label` (default `"main"`) and it is read only on the SLOW path — the fast path
+just repositions whatever already exists.
+
+Two details that are load-bearing, both inherited from `popout_pane`: the command MUST
+stay `async` (on Windows `WebviewWindowBuilder` deadlocks when driven from a synchronous
+command — the shell appears, the webview never initializes, blank white), and the URL
+must be a CLEAN `index.html`, because the built app's asset protocol treats any suffix
+as a literal path and serves a blank page. The workspace id rides the window LABEL.
+
+**The devtools split is deliberate.** The popout WINDOW gets `.devtools(false)` — it
+renders ymux's own UI, and per the Cargo.toml:44-51 warning the `devtools` feature flips
+wry's runtime default to `true` for every webview, so the explicit opt-out is the only
+thing holding Rule #1. The CHILD webview inside it keeps `.devtools(true)`: that one
+shows a tunneled third-party page, nothing of ours.
+
+Geometry is saved in LOGICAL pixels on `WindowEvent::Destroyed` (`Destroyed`, not
+`CloseRequested` — it also covers a programmatic close). `outer_position` / `inner_size`
+report PHYSICAL, and the builder takes logical, so a straight round-trip would rescale
+the window by the scale factor on every open/close cycle on any HiDPI display. The same
+handler drops the child Webview — it belongs to a window that no longer exists, and
+leaving it in the map would send the next `workspace_browser_show` down the fast path
+onto a dead handle — clears the persisted mode, and emits `browser-popout:closed`.
+`teardown_workspace_runtime` calls `close_popout_window` so the window cannot outlive
+the workspace it belongs to.
+
+**`workspace_browser_open_devtools` calls `open_devtools()` with no `#[cfg]` around it,
+and that is deliberate.** The method is gated on the **tauri crate's**
+`any(debug_assertions, feature = "devtools")`, and `Cargo.toml:52` turns that feature on
+for every build, so the call compiles in release — and stops compiling loudly if anyone
+ever strips the feature. Phase 85.A removed a gate that *looked* like it mirrored tauri's
+but did not: inside this crate `feature = "devtools"` resolves against **`app`'s own**
+feature set, and `app` declares no `[features]` section at all. In release, where
+`debug_assertions` is off, the condition was therefore always false and the
+`#[cfg(not(...))]` arm compiled instead — the command returned `Err("this build was
+compiled without devtools support")` in 100% of shipped builds. Right-click → Inspect was
+unaffected the whole time, because `.devtools(true)` on the builder is not gated; that
+mismatch is what made it look like a UI bug. **Do not write `feature = "…"` in a `#[cfg]`
+inside `app/src-tauri/src/`** — the crate has no features, so every such cfg is silently
+false. These two were the only ones.
 
 **Who can call what, in this webview.** The old comment here said no IPC is injected into
 the child, and that was wrong; Phase 82.E corrected it in place. `tauri::manager::webview`

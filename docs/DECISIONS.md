@@ -299,6 +299,35 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 
 ## Decided
 
+### 2026-08-23 — Phase 85.C: the Browser pops out with the FULL chrome, and its X just closes
+
+- **Context:** three Browser complaints from Yossi in one message — the DevTools button
+  did nothing, X left the native webview stuck over the panels, and there was no way to
+  make the Browser a real separate window. The first two were bugs (85.A / 85.B); this is
+  the third. It finally lands what `63.E` described and never shipped: the 63.A schema
+  (`FloatingWindowMode::PopOut`, `popout_rect`, `popout_display`) had been sitting in
+  `settings.json` since 2026-06 with zero readers. The 2026-06-18 Phase 63 entry was
+  closed in the 2026-07-15 cleanup as "covered by later work" — for 63.E specifically
+  that was not true, which is why this is a new entry rather than a reopened one.
+- **Decision 1 — full chrome, not a bare browser window.** The alternative was a
+  `WebviewUrl::External(url)` window: ~70 lines, no port picker, no tabs. Yossi chose the
+  full chrome, so the popout loads ymux's own `index.html`, routes on the
+  `browser-popout-<ws>` label, and hosts its own child webview. Cost: `BrowserWindow.tsx`
+  had to be split into an injectable chrome (`BrowserChrome.tsx`) plus two hosts.
+- **Decision 2 — closing the popped-out window closes the Browser.** It does NOT
+  re-attach into the floating panel, unlike the terminal pop-out (`popout:closed` →
+  re-attach). Simpler, and it matches what an OS window's X means everywhere else.
+- **Decision 3 — the mode persists.** Quit popped out, launch popped out, same monitor
+  and size. This is what makes the 63.A fields load-bearing at last, and it forced
+  `floating_windows` to become Rust-owned with a carry in `settings_save`.
+- **Accepted cost — popping out RELOADS the page.** A child Webview cannot be
+  re-parented; `add_child` binds it to its host window for life. So the pop-out destroys
+  the child under `main` and the new window spawns its own. Not fixable without giving up
+  the native-child architecture. The button tooltip says so in all four locales.
+- **Note for whoever revisits 63.B/C ("Pane" mode):** the same `slotRect()` +
+  `windowLabel` seam this phase introduced is what a docked Pane mode would use — it
+  would be a third host, not a third code path.
+
 ### 2026-08-23 — `force_rtl`: a full-RTL terminal mode for remote panes, and why it is a fourth mode rather than a fix to the third
 - **Context:** Yossi asked for "RTL מלא - ולא שורה שורה - במרוחק". The existing default, `auto_per_line`, decides a paragraph direction for **every row independently** — the `RTL_DOMINANCE` vote, block-aware table/fence grouping, and `stripPaneFrame`. Each of those heuristics was added to fix a real reported bug, and each is a compromise. The ask was to stop deciding at all on remote panes.
 - **Decided — force `dir="rtl"` on every row; do NOT flip the grid.** A terminal is a fixed character grid: column 0 is always leftmost. Whole-grid RTL has already been tried here **by accident** — `i18n/index.ts` sets `dir` on `<html>` from the interface language, so a Hebrew UI flipped the terminal's grid — and it was filed as a root-cause bug, fixed with an unconditional `direction: ltr` on `.terminal-container`. `force_rtl` therefore changes only each row's paragraph direction; `rowsHost` keeps `dir="ltr"` and the grid origin is untouched. Everything downstream that computes a column from a pixel offset (selection, mouse, caret, fit) keeps working.
