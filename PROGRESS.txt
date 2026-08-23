@@ -5245,3 +5245,50 @@ table and the exact user steps are in the plan file and docs/DECISIONS.md.
 Files: app/src-tauri/src/browser_diag.js (new), app/src-tauri/src/workspace_browser.rs,
 app/src-tauri/src/lib.rs, app/src-tauri/Cargo.toml,
 .github/workflows/build-macos-intel.yml, docs/DECISIONS.md, FOLLOWUPS.md
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 82.E | CI result - and the entitlement theory is now DEAD
+--------------------------------------------------------------------------------
+First dispatch (32648472423 / 32648474564) failed on all three legs at the same
+place: one of my own new tests, `beacon_is_normalized_to_a_single_line`, built
+its hostile payload with a real LF inside a JSON string value instead of a `
+`
+escape - an invalid document, so serde rejected it before decode_diag could
+demonstrate anything. Test-only bug; 333 (win) and 321 (mac, per arch) other
+tests passed, which was itself the first proof the new macOS-only arms compile.
+Fixed and re-run.
+
+Second dispatch: ci-windows 32648794352 SUCCESS, build-macos 32648796206 SUCCESS
+on both arm64 and x64.
+
+THE NEW CI ASSERTIONS FIRED AND PASSED ON A REAL BUNDLE. From the arm64 leg:
+
+    CodeDirectory v=20500 size=377645 flags=0x10002(adhoc,runtime) ...
+    OK: hardened runtime flag present
+    OK: com.apple.security.cs.allow-jit = true
+    OK: com.apple.security.cs.allow-unsigned-executable-memory = true
+    OK: com.apple.security.cs.disable-library-validation = true
+    OK: com.apple.security.network.client = true
+    OK: com.apple.security.network.server = true
+    OK: com.apple.security.files.user-selected.read-write = true
+    --- Info.plist merge --- true
+
+That is the hard version of what was only inferred this morning: the hardened
+runtime flag IS set, Entitlements.plist DID land, and all six keys ARE on the
+shipped .app. The JIT entitlement cannot be why the site's JS is dead - and the
+FOLLOWUPS P1 worry that "CI structurally cannot catch a dropped entitlement" is
+now false for the plumbing. What is still unproven is the LAUNCH half: nothing
+has run this bundle on a Mac.
+
+Artifacts on run 32648796206 (90-day expiry): ymux-macos-arm64-dmg (22MB),
+ymux-macos-x64-dmg (23MB), plus the tarred .app of each.
+
+NEXT (needs a human, both halves - Rule #14):
+  1. WINDOWS FIRST, as the control. Open a workspace Browser on the same
+     service, then Settings -> Logs and capture every BROWSERDIAG line. A
+     healthy baseline has p=boot / feat / scripts / report and a NON-ZERO `gd`.
+  2. THEN the Mac. Drag the .app to /Applications (NOT from the mounted dmg -
+     App Translocation), `xattr -dr com.apple.quarantine /Applications/ymux.app`,
+     open the same URL, wait ~10s, copy every BROWSERDIAG and page_load line.
+     Fallback path: ~/Library/Application Support/ymux/debug.log
+  3. Read the verdict table in docs/DECISIONS.md (Open, 2026-08-23).
