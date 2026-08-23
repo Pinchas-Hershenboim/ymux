@@ -9426,6 +9426,9 @@ async fn popout_pane(
         .title(title.clone())
         .inner_size(win_w, win_h)
         .center()
+        // Same reason as the main window — see Phase 82.E in Cargo.toml.
+        // A popout pane is ymux's own UI showing PTY output.
+        .devtools(false)
         .build()
         {
             Ok(w) => {
@@ -9575,6 +9578,12 @@ pub fn run() {
             )
             .title("YMUX")
             .inner_size(1100.0, 700.0)
+            // Mandatory companion to the `devtools` feature in Cargo.toml
+            // (Phase 82.E): the feature flips the runtime default to
+            // `true` for every webview, and this one renders live PTY
+            // output — Rule #1. Only the workspace Browser child webview
+            // opts in, and only on macOS.
+            .devtools(false)
             .build()
             .map_err(|e| Box::<dyn std::error::Error>::from(format!("main window: {e}")))?;
             log_debug("APP", "setup: main webview created");

@@ -326,10 +326,61 @@ jobs:
           APP=$(ls -d "$BUNDLE_DIR"/*.app | head -1)
           echo "--- codesign --verify ---"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          # These two blocks used to end in `|| true` and only print. A
+          # missing entitlement or a missing hardened-runtime flag fails at
+          # LAUNCH, not at build, so a green run proved nothing — that is
+          # the gap FOLLOWUPS "HARDENED RUNTIME HAS NEVER BEEN LAUNCHED"
+          # is about. They assert now.
           echo "--- codesign -dvvv (identity, runtime flags) ---"
-          codesign -dvvv "$APP" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier|flags|Signature" || true
+          codesign -dvvv "$APP" 2>&1 | tee "$RUNNER_TEMP/cs.txt" \
+            | grep -E "Authority|Identifier|TeamIdentifier|flags|Signature" || true
+          # `hardenedRuntime: true` in tauri.macos.conf.json is a REQUEST.
+          # Without the runtime flag actually set, every entitlement below
+          # is inert and notarisation would reject the bundle.
+          if ! grep -qE 'flags=0x[0-9a-f]+\([^)]*runtime[^)]*\)' "$RUNNER_TEMP/cs.txt"; then
+            echo "::error::hardened runtime flag is NOT set on the .app"
+            grep -E '^CodeDirectory' "$RUNNER_TEMP/cs.txt" || true
+            exit 1
+          fi
+          echo "OK: hardened runtime flag present"
+
           echo "--- entitlements actually applied ---"
-          codesign -d --entitlements - --xml "$APP" 2>/dev/null | head -40 || true
+          # `--xml` on older codesign, `:-` on newer. Try both rather than
+          # turning a tooling change into a spurious red build.
+          codesign -d --entitlements - --xml "$APP" > "$RUNNER_TEMP/ent.plist" 2>/dev/null \
+            || codesign -d --entitlements :- "$APP" > "$RUNNER_TEMP/ent.plist" 2>/dev/null \
+            || { echo "::error::codesign could not read entitlements off the .app"; exit 1; }
+          plutil -lint "$RUNNER_TEMP/ent.plist" \
+            || { echo "::error::entitlements blob is not a readable plist — the app is signed without them"; exit 1; }
+          plutil -p "$RUNNER_TEMP/ent.plist"
+          # Every key is in Entitlements.plist because the runtime BREAKS
+          # without it (that file says which symptom maps to which key),
+          # not defensively. Assert, don't print.
+          for KEY in \
+            com.apple.security.cs.allow-jit \
+            com.apple.security.cs.allow-unsigned-executable-memory \
+            com.apple.security.cs.disable-library-validation \
+            com.apple.security.network.client \
+            com.apple.security.network.server \
+            com.apple.security.files.user-selected.read-write
+          do
+            VAL=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$RUNNER_TEMP/ent.plist" 2>/dev/null || echo MISSING)
+            if [ "$VAL" != "true" ]; then
+              echo "::error::entitlement $KEY is '$VAL' (expected true) — Entitlements.plist did not land"
+              exit 1
+            fi
+            echo "OK: $KEY = true"
+          done
+          # The sandbox must stay OFF — ymux spawns PTYs and shells out.
+          if /usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" "$RUNNER_TEMP/ent.plist" >/dev/null 2>&1; then
+            echo "::error::app-sandbox entitlement appeared — local panes would break"
+            exit 1
+          fi
+
+          # Same "did the plist actually merge?" question, one file over.
+          echo "--- Info.plist merge ---"
+          plutil -extract NSAppSleepDisabled raw "$APP/Contents/Info.plist" \
+            || { echo "::error::NSAppSleepDisabled missing — Info.plist was not merged into the bundle"; exit 1; }
           echo "--- spctl -a -vv (Gatekeeper) ---"
           set +e
           spctl -a -vv "$APP" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"

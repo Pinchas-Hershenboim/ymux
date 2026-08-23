@@ -25,6 +25,57 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 
 ## Open
 
+### 2026-08-23 - macOS: the site's JS is dead in the in-app Browser (diagnostic build)
+- **Symptom.** On macOS the workspace Browser loads a page and renders HTML/CSS,
+  but the site's own JavaScript never runs. Windows is fine, and
+  `workspace_browser.rs` has no `cfg(target_os)` arms at all - every line of it
+  was written against WebView2 and runs unchanged under WKWebView.
+- **Ruled out before writing any code.** Entitlements: `Entitlements.plist`
+  already carries `allow-jit` + `allow-unsigned-executable-memory` (they landed
+  in the same commit as `hardenedRuntime`, `048f1b2`), and the app's MAIN window
+  is itself a WKWebView that renders - so JavaScriptCore works in-process. CSP:
+  `tauri.conf.json` sets `"csp": null`, and Tauri's CSP does not apply to an
+  external URL regardless. `javascript_disabled` defaults to `false` in
+  tauri-runtime, so it is not a Tauri toggle.
+- **What shipped is a DIAGNOSTIC, not a fix.** Rule #17 means no local mac build,
+  so the probe is baked into the binary: `browser_diag.js` runs at document start
+  and reports through `document.title` -> `on_document_title_changed`, plus an
+  `on_page_load` line and a Rust-side `eval` probe that together separate three
+  hypotheses in one launch (engine dead / site scripts never executed - including
+  an ATS block on cross-origin `http://` script sources / a WebKit-vs-Chromium
+  SyntaxError that is not our bug at all).
+- **Why `document.title` and not the existing `ymux-ticket:` navigation bridge.**
+  Read out of wry 0.54.4: `fetch`/`<img>` cannot reach `on_navigation` (it is the
+  `decidePolicyForNavigationAction` delegate - frame navigations only); an iframe
+  beacon works on mac but is silently dead on Windows (`webview2/mod.rs` hooks
+  `NavigationStarting`, never `FrameNavigationStarting`), which would destroy the
+  Windows control run; and `location.href` is a main-frame navigation fired in
+  the exact window we are trying to measure. Title change is the one hook wry
+  implements symmetrically on both platforms.
+- **The probe is NOT cfg-gated to macOS, deliberately.** If it first executed on
+  the one machine we cannot debug, "no beacon in the log" would be ambiguous
+  between "the JS engine is dead" and "my probe is broken". Windows runs it first
+  as the control.
+- **OPEN QUESTION - does the `devtools` feature stay on after the verdict?**
+  Enabling it in Cargo.toml is the only way wry calls `setInspectable(true)`, i.e.
+  the only way Safari's Web Inspector can attach to a release build. But
+  tauri-runtime-wry reads it as `devtools.unwrap_or(true)`, so the feature flips
+  the default for EVERY webview - the main window included, which renders live PTY
+  output (Rule #1). It is neutralised by an explicit `.devtools(false)` on the
+  main and popout builders, and only the Browser child webview opts in, only on
+  macOS. That is a correct but load-bearing arrangement: anyone adding a webview
+  later inherits `true` by default. Decide after the diagnosis whether to keep it
+  (permanently useful for a browser feature) or drop the feature and the three
+  call sites together.
+- **Also corrected on the way.** The comment at `workspace_browser.rs` claiming no
+  Tauri IPC is injected into the child webview is factually wrong for 2.10.3 -
+  `__TAURI_INTERNALS__` is prepended to every webview including external URLs.
+  What actually denies the tunneled page is the capability layer (`Origin::Remote`
+  vs the `Local` execution context every capability declares). Left as a comment
+  because `capabilities/default.json` is scoped to `windows: ["main"]` and this
+  webview lives in the `main` window - a `remote` context added there would expose
+  it.
+
 ### 2026-08-18 — Project folders v4: a project folder IS a workspace (SUPERSEDES v2 and v1)
 - **What changed and why.** v2 and v3 were both rejected on sight for the same reason, which took four rounds to hear correctly. Yossi: *"it pins the whole workspace to a folder inside it, instead of opening a **sub-workspace** of that folder — and then it would let you open panes in that environment, directly on that folder."* The `ProjectFolder` entity is gone. What it modelled — a directory on a host you keep coming back to — is a workspace with a `cwd`; the only field genuinely missing from the schema was a parent.
 - **Decided (Yossi's calls, 2026-08-18):**
