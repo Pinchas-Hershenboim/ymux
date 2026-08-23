@@ -12,7 +12,16 @@ export type Shortcuts = { copy: string, paste: string, select_all: string, find:
  * Ctrl+Alt+B (B for "brief"). #[serde(default)] so pre-17
  * settings.json files don't need to be touched.
  */
-summarize_claude: string, 
+summarize_claude: string, command_palette: string, toggle_sidebar: string, 
+/**
+ * Plain Ctrl+B. Only fires when focus is OUTSIDE a terminal — inside
+ * one, Ctrl+b is tmux's prefix and has to reach the PTY.
+ */
+toggle_sidebar_soft: string, toggle_maximize: string, focus_zoom: string, reset_terminal: string, distribute_evenly: string, split_horizontal: string, split_vertical: string, close_pane: string, split_or_move_left: string, split_or_move_right: string, split_or_move_up: string, split_or_move_down: string, quadrant_top_left: string, quadrant_top_right: string, quadrant_bottom_left: string, quadrant_bottom_right: string, 
+/**
+ * Tab cycling. Only fires in a tabs-mode workspace.
+ */
+tab_next: string, tab_prev: string, 
 /**
  * When true and the terminal has a selection, plain Ctrl+C copies
  * to clipboard instead of sending SIGINT. Matches Windows Terminal
