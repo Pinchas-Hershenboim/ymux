@@ -234,7 +234,7 @@ export function PaneView(p: Props) {
   // tmux" or "can I exec there"; that is what `caps()` is for.
   const isSsh = () => isRemoteEffective(p.pane, p.workspaceConnection);
   // macOS port: a LOCAL workspace on mac has a local tmux server too —
-  // `caps().tmuxPersistence` says so (capsOf branches on the host OS), so
+  // `caps().sessionPersistence` says so (capsOf branches on the host OS), so
   // the Connect probe → picker and the tmux/regular toggle apply there.
   // These two only pick platform-specific copy / the native folder dialog;
   // SSH-only commands (ensure_connected, SFTP, ports) keep isSsh().

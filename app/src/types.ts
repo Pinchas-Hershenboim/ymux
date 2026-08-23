@@ -404,7 +404,7 @@ const LOCAL_CAPS: ConnCaps = {
 const LOCAL_UNIX_CAPS: ConnCaps = {
   ...LOCAL_CAPS,
   posixExec: true,
-  tmuxPersistence: true,
+  sessionPersistence: true,
 };
 
 const SSH_CAPS: ConnCaps = {

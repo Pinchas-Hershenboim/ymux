@@ -179,6 +179,7 @@ export function LocalSetupFlow(p: Props) {
   // Build the effective step list: checked tools (in canonical order) +
   // local hooks + only the *needed* parts of the WSL chain.
   const buildSteps = (): string[] => {
+    const r = inspect();
     const steps: string[] = [];
     for (const row of TOOL_ROWS) {
       if (checkedTools().has(row.step)) steps.push(row.step);
