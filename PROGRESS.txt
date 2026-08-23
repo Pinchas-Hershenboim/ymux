@@ -6116,3 +6116,24 @@ Vault: App.css is not covered by docs/vault — no page to update. The staleness
 vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
 Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
+
+[2026-08-23 21:31] Phase 84.G — top-center overlay lanes (session ticker vs. toasts)
+  Report: the Claude-usage pill sits top-center and every app message was
+  rendering underneath it — enabling sound or hitting an error showed nothing.
+  Cause: .claude-usage-pill is position:fixed top:8px left:50% z-index:9000;
+  .summary-toast is top:12px left:50% z-index:230 — same pixels, pill wins by
+  39x. That toast is the app's ONLY global message surface (~20
+  flashSummaryToast call sites, every ad-hoc error included). .connecting-pill
+  (top:14px z:9000) lost the same way: equal z, earlier in the DOM.
+  Fix (app/src/App.css, CSS only):
+    - .summary-toast   z 230 -> 9200
+    - .reconnect-toast z 231 -> 9201
+    - .connecting-pill z 9000 -> 9100
+    - new lane block: .app:has(.claude-usage-pill) pushes summary-toast +
+      connecting-pill to top:44px and reconnect-toast to top:88px, so pill and
+      message are both readable. :has() and not a fixed offset because the pill
+      only mounts for a live workspace with usage data.
+  Files: app/src/App.css (+44/-4). No vault page covers App.css (checked
+  .vault-lock.json) — vault-check drift is the pre-existing Go/insights one
+  from a0a3598, untouched here.
+  Status: compiles-only reasoning; NOT run live (Rule #17 - no local builds).
