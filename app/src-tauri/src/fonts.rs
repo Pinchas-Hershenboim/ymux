@@ -200,7 +200,9 @@ pub(crate) struct FontCatalogItem {
     pub installed: bool,
 }
 
-#[derive(Serialize)]
+/// `Debug` so `an_unknown_id_is_refused_before_anything_is_deleted` can call
+/// `unwrap_err()` — `Result::unwrap_err` has to be able to print the Ok side.
+#[derive(Debug, Serialize)]
 pub(crate) struct FontUninstallResult {
     /// File names deleted from the per-user font directory.
     pub removed: Vec<String>,
