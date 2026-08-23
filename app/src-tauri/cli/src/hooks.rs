@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug)]
 pub enum AgentStatus {
     NotDetected,
     Stub(String),
@@ -931,6 +932,60 @@ mod tests {
         let me = std::env::current_exe().expect("test binary path");
         let live = entry(&format!("\"{}\" claude-hook stop", me.display()));
         assert!(ymux_entry_is_runnable(&[live]));
+    }
+
+    /// The migration case end-to-end, as the bootstrap runs it on every
+    /// connect (`setup-hooks --agent claude --source bundled`, no --force):
+    /// a settings.json whose entries still point at the OLD binary must
+    /// come back as `would_register`, not `already_present`. The old
+    /// binary exists (the compat symlink keeps it alive), so the
+    /// runnable check alone is satisfied — this is what
+    /// `ymux_entry_points_at` adds.
+    #[test]
+    fn bootstrap_rerun_replaces_entries_on_the_old_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "ymux-hooks-migrate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("tmp dir");
+        let old_exe = dir.join("winmux");
+        let new_exe = dir.join("ymux");
+        fs::write(&old_exe, b"").expect("old exe");
+        fs::write(&new_exe, b"").expect("new exe");
+        let settings = dir.join("settings.json");
+        let old_cmd = |ev: &str| format!("{} claude-hook {ev}", old_exe.display());
+        fs::write(
+            &settings,
+            serde_json::to_string(&json!({
+                "hooks": {
+                    "Stop": [entry(&old_cmd("stop"))],
+                    "PreToolUse": [entry(&old_cmd("pre-tool-use"))],
+                    "UserPromptSubmit": [entry(&old_cmd("user-prompt-submit"))],
+                },
+                "ymux_meta": { "hooks_version": "1.5.0", "agent": "claude-code" }
+            }))
+            .expect("json"),
+        )
+        .expect("settings");
+
+        let spec = bundled_claude_spec();
+        let status = apply_to_settings(
+            &dir,
+            &settings,
+            &new_exe.display().to_string(),
+            &spec,
+            true,
+            false,
+        );
+        let AgentStatus::DryRun { would_register, already_present, .. } = status else {
+            panic!("expected DryRun, got {status:?}");
+        };
+        assert!(already_present.is_empty(), "nothing on the old binary is 'present': {already_present:?}");
+        for ev in ["Stop", "PreToolUse", "UserPromptSubmit"] {
+            assert!(would_register.iter().any(|e| e == ev), "{ev} must be rewritten");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

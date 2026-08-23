@@ -66,9 +66,13 @@ agent state (see `backend-rpc.md`). Bumping `manifest.json`'s
 `setup-hooks` also carries a **dead-hook check** (`ymux_entry_is_runnable`): a hook entry
 pointing at a binary that no longer exists is repaired rather than skipped forever. That
 is not hypothetical — a move left an entry pointing at the old absolute path, the hook
-then failed silently, and the desktop simply never heard from that agent again. The check
-is deliberately narrow: it repairs only entries it can prove are dead, because guessing
-wrong would rewrite a working hook on every single run.
+then failed silently, and the desktop simply never heard from that agent again. Phase 86.E widened it
+with `ymux_entry_points_at`: an entry of ours whose executable is not the binary being
+installed is stale too. That is the winmux→ymux migration case seen live — four entries
+on `~/.winmux/bin/winmux` (exists, runs, has no `last.env` fallback) and a 1.5.0 stamp.
+Because the bootstrap runs `setup-hooks --source bundled` on **every connect**, this is
+what makes every migrated install converge on the current CLI with no user action. The
+same rule rewrites an entry missing the spec's `timeout` (`ymux_entry_has_timeout`).
 
 The hook spec used to be a hardcoded `&[(event, subcmd, matcher)]` slice. It now ships as
 JSON at the repo root — `hooks/claude-code.json`, `hooks/codex.json`,

@@ -6146,3 +6146,11 @@ setup-hooks kept them because the old file exists. Added
 `ymux_entry_points_at(entries, exe_path)` to both writers' skip path: an
 entry of ours whose executable is not the one being installed is stale.
 Repaired this server with `ymux setup-hooks --agent claude --force`.
+Yossi: "this will hit every user who migrated winmux -> ymux". Checked the
+trigger: crates/ymux-bootstrap runs `setup-hooks --agent claude --source
+bundled` on EVERY connect (settings.hooks.auto_install defaults true), so
+the new skip rule is enough — first connect after the CLI update rewrites
+the old entries for everyone. Added an end-to-end dry-run test
+(`bootstrap_rerun_replaces_entries_on_the_old_binary`) that builds a
+settings.json on an existing old binary and asserts all three events come
+back as would_register.
