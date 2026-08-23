@@ -2674,6 +2674,55 @@ NOTES: no hook-spec change and no setup-hooks re-run needed - UserPromptSubmit
   NOTE: `gh pr create` was blocked by the permission layer twice, so no PR is
   open - the branch is pushed and CI-verified, Yossi opens the PR.
 ------------------------------------------------------------------
+
+==================================================================
+[2026-08-18 ~22:30 IDT] session=hook-pane-resolve (worktree)
+TASK: Phase 81.G - the pane-header hook path never worked. Two bugs, found
+  by Yossi actually RUNNING 81.F instead of trusting green CI.
+  SYMPTOM: 81.F installed, session-meta.json provably correct (auto_name
+  present for live sessions), pane header still showed the default name.
+BUG 1 (Phase 81's, inherited - NOT introduced by 81.F):
+  feed.push identifies the pane by WINMUX_PANE_ID, an env var the shell
+  inherited at spawn. Evidence from the live box: `tmux show-environment`
+  returns NO per-session value for any of 9 sessions; only the server-global
+  one exists (last-connector-wins). A tmux session that outlives its creating
+  pane pushes a pane_id the desktop no longer has -> find_workspace_for_pane
+  misses -> update_pane_auto_title returned in TOTAL SILENCE. That silence is
+  why this survived a month: Phase 81 shipped "compiles + unit-tested, NOT
+  live-verified", and claude_title never reached a pane header either.
+  FIX: resolve_hook_pane() - trust pane_id only when the layout contains it,
+  else reverse-map from the tmux_session name the push already carries (the
+  CLI resolves that by ASKING TMUX, exactly because the env var is stale-prone
+  - resolve_session_name's own comment says so). Reverse lookup through the
+  live pane_sessions/sessions maps, WSL panes included. Silent no-op now logs.
+BUG 2 (81.F's, mine): auto_name is written ONCE into a last-writer-wins store.
+  The file's own header says a lost read-modify-write "self-heals within one
+  turn" - true for claude_title (rewritten every turn), FALSE for a write-once
+  field. Observed live: an entry lost auto_name while its own updated_at never
+  moved = a concurrent writer saved a stale snapshot.
+  FIX: heal on `stop` - rebuild a missing auto_name from the transcript's first
+  user message, stamped with THAT ENTRY'S timestamp rather than now(), or every
+  heal would mint a new time and the "stable" name would churn.
+FILES:
+  M app/src-tauri/src/lib.rs (resolve_hook_pane, find_pane_by_tmux_session,
+    log_warn on the silent no-op)
+  M app/src-tauri/src/rpc_server.rs (both auto_title call sites resolve first)
+  M app/src-tauri/cli/src/session_meta.rs (scan_transcript + TranscriptScan,
+    recover_session_name, parse_stamp, compose_session_name shared by both
+    paths, heal in the stop arm; +6 tests)
+  M docs/DECISIONS.md, FOLLOWUPS.md
+RESULT: CLI 29/29. Live smoke of the heal: first prompt writes
+  "נעבור התהליך · 2026-08-18 22:28", auto_name is then WIPED on disk to
+  simulate the lost race, one `stop` restores it as
+  "נעבור התהליך · 2026-08-18 20:47" - stamp taken from the transcript entry
+  (18:47:13Z), which is what makes re-healing idempotent.
+  Desktop half compiled by CI only (no GTK locally). Bug 1's real test needs a
+  tmux session that OUTLIVED its pane - see FOLLOWUPS P1.
+NOTES: also found in the live hook payload that Claude Code now sends a
+  `session_title` field on UserPromptSubmit - an official session name we could
+  prefer over the heuristic two words. Deliberately NOT taken in this round:
+  get the pipe working first. grep: resolve_hook_pane, recover_session_name.
+==================================================================
 =======
 [PANE-OVERFLOW + PROJECT-FOLDERS] two features, plan functional-bouncing-ritchie
    2026-08-13 ~17:00 +0300. Branch claude/pane-overflow-project-folders-a7353c
@@ -4890,6 +4939,40 @@ the .app on a real Mac.
   Recovery, if any of this turns out wrong: archive/pre-merge-main
   (ce50f0f) and archive/pre-merge-release (d2a4f3a) are pushed tags.
 
+
+2026-08-23 (cont.)  Phase 81.G landed — 125 commits after it was written
+  Merge of origin/hook-pane-resolve into main.
+
+  Held up since 2026-08-18 with two unmerged bug fixes. Confirmed still
+  needed before touching it, rather than assumed: none of its five new
+  functions existed on main, YMUX_PANE_ID is still the identifier the
+  desktop injects, feed.push still resolves it with a bare
+  find_workspace_for_pane and no fallback, and the stop path still does
+  `entry.auto_name.clone().or(title)` with no rebuild. Both bugs live.
+
+  125 commits behind and ONE conflict, in docs/DECISIONS.md. Every Rust
+  file auto-merged. Two lines were dropped from the incoming side, both
+  from a 2026-07-16 bidi entry that main had already superseded on 08-19.
+
+  Three things the textual auto-merge could not know, fixed by hand:
+    - find_pane_by_tmux_session's doc said it covers "WSL panes too".
+      Since the zellij merge earlier today, LocalSession.tmux_session
+      also holds the ZELLIJ name of a native Windows pane, so the same
+      lookup now covers those. Comment corrected rather than left to
+      mislead the next reader.
+    - A test temp file was named winmux-recover-*.jsonl. Not a compat
+      shim (CLAUDE.md warns most winmux spellings are) -- just a name
+      written hours before the rename. Now ymux-recover-*.
+    - A doc comment named WINMUX_PANE_ID. The desktop injects
+      YMUX_PANE_ID and only mirrors the old spelling for pre-rename
+      installs, so the comment named the shim instead of the real var.
+
+  STILL NOT VERIFIED LIVE (rule 14), and this is the same gap that
+  CREATED bug 1: Phase 81 shipped "compiles + unit-tested", and the
+  never-verified part was exactly this path. The decisive test is a tmux
+  session that OUTLIVED its creating pane on a real box -- reconnect to
+  it and confirm the pane header takes Claude's title. The CLI half has
+  29/29 plus a live smoke for bug 2; the desktop half is CI-compiled only.
 ===============================================================================
 2026-08-23 | MERGED TO MAIN: the mac signing fix + the two-arch matrix
 Files: merge 47dfab0 (main 1cfbb1e -> 47dfab0, fast-forward)
@@ -5114,3 +5197,43 @@ TESTS ADDED (they run on CI, per Rule #17 — nothing was built locally):
 
 STATUS: compiles-untested until CI is green, and Rule #14 (not "verified")
 until the FOLLOWUPS P1 smoke list runs on a real machine.
+-------------------------------------------------------------------------------
+2026-08-23 (session close) | worktree + branches removed
+-------------------------------------------------------------------------------
+Containment re-checked at deletion time, not against the morning's plan
+-- which is the exact mistake the P2 above records: working tree clean,
+`origin/main..HEAD` empty, and both branches ancestors of `origin/main`.
+Deleted: worktree .claude/worktrees/mac-build-broken-b59d67, local
+branches claude/mac-build-broken-b59d67 + claude/macos-universal-signing,
+and remote origin/claude/macos-universal-signing (47dfab0, contained in
+main a87c764). Two worktrees from that P2 remain, untouched: another
+session may still be live in them.
+
+-------------------------------------------------------------------------------
+2026-08-23 (session close) | worktree cleanup, and one mistake worth recording
+-------------------------------------------------------------------------------
+Done: branch claude/macos-universal-signing deleted local + remote, and
+claude/mac-build-broken-b59d67 deleted locally. The worktree was
+deregistered and emptied; only the locked empty DIRECTORY remains (P3).
+
+THE MISTAKE, because it will otherwise be repeated. A cleanup command was
+written as `cd <worktree> && ... && git add -A && git commit`. By the time
+it ran, `git worktree remove` had already emptied that directory, so the
+`cd` landed in a now-nonexistent path, git walked UP to the enclosing main
+checkout -- .claude/worktrees/ lives inside it -- and `git add -A` staged
+every untracked file there: four local test binaries, ~264MB, committed to
+local `main` under a docs commit message.
+
+Caught before any push. `git reset --mixed origin/main` un-did it with the
+files untouched on disk, then FOLLOWUPS/PROGRESS were restored from HEAD
+after verifying the on-disk copies were merely stale (identical to
+e7c6e90) and not someone else's uncommitted work.
+
+Two rules earned:
+  1. Never `git add -A` in a shared checkout. Stage explicit paths. `-A`
+     has no blast radius limit and the main checkout is not clean-by-
+     construction -- it holds the user's own untracked artifacts.
+  2. A `cd` that fails does not stop a `&&` chain when the shell falls
+     back to another directory. Verify the working directory INSIDE the
+     command that mutates git state, not before it.
+

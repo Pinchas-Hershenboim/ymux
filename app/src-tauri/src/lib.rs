@@ -1375,6 +1375,89 @@ fn pane_auto_title_in(node: &LayoutNode, target: &str) -> Option<String> {
     }
 }
 
+/// Phase 81.G: which pane does a hook push actually belong to?
+///
+/// The push carries `pane_id` from the hook process's `YMUX_PANE_ID`
+/// env var, which the shell inherited when it was spawned. That value
+/// goes stale: a tmux session outlives the pane that created it, and
+/// `tmux set-environment -g` is tmux-SERVER-global (last-connector-wins),
+/// so it cannot be re-read per session either — on a live box every
+/// session reports no per-session value at all and the global one names
+/// whichever pane connected most recently. A stale id means
+/// `find_workspace_for_pane` misses and the title update silently does
+/// nothing, which is exactly how the Phase 81 pane-header path went a
+/// month without anyone noticing it never worked.
+///
+/// `tmux_session` is the trustworthy identifier: the CLI resolves it by
+/// asking tmux itself (`session_meta::resolve_session_name`), precisely
+/// because the env var can't be trusted. The desktop knows which pane is
+/// attached to which tmux session right now, so map back through that.
+///
+/// Order: trust `pane_id` when the layout actually contains it (cheap,
+/// and correct in the common case), else fall back to the tmux name.
+pub(crate) fn resolve_hook_pane(
+    state: &AppState,
+    pane_id: Option<&str>,
+    tmux_session: Option<&str>,
+) -> Option<String> {
+    if let Some(pid) = pane_id {
+        let known = {
+            let file = state.workspaces.lock().ok()?;
+            find_workspace_for_pane(&file, pid).is_some()
+        };
+        if known {
+            return Some(pid.to_string());
+        }
+    }
+    let tmux = tmux_session?;
+    let resolved = find_pane_by_tmux_session(state, tmux);
+    match &resolved {
+        // Rule #1: session/pane names only, never titles or prompts.
+        Some(p) => log_debug(
+            "RPC",
+            &format!(
+                "hook pane recovered via tmux: stale_pane_id={} tmux={tmux} pane_id={p}",
+                pane_id.unwrap_or("(none)")
+            ),
+        ),
+        None => log_warn(
+            "RPC",
+            &format!(
+                "hook pane unresolved: pane_id={} tmux={tmux} — title update skipped",
+                pane_id.unwrap_or("(none)")
+            ),
+        ),
+    }
+    resolved
+}
+
+/// Phase 81.G: reverse of `lookup_tmux_for_pane` — the pane currently
+/// attached to a multiplexer session name. Covers WSL panes (Phase 80 gave
+/// `LocalSession` a `tmux_session`) and, since the 2026-08-23 merge, native
+/// Windows panes too — those store their ZELLIJ session name in the same
+/// field. Only reached when a hook actually sends a name, which today means
+/// a tmux-backed pane; the zellij case falls out for free if one ever does.
+fn find_pane_by_tmux_session(state: &AppState, tmux_session: &str) -> Option<String> {
+    let session_id = {
+        let sessions = state.core.sessions.lock().ok()?;
+        sessions
+            .iter()
+            .find(|(_, s)| {
+                let name = match s {
+                    Session::Ssh(ss) => ss.tmux_session.as_deref(),
+                    Session::Local(ls) => ls.tmux_session.as_deref(),
+                };
+                name == Some(tmux_session)
+            })
+            .map(|(sid, _)| sid.clone())?
+    };
+    let pane_sessions = state.core.pane_sessions.lock().ok()?;
+    pane_sessions
+        .iter()
+        .find(|(_, sid)| sid.as_str() == session_id)
+        .map(|(pane_id, _)| pane_id.clone())
+}
+
 /// Phase 81: persist a Claude-derived title on a pane (stop-hook path,
 /// rpc_server feed.push). Touches ONLY `auto_title` — the user's manual
 /// `title` always wins in the UI. No-ops when the pane is gone or the
@@ -1388,6 +1471,14 @@ pub(crate) fn update_pane_auto_title(
     let changed = {
         let mut file = state.workspaces.lock().unwrap();
         let Some(ws_id) = find_workspace_for_pane(&file, pane_id) else {
+            // Phase 81.G: this used to return in total silence, which is
+            // why a permanently broken pane-header path looked like a
+            // working one. Callers should pre-resolve via
+            // `resolve_hook_pane`; reaching here means even that failed.
+            log_warn(
+                "WORKSPACE",
+                &format!("auto_title: no workspace holds pane_id={pane_id} — skipped"),
+            );
             return;
         };
         let Some(ws) = file.workspaces.iter_mut().find(|w| w.id == ws_id) else {
