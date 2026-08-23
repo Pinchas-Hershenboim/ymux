@@ -29,6 +29,7 @@ import {
   type SplitDirection,
 } from "./types";
 import type { TerminalInstance } from "./terminalInstance";
+import { trafficLight, type PaneAgentState } from "./paneAgentState";
 import { IconGlobe, IconFolderOpen, IconClose } from "./icons";
 
 interface Props {
@@ -53,7 +54,18 @@ interface Props {
   paneStatus: Record<string, { msg: string; err: boolean }>;
   paneStatusText: Record<string, string>;
   // issue #4: per-pane agent turn timing + a reactive clock for the Ticker.
-  agentRuns: Record<string, { startedAt: number | null; avgMs: number | null }>;
+  // Phase 84.B widened it with the effective agent state behind the
+  // traffic light.
+  agentRuns: Record<
+    string,
+    {
+      startedAt: number | null;
+      avgMs: number | null;
+      state: PaneAgentState;
+      stateSince: number | null;
+      seq: number;
+    }
+  >;
   agentClockMs: () => number;
   ensureTerm: (paneId: string, profile: RtlProfileKind) => TerminalInstance;
   onFocus: (paneId: string) => void;
@@ -100,6 +112,11 @@ interface Props {
   // maximized pane's header can show how many run in the background.
   maximizedPaneId: string | null;
   workspacePaneCount: number;
+  // Phase 84.A: this workspace renders its panes as a tab strip. Only
+  // forwarded to PaneView, which uses it to drop the (now meaningless)
+  // maximize button. SplitView spreads `{...s.all}` so it propagates
+  // through nested splits for free.
+  tabsMode: boolean;
   // Phase 24.D: onWorkspacesFileUpdate removed — its only consumers
   // were the (now-gone) ChatPane / ClaudeLogPane Match arms.
 }
@@ -148,6 +165,26 @@ export function LayoutView(p: Props) {
 function LeafPane(props: { all: Props; pane: Extract<LayoutNode, { kind: "pane" }> }) {
   const isActive = () => props.all.activePaneId === props.pane.pane_id;
   const kind = () => paneKindOf(props.pane);
+  // Phase 84.B: every input to the traffic light is already in scope
+  // here, so the verdict is computed once and passed down rather than
+  // re-derived per consumer. Accessors, not a spread of a plain object —
+  // Solid compiles `prop={expr}` into a getter, but a spread of an
+  // eagerly-evaluated object freezes at first render.
+  //
+  // Reading agentClockMs() ties this to the existing 250ms pulseTick, so
+  // the staleness cutoff re-evaluates for free — no second timer.
+  const waitingOnPermission = () =>
+    props.all.waitingPaneIds.has(props.pane.pane_id);
+  const agentLight = () => {
+    const run = props.all.agentRuns[props.pane.pane_id];
+    return trafficLight({
+      state: run?.state ?? "unknown",
+      stateSince: run?.stateSince ?? null,
+      waitingOnPermission: waitingOnPermission(),
+      connected: props.all.connectedPaneIds.has(props.pane.pane_id),
+      nowMs: props.all.agentClockMs(),
+    });
+  };
   // Phase 53 (rebased): the workspaceIsSsh local that fed the
   // FileManager Match arm is gone alongside the arm itself. The
   // prop stays on the Props interface so existing call sites in
@@ -167,6 +204,7 @@ function LeafPane(props: { all: Props; pane: Extract<LayoutNode, { kind: "pane" 
           isActive={isActive()}
           isMaximized={props.all.maximizedPaneId === props.pane.pane_id}
           backgroundPaneCount={Math.max(0, props.all.workspacePaneCount - 1)}
+          tabsMode={props.all.tabsMode}
           isWaiting={props.all.waitingPaneIds.has(props.pane.pane_id)}
           isNotified={
             props.all.panePulseEnabled &&
@@ -180,6 +218,10 @@ function LeafPane(props: { all: Props; pane: Extract<LayoutNode, { kind: "pane" 
           statusText={props.all.paneStatusText[props.pane.pane_id]}
           agentRun={props.all.agentRuns[props.pane.pane_id]}
           agentClockMs={props.all.agentClockMs}
+          agentLight={agentLight()}
+          agentWaitingOnPermission={waitingOnPermission()}
+          agentStateSince={props.all.agentRuns[props.pane.pane_id]?.stateSince ?? null}
+          agentNowMs={props.all.agentClockMs()}
           ensureTerm={props.all.ensureTerm}
           onFocus={props.all.onFocus}
           onConnect={props.all.onConnect}

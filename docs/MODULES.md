@@ -153,6 +153,26 @@ a `<SplitView>` (a flex container with two `LayoutView` children + a `<Divider>`
 Everything passes through to `PaneView` props is forwarded by spread (`...s.all`)
 to keep deeply-nested calls readable.
 
+### `PaneTabs.tsx`
+
+Phase 84.A. The tab strip shown above `.layout-root` when a workspace has
+`tabs_mode` set. Owns no state: the tab list is the layout tree's leaves in
+DFS order, the active tab is `activePaneId`, and selecting a tab is focusing
+a pane. Reordering is free — each tab carries `data-pane-id`, which is what
+`paneDrag` resolves drop targets against, so the existing drag store, ghost
+and `workspace_swap_panes` apply unchanged.
+
+### `AgentLight.tsx` / `paneAgentState.ts`
+
+Phase 84.B. The per-pane Claude traffic light: green = working, yellow =
+finished, red = blocked on you, nothing = unknown. `paneAgentState.ts` is
+pure and Solid-free and holds `trafficLight()`, the single verdict both the
+pane header and the tab strip call so the two cannot disagree; unit-tested in
+`paneAgentState.test.ts`. `AgentLight.tsx` paints it, using shape as well as
+hue (disc / ring / triangle) so it survives greyscale, 8px and red-green
+deficiency. State itself is owned by the backend — see `PaneAgentState` in
+`lib.rs` and the `pane:agent-run` event.
+
 ### `PaneView.tsx` (~223 lines)
 
 A single pane. Header has connection info, optional status text,
