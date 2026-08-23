@@ -391,6 +391,20 @@ pub struct Workspace {
     // Persisted collapse state of this workspace's subtree.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_collapsed: bool,
+    // Phase 84.A: render this workspace's panes as a tab strip — one pane
+    // fills the workspace area, the rest keep running in the background —
+    // instead of the split grid.
+    //
+    // The `layout` tree is UNTOUCHED by the mode. Tabs are just
+    // `collect_panes(layout)` in DFS order, so flipping to tabs and back
+    // restores the exact split layout with its ratios and nesting. That is
+    // the whole reason this is a flag and not a `LayoutNode::Tabs` variant:
+    // a third variant would make every `match` on LayoutNode non-exhaustive
+    // (~44 sites in the app crate alone), it would be lossy in both
+    // directions, and an older ymux reading a `Tabs` node out of
+    // workspaces.json could not render it at all.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tabs_mode: bool,
 }
 
 /// `skip_serializing_if` for bools. Plain `#[serde(default)]` still
@@ -803,6 +817,7 @@ mod tests {
         assert!(w.parent_id.is_none());
         assert!(!w.is_project_root);
         assert!(!w.is_collapsed);
+        assert!(!w.tabs_mode);
     }
 
     #[test]
@@ -816,7 +831,8 @@ mod tests {
         // `env` is skipped when empty, while `auto_port_forward`,
         // `claude_separate_account` and `last_active_at` are always
         // written — they predate the skip_serializing_if convention and
-        // are grandfathered. The three tree keys must NOT join them.
+        // are grandfathered. The three tree keys must NOT join them, and
+        // neither must Phase 84.A's `tabs_mode`.
         let raw = json!({
             "id": "w1",
             "name": "legacy",
@@ -826,7 +842,7 @@ mod tests {
         });
         let w: Workspace = serde_json::from_value(raw.clone()).unwrap();
         let back = serde_json::to_value(&w).unwrap();
-        for key in ["parent_id", "is_project_root", "is_collapsed"] {
+        for key in ["parent_id", "is_project_root", "is_collapsed", "tabs_mode"] {
             assert!(back.get(key).is_none(), "{key} must be elided, got {back}");
         }
         assert_eq!(raw, back, "an untouched workspace must round-trip byte-identical");

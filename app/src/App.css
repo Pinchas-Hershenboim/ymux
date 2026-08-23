@@ -864,12 +864,61 @@ body {
 /* issue #4: session Ticker label, pinned to the right of the pane header.
    tabular-nums keeps the M:SS from jittering as digits change. */
 .pane-agent-run {
-  margin-left: auto;
+  /* Phase 84.B: was `margin-left`, a physical property — in he/ar it
+     pinned the ticker to the visual LEFT while the rest of the header
+     mirrored, so the label ended up on the wrong side of the pane. */
+  margin-inline-start: auto;
   padding: 0 2px;
   font-size: var(--w-fs-sm);
   font-variant-numeric: tabular-nums;
   color: var(--w-accent, var(--w-text-dim));
   white-space: nowrap;
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Phase 84.B: the Claude traffic light.
+   Green = working, yellow = finished, red = blocked on you.
+   Shape carries the meaning alongside hue — a filled disc, a hollow
+   ring and a triangle are still three different things in greyscale,
+   at 8px, to someone with a red-green deficiency.
+   Sits in a fixed-size slot immediately before the ticker so it never
+   shifts as the M:SS digit count changes (same reasoning as the
+   sidebar's .ws-meta column).
+   ─────────────────────────────────────────────────────────────── */
+.pane-agent-light {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline: 0 6px;
+  border-radius: 50%;
+}
+/* Running: filled disc with a slow breathing halo. --w-success is the
+   theme's teal (#4ec9b0), not a saturated green — deliberate, it matches
+   every other "good" signal in the app. Don't "fix" it to #0f0. */
+.pane-agent-light[data-light="green"] {
+  background: var(--w-success, #4ec9b0);
+  animation: ymux-agent-light-pulse 2s ease-in-out infinite;
+}
+/* Finished: hollow ring. Reads as "stopped" rather than "off". */
+.pane-agent-light[data-light="yellow"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--w-warning, #e0af68);
+}
+/* Needs input: filled triangle — the only non-round shape, because this
+   is the one state the user has to act on. */
+.pane-agent-light[data-light="red"] {
+  background: var(--w-error, #f7768e);
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+  animation: ymux-agent-light-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ymux-agent-light-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pane-agent-light { animation: none !important; }
 }
 
 .pane-title {

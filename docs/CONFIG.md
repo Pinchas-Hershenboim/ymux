@@ -62,6 +62,13 @@ type Workspace = {
   parent_id?: string;
   is_project_root?: boolean;             // elided when false
   is_collapsed?: boolean;                // elided when false
+  // Phase 84.A: render this workspace's panes as a tab strip (one pane
+  // fills the workspace area, the rest keep running in the background)
+  // instead of the split grid. Presentational only — `layout` is never
+  // touched by the mode, so flipping to tabs and back restores the exact
+  // split tree with its ratios. Tabs are derived from the leaves of
+  // `layout` in DFS order; the active tab is the active pane.
+  tabs_mode?: boolean;                   // elided when false
 };
 
 type Connection =
