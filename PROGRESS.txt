@@ -6097,3 +6097,32 @@ cold (~813s vs ~420s on the next release build).
           the Phase 82.E beacon probe + devtools opt-in/opt-out pair, and the four pure
           Monitor support modules. Coverage 93% -> 95% (226 files). vault-check clean.
           Docs only — no code touched.
+2026-08-23 — Phase 84.F: the tab strip's CSS came back from the dead
+Task: Yossi reported the pane tabs render as a vertical "card" stacked on the
+left instead of a horizontal strip, and that clicking a tab does nothing.
+
+Root cause: ONE bad merge. Commit 417da22 ("Merge branch 'main' into
+claude/pane-tabs-status-indicator-…") resolved app/src/App.css by taking the
+other side wholesale and deleted the entire 136-line `.pane-tab*` block that
+84.A added and 84.B extended. Nothing else was lost — `git diff ddda7c97
+417da22 -- app/src/App.css` is 136 deletions and they are exactly that block.
+PaneTabs.tsx, the App.tsx wiring and all four i18n files survived intact.
+
+Both symptoms are that one deletion:
+  - Vertical "card": with no rules, `.pane-tabs` / `.pane-tabs-list` /
+    `.pane-tab` are plain block divs, so the tabs stack down the page at the
+    left margin instead of laying out in a 28px flex row.
+  - "Clicking does nothing": the click DOES work — focusPane sets
+    activePaneId and LayoutView swaps the rendered leaf. But `.pane-tab-active`
+    had no styling either, so with two same-looking shells there was no
+    feedback at all that anything had changed.
+
+Fix: restored the block verbatim from ddda7c97 (the pre-merge parent that had
+it), including 84.B's `.pane-tab .pane-agent-light { margin-inline: 0 }`.
+No behaviour change, no new rules invented.
+
+Files: app/src/App.css (+141)
+Vault: App.css is not covered by docs/vault — no page to update. The staleness
+vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
+Status: compiles-only claim not even applicable — CSS. Needs a real launch to
+confirm the strip lays out horizontally and the active tab is visibly active.
