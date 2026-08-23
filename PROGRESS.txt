@@ -6517,3 +6517,35 @@ MERGE CONFLICTS, both in append-only files:
 
 Vault re-checked after the merge: still up to date. Their App.css change is
 not in any vault's covers list.
+
+================================================================================
+2026-08-23 | CI GREEN — run 32658655727, 7m36s. Everything above is compiled.
+Files: none (result record)
+
+The whole pipeline ran for the first time since PR #18:
+  Vault freshness gate  PASS (coverage 96%, 225 files)
+  cargo test            PASS - 373 tests in the app lib (369 passed, 4 ignored,
+                        those four being the network-touching live_install
+                        tests), plus 45 / 7 / 39 in the crates
+  Type-check            PASS
+  Frontend build        PASS
+  go vet, go test       PASS
+  go build linux amd64 + arm64   PASS
+  SDK drift-guard       PASS
+"Assert the embedded server binaries were rebaked" is skipped, correctly - no
+Go source changed in this branch.
+
+CI caught exactly one thing across the three Rust changes: FontUninstallResult
+needed `Debug` for `unwrap_err()` in the unknown-id test. Nothing else in
+84.J/K/L had a compile error. That single failure is also the argument for the
+vault fix having been worth doing first - without it, none of this would have
+been checked at all.
+
+Rule #14 STILL APPLIES. Green means compiled and unit-tested, not run. The
+three live checks, none of which CI can do:
+  84.J  title a pane `work; calc` on Windows, confirm no calc runs, and
+        confirm Kill session still finds the session.
+  84.K  run two builds against one config dir; the older must log REFUSING
+        instead of silently winning.
+  84.L  install a catalog font, remove it, confirm the picker flips back to
+        the warning row and that the files and HKCU values are really gone.
