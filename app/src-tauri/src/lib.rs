@@ -1975,13 +1975,55 @@ pub(crate) fn sanitize_tmux_session_name(pane_id: &str) -> String {
     format!("ymux-{}", cleaned)
 }
 
-/// Phase 23.I: derive a tmux session name from a user-supplied pane
-/// title. Keeps Unicode (Hebrew, Arabic, CJK, etc.) so a title like
-/// "מחקר X" becomes a session literally named "מחקר_X". The only
-/// substitutions are tmux's hard-blockers — `.` and `:` — plus
-/// whitespace collapsing. Returns None when the title is empty or
-/// becomes empty after sanitization; the caller falls back to the
-/// pane-id-derived name in that case.
+/// One character of a session name, judged by a single question: is it
+/// safe to interpolate UNQUOTED into a command line typed into cmd.exe,
+/// PowerShell or a POSIX shell?
+///
+/// A whitelist rather than a blacklist of metacharacters, because the
+/// three shells do not agree on what is special and a blacklist silently
+/// misses whatever the next one adds.
+///
+/// Non-ASCII passes wholesale, and that clause is what keeps Phase 23.I's
+/// promise that a Hebrew or CJK title becomes a session of the same name:
+/// every metacharacter in all three shells is ASCII, so no letter outside
+/// it needs a special case — combining marks (niqqud) included. Controls
+/// and separators are excluded first, which also catches the non-ASCII
+/// line breaks (U+0085, U+2028, U+2029) that `is_ascii()` would wave past.
+pub(crate) fn session_name_char_is_safe(c: char) -> bool {
+    if c.is_control() || c.is_whitespace() {
+        return false;
+    }
+    c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii()
+}
+
+/// Phase 23.I: derive a tmux/zellij session name from a user-supplied
+/// pane title. Keeps Unicode (Hebrew, Arabic, CJK, etc.) so a title like
+/// "מחקר X" becomes a session literally named "מחקר_X". Returns None
+/// when the title is empty or becomes empty after sanitization; the
+/// caller falls back to the pane-id-derived name in that case.
+///
+/// **This is a security boundary, not a cosmetic cleanup.** Fixed
+/// 2026-08-23, FOLLOWUPS P1 of 2026-08-20. The name returned here is
+/// interpolated into `zellij attach -c <name>` by
+/// `build_zellij_attach_command`, which TYPES that line into the user's
+/// cmd.exe or PowerShell. Until this change the only substitutions were
+/// `.`, `:` and whitespace — tmux's own blockers — so `;`, `&`, `|`, `$`,
+/// backticks, quotes and `>` rode a pane title straight into a shell
+/// line, and a pane titled `work; calc` produced a session name that ran
+/// `calc`. Rule #3 in spirit: the command was built by string
+/// concatenation, and the comment at the concatenation site asserted a
+/// sanitizer (`sanitize_session_name`) that has never existed here.
+///
+/// The whitelist lives HERE, at the source, rather than as quoting at
+/// each use site, because there is no quoting that is correct in cmd.exe
+/// and PowerShell at the same time — they disagree about `^`, `%`,
+/// backticks and single quotes — and the attach line must parse in both.
+///
+/// Self-inflicted (the user's own title, their own shell), so this was
+/// never a privilege boundary. The mundane consequence is the expensive
+/// one: a title with a metacharacter produced a session under a DIFFERENT
+/// name than the one ymux went on to track, which is a candidate
+/// explanation for "Kill session did nothing".
 pub(crate) fn sanitize_tmux_session_name_for_title(title: &str) -> Option<String> {
     let trimmed = title.trim();
     if trimmed.is_empty() {
@@ -1990,11 +2032,7 @@ pub(crate) fn sanitize_tmux_session_name_for_title(title: &str) -> Option<String
     let mut out = String::with_capacity(trimmed.len());
     let mut prev_was_underscore = false;
     for c in trimmed.chars() {
-        let replaced = if c == '.' || c == ':' || c.is_whitespace() {
-            '_'
-        } else {
-            c
-        };
+        let replaced = if session_name_char_is_safe(c) { c } else { '_' };
         if replaced == '_' {
             // Collapse runs of underscores (from whitespace runs) to one.
             if prev_was_underscore {
@@ -2714,7 +2752,19 @@ fn spawn_local_pty(
             let id_clone = id.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-                let line = build_zellij_attach_command(&name);
+                let Some(line) = build_zellij_attach_command(&name) else {
+                    // The name derives from a user pane title, so it is
+                    // logged by LENGTH and never by value (Rule #1 in
+                    // spirit: user content stays out of the log).
+                    log_warn(
+                        "PTY",
+                        &format!(
+                            "zellij attach skipped for pane={id_clone}: session name is not shell-safe ({} chars)",
+                            name.chars().count()
+                        ),
+                    );
+                    return;
+                };
                 let mut sessions = sessions_clone.lock().unwrap();
                 if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
                     use std::io::Write as _;
@@ -2997,11 +3047,22 @@ async fn zellij_run(args: &[String], what: &str) -> bool {
 /// `zellij attach` has no `--layout`, and the root `-l` conflicts with
 /// `attach`. Every setting reaches the session through the config file that
 /// `spawn_local_pty` points `ZELLIJ_CONFIG_FILE` / `ZELLIJ_CONFIG_DIR` at.
-fn build_zellij_attach_command(name: &str) -> String {
-    // Session names come from `sanitize_session_name`, which emits only
-    // `[A-Za-z0-9_-]`, so there is nothing here to quote or escape. Asserted
-    // by `zellij_attach_command_is_a_single_safe_line` below.
-    format!("zellij attach -c {name}\r\n")
+///
+/// Returns `None` for a name that is not safe to type unquoted (see
+/// `session_name_char_is_safe`). This is the last gate, not the first:
+/// a name derived from a pane title is already safe by construction, so
+/// a name that fails here came from the picker — an EXISTING session
+/// created outside ymux, e.g. `zellij -s 'a;calc'` typed by hand.
+///
+/// Refusing beats mangling. Mangling would attach to, or create, a
+/// session under a name that is not the one the user picked, silently.
+/// Refusing leaves the pane in a plain working shell — the same failure
+/// mode this function already accepts when zellij is not installed.
+fn build_zellij_attach_command(name: &str) -> Option<String> {
+    if name.is_empty() || !name.chars().all(session_name_char_is_safe) {
+        return None;
+    }
+    Some(format!("zellij attach -c {name}\r\n"))
 }
 
 /// Parse `zellij list-sessions -n` (`--no-formatting`, which upstream
@@ -12305,7 +12366,8 @@ mod zellij_tests {
     // running produced `spike [Created 12m 30s ago]` verbatim.
     use super::{
         build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions,
-        pick_zellij_resources, zellij_args_delete_force, zellij_args_list,
+        pick_zellij_resources, sanitize_tmux_session_name_for_title,
+        session_name_char_is_safe, zellij_args_delete_force, zellij_args_list,
         zellij_args_write_chars, zellij_spawn_error_outcome, KillSessionOutcome,
         ZellijOutcome,
     };
@@ -12641,9 +12703,14 @@ mod zellij_tests {
 
     #[test]
     fn zellij_verbs_pass_the_name_as_one_argv_slot() {
-        // Rule #3: no shell in between, so a name is never re-parsed. Names
-        // come from `sanitize_session_name` and cannot contain spaces today —
-        // this pins the argv shape so that stays true if it ever changes.
+        // Rule #3: no shell in between, so a name is never re-parsed. This
+        // is the SAFE half of the pair, and the reason the argv shape is
+        // pinned: a hostile name is harmless here precisely because
+        // nothing re-parses it — which is exactly what
+        // `build_zellij_attach_command` cannot rely on, since it types its
+        // line into a shell, so it refuses such a name instead. (This
+        // comment used to cite `sanitize_session_name`, a function that
+        // has never existed in this tree.)
         let args = zellij_args_delete_force("weird name; rm -rf");
         assert_eq!(args.len(), 3);
         assert_eq!(args[2], "weird name; rm -rf");
@@ -12669,12 +12736,150 @@ dead-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
 
     #[test]
     fn zellij_attach_command_is_a_single_safe_line() {
-        let cmd = build_zellij_attach_command("ymux-p_1a2b_0");
+        let cmd = build_zellij_attach_command("ymux-p_1a2b_0")
+            .expect("a pane-id-derived name is always safe");
         assert_eq!(cmd, "zellij attach -c ymux-p_1a2b_0\r\n");
         // One line typed into a shell: a stray newline would run whatever
         // followed it as a second command.
         assert_eq!(cmd.matches('\n').count(), 1);
         assert!(cmd.ends_with("\r\n"));
+    }
+
+    // ── The P1 that produced all of the above ───────────────────────────
+    //
+    // Filed 2026-08-20: a pane title could break its own session name. The
+    // test that was supposed to be guarding this line (above) only ever
+    // fed it `ymux-p_1a2b_0` — a name that could not have failed — so it
+    // passed for as long as the hole existed. These feed it the input that
+    // matters.
+
+    #[test]
+    fn attach_command_refuses_a_name_it_cannot_safely_type() {
+        // Each of these ends the `zellij attach` command and starts another
+        // one in at least one of cmd.exe / PowerShell / a POSIX shell.
+        for hostile in [
+            "work; calc",
+            "work && calc",
+            "work | calc",
+            "work & calc",
+            "$(calc)",
+            "`calc`",
+            "work > out.txt",
+            "work\ncalc",
+            "work\r\ncalc",
+            "a\u{2028}calc",
+            "it's",
+            "say \"hi\"",
+            "50%PATH%",
+            "up^caret",
+            "",
+        ] {
+            assert!(
+                build_zellij_attach_command(hostile).is_none(),
+                "must refuse to type {hostile:?} into a shell"
+            );
+        }
+    }
+
+    #[test]
+    fn a_title_cannot_smuggle_a_second_command_through_the_sanitizer() {
+        // The real path: title -> sanitizer -> attach line. Whatever the
+        // title, the produced name must survive the last gate, and the
+        // command must stay ONE line.
+        for title in [
+            "work; calc",
+            "work && calc",
+            "$(calc)",
+            "`calc`",
+            "a|b",
+            "a>b",
+            "it's mine",
+            "say \"hi\"",
+            "50%PATH%",
+            "tab\there",
+            "nl\nhere",
+        ] {
+            let name = sanitize_tmux_session_name_for_title(title)
+                .unwrap_or_else(|| panic!("{title:?} should still yield a name"));
+            let cmd = build_zellij_attach_command(&name)
+                .unwrap_or_else(|| panic!("{title:?} -> {name:?} was refused"));
+            assert_eq!(
+                cmd.matches('\n').count(),
+                1,
+                "{title:?} produced more than one line: {cmd:?}"
+            );
+            for bad in [';', '&', '|', '$', '`', '>', '<', '^', '%', '\'', '"', '(', ')'] {
+                assert!(
+                    !name.contains(bad),
+                    "{title:?} left {bad:?} in the session name {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_whitelist_still_keeps_phase_23i_promise_about_unicode_titles() {
+        // The whole point of the original sanitizer: a Hebrew title becomes
+        // a session of the same name. Tightening it for shell safety must
+        // not quietly turn that back into underscores.
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("מחקר X").as_deref(),
+            Some("מחקר_X")
+        );
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("作業").as_deref(),
+            Some("作業")
+        );
+        // Niqqud are combining marks, not alphanumerics — the rule is
+        // "non-ASCII passes" precisely so they survive rather than being
+        // punched out of the middle of a word.
+        let pointed = "עבודה\u{05B8}";
+        assert_eq!(
+            sanitize_tmux_session_name_for_title(pointed).as_deref(),
+            Some(pointed)
+        );
+        assert!(build_zellij_attach_command(pointed).is_some());
+    }
+
+    #[test]
+    fn sanitizer_keeps_its_old_contract_where_it_was_already_right() {
+        // Regressions guarded: tmux's own blockers still go, runs of
+        // replacements still collapse to one underscore, the result is
+        // still trimmed of leading/trailing underscores, an all-junk title
+        // still yields None so the caller falls back to the pane id, and
+        // the 100-CHAR (not byte) cap still holds on a Hebrew title.
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("a.b:c").as_deref(),
+            Some("a_b_c")
+        );
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("a   b").as_deref(),
+            Some("a_b")
+        );
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("  ...x...  ").as_deref(),
+            Some("x")
+        );
+        assert_eq!(sanitize_tmux_session_name_for_title(""), None);
+        assert_eq!(sanitize_tmux_session_name_for_title("   "), None);
+        assert_eq!(sanitize_tmux_session_name_for_title(";;;"), None);
+        let long = "מחקר".repeat(60);
+        let capped = sanitize_tmux_session_name_for_title(&long).expect("non-empty");
+        assert_eq!(capped.chars().count(), 100);
+    }
+
+    #[test]
+    fn safe_char_rule_is_the_one_both_call_sites_share() {
+        for c in ['a', 'Z', '7', '_', '-', 'מ', '作'] {
+            assert!(session_name_char_is_safe(c), "{c:?} should be allowed");
+        }
+        for c in [
+            ';', '&', '|', '$', '`', '>', '<', '^', '%', '(', ')', '{', '}',
+            '\'', '"', ' ', '\t', '\n', '\r', '.', ':', '\u{0085}', '\u{2028}',
+            '\u{00A0}', '\u{0000}',
+        ] {
+            assert!(!session_name_char_is_safe(c), "{c:?} should be rejected");
+        }
     }
 }
 

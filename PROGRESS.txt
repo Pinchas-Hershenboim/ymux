@@ -6184,3 +6184,62 @@ never by FOLLOWUPS.md:NN, because the numbers shift on every add or archive.
 
 STATUS: documentation only, no code touched, nothing to build. Open counts
 after the pass: P0 0, P1 18, P2 29, P3 25.
+
+================================================================================
+2026-08-23 | Phase 84.F - a pane title could inject a command into its own shell
+Files: app/src-tauri/src/lib.rs, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md
+Closes FOLLOWUPS P1 of 2026-08-20 ("A PANE TITLE CAN BREAK ITS OWN SESSION NAME")
+
+The entry's own best evidence was a comment. `build_zellij_attach_command`
+carried "session names come from `sanitize_session_name`, which emits only
+[A-Za-z0-9_-], so there is nothing here to quote or escape". No function by
+that name has ever existed in this tree. What actually feeds that line is
+`sanitize_tmux_session_name_for_title`, which substituted `.`, `:` and
+whitespace and nothing else - so `;`, `&`, `|`, `$`, backtick, quotes, `>` and
+`^` survived a user's pane title into `format!("zellij attach -c {name}\r\n")`,
+which is typed VERBATIM into cmd.exe or PowerShell 900ms after pane spawn.
+A pane titled `work; calc` ran calc.
+
+Self-inflicted (own title, own shell), so never a privilege boundary - but the
+mundane half is the expensive one and is why this was P1: the session gets
+created under a different name than the one ymux tracks, which is a live
+candidate for "Kill session did nothing".
+
+FIXED AT THE SOURCE, not by quoting at the use site. There is no quoting that
+is correct in cmd.exe and PowerShell simultaneously - they disagree about `^`,
+`%`, backticks and single quotes - and this line must parse in both.
+  session_name_char_is_safe(c): ASCII alphanumeric, `_`, `-`, or any NON-ASCII
+    char that is neither control nor whitespace.
+  The non-ASCII clause is what keeps Phase 23.I's promise that a Hebrew title
+    becomes a session of the same name. Every metacharacter in all three
+    shells is ASCII, so Hebrew/Arabic/CJK need no special case and niqqud
+    (combining marks, NOT alphanumerics) survive rather than being punched out
+    of the middle of a word. Controls/separators are excluded first, which
+    also catches U+0085 / U+2028 / U+2029 - non-ASCII line breaks that an
+    is_ascii() test alone would wave straight past.
+  build_zellij_attach_command now returns Option and REFUSES a name it cannot
+    type. Refusing beats mangling: mangling attaches to a session that is not
+    the one picked, silently, while refusing leaves the pane in a plain
+    working shell - the failure mode this function already accepts for a
+    missing zellij. Only a picker-supplied name (a session made outside ymux
+    by hand) can reach the refusal.
+
+Audited the neighbours rather than assuming: the tmux/SSH attach script
+(build_tmux_attach_script) and `tmux kill-session` already use shell_quote,
+and zellij_args_delete_force was already argv-only. The Windows zellij line
+was the single hole. Two other comments repeating the `sanitize_session_name`
+claim were corrected.
+
+TESTS: six, five of them hostile input. Worth recording WHY the old one missed
+this - `zellij_attach_command_is_a_single_safe_line` fed the function
+`ymux-p_1a2b_0`, a name that could not fail, so it passed for the entire life
+of the hole. The new ones drive the real path (title -> sanitizer -> attach
+line) and assert the command stays ONE line; plus a Unicode test pinning the
+Phase 23.I promise, and a regression test for the parts of the old contract
+that were already right (dot/colon, run collapsing, trimming, None on an
+all-junk title, the 100-CHAR-not-byte cap).
+
+STATUS: per Rule #17 nothing was built or tested here - CI is the verification
+step. Rule #14 still applies after that: the live check is titling a pane
+`work; calc` on Windows, confirming no calc, and confirming Kill session still
+finds the session.
