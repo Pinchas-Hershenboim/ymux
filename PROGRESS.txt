@@ -6243,3 +6243,64 @@ STATUS: per Rule #17 nothing was built or tested here - CI is the verification
 step. Rule #14 still applies after that: the live check is titling a pane
 `work; calc` on Windows, confirming no calc, and confirming Kill session still
 finds the session.
+
+================================================================================
+2026-08-23 | Phase 84.G - workspaces.json schema gate (the P1's option (b))
+Files: app/src-tauri/src/lib.rs, FOLLOWUPS.md, FOLLOWUPS-ARCHIVE.md, BACKLOG.md
+Closes FOLLOWUPS P1 of 2026-08-18 ("TWO WINMUX BUILDS SHARE %APPDATA%...")
+
+workspaces.json has carried a `version` field since forever and NOTHING has
+ever read it - it was written as a literal 1 and ignored on load. It is
+load-bearing from here on.
+
+  WORKSPACES_SCHEMA_VERSION = 2, stamped on every write through
+    `serialize_with` rather than by assigning the field. The invariant is
+    "what we WRITE is always current", and serialization is the one place
+    that cannot be bypassed; an assignment would have to be repeated at every
+    construction site and would drift the first time one was added.
+  schema_gate(on_disk, last_written) extracted as a pure function - the same
+    reason resolve_effective_session_name was extracted - because the
+    interesting cases need two binaries sharing a config dir and no test can
+    arrange that. Three outcomes:
+      Refuse        on-disk newer than this build. Hard Err out of
+                    save_to_disk. Merging cannot help: we would have to
+                    understand keys we have never heard of.
+      WarnDowngrade on-disk older than what we last wrote - an old build got
+                    here first. Write ANYWAY. Refusing would leave the user
+                    unable to save for as long as that build is open, and the
+                    three-way merge is the actual repair.
+      Write         everything else.
+  schema_version_of is deliberately tolerant. Absent, empty, malformed,
+    version-less, string, negative and float all read as None = carry on. A
+    refusal hangs off this function, so a stray byte in the file must never
+    become "you cannot save". BOM stripped first - one already bricked this
+    file once.
+
+THE LIMIT, AND IT IS NOT SMALL: this does nothing about the 0.4.x builds
+already on disk. They never read the field and will write v1 back over a v2
+file, so the incident as REPORTED is not prevented in the backwards direction.
+What covers that case is workspaces_merge, which already re-reads and merges
+rather than dumping, and treats a field that vanished on the other side as an
+absence rather than a deletion. What the gate adds for that case is the LOG
+LINE - and that is exactly the half that was missing, because the entry's own
+words were "NOTHING appears in the log of the new build, because it did
+nothing". Option (a) from the entry, the pid lock, is the only mechanism that
+can stop an already-shipped binary; it is NOT done and went to BACKLOG rather
+than being left implied, together with the note that it should be solved with
+the tauri-plugin-single-instance P2 about two ymux.exe racing on log rotation,
+not twice.
+
+Deliberately NOT extended to settings.rs, which has the same atomic-write +
+load-poison shape: the loss mode there is smaller, and a lock would cover both.
+Recorded in the BACKLOG entry so the omission is a decision, not an oversight.
+
+TESTS: seven. The stamping across a carried 0/1/current, a legacy file with no
+version key still loading as v1, the tolerant reader across nine junk inputs,
+the gate in all three directions, and the case that a legacy file we have not
+written over yet is NOT a downgrade. An earlier draft of the gate test asserted
+`ours + 1 > ours` - arithmetic, not the code - which is why the decision was
+extracted into a function instead.
+
+STATUS: per Rule #17 nothing was built or tested here; CI is the verification
+step. Live check after that: run two builds against one config dir and confirm
+the older one now says REFUSING instead of silently winning.

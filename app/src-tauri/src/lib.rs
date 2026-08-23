@@ -528,7 +528,7 @@ pub(crate) use ymux_types::{
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 struct WorkspacesFile {
-    #[serde(default = "default_version")]
+    #[serde(default = "default_version", serialize_with = "serialize_schema_version")]
     version: u32,
     #[serde(default)]
     active_workspace_id: Option<String>,
@@ -542,8 +542,107 @@ struct WorkspacesFile {
     groups: Vec<WorkspaceGroup>,
 }
 
+/// The workspaces.json schema this binary writes.
+///
+/// **Bump this whenever a field is added that an older build would drop on
+/// its next save** — that is the entire trigger, and the only one.
+///
+/// v1 -> v2 (2026-08-23): the field existed since forever and nothing ever
+/// read it. It is load-bearing from here on, for the failure recorded as
+/// FOLLOWUPS P1 of 2026-08-18: a stale build sharing `%APPDATA%\\ymux`
+/// predated `parent_id` / `is_project_root`, serde dropped the keys it did
+/// not know, and `save_to_disk` rewrote the WHOLE document from the struct,
+/// so every save by the old app erased the workspace nesting. The symptom
+/// was maximally misleading: pinned folders reappeared as top-level
+/// workspaces, worktrees stopped listing, and NOTHING appeared in the new
+/// build's log, because the new build had not done anything.
+///
+/// **Know what this does and does not buy**, so nobody reads more safety
+/// into it than is here:
+///   - It stops THIS build clobbering a file written by a FUTURE one. That
+///     is the dangerous direction — losing user data to an older binary —
+///     and it is a hard refusal.
+///   - It cannot stop an ALREADY-SHIPPED 0.4.x build, which never reads
+///     this field and will happily write v1 back over a v2 file. Nothing
+///     added here can reach a binary that is already on disk. What covers
+///     that case is `workspaces_merge`, which re-reads and merges rather
+///     than dumping, and treats a field that vanished on the other side as
+///     an absence rather than a deletion.
+///   - What it adds for that case is a LOG LINE. The original incident
+///     cost hours precisely because it was silent; a downgrade of the
+///     on-disk version now says so.
+pub(crate) const WORKSPACES_SCHEMA_VERSION: u32 = 2;
+
+/// A `version` key that is absent entirely means a pre-versioning file.
 fn default_version() -> u32 {
     1
+}
+
+/// Stamp the CURRENT schema version on every write, whatever the loaded
+/// struct happens to be carrying.
+///
+/// A `serialize_with` rather than assigning the field somewhere, because
+/// the invariant is "what we WRITE is always current" and serialization is
+/// the one place that cannot be bypassed. An assignment would have to be
+/// repeated at every construction site and would drift the first time one
+/// is added.
+fn serialize_schema_version<S>(_current: &u32, ser: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    ser.serialize_u32(WORKSPACES_SCHEMA_VERSION)
+}
+
+/// The `version` of a workspaces.json document without deserializing the
+/// rest of it.
+///
+/// Deliberately tolerant: the guard it feeds must not turn an unparseable
+/// or version-less file into a refusal to save. `None` means "no usable
+/// version here", which every caller treats as "carry on" — the existing
+/// load-poison gate already handles a genuinely broken file, and a BOM is
+/// stripped first because Windows tooling adds them routinely.
+/// What `save_to_disk` should do about the version it found on disk.
+///
+/// Extracted from the save path for the same reason
+/// `resolve_effective_session_name` was: the interesting cases need two
+/// binaries sharing a config dir, which no test can arrange, and a policy
+/// buried in an I/O function is a policy nobody checks.
+#[derive(Debug, PartialEq, Eq)]
+enum SchemaGate {
+    /// Normal: write it.
+    Write,
+    /// A NEWER build owns the file. Refusing is the whole point.
+    Refuse,
+    /// An OLDER build rewrote the file since we last wrote it. Write
+    /// anyway — the three-way merge is the repair — but say so, because
+    /// silence is what made this expensive the first time.
+    WarnDowngrade,
+}
+
+/// `on_disk` / `last_written` are `None` when the file is absent, empty,
+/// unparseable or version-less. All of those mean "carry on": a refusal
+/// hangs off this, and refusing on a malformed file would lock the user
+/// out of saving entirely.
+fn schema_gate(on_disk: Option<u32>, last_written: Option<u32>) -> SchemaGate {
+    let Some(disk) = on_disk else {
+        return SchemaGate::Write;
+    };
+    if disk > WORKSPACES_SCHEMA_VERSION {
+        return SchemaGate::Refuse;
+    }
+    match last_written {
+        Some(base) if base > disk => SchemaGate::WarnDowngrade,
+        _ => SchemaGate::Write,
+    }
+}
+
+fn schema_version_of(text: &str) -> Option<u32> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()?
+        .get("version")?
+        .as_u64()
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
 }
 
 #[derive(Deserialize)]
@@ -761,6 +860,41 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     // path cannot be reached by launching one and waiting.
     let base_text = LAST_KNOWN.lock().ok().and_then(|g| g.clone());
     let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+
+    // The schema gate, in both directions. See WORKSPACES_SCHEMA_VERSION for
+    // what this does and does not cover.
+    let disk_version = schema_version_of(&on_disk);
+    match schema_gate(disk_version, base_text.as_deref().and_then(schema_version_of)) {
+        SchemaGate::Write => {}
+        SchemaGate::Refuse => {
+            // A NEWER ymux owns this file and knows fields this build would
+            // drop. Merging cannot save it — we would have to understand the
+            // keys to merge them — so do not write at all.
+            let msg = format!(
+                "save_to_disk: REFUSING \u{2014} workspaces.json on disk is schema v{} \
+                 and this build writes v{}. A newer ymux owns this config dir; \
+                 close it, or give this build its own with YMUX_CONFIG_DIR.",
+                disk_version.unwrap_or_default(),
+                WORKSPACES_SCHEMA_VERSION
+            );
+            log_error("WORKSPACE", &msg);
+            return Err(msg);
+        }
+        SchemaGate::WarnDowngrade => {
+            log_warn(
+                "WORKSPACE",
+                &format!(
+                    "save_to_disk: workspaces.json was rewritten by an OLDER build \
+                     (on disk v{}, we last wrote v{}). Fields that build does not \
+                     know may have been dropped; the three-way merge below \
+                     restores what it can.",
+                    disk_version.unwrap_or_default(),
+                    WORKSPACES_SCHEMA_VERSION
+                ),
+            );
+        }
+    }
+
     let (reconciled, notes) =
         workspaces_merge::reconcile(&text, base_text.as_deref(), &on_disk);
     for n in &notes {
@@ -883,6 +1017,19 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         file.workspaces.len(),
         file.active_workspace_id
     ));
+    // Loading is always allowed — serde carries the unknown keys nowhere,
+    // but reading a newer file does no harm and refusing would lock the
+    // user out of their own workspaces. Saving is where this gets stopped
+    // (see save_to_disk); say it here so the log shows the cause before it
+    // shows the first refusal.
+    if file.version > WORKSPACES_SCHEMA_VERSION {
+        log_warn("WORKSPACE", &format!(
+            "load_from_disk: workspaces.json is schema v{} but this build writes v{} \
+             \u{2014} a newer ymux has written this config dir. Saving is disabled \
+             until that build stops using it.",
+            file.version, WORKSPACES_SCHEMA_VERSION
+        ));
+    }
 
     let mut migrated = false;
     // 2026-08-19: WSL workspaces become plain local ones. Runs FIRST so no
@@ -12880,6 +13027,116 @@ dead-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
         ] {
             assert!(!session_name_char_is_safe(c), "{c:?} should be rejected");
         }
+    }
+}
+
+#[cfg(test)]
+mod workspaces_schema_tests {
+    // The gate that stops an older ymux writing over a newer one's file.
+    // Covered because the failure it guards is silent by nature: the bug that
+    // produced it (FOLLOWUPS P1, 2026-08-18) erased workspace nesting on every
+    // save by a stale build and left nothing in the new build's log.
+    use super::{
+        schema_gate, schema_version_of, SchemaGate, WorkspacesFile,
+        WORKSPACES_SCHEMA_VERSION,
+    };
+
+    #[test]
+    fn a_save_always_stamps_the_current_schema_version() {
+        // The point of `serialize_with`: whatever the struct is CARRYING —
+        // a legacy 1, or a 0 from Default — what reaches disk is current.
+        for carried in [0, 1, WORKSPACES_SCHEMA_VERSION] {
+            let file = WorkspacesFile {
+                version: carried,
+                ..Default::default()
+            };
+            let text = serde_json::to_string(&file).expect("serialize");
+            assert_eq!(
+                schema_version_of(&text),
+                Some(WORKSPACES_SCHEMA_VERSION),
+                "carrying v{carried} must still write v{}",
+                WORKSPACES_SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_file_without_a_version_key_still_loads() {
+        // Pre-versioning files exist in the wild; they must not become
+        // unreadable, and they must read as v1 rather than as "newer".
+        let file: WorkspacesFile =
+            serde_json::from_str(r#"{"workspaces":[]}"#).expect("parse");
+        assert_eq!(file.version, 1);
+        assert!(file.version <= WORKSPACES_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_reader_is_tolerant_because_a_refusal_hangs_off_it() {
+        // `None` means "carry on saving". Anything that is not a usable
+        // version must land there rather than tripping the gate: a refusal
+        // triggered by a malformed file would lock the user out of saving.
+        assert_eq!(schema_version_of(r#"{"version":2}"#), Some(2));
+        assert_eq!(schema_version_of(r#"{"version":99}"#), Some(99));
+        // A BOM is stripped first — Windows tooling writes them routinely and
+        // one already bricked this file once.
+        assert_eq!(schema_version_of("\u{feff}{\"version\":2}"), Some(2));
+        for shrug in [
+            "",
+            "   ",
+            "not json at all",
+            r#"{"workspaces":[]}"#,
+            r#"{"version":null}"#,
+            r#"{"version":"2"}"#,
+            r#"{"version":-1}"#,
+            r#"{"version":1.5}"#,
+            "[1,2,3]",
+        ] {
+            assert_eq!(
+                schema_version_of(shrug),
+                None,
+                "{shrug:?} must read as no-usable-version, not as a version"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_only_refuses_the_direction_that_loses_data() {
+        let ours = WORKSPACES_SCHEMA_VERSION;
+
+        // The one hard stop: a newer build owns the file.
+        assert_eq!(schema_gate(Some(ours + 1), Some(ours)), SchemaGate::Refuse);
+        assert_eq!(schema_gate(Some(ours + 9), None), SchemaGate::Refuse);
+
+        // Ordinary saves.
+        assert_eq!(schema_gate(Some(ours), Some(ours)), SchemaGate::Write);
+
+        // An older build rewrote it since we last wrote: warn, never refuse.
+        // Refusing here would leave the user unable to save at all for as
+        // long as the old build is open, which is worse than letting the
+        // merge repair it.
+        assert_eq!(
+            schema_gate(Some(ours - 1), Some(ours)),
+            SchemaGate::WarnDowngrade
+        );
+
+        // A legacy file we have not written over yet is NOT a downgrade —
+        // there is nothing to have lost.
+        assert_eq!(schema_gate(Some(ours - 1), None), SchemaGate::Write);
+        assert_eq!(
+            schema_gate(Some(ours - 1), Some(ours - 1)),
+            SchemaGate::Write
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_never_blocks_a_save() {
+        // `None` is every case the reader shrugged at: absent, empty,
+        // malformed, version-less. None of them may become a refusal — a
+        // user whose file got a stray byte must still be able to save.
+        let ours = WORKSPACES_SCHEMA_VERSION;
+        assert_eq!(schema_gate(None, None), SchemaGate::Write);
+        assert_eq!(schema_gate(None, Some(ours)), SchemaGate::Write);
+        assert_eq!(schema_gate(None, Some(ours + 1)), SchemaGate::Write);
     }
 }
 
