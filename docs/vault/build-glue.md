@@ -51,6 +51,11 @@ that runs, so launch it.
 `build:frontend` uses esbuild, which strips types without checking them. It catches bad
 imports and dead assets; it is not a substitute for `typecheck`.
 
+`"engines": { "node": ">=22" }` — declared 2026-08-23 when CI moved off the deprecated
+node20 Actions runtime. The runners are on node 24 (`actions/setup-node@v7`), and the
+third-party actions in the workflows are pinned by commit SHA rather than tag, with
+dependabot watching them.
+
 Notable deps: `@xterm/xterm` 6 with the fit/webgl/clipboard addons, `bidi-js`,
 `dompurify`, `markdown-it`, `@tauri-apps/api` ~2.10.
 

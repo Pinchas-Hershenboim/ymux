@@ -50,7 +50,7 @@
     "app/src-tauri/src/updater.rs": "d9c517270bb3832992185db5594277368329f7b7eca0c334d244d8a731631f06"
   },
   "build-glue": {
-    "app/package.json": "2c210f073e00249f3cb468060a956781ba338a8b92282be41331b09a86866e8d",
+    "app/package.json": "05adb67866128fde80c8d32a150462f3b00f2da429978d8dafdcde5a7561ef2b",
     "app/scripts/build-linux-cli.ps1": "f315ca76cc2fbc98016ab80b7d1ee8bb9f96a64c9b21e7703e0f62049b31d490",
     "app/scripts/build-release.ps1": "94f393bbeb1fca76bf581f4722700de94a9a9c441a7343788b6dddb3b44b4964",
     "app/scripts/reset-local-setup.ps1": "347e044d783487badb372a67a6faa3043ba676b0bc01857cac6090f9ff59ca09",

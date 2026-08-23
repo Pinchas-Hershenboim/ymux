@@ -5265,6 +5265,91 @@ committed one". No CLI source was touched here; it is the known rebake
 churn CLAUDE.md calls cosmetic, and the run is green.
 
 ================================================================================
+2026-08-23 | CI: off the deprecated node20 runtime, and three pins that were
+             never being watched
+================================================================================
+Trigger was the runner warning that checkout@v4 / setup-go@v5 / setup-node@v4
+are being force-migrated to Node 24. The warning was the smaller half of the
+problem: all four workflows also pinned `node-version: 20`, and **Node 20 hit
+EOL on 2026-04-30** — nearly four months of building the shipped frontend on a
+runtime that gets no security fixes.
+
+Files: .github/workflows/{ci-windows,build-windows,build-macos-intel,
+warm-rust-cache}.yml, .github/dependabot.yml (new), app/package.json,
+CLAUDE.md, BACKLOG.md.
+
+WHAT CHANGED
+  26 `uses:` lines, verified against each action's real action.yml rather than
+  guessed from the changelog — every target below reports `runs.using: node24`:
+    actions/checkout       @v4 -> @v7   (x4)
+    actions/setup-node     @v4 -> @v7   (x4)
+    actions/setup-go       @v5 -> @v7   (x1)
+    actions/upload-artifact@v4 -> @v7   (x6)
+    actions/cache          @v4 -> @v6   (x1)
+  node-version: 20 -> 24 (x4). Node 24 is Active LTS to 2026-10-20, then
+  maintenance to 2028-04-30. Chose 24 over 22 for the extra year at equal cost.
+  Compatibility floor in the tree is marked@18.0.4 (">= 20") and vite@6.4.2
+  ("^18 || ^20 || >=22") — 24 clears both. No native/node-gyp deps, so npm ci
+  needs no rebuild.
+  app/package.json gained `"engines": { "node": ">=22" }` so the requirement is
+  declared in the repo and not only in four YAML files. >=22 not >=24 on
+  purpose: do not break a dev still on 22 locally; CI is the one that pins 24.
+
+SHA-PINNED THE TWO THIRD-PARTY ACTIONS
+  Swatinem/rust-cache    @v2     -> @6323deb1... # v2.9.2 (already node24)
+  dtolnay/rust-toolchain @stable -> @4360b525... # stable branch @ 2026-08-05
+  `@stable` was a BRANCH pin: anyone with push access to it ran code in our CI
+  with the repo checked out. rust-toolchain is a composite action and never had
+  a Node runtime, so this is supply-chain hygiene, not deprecation work.
+
+  THE TRAP, verified against the GitHub API and worth not rediscovering:
+  that repo's ONLY tag, v1, points at 6c977a6c = master head — a different
+  commit from the stable branch head. On master `toolchain` is
+  `required: true` WITH NO DEFAULT, while on the stable branch it defaults to
+  `stable`. So a dependabot "upgrade" from our stable-branch SHA onto v1 would
+  fail every job on a missing required input. Mitigated two ways: an explicit
+  `toolchain: stable` at all four call sites (works on either branch), and a
+  comment in dependabot.yml telling the reviewer to check the branch. Pinning
+  the SHA does NOT freeze the Rust version — the stable branch still resolves
+  to current stable.
+
+  actions/* stay on floating majors on purpose. GitHub owns them; SHA-pinning
+  there buys noise, not safety.
+
+TWO HOLES FOUND IN PASSING, BOTH CLOSED
+  1. Not one workflow had a `permissions:` block, so GITHUB_TOKEN got the repo
+     default. Added `permissions: contents: read` to all four. Verified safe by
+     grep over .github/workflows for `gh release` / `gh api` / `git push` /
+     `git commit` / `softprops` / `packages:` / `id-token` — zero hits; release
+     publishing is manual per docs/RELEASING.md. upload-artifact authenticates
+     with ACTIONS_RUNTIME_TOKEN, not GITHUB_TOKEN, so artifacts still upload.
+     The Apple secrets in build-macos-intel are untouched (permissions only
+     governs GITHUB_TOKEN).
+  2. No .github/dependabot.yml existed — nothing was watching the pins, which
+     is exactly how the whole set drifted onto node20 together and surfaced as
+     a runner warning instead of a PR. Added, github-actions ecosystem only,
+     monthly, grouped into one PR. npm/cargo deliberately left off (would open
+     a wave of PRs against unreviewed trees); queued in BACKLOG.md.
+
+BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
+  checkout@v7 blocks fork-PR checkout for pull_request_target / workflow_run —
+    we only use push / pull_request / workflow_dispatch.
+  checkout@v6 persists credentials to a separate file — no step reads
+    .git/config by hand.
+  setup-node@v5 auto-caches when package.json has a `packageManager` field —
+    app/package.json has none (confirmed), and `cache: npm` is explicit anyway.
+  upload-artifact@v7 added an `archive` input, default 'true' = v4 behaviour;
+    name / path / if-no-files-found unchanged, so the ymux-server-linux-* glob
+    step is unaffected.
+  cache@v5+ and upload-artifact@v6+ need runner >= 2.327.1 — self-hosted only;
+    we are on GitHub-managed runners.
+  Went straight to the newest major rather than the first node24 one because
+  none of the above touches this repo and checkout@v7 is itself the fix for a
+  fork-PR checkout issue. Stopping halfway would just book a second bump.
+
+STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
+or tested on the dev box — CI is the verification step. Result recorded below
+once the runs land.
 2026-08-23 — Phase 84 (+84.A/B/C): the vault + its CI freshness gate
 ================================================================================
 
@@ -5334,3 +5419,36 @@ can prove the latter. The acceptance test is human: answer a real question
 ("where is the SSH auth chain", "what writes workspaces.json") from
 docs/vault/INDEX.md alone without opening a .rs file. If you cannot, the page
 is too thin — fix the page, not the gate.
+
+--------------------------------------------------------------------------------
+2026-08-23 (same session) — merge origin/main: THE GATE'S FIRST LIVE CATCH
+--------------------------------------------------------------------------------
+
+PR #20 came back CONFLICTING and with ZERO checks. Both had one cause: PR #19
+(node20 deprecation) landed on main mid-session, touching ci-windows.yml,
+CLAUDE.md, PROGRESS.txt and app/package.json — the same files this branch
+touched. GitHub could not compute the merge ref, so no `pull_request` workflow
+ever triggered. Exactly the CLAUDE.md "git fetch before every merge" scenario;
+noticed here only because the PR's check list was empty.
+
+Conflicts resolved:
+  ci-windows.yml  keep the vault gate step, take main's SHA-pinned
+                  dtolnay/rust-toolchain block that replaced `@stable`
+  PROGRESS.txt    both entries kept, main's first
+  CLAUDE.md       auto-merged clean; Rule #18 + the "Where to start" line intact
+
+THEN — and this is the point — `node scripts/vault-check.mjs` on the merged tree
+came back RED:
+
+  ERROR: docs/vault/build-glue.md is stale — the code it explains moved:
+    ~ app/package.json (changed since the vault file was written)
+
+main had added `"engines": { "node": ">=22" }` and moved CI to node 24 /
+setup-node@v7. Nothing in this branch touched package.json; the drift arrived
+through the merge. That is precisely the case a diff-only gate cannot see and
+the reason the hash half exists — the FIRST thing it caught was real, and it
+caught it before the merge landed rather than months later like MODULES.md.
+
+build-glue.md now records the engines pin, the node-24 runners and the
+SHA-pinning of third-party actions. Re-stamped; gate green; 96% coverage
+unchanged.
