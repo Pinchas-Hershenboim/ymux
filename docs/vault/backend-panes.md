@@ -48,31 +48,6 @@ surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_loc
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
 
-<<<<<<< HEAD
-Phase 82.E/F grew it to ~850 lines for one macOS bug that cannot be debugged locally
-(Rule #17): on the Mac the page renders but the site's own JS never runs, and the file
-had zero `cfg(target_os)` arms — it was written against WebView2. So the **diagnosis
-ships in the binary**: `browser_diag.js` (`include_str!`) runs at document start and
-beacons through `document.title = "ymux-diag:<base64 json>"`, the one hook wry
-implements symmetrically on both platforms (`fetch`/`<img>`/iframe/`location.href` were
-each rejected, see the comment block). Rust reads it in `on_document_title_changed`,
-adds a JS-free `on_page_load` line, and pushes a second `eval` probe 300 ms after
-`Finished` (`DIAG_EVAL_JS`, a different injection mechanism from the user script, which
-is what makes "engine dead" falsifiable); an 8 s watchdog logs silence so an empty log
-is not mistaken for "never opened a page". Deliberately **not** mac-gated — Windows is
-the control run. The page controls its own title, so the channel is attacker-influenced:
-beacons are re-serialized via `serde_json` (raw newlines would forge log lines),
-truncated on a char boundary (`DIAG_MAX_LOG`), and budgeted at `DIAG_MAX_BEACONS = 24`
-per webview; ordinary titles are never logged (Rule #1). `workspace_browser_open_devtools`
-(82.F) opens the inspector on this webview alone — `.devtools(true)` here, explicit
-`.devtools(false)` on main and popouts, because the `devtools` Cargo feature flips
-tauri's default to inspectable-everywhere (see `build-glue.md`). The command always
-exists and only its body is `cfg`-gated, so the frontend needs no build-shape knowledge.
-Also corrected there: `__TAURI_INTERNALS__` *is* injected into the external page; what
-denies it commands is the capability layer (`Origin::Remote` vs `Local` context) — do
-not add a `remote` context to `capabilities/default.json`, it is scoped to `main` and
-this webview lives in `main`.
-=======
 **Who can call what, in this webview.** The old comment here said no IPC is injected into
 the child, and that was wrong; Phase 82.E corrected it in place. `tauri::manager::webview`
 prepends `__TAURI_INTERNALS__` and the invoke bootstrap to **every** webview's init
@@ -130,7 +105,6 @@ Windows, where WebView2's F12 is not wired up for a child webview. `.devtools(tr
 on this webview alone; the command always exists so the frontend needs no build-shape
 knowledge, but its body is `#[cfg(any(debug_assertions, feature = "devtools"))]` and the
 other arm returns a clean error.
->>>>>>> origin/main
 
 ## Git
 

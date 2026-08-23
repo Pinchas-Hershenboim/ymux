@@ -6085,7 +6085,6 @@ thing that exercises cache@v6 and the rust-toolchain SHA on the release
 path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
-<<<<<<< ours
 [2026-08-23 ~20:30 IDT] Phase 86: server + port-watch + hooks load (worktree wt-phase85, branch phase85-server-load)
 
 Measured on Yossi's server BEFORE touching anything: 18 `ymux port-watch`
@@ -6158,7 +6157,6 @@ back as would_register.
 Yossi pulled the manifest bump into scope: manifest.json hooks.claude-code
 1.1.0 -> 1.6.0. Both raw URLs (yyhezkel/winmux and /ymux) return 200, so
 the old URL in the manifest is left alone. FOLLOWUPS P2 closed.
-=======
 [2026-08-23 ~17:40] vault: re-sync after the four-PR merge train (#20/#21/#22/#23)
   Task: main's ci-windows was red — the vault gate fired on 7 pages. PR #20 landed
         the gate and stamped its lock on its own branch; #22 (Phase 84.C-E Monitor
@@ -6202,4 +6200,3 @@ Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
 [2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
->>>>>>> theirs

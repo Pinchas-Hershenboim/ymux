@@ -11,13 +11,8 @@ covers:
 
 # Claude integration + local Insights
 
-<<<<<<< HEAD
-Four modules, ~2,100 lines (plus the uncovered `claude_usage_local.rs` mirror, Phase 84.E). Three of them read or drive the `claude` CLI **on the machine
-that hosts the transcripts** — usually the remote, not the desktop. The fourth is the
-=======
 Five modules, ~2,650 lines. Three of them read or drive the `claude` CLI **on the machine
 that hosts the transcripts** — usually the remote, not the desktop. The other two are the
->>>>>>> origin/main
 local-machine half of the Insights panel.
 
 ## `claude_summary.rs` (375) — session auto-summary

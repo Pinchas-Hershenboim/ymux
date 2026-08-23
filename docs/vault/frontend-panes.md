@@ -14,13 +14,6 @@ covers:
   - app/src/InsightsWindow.tsx
   - app/src/InsightsAnalytics.tsx
   - app/src/InsightsClaudeCost.tsx
-<<<<<<< HEAD
-  - app/src/insightsReport.ts
-  - app/src/claudePricing.ts
-  - app/src/insightsFmt.ts
-  - app/src/clipboardText.ts
-=======
->>>>>>> origin/main
   - app/src/HygienePanel.tsx
   - app/src/PortsWindow.tsx
   - app/src/TicketsPanel.tsx
@@ -50,20 +43,12 @@ fullscreen — so they get that chrome for free instead of hand-rolling a varian
 **`BrowserWindow.tsx` (792)** — the workspace-level Browser floating window. The actual
 page is a **native child Webview** the Rust side mounts
 (`workspace_browser.rs`); this component owns the toolbar, tabs, port+path entry,
-<<<<<<< HEAD
-navigation, and the window geometry. At most one per workspace. Phase 82.F added a
-DevTools button beside the Dev Mode toggle that invokes `workspace_browser_open_devtools`
-— on macOS it replaces the Safari → Develop → machine → webview walk, on Windows it is the
-only way in, since F12 is not wired up for a child webview (and App's own F12 blocker
-stays). Only this webview is inspectable; the why is in `build-glue.md`.
-=======
 navigation, and the window geometry. At most one per workspace. The 🐞 button toggles Dev
 Mode (ticket capture); the terminal-icon button next to it calls
 `workspace_browser_open_devtools` and opens the Web Inspector on the loaded page — on
 macOS that saves a trip through Safari → Develop, and on Windows it is the *only* way in,
 since F12 is not wired up for a child webview. Only that webview is inspectable; see
 `backend-panes.md`.
->>>>>>> origin/main
 
 **`browserDevMode.ts` (448)** — right-click an element in the workspace browser to
 capture it as a ticket. Kept out of `BrowserWindow.tsx` on purpose: with Dev Mode in its
@@ -102,31 +87,6 @@ root feeds them all into a single list.
 
 ## Monitoring
 
-<<<<<<< HEAD
-**`InsightsWindow.tsx` (586)** — pull-based server monitor. Fetches the live snapshot
-through the `insights_fetch` Tauri command, which curls `127.0.0.1:7879` over the
-workspace SSH session — **or serves it from `insights_local.rs` for a local workspace;
-the routing is transparent to this component.** No mock data: if the daemon is not
-installed or not running, the panel says so. It takes a `local` prop (App passes
-`connection.type === "local"`) only so the copy-the-commands blocks can name the right
-paths. Phase 84.C added a sixth tab, **Analytics** (`InsightsAnalytics.tsx`): what the
-server has *been* doing, from the 7-day SQLite history the daemon had kept since Phase
-68 that nothing ever read. One `/analytics` fetch (not `/history`, which is
-`LIMIT 2000` oldest-first and answers a 7-day question with the wrong 2.8 hours) gives
-stat tiles, a hand-rolled SVG sparkline with a `<details>` table twin, and by-period /
-by-disk / by-container rollups — no charting library, no poll, loads on tab open and
-Refresh. Amber is spent only on a disk past 85% or a container under 95% uptime; every
-other bar is accent, because a bar encodes magnitude. A local workspace gets
-`{"unavailable":"local"}` and an explanation; a 404 from an old daemon becomes
-"reinstall from Add-ons". Phase 84.D's **Copy for Claude** flattens exactly what is on
-screen to fixed-width text via the pure, tested `insightsReport.ts` (own one-decimal
-`pct()`, absolute local-time stamps, states what is *not* included). Phase 84.E put
-`InsightsClaudeCost.tsx` under the Claude tab's quota bars: `/claude-usage` tokens by
-hour / model+speed / project / session, priced **on the desktop only** from
-`claudePricing.ts` (API list price against a subscription — an estimate, and the UI says
-so three times; unknown models cost 0 and are flagged, mixed rows show a "~" blended
-rate). `fmtBytes`/`fmtBps` moved to `insightsFmt.ts` so the new tabs share them.
-=======
 **`InsightsWindow.tsx` (586)** — pull-based server monitor and the tab host. Fetches the
 live snapshot through the `insights_fetch` Tauri command, which curls `127.0.0.1:7879`
 over the workspace SSH session — **or serves it from `insights_local.rs` for a local
@@ -159,7 +119,6 @@ reading it as a bill: Claude Code on a subscription is not billed per token, the
 list prices applied to real counts. Right for comparing projects, models and sessions
 against each other; wrong for predicting a charge. Prices come from `claudePricing.ts`
 (`frontend-lib.md`) — the server deliberately never prices anything.
->>>>>>> origin/main
 
 **`HygienePanel.tsx` (159)** — the Monitor's Cleanup tab. Surfaces the two server-side
 leaks Yossi hit (duplicate ymux port-watchers, orphaned claude sessions) from the
