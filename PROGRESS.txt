@@ -5119,3 +5119,43 @@ rather than mtime, because re-copying a byte-identical file into resources/
 was forcing a full rebuild of the app lib. The server blobs are staged by
 hand, so that optimisation does not cover them — but it is the same class
 of problem and the same directory.
+-------------------------------------------------------------------------------
+2026-08-23 (session close) | worktree + branches removed
+-------------------------------------------------------------------------------
+Containment re-checked at deletion time, not against the morning's plan
+-- which is the exact mistake the P2 above records: working tree clean,
+`origin/main..HEAD` empty, and both branches ancestors of `origin/main`.
+Deleted: worktree .claude/worktrees/mac-build-broken-b59d67, local
+branches claude/mac-build-broken-b59d67 + claude/macos-universal-signing,
+and remote origin/claude/macos-universal-signing (47dfab0, contained in
+main a87c764). Two worktrees from that P2 remain, untouched: another
+session may still be live in them.
+
+-------------------------------------------------------------------------------
+2026-08-23 (session close) | worktree cleanup, and one mistake worth recording
+-------------------------------------------------------------------------------
+Done: branch claude/macos-universal-signing deleted local + remote, and
+claude/mac-build-broken-b59d67 deleted locally. The worktree was
+deregistered and emptied; only the locked empty DIRECTORY remains (P3).
+
+THE MISTAKE, because it will otherwise be repeated. A cleanup command was
+written as `cd <worktree> && ... && git add -A && git commit`. By the time
+it ran, `git worktree remove` had already emptied that directory, so the
+`cd` landed in a now-nonexistent path, git walked UP to the enclosing main
+checkout -- .claude/worktrees/ lives inside it -- and `git add -A` staged
+every untracked file there: four local test binaries, ~264MB, committed to
+local `main` under a docs commit message.
+
+Caught before any push. `git reset --mixed origin/main` un-did it with the
+files untouched on disk, then FOLLOWUPS/PROGRESS were restored from HEAD
+after verifying the on-disk copies were merely stale (identical to
+e7c6e90) and not someone else's uncommitted work.
+
+Two rules earned:
+  1. Never `git add -A` in a shared checkout. Stage explicit paths. `-A`
+     has no blast radius limit and the main checkout is not clean-by-
+     construction -- it holds the user's own untracked artifacts.
+  2. A `cd` that fails does not stop a `&&` chain when the shell falls
+     back to another directory. Verify the working directory INSIDE the
+     command that mutates git state, not before it.
+
