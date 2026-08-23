@@ -6604,3 +6604,44 @@ the resolution is `git add`ed. That error means "finish the merge", not
 Both halves of the gate verified locally after resolution: hash check clean,
 and `--diff-base origin/main` reports every touched-and-covered file has an
 updated vault entry. Coverage 96%, 226 files.
+
+================================================================================
+2026-08-23 | Evaluated a candidate vault-check.sh; kept ours, fixed 4 stale cites
+Files: docs/vault/backend-core.md, docs/vault/.vault-lock.json, FOLLOWUPS.md
+
+Yossi shared an Obsidian-style `vault-check.sh` (98 lines, zero deps) and asked
+whether it solves the vault drift problem. It does not, and the reasons are
+worth recording so nobody re-evaluates it later.
+
+What it checks: [[wikilink]] resolution, reachability from moc.md, that
+file:line cites point at existing files, and that the cited line is within the
+file. What it does NOT have: hashes, a lock file, a diff base, or any notion of
+"covers". So it has no way to answer "did the code move since this prose was
+written", which is the entire failure that turned main red today, and no way to
+answer "is there code no vault claims", which is the blind spot filed this
+afternoon. It would have printed "vault OK" through both.
+
+Format mismatch is total, not cosmetic: our vault has ZERO wikilinks and no
+moc.md, so check 1 passes vacuously and check 2 hard-fails on the first line
+("MISSING: moc.md — the vault has no root index").
+
+THE ONE GOOD IDEA IN IT is verifying file:line cites, which our gate genuinely
+does not do - so it was worth taking seriously. But its implementation cannot
+work here, and that is measurable rather than a matter of taste: it checks the
+line is IN RANGE, and lib.rs is 13,272 lines. Measured our six cites:
+  AppState       cited lib.rs:145   really 146
+  save_to_disk   cited lib.rs:514   really 838
+  pane_connect   cited lib.rs:7419  really 7949
+  emit_data      cited lib.rs:1960  really 2370
+  BIND_ERROR     rpc_server.rs:37   correct
+  dispatch       rpc_server.rs:646  correct
+Four of six were wrong, and all four are comfortably "in range" - the script
+would have passed every one. Fixed by hand here.
+
+Note why the hash gate does not cover this either: it fires when the file
+changes, which is exactly when someone re-reads the PROSE - and a line number
+inside that prose is the thing they do not re-derive. Filed as P3 with the fix
+that would work: an IDENTITY check (cite the symbol with the line, verify the
+symbol is on or near it) rather than a bounds check.
+
+Verdict: keep vault-check.mjs, do not adopt or fork the shell script.
