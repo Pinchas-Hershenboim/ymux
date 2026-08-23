@@ -4944,3 +4944,15 @@ staging post. Consequences applied rather than just recorded:
 No code or CI change. The workflow already warns rather than fails in the
 ad-hoc path, which is exactly the behaviour this decision wants.
 
+-------------------------------------------------------------------------------
+2026-08-23 (session close) | worktree + branches removed
+-------------------------------------------------------------------------------
+Containment re-checked at deletion time, not against the morning's plan
+-- which is the exact mistake the P2 above records: working tree clean,
+`origin/main..HEAD` empty, and both branches ancestors of `origin/main`.
+Deleted: worktree .claude/worktrees/mac-build-broken-b59d67, local
+branches claude/mac-build-broken-b59d67 + claude/macos-universal-signing,
+and remote origin/claude/macos-universal-signing (47dfab0, contained in
+main a87c764). Two worktrees from that P2 remain, untouched: another
+session may still be live in them.
+
