@@ -175,13 +175,7 @@ func dockerList() ([]DockerContainer, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("docker list: %d", resp.StatusCode)
 	}
-	var raw []struct {
-		Id     string   `json:"Id"`
-		Names  []string `json:"Names"`
-		Image  string   `json:"Image"`
-		State  string   `json:"State"`
-		Status string   `json:"Status"`
-	}
+	var raw []dockerListEntry
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
