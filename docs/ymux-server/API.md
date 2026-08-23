@@ -49,7 +49,8 @@ Full schemas: the served `openapi.json` (REST) + `frames.schema.json` (WS).
 ## Desktop-internal surface (not in the SDK spec)
 
 Insights metrics, served at both legacy paths and `/api/v2/insights/*`:
-`current`, `history`, `analytics`, `hygiene[/kill]`, `docker[/…]`, `processes`,
+`current`, `history`, `analytics`, `claude-usage`, `hygiene[/kill]`,
+`docker[/…]`, `processes`,
 plus `/api/v2/logs/daemon`. Dynamic JSON (metric/docker/process maps) consumed by
 the desktop over SSH; intentionally kept on raw stdlib handlers and out of the
 generated OpenAPI (PHASE-77-DESIGN §6).
@@ -65,6 +66,22 @@ returns raw rows with `LIMIT 2000`, which at the 5s sample interval is the
 clamped, never rejected (`since` to the 7-day retention window and to a 5-minute
 floor, `points` to 20…400). Timestamps come back as unix seconds so the desktop
 formats them in the viewer’s timezone, not the server’s.
+
+`GET claude-usage?since=&until=` backs the **Claude** tab's cost panel. It walks
+`~/.claude/projects/**/*.jsonl` — Claude Code's own transcripts — and returns
+token counts rolled up by hour, by model+speed, by project and by session, plus
+a main-loop/subagent split. It **counts tokens and never prices them**: the
+price table lives in `app/src/claudePricing.ts`, in one place, so a rate change
+is a one-file desktop edit rather than a server rebake plus a matching edit in
+the Rust local mirror. Token counts are facts; prices are a table that goes
+stale.
+
+The scan is bounded by an mtime prune — a transcript's mtime is its last
+append, so a file older than `since` cannot hold an in-window line and is never
+opened. That is what keeps a 240 MB tree affordable inside a six-second `curl`.
+The response reports `scanned_files` / `skipped_files` / `parse_errors` so an
+empty answer can be told apart from a failed one, and cache writes come back
+split 5m vs 1h because those are priced differently (1.25x vs 2x base input).
 
 ## Pairing (desktop-facing)
 

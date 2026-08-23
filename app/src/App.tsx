@@ -3970,6 +3970,7 @@ function App() {
         surface={surfaceOf("monitor")}
         workspaceId={file().active_workspace_id ?? undefined}
         workspaceName={activeWs()?.name}
+        local={activeWs()?.connection?.type === "local"}
         onClose={() => closePanel("monitor")}
         onDrawer={() => openPanel("monitor")}
         onFloat={() => floatPanel("monitor")}

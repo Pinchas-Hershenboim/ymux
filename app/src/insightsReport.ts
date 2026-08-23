@@ -271,3 +271,157 @@ export function buildAnalyticsReport(rep: AnReport, s: ReportStrings): string {
 
   return out.join("\n") + "\n";
 }
+
+// ─── Claude usage ────────────────────────────────────────────────────────
+//
+// The second thing worth flattening into text: what Claude Code spent. Same
+// rules as the metrics report — absolute timestamps, an explicit note about
+// what is NOT included, and no summarising away the shape over time.
+
+export interface ClaudeTokenCounts {
+  calls: number;
+  in_tokens: number;
+  out_tokens: number;
+  cache_read: number;
+  cache_write: number;
+  cache_write_5m: number;
+  cache_write_1h: number;
+}
+export interface ClaudeBucket extends ClaudeTokenCounts {
+  t: number;
+}
+export interface ClaudeRow extends ClaudeTokenCounts {
+  key: string;
+  speed?: string;
+  project?: string;
+  started?: number;
+  ended?: number;
+}
+export interface ClaudeUsageReport {
+  unavailable?: string;
+  since: number;
+  until: number;
+  bucket_s: number;
+  scanned_files: number;
+  skipped_files: number;
+  parse_errors: number;
+  took_ms: number;
+  totals: ClaudeTokenCounts;
+  sidechain: ClaudeTokenCounts;
+  sessions: number;
+  projects: number;
+  first_ts: number;
+  last_ts: number;
+  series: ClaudeBucket[];
+  by_model: ClaudeRow[];
+  by_project: ClaudeRow[];
+  by_session: ClaudeRow[];
+}
+
+export interface ClaudeReportStrings {
+  intro: string;
+  name: string;
+  rangeLabel: string;
+  /** Pre-formatted cost per row, supplied by the caller — the price table
+   *  lives in claudePricing.ts and this module stays free of it. */
+  costOf: (t: ClaudeTokenCounts, model?: string, speed?: string, at?: number) => string;
+  /** Total cost string for the header. */
+  totalCost: string;
+  pricingAsOf: string;
+}
+
+export function buildClaudeUsageReport(rep: ClaudeUsageReport, s: ClaudeReportStrings): string {
+  const t = rep.totals;
+  const out: string[] = [];
+
+  out.push(s.intro, "");
+  out.push(`# Claude Code usage${s.name ? ` — ${s.name}` : ""}`);
+  out.push(
+    `Range: last ${s.rangeLabel} (${stamp(rep.since)} → ${stamp(rep.until)}). ` +
+      `All timestamps are the LOCAL time of the machine that copied this.`,
+  );
+  out.push(
+    `Scanned ${rep.scanned_files} transcript file(s), skipped ${rep.skipped_files} ` +
+      `older than the range${rep.parse_errors ? `, ${rep.parse_errors} unparseable line(s)` : ""}.`,
+  );
+  out.push(
+    `COST IS AN ESTIMATE, NOT A BILL: Claude Code on a subscription is not billed per token. ` +
+      `These figures are what the same tokens would cost at Anthropic first-party API list ` +
+      `price (table as of ${s.pricingAsOf}). Use them to compare where usage went, not to ` +
+      `predict a charge.`,
+  );
+  out.push(
+    "Source: ymux Monitor → Claude, read from Claude Code's own transcripts. " +
+      "Token counts, model ids, project paths and session ids only — no prompts, " +
+      "no responses, no file contents.",
+  );
+
+  out.push("", "## Totals");
+  out.push(
+    textTable(
+      ["metric", "value"],
+      [
+        ["Estimated cost", s.totalCost],
+        ["Calls", String(t.calls)],
+        ["Sessions", String(rep.sessions)],
+        ["Projects", String(rep.projects)],
+        ["Input tokens", String(t.in_tokens)],
+        ["Output tokens", String(t.out_tokens)],
+        ["Cache read", String(t.cache_read)],
+        ["Cache write (5m)", String(t.cache_write_5m)],
+        ["Cache write (1h)", String(t.cache_write_1h)],
+        [
+          "Subagent share",
+          t.calls > 0
+            ? `${((rep.sidechain.calls / t.calls) * 100).toFixed(1)}% of calls`
+            : "n/a",
+        ],
+      ],
+    ),
+  );
+
+  if (rep.series.length) {
+    out.push("", `## Per ${fmtSpan(rep.bucket_s)}`);
+    out.push(
+      textTable(
+        ["time", "calls", "in", "out", "cache_read", "cw_5m", "cw_1h", "est_cost"],
+        rep.series.map((b) => [
+          stamp(b.t),
+          String(b.calls),
+          String(b.in_tokens),
+          String(b.out_tokens),
+          String(b.cache_read),
+          String(b.cache_write_5m),
+          String(b.cache_write_1h),
+          // No model on a time bucket — the caller prices it with the window's
+          // dominant model and says so in the header.
+          s.costOf(b, undefined, undefined, b.t),
+        ]),
+      ),
+    );
+  }
+
+  const rollup = (title: string, rows: ClaudeRow[], keyHeader: string) => {
+    if (!rows.length) return;
+    out.push("", `## ${title}`);
+    out.push(
+      textTable(
+        [keyHeader, "calls", "in", "out", "cache_read", "cache_write", "est_cost"],
+        rows.map((r) => [
+          r.speed && r.speed !== "standard" ? `${r.key} (${r.speed})` : r.key,
+          String(r.calls),
+          String(r.in_tokens),
+          String(r.out_tokens),
+          String(r.cache_read),
+          String(r.cache_write),
+          s.costOf(r, r.key, r.speed, r.ended || rep.until),
+        ]),
+      ),
+    );
+  };
+  rollup("By model", rep.by_model, "model");
+  rollup("By project", rep.by_project, "project");
+  rollup("By session", rep.by_session, "session");
+
+  return out.join("\n") + "\n";
+}

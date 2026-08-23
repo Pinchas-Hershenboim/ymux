@@ -5276,3 +5276,70 @@ Deliberate choices:
 Status: report formatting VERIFIED by unit test. The button itself is NOT
 verified live - clipboard-write inside WebView2 for this panel is exactly the
 kind of thing that only a real run settles. Rolled into the FOLLOWUPS P1.
+
+--------------------------------------------------------------------------------
+2026-08-23 | Phase 84.B - Claude usage + cost analysis (the thing Yossi
+                          actually asked for)
+--------------------------------------------------------------------------------
+Yossi asked whether the Claude usage/cost/API analysis had been added. Checked
+the code rather than guessing. IT HAD NOT, AND IT DID NOT EXIST:
+
+  * Monitor > Claude ran `claude -p /usage` and showed SUBSCRIPTION QUOTA
+    PERCENTAGES only. No cost, no tokens, no call counts - and NO HISTORY at
+    all (5-min cache, one point in time; yesterday's number was simply gone).
+  * The closest thing to data was a free-text line, "Last 24h - 3466 requests -
+    10 sessions". A string, not a dataset.
+  * Phase 84 (Analytics) had answered "what did the MACHINE do". The question
+    was "what did CLAUDE cost".
+
+Same story as the metrics DB, one layer over: THE DATA WAS ALREADY ON DISK AND
+NOBODY READ IT. claude_log.rs (Phase 24.A, dormant since 24.D removed its UI)
+already SFTP-mirrors ~/.claude/projects/**/*.jsonl - and its parser reads
+text/tool_name/timestamp and THROWS THE usage BLOCK AWAY. Verified against a
+real transcript on this machine, not from memory: every assistant line carries
+message.model plus message.usage with input/output/cache_read, the
+cache_creation 5m-vs-1h SPLIT, service_tier and speed, alongside sessionId,
+cwd, gitBranch and isSidechain.
+
+Files:
+  NEW server/internal/insights/claudeusage.go (+ _test.go, 9 tests)
+      GET /claude-usage - walks the transcripts, rolls up by hour / model+speed
+      / project / session, splits main-loop vs subagent. The mtime prune is the
+      whole trick: a transcript mtime is its LAST append, so a file older than
+      the window cannot hold an in-window line and is never opened. That is what
+      makes 240 MB affordable inside a 6s curl.
+  NEW src/claude_usage_local.rs (+ 4 tests) - the local mirror, same JSON shape,
+      same clamping. Two implementations of one aggregation is real duplication
+      and it is the CHEAPER option: the alternative is SFTP-pulling hundreds of
+      MB to the desktop every time the tab opens.
+  NEW app/src/claudePricing.ts (+ 16 tests) - THE ONLY PLACE PRICES LIVE. Both
+      backends count tokens and deliberately do not price them.
+  NEW app/src/InsightsClaudeCost.tsx - the panel, under the quota bars.
+  NEW app/src/insightsCommands.ts - "copy investigation commands" for BOTH tabs.
+  MOD insightsReport.ts - a second pasteable report, for usage.
+  MOD App.tsx - passes `local` down so the command block names the right paths.
+
+DECISIONS THAT MATTER, and why:
+  * COST IS AN ESTIMATE AND THE UI SAYS SO THREE TIMES. Claude Code on a
+    subscription is NOT billed per token. Every figure is API-list-price applied
+    to real token counts: right for comparing projects/models/sessions, WRONG
+    for predicting a charge. Getting this framing wrong would make the whole
+    feature a lie, so the disclaimer LEADS the panel rather than trailing it.
+  * Prices came from the claude-api skill, not from memory - that skill exists
+    precisely because a training-prior price is a plausible wrong number.
+  * The 5m/1h cache-write split is carried end to end. A 1h write costs 2x base
+    input against a 5m write 1.25x; collapsing them understates any long
+    session, and an agentic workload is mostly cache writes.
+  * Sonnet 5 intro pricing is time-bounded IN THE TABLE (until 2026-08-31), and
+    cost is computed from WHEN the tokens were spent. Pricing a week-old call at
+    today's rate would overstate it by 50%.
+  * An unknown model costs 0 and is FLAGGED as unpriced. A wrong dollar figure
+    is worse than an honest blank.
+  * Only by_model knows its model; day/project/session rows can mix several, so
+    they use a token-weighted BLENDED rate and are marked "~". Exact with one
+    model in the window, honest approximation with several.
+  * Local days are rolled up client-side from hourly server buckets - the only
+    way a day boundary lands where the reader clock says it does.
+
+Status: 28 frontend tests + 9 Go tests + 4 Rust tests, all written; the
+frontend ones run and pass here. NOT VERIFIED LIVE (Rule 14).

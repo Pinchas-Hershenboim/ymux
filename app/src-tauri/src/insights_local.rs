@@ -669,6 +669,7 @@ pub async fn route_path(path: &str) -> Result<String, String> {
     match base {
         "/current" => insights_local_current().await,
         "/analytics" => insights_local_analytics(),
+        "/claude-usage" => crate::claude_usage_local::route(query),
         "/docker" => insights_local_docker().await,
         "/hygiene" => insights_local_hygiene().await,
         "/processes" => {

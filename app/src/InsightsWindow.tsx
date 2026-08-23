@@ -16,6 +16,7 @@ import { formatResetLocal } from "./claudeUsageFmt";
 import { MobilePairing } from "./MobilePairing";
 import { HygienePanel } from "./HygienePanel";
 import { InsightsAnalytics } from "./InsightsAnalytics";
+import { InsightsClaudeCost } from "./InsightsClaudeCost";
 import { fmtBytes, fmtBps } from "./insightsFmt";
 import { PanelSurface } from "./PanelSurface";
 import type { Surface } from "./panels";
@@ -54,6 +55,9 @@ interface Props {
   surface: Surface;
   workspaceId?: string;
   workspaceName?: string;
+  /** Local workspaces are served in-process; remote ones over SSH. Only the
+   *  copy-the-commands blocks care, so they can name the right paths. */
+  local?: boolean;
   onClose: () => void;
   onDrawer: () => void;
   onFloat: () => void;
@@ -312,7 +316,7 @@ export function InsightsWindow(p: Props) {
   const bodyContent = () => (
     <>
       <Show when={view() === "analytics"}>
-            <InsightsAnalytics workspaceId={p.workspaceId} workspaceName={p.workspaceName} />
+            <InsightsAnalytics workspaceId={p.workspaceId} workspaceName={p.workspaceName} local={p.local} />
           </Show>
           <Show when={view() === "mobile"}>
             <MobilePairing workspaceId={p.workspaceId} />
@@ -376,6 +380,14 @@ export function InsightsWindow(p: Props) {
                   </>
                 )}
               </Show>
+              {/* Phase 84.B: the quota bars above say how much allowance is
+                  left; this says where it went, in tokens and dollars. */}
+              <h4 class="ins-h4">{t("insights.cc.title")}</h4>
+              <InsightsClaudeCost
+                workspaceId={p.workspaceId}
+                workspaceName={p.workspaceName}
+                local={p.local}
+              />
             </div>
           </Show>
           <Show when={view() === "logs"}>

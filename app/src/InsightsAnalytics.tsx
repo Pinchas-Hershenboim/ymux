@@ -1,13 +1,14 @@
 import { createSignal, createMemo, createEffect, on, onCleanup, For, Show } from "solid-js";
 import { createNarrow } from "./useNarrow";
 import { invoke } from "@tauri-apps/api/core";
-import { IconClipboard, IconRefresh } from "./icons";
+import { IconClipboard, IconRefresh, IconTerminal } from "./icons";
 import { t, currentLanguage } from "./i18n";
 import { fmtBytes, fmtBps, fmtPct, fmtSpan } from "./insightsFmt";
 import { createLogger } from "./logger";
 import { buildAnalyticsReport } from "./insightsReport";
 import type { AnPoint, AnReport } from "./insightsReport";
 import { copyText } from "./clipboardText";
+import { buildCommands } from "./insightsCommands";
 
 // InsightsAnalytics — the Monitor's Analytics tab: what the server has been
 // DOING, as opposed to the Metrics tab's what-it-is-doing-right-now.
@@ -71,6 +72,8 @@ interface Props {
   workspaceId?: string;
   /** Used to title the copyable report; the panel header shows it separately. */
   workspaceName?: string;
+  /** Chooses which paths the copyable command block names. */
+  local?: boolean;
 }
 
 export function InsightsAnalytics(p: Props) {
@@ -86,8 +89,8 @@ export function InsightsAnalytics(p: Props) {
   const [loading, setLoading] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
   const [hover, setHover] = createSignal<number | null>(null);
-  // null = idle, true = copied, false = the clipboard refused us.
-  const [copied, setCopied] = createSignal<boolean | null>(null);
+  // null = idle, otherwise which button landed ("report" / "cmd" / "fail").
+  const [copied, setCopied] = createSignal<string | null>(null);
   let svgRef: SVGSVGElement | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(copiedTimer));
@@ -236,10 +239,21 @@ export function InsightsAnalytics(p: Props) {
         rangeLabel: t(`insights.an.range.${range()}`),
       }),
     );
-    setCopied(ok);
+    setCopied(ok ? "report" : "fail");
     clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => setCopied(null), 2500);
     log.debug(`analytics report copied=${ok} range=${range()}`);
+  };
+
+  // The report answers the questions we thought to ask; this hands over the
+  // paths and the schema so an assistant with a shell can ask its own.
+  const copyCommands = async () => {
+    const ok = await copyText(
+      buildCommands("metrics", { intro: t("insights.an.cmd_intro"), local: !!p.local }),
+    );
+    setCopied(ok ? "cmd" : "fail");
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => setCopied(null), 2500);
   };
 
   // ── Bits ─────────────────────────────────────────────────────────────
@@ -290,19 +304,25 @@ export function InsightsAnalytics(p: Props) {
             onClick={() => void copyForClaude()}
           >
             <IconClipboard />
-            <span>
-              {copied() === true
-                ? t("insights.an.copied")
-                : copied() === false
-                ? t("insights.an.copy_failed")
-                : t("insights.an.copy")}
-            </span>
+            <span>{copied() === "report" ? t("insights.an.copied") : t("insights.an.copy")}</span>
+          </button>
+          <button
+            class="ins-an-copy"
+            title={t("insights.an.cmd_hint")}
+            onClick={() => void copyCommands()}
+          >
+            <IconTerminal />
+            <span>{copied() === "cmd" ? t("insights.an.copied") : t("insights.cc.cmd")}</span>
           </button>
           <button class="ins-refresh" onClick={() => void load()} title={t("insights.refresh")}>
             {loading() ? "…" : <IconRefresh />}
           </button>
         </div>
       </div>
+
+      <Show when={copied() === "fail"}>
+        <div class="settings-hint">{t("insights.an.copy_failed")}</div>
+      </Show>
 
       <Show when={err()}>
         <div class="ins-docker-err">
