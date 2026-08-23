@@ -5452,6 +5452,41 @@ fn workspace_set_collapsed(
     Ok(state.workspaces.lock().unwrap().clone())
 }
 
+/// Phase 84.A: flip a workspace between the split grid and the tab strip.
+///
+/// Purely presentational — `layout` is never touched, so flipping to tabs
+/// and back restores the exact split tree with its ratios. The frontend
+/// derives the tab list from `collect_panes(layout)`; see the `tabs_mode`
+/// doc comment in `ymux-types`.
+#[tauri::command]
+fn workspace_set_tabs_mode(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    tabs_mode: bool,
+) -> Result<WorkspacesFile, String> {
+    // Clone inside the guarded scope. `workspace_set_collapsed` above
+    // re-locks and `unwrap()`s for its return value; that's grandfathered,
+    // but Rule #4 forbids a new one.
+    let snapshot = {
+        let mut file = state
+            .workspaces
+            .lock()
+            .map_err(|e| format!("workspaces lock poisoned: {e}"))?;
+        let ws = file
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        ws.tabs_mode = tabs_mode;
+        file.clone()
+    };
+    persist(&state)?;
+    let _ = app.emit("workspaces:changed", ());
+    log_info("WORKSPACE", &format!("ws={workspace_id} tabs_mode={tabs_mode}"));
+    Ok(snapshot)
+}
+
 // ─── tree repair + the v2/v3 project-folder migration ───────────────
 
 /// Repair `parent_id` so every consumer may assume a forest.
@@ -9985,6 +10020,7 @@ pub fn run() {
             workspace_open_worktree,
             workspace_set_collapsed,
             workspace_set_project_root,
+            workspace_set_tabs_mode,
             worktrees::git_probe_worktrees,
             worktrees::workspace_list_worktrees,
             worktrees::workspace_create_project_worktree,
