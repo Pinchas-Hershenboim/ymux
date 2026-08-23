@@ -4,6 +4,7 @@ covers:
   - app/src-tauri/src/diff_pane.rs
   - app/src-tauri/src/file_manager.rs
   - app/src-tauri/src/workspace_browser.rs
+  - app/src-tauri/src/browser_diag.js
   - app/src-tauri/src/worktrees.rs
   - app/src-tauri/src/workspaces_merge.rs
   - app/src-tauri/src/notes.rs
@@ -17,7 +18,7 @@ covers:
 
 # Non-terminal panes and app features
 
-Twelve modules, ~8,300 lines. A pane in ymux is not necessarily a shell — Diff, File
+Twelve modules, ~8,650 lines, plus one injected JS probe. A pane in ymux is not necessarily a shell — Diff, File
 Manager, and Browser are panes too, and they share the layout tree with terminals.
 
 ## Panes
@@ -37,7 +38,7 @@ already-authenticated SSH session and open **a fresh SFTP channel per call**. Se
 are deliberately *not* cached: a new SFTP subsystem on an existing handle is cheap, and
 caching would mean chasing teardown semantics when the terminal pane disconnects.
 
-**`workspace_browser.rs` (506)** — **at most one child Webview per workspace**, attached
+**`workspace_browser.rs` (851)** — **at most one child Webview per workspace**, attached
 to the main window via `Window::add_child` (this is what pins `tauri = "=2.10.3"` with
 `features = ["unstable"]`). `workspace_browser_show(workspace_id, url, x, y, w, h)`
 creates or reveals it. All browser webviews share the **process-default WebView2
@@ -46,6 +47,64 @@ workspace and WebView2 does not support multiple environments in one process —
 surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_lock` for
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
+
+**Who can call what, in this webview.** The old comment here said no IPC is injected into
+the child, and that was wrong; Phase 82.E corrected it in place. `tauri::manager::webview`
+prepends `__TAURI_INTERNALS__` and the invoke bootstrap to **every** webview's init
+scripts, external URLs included, so an `invoke` function does reach the tunneled page.
+What actually denies it is the capability layer: a remote page's origin is
+`Origin::Remote`, every capability in `capabilities/` declares a `Local` execution
+context, so `Origin::matches` fails and each command is refused. **`capabilities/default.json`
+is scoped to `windows: ["main"]` and this webview lives in the `main` window** — adding a
+`remote` context there would hand a third-party service the app's whole command surface.
+Don't.
+
+The Dev-Mode inspect script still talks back through navigation
+(`location.href = "ymux-ticket:<base64url>"`, decoded by `handle_ticket_navigation`,
+re-emitted as `browser:ticket-captured`) because `WebviewBuilder` has no `on_ipc` in 2.10.
+
+**Phase 82.E — the macOS "site JS is dead" probe.** On macOS a page renders in this
+webview but the site's own JavaScript never runs; the identical code path is fine on
+Windows. Rule #17 rules out building or attaching a debugger locally, so the diagnosis
+ships inside the binary and reports through the unified logger under tag `BROWSERDIAG`.
+Three independent channels, chosen so that silence is still evidence:
+
+- **`browser_diag.js` (241)** — a document-start `initialization_script` that reports by
+  setting `document.title` to `ymux-diag:<base64 json>`. That is the one channel that
+  behaves identically on both platforms (wry hooks `add_DocumentTitleChanged` on Windows
+  and a KVO observer on the `title` keypath on macOS) and it needs no navigation, so it
+  cannot perturb the page load being measured. `fetch`, an iframe, and `location.href`
+  were all considered and rejected — the file's header says why.
+- **`DIAG_EVAL_JS`**, pushed from Rust 300 ms after `PageLoadEvent::Finished`. `eval` is
+  `evaluateJavaScript` on macOS, a *different* injection mechanism from the `WKUserScript`
+  that carries the document-start probe, and it reports whether that probe left its global
+  behind. One beacon therefore separates "JS engine is dead" (nothing arrives) from
+  "user-script injection is broken" (this arrives, `us` is 0).
+- **`on_page_load`**, which fires from the navigation delegate with no JS involved at all
+   — proof the page committed even when nothing else reports in. Plus an 8-second
+  watchdog that logs `NO BEACON` affirmatively, so an empty log can never be confused
+  with "the user never opened a page".
+
+It is deliberately **not** `cfg`-gated to macOS: if the probe first ran on the one machine
+nobody can debug, "no beacon" would be ambiguous between a dead JS engine and a broken
+probe. The Windows build is the control experiment.
+
+**The beacon channel is attacker-influenced and treated that way.** The page controls its
+own title. `handle_diag_title` spends from a per-webview budget of `DIAG_MAX_BEACONS = 24`
+and then goes quiet; `decode_diag` re-serializes through `serde_json` rather than logging
+the page's bytes (raw newlines are legal JSON whitespace, so a hostile page could
+otherwise forge `[ERROR]` lines in `debug.log`) and truncates at `DIAG_MAX_LOG = 900` on a
+char boundary. **Any other title is ignored, not logged** — Rule #1's spirit is that page
+content stays out of the log. `mod diag_title_tests` pins all of it, including that `btoa`'s
+padded standard-alphabet output round-trips through `tickets::base64_decode`, which was
+written for the URL-safe unpadded dialect.
+
+**`workspace_browser_open_devtools(workspace_id)`** opens the inspector on that webview:
+one click instead of Safari → Develop → machine → webview, and the *only* way in on
+Windows, where WebView2's F12 is not wired up for a child webview. `.devtools(true)` is set
+on this webview alone; the command always exists so the frontend needs no build-shape
+knowledge, but its body is `#[cfg(any(debug_assertions, feature = "devtools"))]` and the
+other arm returns a clean error.
 
 ## Git
 
@@ -125,6 +184,12 @@ bug-report file IO. The commands and RPC handlers themselves live in `lib.rs` an
   reference implementation; `port_watcher_tasks` in `CoreState` follows the same shape.
 - One Webview per workspace, one WebView2 environment per process. Do not add a
   `--user-data-dir`.
+- **Only the workspace Browser webview is inspectable.** The `devtools` feature flips
+  wry's default to `true` process-wide; the `.devtools(false)` opt-outs on the main window
+  and popouts in `lib.rs` are what keep PTY output out of an inspector. See
+  `backend-core.md` § Gotchas.
+- `capabilities/default.json` stays `Local`-context only. A `remote` context would expose
+  the command surface to whatever the Browser is pointed at.
 
 ## Read the source when
 

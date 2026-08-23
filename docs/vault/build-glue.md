@@ -84,10 +84,20 @@ encoding behaviour causes the bug.
 
 ## `app/src-tauri/Cargo.toml` and `build.rs`
 
-`tauri = "=2.10.3"` with `features = ["unstable"]`, **pinned**. The unstable feature gates
-`Window::add_child`, which the per-workspace browser webviews depend on. Bumping tauri
-means verifying `add_child`'s signature and the multi-webview shape still compile — push
-the bump and let CI type-check it (Rule #17), then smoke-test the workspace Browser.
+`tauri = "=2.10.3"` with `features = ["unstable", "tray-icon", "image-png", "devtools"]`,
+**pinned**. The unstable feature gates `Window::add_child`, which the per-workspace
+browser webviews depend on. Bumping tauri means verifying `add_child`'s signature and the
+multi-webview shape still compile — push the bump and let CI type-check it (Rule #17),
+then smoke-test the workspace Browser.
+
+**`devtools` is the dangerous one.** It is the only thing that makes wry call
+`setInspectable(true)` on macOS, i.e. the only way Safari's Develop menu can attach to the
+workspace Browser webview in a release build (Phase 82.E). But `tauri-runtime-wry` reads
+the setting as `devtools.unwrap_or(true)`, so **enabling the feature makes every webview
+inspectable by default** — including `main`, which renders live PTY output, i.e. Rule #1.
+The explicit `.devtools(false)` calls on the main-window and popout builders in `lib.rs`
+are what keep that from happening. They are not optional, and they are not cleanup. See
+`backend-core.md` § Gotchas and `backend-panes.md` § Panes.
 
 `build.rs` runs `tauri_build`, which is what embeds `frontendDist` — the whole reason
 Rule #13 exists.

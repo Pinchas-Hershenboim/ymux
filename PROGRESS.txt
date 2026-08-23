@@ -6085,9 +6085,19 @@ thing that exercises cache@v6 and the rust-toolchain SHA on the release
 path, and warm-rust-cache must run once or the windows-release cache stays
 cold (~813s vs ~420s on the next release build).
 
-================================================================================
+[2026-08-23 ~17:40] vault: re-sync after the four-PR merge train (#20/#21/#22/#23)
+  Task: main's ci-windows was red — the vault gate fired on 7 pages. PR #20 landed
+        the gate and stamped its lock on its own branch; #22 (Phase 84.C-E Monitor
+        Analytics + Claude usage/cost) and #23 (Phase 82.E macOS browser JS probe)
+        then landed 1.8k lines of covered code under it. Nothing after step 5 of
+        ci-windows had run since, so main was UNTYPE-CHECKED, not just undocumented.
+  Files: docs/vault/{INDEX,server-go,backend-claude,backend-core,backend-panes,
+         build-glue,frontend-panes,frontend-shell,frontend-lib}.md + .vault-lock.json
+  Result: prose written for /analytics + /claude-usage (both halves), claude_usage_local.rs,
+          the Phase 82.E beacon probe + devtools opt-in/opt-out pair, and the four pure
+          Monitor support modules. Coverage 93% -> 95% (226 files). vault-check clean.
+          Docs only — no code touched.
 2026-08-23 — Phase 84.F: the tab strip's CSS came back from the dead
-================================================================================
 Task: Yossi reported the pane tabs render as a vertical "card" stacked on the
 left instead of a horizontal strip, and that clicking a tab does nothing.
 
@@ -6117,6 +6127,7 @@ vault-check reports (lib.rs, App.tsx, server-go, …) is pre-existing on main.
 Status: compiles-only claim not even applicable — CSS. Needs a real launch to
 confirm the strip lays out horizontally and the active tab is visibly active.
 
+[2026-08-23] CLAUDE.md: added Absolute Rule #19 — before every push, sweep the full worktree-vs-origin/main diff and update docs/vault/ + re-stamp .vault-lock.json. Files: CLAUDE.md. Result: doc-only, no code touched.
 [2026-08-23 21:31] Phase 84.G — top-center overlay lanes (session ticker vs. toasts)
   Report: the Claude-usage pill sits top-center and every app message was
   rendering underneath it — enabling sound or hitting an error showed nothing.
@@ -6134,6 +6145,6 @@ confirm the strip lays out horizontally and the active tab is visibly active.
       message are both readable. :has() and not a fixed offset because the pill
       only mounts for a live workspace with usage data.
   Files: app/src/App.css (+44/-4). No vault page covers App.css (checked
-  .vault-lock.json) — vault-check drift is the pre-existing Go/insights one
-  from a0a3598, untouched here.
+  .vault-lock.json); Rule #19 sweep of origin/main...HEAD lists only
+  PROGRESS.txt + App.css, neither covered.
   Status: compiles-only reasoning; NOT run live (Rule #17 - no local builds).
