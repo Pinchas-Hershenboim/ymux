@@ -3613,3 +3613,69 @@ Mac and check (a) a local pane spawns zsh, (b) `ymux` on PATH reaches the
 app over the Unix socket — this is the hooks/statusline path and the one
 most likely to be wrong, (c) the connect wizard stops flagging every key
 as badly permissioned, (d) Settings shows real installed fonts.
+
+
+================================================================================
+2026-08-23 | Phase 83 — the Go server enters the CI pipeline
+================================================================================
+Files: .github/workflows/ci-windows.yml, .gitattributes, CLAUDE.md,
+docs/ymux-server/README.md, docs/DECISIONS.md, FOLLOWUPS.md
+
+Yossi: "the SERVER should also go through BUILD if we changed something in
+its code — no reason it's not in the CI pipe." Two holes, the second worse
+than the first.
+
+1. The server WAS compiled in CI, for the wrong platform. `go test ./...`
+   runs on windows-latest, i.e. GOOS=windows. What ships is
+   resources/ymux-server-linux-{x64,arm64}. A linux-only break — a syscall
+   arm, a //go:build tag, a dep without windows/linux parity — was
+   invisible until a human cross-compiled at release time.
+
+2. Those two binaries are COMMITTED BLOBS baked by hand
+   (docs/ymux-server/README.md § Build; the manual step is even minuted at
+   docs/DECISIONS.md:298). src/addons.rs `include_bytes!`s them, so nothing
+   in the desktop build ever reads the Go source. Change a handler, skip the
+   rebake, and every job is green while every remote gets the OLD server.
+   Nothing anywhere said so.
+
+Added to ci-windows.yml:
+  - `go vet ./...`
+  - cross-build linux/amd64 + linux/arm64 with the release flags from
+    README § Build (-trimpath -ldflags="-s -w", CGO_ENABLED=0). Built with
+    `-o <dir>/ ./...` as well as ./cmd, so packages main does not import are
+    compiled for linux too. ~30s, CGO-free.
+  - upload both as the `ymux-server-linux` artifact, which makes a rebake
+    "download and commit" instead of "install Go locally" (Rule #17).
+  - THE GATE: fail if `server/**.{go,mod,sum}` (minus _test.go) changed
+    between the base commit and HEAD while
+    resources/ymux-server-linux-{x64,arm64} did not. Two-dot diff against a
+    shallow-fetched base — the checkout is depth-1, and on a PR the checked
+    out ref is already base-merged so two-dot IS the PR diff.
+  - `sdk-gen/ci-check.mjs` (the SDK/OpenAPI drift-guard). Closes the root
+    cause of the FOLLOWUPS P2 from 2026-08-18, where ~670 lines of stale
+    generated output rode into the rename commit because nothing checked.
+
+DELIBERATELY NOT a byte-compare of the committed blob against the fresh
+cross-build. Go output is reproducible only for a fixed toolchain patch
+version, and setup-go resolves `go 1.26` to whatever 1.26.x is current, so
+that check would go red on a Go point release for a reason unrelated to the
+change. The source-drift gate is exact and has no such failure mode.
+
+Also, found while reading .gitattributes: `* text=auto eol=lf` covers the
+whole tree and the three extensionless shipped binaries (ymux-cli,
+ymux-linux-x64, ymux-server-linux-*) match no `binary` rule. They survive
+today only because git sniffs a NUL in the ELF header. Named them
+explicitly — a heuristic is not what should stand between us and a
+corrupted 12MB blob.
+
+Current state: the committed blobs are NOT stale. Both are from 90626bb
+(2026-08-19, the rename) and `git log 90626bb..HEAD -- app/src-tauri/server/`
+is empty. So this is a gate, not a fix.
+
+NOT VERIFIED (Rule #14/#17): workflow edits only, nothing run. The CI run on
+this branch is the verification. Two things it will settle that reading
+cannot: whether `go vet ./...` is clean on the current tree (it has not run
+since the rename), and whether ci-check.mjs is green on a fresh Windows
+checkout — it shells `go run ./cmd/ymux-server openapi` and diffs generated
+output, and .gitattributes forces LF everywhere so line endings should not
+bite, but should is not did.

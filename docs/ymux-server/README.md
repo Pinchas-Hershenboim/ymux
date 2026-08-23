@@ -47,5 +47,13 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
 these two binaries (`include_bytes!` in `src/addons.rs`) and SFTP-uploads the
 right arch to `~/.ymux/bin/ymux-server` on install.
 
+**You usually should not run those two commands.** Per CLAUDE.md Rule #17
+builds happen on CI: `ci-windows.yml` runs the identical cross-build on every
+push/PR and uploads the result as the `ymux-server-linux` artifact. Rebaking =
+download that artifact into `../resources/` and commit it alongside the Go
+change. The same workflow *fails* if you change `server/**` without doing so,
+because the committed blobs are what ships — the Go source is never compiled
+by the desktop build.
+
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the systemd unit + tunnel, and
 [UPGRADE.md](UPGRADE.md) for the 1.x → 2.0 path.

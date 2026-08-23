@@ -56,3 +56,12 @@
 *.webm      binary
 *.wav       binary
 *.flac      binary
+
+# Extensionless shipped binaries. `* text=auto` currently leaves these
+# alone only because git sniffs a NUL in the ELF header — that is a
+# heuristic, and these are 12MB blobs the desktop `include_bytes!`s.
+# Say it outright rather than relying on the sniff.
+app/src-tauri/resources/ymux-cli            binary
+app/src-tauri/resources/ymux-linux-x64      binary
+app/src-tauri/resources/ymux-server-linux-x64    binary
+app/src-tauri/resources/ymux-server-linux-arm64  binary
