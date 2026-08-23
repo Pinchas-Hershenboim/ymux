@@ -31,9 +31,10 @@
 //! the unstable gate in this version. See CLAUDE.md "Pinned deps".
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tauri::webview::WebviewBuilder;
+use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, Webview, WebviewUrl,
 };
@@ -47,6 +48,63 @@ const TICKET_SCHEME: &str = "ymux-ticket";
 /// Event the main window listens on to open the ticket modal.
 const TICKET_EVENT: &str = "browser:ticket-captured";
 
+// ---------------------------------------------------------------------
+// Phase 82.E: the macOS "site JS does not run" probe.
+//
+// On macOS a page renders in this webview but the site's own JavaScript
+// is dead; the identical code path works on Windows. Rule #17 means we
+// cannot build or attach a debugger locally, so the diagnosis ships in
+// the binary and reports through the unified logger.
+//
+// The probe (`browser_diag.js`) reports by setting `document.title` to
+// `ymux-diag:<base64 json>`. That is the ONE channel that behaves the
+// same on both platforms: wry hooks `add_DocumentTitleChanged` on
+// Windows and a KVO observer on the `title` keypath on macOS. It also
+// needs no navigation, so it cannot perturb the page load we are
+// measuring. See the header comment in `browser_diag.js` for why
+// `fetch`, an iframe, and `location.href` were all rejected.
+//
+// Deliberately NOT `cfg`-gated to macOS: if the probe first executed on
+// the one machine we cannot debug, "no beacon in the log" would be
+// ambiguous between "the JS engine is dead" and "my probe is broken".
+// Running it on Windows first makes that build the control experiment.
+// ---------------------------------------------------------------------
+
+/// Title prefix the probe uses to mark a beacon.
+const DIAG_TITLE_PREFIX: &str = "ymux-diag:";
+
+/// Log tag for everything this probe emits.
+const DIAG_TAG: &str = "BROWSERDIAG";
+
+/// The document-start probe itself.
+const DIAG_SCRIPT: &str = include_str!("browser_diag.js");
+
+/// Hard cap on one logged beacon. The page controls its own title.
+const DIAG_MAX_LOG: usize = 900;
+
+/// Hard cap on beacons logged per webview. The page controls its own
+/// title, so this channel is attacker-influenced: without a budget a
+/// hostile or merely chatty page could flood `debug.log`.
+const DIAG_MAX_BEACONS: usize = 24;
+
+/// How long to wait for the first beacon before saying so out loud.
+const DIAG_WATCHDOG_SECS: u64 = 8;
+
+/// Independent probe pushed from Rust after `PageLoadEvent::Finished`.
+///
+/// This is the line that makes "the JS engine is dead" falsifiable:
+/// `eval` is `evaluateJavaScript` on macOS, a DIFFERENT injection
+/// mechanism from the `WKUserScript` that carries `browser_diag.js`.
+/// `us` reports whether the document-start script left its global
+/// behind, so one beacon separates "engine dead" (nothing arrives at
+/// all) from "user-script injection broken" (this arrives, `us` is 0).
+const DIAG_EVAL_JS: &str = concat!(
+    "try{var d=window.__ymuxDiag?1:0;var o=document.title;",
+    "document.title='ymux-diag:'+btoa('{\"p\":\"eval\",\"ok\":1,\"us\":'+d+'}');",
+    "setTimeout(function(){if(String(document.title).indexOf('ymux-diag:')===0)",
+    "{document.title=o}},0)}catch(e){}"
+);
+
 /// Payload delivered to the frontend for one captured element.
 #[derive(Clone, serde::Serialize)]
 struct TicketCapture {
@@ -57,11 +115,21 @@ struct TicketCapture {
     capture: serde_json::Value,
 }
 
-/// The child webview is a plain external page: no Tauri IPC is injected
-/// into it (and injecting it would hand a tunneled third-party service
-/// the app's command surface). Tauri 2.10's `WebviewBuilder` has no
-/// `on_ipc` either. So the Dev-Mode inspect script talks back through
-/// the one hook that does exist — navigation.
+/// The child webview is a plain external page with no IPC surface, and
+/// `WebviewBuilder` has no `on_ipc` in 2.10 anyway. So the Dev-Mode
+/// inspect script talks back through the one hook that does exist —
+/// navigation.
+///
+/// Correction (Phase 82.E): the injection is not what protects us.
+/// `tauri::manager::webview` prepends `__TAURI_INTERNALS__` and the
+/// invoke bootstrap to EVERY webview's init scripts, external URLs
+/// included — so an `invoke` function does reach the tunneled page. What
+/// denies it is the capability layer: a remote page's origin is
+/// `Origin::Remote`, and every capability in `capabilities/` declares a
+/// `Local` execution context, so `Origin::matches` fails and every
+/// command is refused. Note `capabilities/default.json` is scoped to
+/// `windows: ["main"]` and this webview lives in the `main` window, so
+/// adding a `remote` context there would expose it. Don't.
 ///
 /// The script sets `location.href = "ymux-ticket:<base64url>"`. This
 /// handler decodes it, emits `browser:ticket-captured`, and returns
@@ -114,6 +182,66 @@ fn decode_capture(encoded: &str) -> Result<serde_json::Value, String> {
     let bytes = crate::tickets::base64_decode(encoded)?;
     let text = String::from_utf8(bytes).map_err(|e| format!("capture is not utf-8: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("capture is not json: {e}"))
+}
+
+/// Handle one `document.title` change from the Browser webview.
+///
+/// Returns `true` if the title was one of our beacons — the caller uses
+/// that to arm the watchdog, so "the log is empty" can never be confused
+/// with "the user never opened a page".
+///
+/// Every other title is an ordinary page title and is ignored, not
+/// logged: Rule #1's spirit is that page content stays out of the log.
+fn handle_diag_title(workspace_id: &str, title: &str, budget: &AtomicUsize) -> bool {
+    let encoded = match title.strip_prefix(DIAG_TITLE_PREFIX) {
+        Some(e) => e,
+        None => return false,
+    };
+    // Spend one unit of budget, or stay silent if it is gone.
+    let remaining = match budget.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        if n == 0 {
+            None
+        } else {
+            Some(n - 1)
+        }
+    }) {
+        Ok(prev) => prev - 1,
+        Err(_) => return true,
+    };
+    match decode_diag(encoded) {
+        Ok(json) => log_warn(DIAG_TAG, &format!("ws={workspace_id} {json}")),
+        Err(e) => log_warn(DIAG_TAG, &format!("ws={workspace_id} bad beacon: {e}")),
+    }
+    if remaining == 0 {
+        log_warn(
+            DIAG_TAG,
+            &format!("ws={workspace_id} beacon budget spent — no further beacons will be logged"),
+        );
+    }
+    true
+}
+
+/// Decode a beacon payload into exactly one log-safe line.
+///
+/// Re-serializes through `serde_json` rather than logging the page's
+/// bytes verbatim: raw newlines are legal JSON whitespace, so a page
+/// could otherwise forge extra lines in `debug.log`.
+fn decode_diag(encoded: &str) -> Result<String, String> {
+    let bytes = crate::tickets::base64_decode(encoded)?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("beacon is not utf-8: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("beacon is not json: {e}"))?;
+    let mut compact =
+        serde_json::to_string(&value).map_err(|e| format!("beacon re-encode failed: {e}"))?;
+    if compact.len() > DIAG_MAX_LOG {
+        let mut cut = DIAG_MAX_LOG;
+        while cut > 0 && !compact.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        compact.truncate(cut);
+        compact.push_str("…(truncated)");
+    }
+    Ok(compact)
 }
 
 /// Map of `workspace_id -> Webview`. Exactly one entry per workspace
@@ -220,16 +348,69 @@ pub(crate) async fn workspace_browser_show(
     const MAX_ATTEMPTS: u32 = 3;
     let mut last_err = String::new();
     let mut created = None;
+    // Phase 82.E probe state, shared by the title handler and the
+    // watchdog. Built outside the retry loop; the closures that capture
+    // it are rebuilt per attempt because `add_child` consumes the builder.
+    let diag_seen = Arc::new(AtomicBool::new(false));
+    let diag_budget = Arc::new(AtomicUsize::new(DIAG_MAX_BEACONS));
     for attempt in 1..=MAX_ATTEMPTS {
         // Default environment — shared with the main window + every other
         // workspace browser. One WebView2 environment per process.
-        // Only addition to the builder: the ticket bridge. It is inert
-        // for every URL that isn't `ymux-ticket:` (returns true =
-        // navigate as before), and nothing is injected into the page.
+        // The ticket bridge is inert for every URL that isn't
+        // `ymux-ticket:` (returns true = navigate as before). Phase 82.E
+        // added the diagnostic probe below it — that one IS injected into
+        // the page, at document start; see the const block at the top.
         let bridge_app = app.clone();
         let bridge_ws = workspace_id.clone();
+        let title_ws = workspace_id.clone();
+        let title_seen = diag_seen.clone();
+        let title_budget = diag_budget.clone();
+        let load_ws = workspace_id.clone();
         let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url.clone()))
-            .on_navigation(move |url| handle_ticket_navigation(&bridge_app, &bridge_ws, url));
+            .on_navigation(move |url| handle_ticket_navigation(&bridge_app, &bridge_ws, url))
+            // ----- Phase 82.E diagnostics (see the const block above) -----
+            .initialization_script(DIAG_SCRIPT)
+            // Both platforms, on purpose (Yossi's call): the Windows
+            // build is the control run for the macOS bug, and a control
+            // you cannot inspect is worth much less. Without the
+            // `devtools` feature wry never calls `setInspectable(true)`
+            // on macOS, so Safari's Develop menu cannot attach at all.
+            // This webview shows a tunneled third-party service, not
+            // ymux's own UI, so an inspector here exposes nothing of
+            // ours — the main and popout windows are explicitly opted
+            // OUT in lib.rs, because enabling the feature flips the
+            // runtime default for every webview to `true`.
+            .devtools(true)
+            // Handlers run on the WebView2 UI thread / the macOS KVO
+            // thread. They may only decode and log — `log_*` just pushes
+            // onto a channel. Anything that re-enters the webview (an
+            // `eval`) goes through `async_runtime::spawn` instead.
+            .on_document_title_changed(move |_wv, title| {
+                if handle_diag_title(&title_ws, &title, &title_budget) {
+                    title_seen.store(true, Ordering::Relaxed);
+                }
+            })
+            .on_page_load(move |wv, payload| {
+                // Fires from the navigation delegate with zero JS
+                // involved — proof the page committed even when nothing
+                // else reports in.
+                log_warn(
+                    DIAG_TAG,
+                    &format!(
+                        "ws={} page_load={:?} scheme={} host={:?}",
+                        load_ws,
+                        payload.event(),
+                        payload.url().scheme(),
+                        payload.url().host_str()
+                    ),
+                );
+                if payload.event() == PageLoadEvent::Finished {
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        let _ = wv.eval(DIAG_EVAL_JS);
+                    });
+                }
+            });
         match main_window.add_child(
             builder,
             LogicalPosition::new(x, y),
@@ -268,6 +449,22 @@ pub(crate) async fn workspace_browser_show(
         "[workspace_browser_show] spawned ws={} url={} rect=({:.0},{:.0},{:.0},{:.0})",
         workspace_id, url, x, y, w, h
     ));
+
+    // Phase 82.E watchdog: turn silence into an affirmative log line.
+    // Without it, an empty log is ambiguous between "the probe never
+    // ran" and "the user never actually opened a page".
+    {
+        let ws = workspace_id.clone();
+        let seen = diag_seen.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(DIAG_WATCHDOG_SECS)).await;
+            if !seen.load(Ordering::Relaxed) {
+                log_warn(DIAG_TAG, &format!(
+                    "ws={ws} NO BEACON within {DIAG_WATCHDOG_SECS}s — the document-start probe never reported (H1 candidate: JS is dead in the child webview)"
+                ));
+            }
+        });
+    }
     Ok(())
 }
 
@@ -333,6 +530,44 @@ pub(crate) async fn workspace_browser_eval(
         .ok_or_else(|| format!("no browser webview for workspace {workspace_id}"))?;
     webview.eval(js).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Open the inspector on the workspace's Browser webview.
+///
+/// The one-click alternative to Safari → Develop → <machine> → <webview>,
+/// and the only way in at all on Windows, where WebView2's own F12 is not
+/// wired up for a child webview. Only this webview is inspectable — see
+/// the `.devtools(...)` call in `workspace_browser_show`.
+#[tauri::command]
+pub(crate) async fn workspace_browser_open_devtools(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let webview = state
+        .workspace_browsers
+        .lock()
+        .unwrap()
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(|| format!("no browser webview for workspace {workspace_id}"))?;
+    // The command always exists so the frontend needs no build-shape
+    // knowledge; only the body is gated. `open_devtools` is compiled out
+    // unless the `devtools` feature is on (it is — see Cargo.toml) or
+    // this is a debug build.
+    #[cfg(any(debug_assertions, feature = "devtools"))]
+    {
+        webview.open_devtools();
+        log_info(
+            "BROWSER",
+            &format!("[workspace_browser_open_devtools] ws={workspace_id}"),
+        );
+        Ok(())
+    }
+    #[cfg(not(any(debug_assertions, feature = "devtools")))]
+    {
+        let _ = webview;
+        Err("this build was compiled without devtools support".to_string())
+    }
 }
 
 #[tauri::command]
@@ -504,3 +739,113 @@ mod ticket_bridge_tests {
     }
 }
 
+
+/// Phase 82.E: the `ymux-diag:` beacon channel. `browser_diag.js` reports
+/// through `document.title`, which the PAGE also controls — so the two
+/// things worth pinning down are that an ordinary title is inert, and
+/// that a hostile one cannot forge extra lines in `debug.log`.
+#[cfg(test)]
+mod diag_title_tests {
+    use super::*;
+
+    fn b64(s: &str) -> String {
+        // Mirrors what `btoa` emits: standard alphabet, `=` padding.
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let b = s.as_bytes();
+        let mut out = String::new();
+        for c in b.chunks(3) {
+            let n = (u32::from(c[0]) << 16)
+                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*c.get(2).unwrap_or(&0));
+            out.push(A[(n >> 18) as usize & 63] as char);
+            out.push(A[(n >> 12) as usize & 63] as char);
+            out.push(if c.len() > 1 {
+                A[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if c.len() > 2 {
+                A[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn ordinary_page_titles_are_inert() {
+        let budget = AtomicUsize::new(DIAG_MAX_BEACONS);
+        assert!(!handle_diag_title("w_1", "Grafana - Home", &budget));
+        assert!(!handle_diag_title("w_1", "", &budget));
+        // Close but not ours — the prefix must match exactly.
+        assert!(!handle_diag_title("w_1", "ymux-ticket:AAAA", &budget));
+        assert_eq!(
+            budget.load(Ordering::Relaxed),
+            DIAG_MAX_BEACONS,
+            "a non-beacon title must not spend budget"
+        );
+    }
+
+    #[test]
+    fn btoa_output_round_trips_through_the_decoder() {
+        // `btoa` uses the standard alphabet with padding; `base64_decode`
+        // was written for the URL-safe, unpadded form the ticket bridge
+        // sends. Both dialects have to work or the beacon is silent.
+        let payload = r#"{"p":"boot","g0":42}"#;
+        let decoded = decode_diag(&b64(payload)).expect("btoa output decodes");
+        assert!(decoded.contains("\"p\":\"boot\""));
+        assert!(decoded.contains("\"g0\":42"));
+    }
+
+    #[test]
+    fn beacon_is_normalized_to_a_single_line() {
+        // Raw newlines are legal JSON whitespace, so a page could
+        // otherwise forge extra lines in debug.log. Re-serializing kills
+        // that: whitespace between tokens is dropped, and a newline
+        // inside a string comes back escaped.
+        // Raw string for the body so the two kinds of newline stay
+        // distinguishable: the ones added by format! are real LF bytes
+        // between tokens (legal JSON whitespace, and the forging vector),
+        // while the `\n` inside the value is a two-character JSON escape.
+        let hostile = format!("{{\n{}\n}}", r#""p":"x","m":"a\nb [ERROR] forged""#);
+        let decoded = decode_diag(&b64(&hostile)).expect("decodes");
+        assert!(!decoded.contains('\n'), "must be one line: {decoded}");
+        assert!(
+            decoded.contains(r"a\nb"),
+            "the escape must survive as an escape: {decoded}"
+        );
+    }
+
+    #[test]
+    fn non_json_and_non_base64_are_rejected_not_logged() {
+        assert!(decode_diag(&b64("not json at all")).is_err());
+        assert!(decode_diag("!!!not base64!!!").is_err());
+    }
+
+    #[test]
+    fn oversized_beacons_are_truncated_on_a_char_boundary() {
+        let big = format!(r#"{{"p":"x","m":"{}"}}"#, "\u{5e9}".repeat(2000));
+        let decoded = decode_diag(&b64(&big)).expect("decodes");
+        assert!(decoded.len() <= DIAG_MAX_LOG + "…(truncated)".len());
+        assert!(decoded.ends_with("…(truncated)"));
+    }
+
+    #[test]
+    fn the_budget_is_spent_and_then_the_channel_goes_quiet() {
+        let budget = AtomicUsize::new(2);
+        let beacon = format!("{DIAG_TITLE_PREFIX}{}", b64(r#"{"p":"boot"}"#));
+        // Both are ours and both are logged...
+        assert!(handle_diag_title("w_1", &beacon, &budget));
+        assert!(handle_diag_title("w_1", &beacon, &budget));
+        assert_eq!(budget.load(Ordering::Relaxed), 0);
+        // ...and from here it still reports "mine" (so the watchdog stays
+        // disarmed) but writes nothing more.
+        assert!(handle_diag_title("w_1", &beacon, &budget));
+        assert_eq!(
+            budget.load(Ordering::Relaxed),
+            0,
+            "must saturate at zero, never wrap"
+        );
+    }
+}

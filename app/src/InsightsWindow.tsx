@@ -6,6 +6,7 @@ import {
   IconFile,
   IconSparkles,
   IconBot,
+  IconHistory,
   IconRefresh,
   IconClose,
 } from "./icons";
@@ -14,6 +15,9 @@ import { t, currentLanguage } from "./i18n";
 import { formatResetLocal } from "./claudeUsageFmt";
 import { MobilePairing } from "./MobilePairing";
 import { HygienePanel } from "./HygienePanel";
+import { InsightsAnalytics } from "./InsightsAnalytics";
+import { InsightsClaudeCost } from "./InsightsClaudeCost";
+import { fmtBytes, fmtBps } from "./insightsFmt";
 import { PanelSurface } from "./PanelSurface";
 import type { Surface } from "./panels";
 import type { Geometry } from "./floatingWindow";
@@ -51,6 +55,9 @@ interface Props {
   surface: Surface;
   workspaceId?: string;
   workspaceName?: string;
+  /** Local workspaces are served in-process; remote ones over SSH. Only the
+   *  copy-the-commands blocks care, so they can name the right paths. */
+  local?: boolean;
   onClose: () => void;
   onDrawer: () => void;
   onFloat: () => void;
@@ -63,20 +70,7 @@ const DEFAULT_GEOMETRY: Geometry = { x: 180, y: 90, w: 820, h: 620 };
 const MIN_W = 460;
 const MIN_H = 360;
 
-function fmtBytes(n: number): string {
-  if (!n) return "0";
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
-}
-const fmtBps = (n: number) => `${fmtBytes(n)}/s`;
-
-type InsightsView = "metrics" | "mobile" | "logs" | "health" | "claude";
+type InsightsView = "metrics" | "analytics" | "mobile" | "logs" | "health" | "claude";
 
 export function InsightsWindow(p: Props) {
   const tabsNarrow = createNarrow(380);
@@ -299,6 +293,7 @@ export function InsightsWindow(p: Props) {
   const tabsEl = () => (
     <div class="ins-tabs" classList={{ compact: tabsNarrow.narrow() }} ref={tabsNarrow.ref}>
       {tab("metrics", <IconActivity />, t("insights.tab.metrics"))}
+      {tab("analytics", <IconHistory />, t("insights.tab.analytics"))}
       {tab("mobile", <IconSmartphone />, t("insights.tab.mobile"))}
       {tab("logs", <IconFile />, t("insights.tab.logs"))}
       {tab("health", <IconSparkles />, t("insights.tab.health"))}
@@ -320,7 +315,10 @@ export function InsightsWindow(p: Props) {
 
   const bodyContent = () => (
     <>
-      <Show when={view() === "mobile"}>
+      <Show when={view() === "analytics"}>
+            <InsightsAnalytics workspaceId={p.workspaceId} workspaceName={p.workspaceName} local={p.local} />
+          </Show>
+          <Show when={view() === "mobile"}>
             <MobilePairing workspaceId={p.workspaceId} />
           </Show>
           <Show when={view() === "health"}>
@@ -382,6 +380,14 @@ export function InsightsWindow(p: Props) {
                   </>
                 )}
               </Show>
+              {/* Phase 84.E: the quota bars above say how much allowance is
+                  left; this says where it went, in tokens and dollars. */}
+              <h4 class="ins-h4">{t("insights.cc.title")}</h4>
+              <InsightsClaudeCost
+                workspaceId={p.workspaceId}
+                workspaceName={p.workspaceName}
+                local={p.local}
+              />
             </div>
           </Show>
           <Show when={view() === "logs"}>

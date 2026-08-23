@@ -6,11 +6,17 @@ conventions to keep things consistent.
 
 ## Where to start reading
 
-1. [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) — the big picture.
-2. [`docs/MODULES.md`](./MODULES.md) — what each file does.
+1. [`docs/vault/INDEX.md`](./vault/INDEX.md) — **the vault**: ~3k lines of prose
+   explaining ~90k lines of code, so you can answer "what does this do / where does X
+   live" without opening the source. Start here, every time.
+2. [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) — the big picture.
 3. [`docs/PROTOCOLS.md`](./PROTOCOLS.md) — the wire formats. Useful when adding RPC
    methods or wire-level features.
-4. The source. `lib.rs` is large but well-sectioned with `// ─── Section ─────` headers.
+4. The source. `lib.rs` is large but well-sectioned with `// ─── Section ─────` headers,
+   and each vault page names the questions it deliberately does not answer.
+
+(`docs/MODULES.md` used to be step 2. It is now a pointer to the vault — see that file
+for why.)
 
 ## Building a runnable exe
 
@@ -159,6 +165,34 @@ land in `app/src/bindings/` and are re-exported from `app/src/types.ts`.
 Don't hand-edit `app/src/bindings/*.ts`. Note: ts-rs renders `Option<T>`
 as `T | null`, and `app/src/settings.ts` keeps a richer hand-tuned mirror
 (literal unions for the UI) rather than the generated `Settings`.
+
+## Updating the vault
+
+`docs/vault/*.md` explain the code so it can be read instead of the source. Each page
+declares in its frontmatter which files it `covers:`, and `docs/vault/.vault-lock.json`
+holds a sha256 of each of them.
+
+When you change covered code, update the page that covers it **in the same commit**:
+
+```bash
+node scripts/vault-check.mjs
+```
+
+That names every page whose code has moved. Fix the prose, then re-stamp and commit both:
+
+```bash
+node scripts/vault-check.mjs --write
+```
+
+`ci-windows.yml` runs the same script on every PR, and additionally requires that the
+owning `.md` appears in the diff — so re-stamping without touching the prose does not
+pass. If a change genuinely does not affect the explanation (a typo fix, a rename the
+page never named), put `[vault-skip]` in the PR title; it is logged as a `::notice::` on
+the run.
+
+Adding coverage is just adding a path to a `covers:` list — the script needs no changes.
+A file may be covered by exactly one page; test files are deliberately left uncovered.
+Keep a page around 200 lines: if it needs more, the area wants splitting.
 
 ## Logging conventions
 
