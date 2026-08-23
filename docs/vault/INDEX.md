@@ -29,6 +29,15 @@ did. Details in `docs/CONTRIBUTING.md` § Updating the vault.
 | [backend-claude.md](backend-claude.md) | session summaries, `/usage` quota, transcript mirroring, local Insights |
 | [crates.md](crates.md) | the eight `ymux-*` crates and why each thing lives where it does |
 
+**Frontend** (`app/src/`, SolidJS)
+
+| Read this | When you want |
+|---|---|
+| [frontend-shell.md](frontend-shell.md) | `App.tsx` and its ~50 signals, the backend event subscriptions, sidebar, layout tree, `PaneView`, the drawer/float/fullscreen panel chrome |
+| [frontend-panes.md](frontend-panes.md) | Browser, File Manager, Insights, Ports, Diff, tickets, notifications, the feed, transfers, add-ons |
+| [frontend-flows.md](frontend-flows.md) | the setup wizard mode tree, the create/edit modals, SSH form sharing, SettingsModal |
+| [frontend-lib.md](frontend-lib.md) | the xterm.js wrapper, the four RTL modules, ts-rs type mirrors, logger, i18n, shortcuts |
+
 ## What the vault is not
 
 - **Not design docs.** Why the system is shaped this way lives in
