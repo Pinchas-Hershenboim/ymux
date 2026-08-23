@@ -86,7 +86,7 @@ rather than duplicated:
   sitting unreachable.
 - **`NotesModal.tsx` (273)** — notes CRUD against `notes.rs`.
 
-## `SettingsModal.tsx` (1,774)
+## `SettingsModal.tsx` (1,869)
 
 The whole settings surface in tabs — theme, fonts, terminal, RTL profiles, hooks,
 notifications, logs, Claude, updates, shortcuts. Reads and writes through
@@ -104,6 +104,20 @@ did not move when `force_rtl` was added (2026-08-23) — the new mode is opt-in.
 
 Two tabs are deliberately **separate components** so they do not bloat this file:
 `AddonsTab` and `YmuxToolsTab` (see `frontend-panes.md`).
+
+The fonts section has two notices that are mirror images, and the second exists because
+of a gap in the first. `FontMissingNotice` renders only while the picked family is
+MISSING, and offers Install — so an INSTALLED font had nowhere to hang a control, which
+is why removing one used to mean hand-deleting from `%LOCALAPPDATA%` and HKCU.
+`FontInstalledList` is the other half: a compact "Installed by ymux" list under both
+pickers, one Remove button per row, rendering nothing when nothing is installed. It has
+to be a list rather than a button beside the picker, because the picker only ever shows
+one family. Guarded by `window.confirm` — it deletes files and the way back is a
+multi-MB download. A partial removal is a normal outcome, not an error: Windows will not
+delete a font a running app has open, so the `failed` list gets its own message.
+**Both handlers re-read `fontCatalog()` as well as `listSystemFonts()`**, since the
+installed flag lives on the catalog and the row would otherwise not appear or disappear
+until Settings was reopened.
 
 **The Shortcuts tab is 28 recordable rows in five labelled groups**, driven by
 `SHORTCUT_GROUPS` from `shortcuts.ts` — the group list is the UI's row order, and a
