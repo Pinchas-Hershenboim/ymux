@@ -84,10 +84,22 @@ encoding behaviour causes the bug.
 
 ## `app/src-tauri/Cargo.toml` and `build.rs`
 
-`tauri = "=2.10.3"` with `features = ["unstable"]`, **pinned**. The unstable feature gates
-`Window::add_child`, which the per-workspace browser webviews depend on. Bumping tauri
-means verifying `add_child`'s signature and the multi-webview shape still compile — push
-the bump and let CI type-check it (Rule #17), then smoke-test the workspace Browser.
+`tauri = "=2.10.3"` with `features = ["unstable", "tray-icon", "image-png", "devtools"]`,
+**pinned**. The unstable feature gates `Window::add_child`, which the per-workspace browser
+webviews depend on. Bumping tauri means verifying `add_child`'s signature and the
+multi-webview shape still compile — push the bump and let CI type-check it (Rule #17), then
+smoke-test the workspace Browser.
+
+**`devtools` (Phase 82.E) is the one feature here that can leak user data, and the guard
+against it lives in a different file.** It is the only thing that makes wry call
+`setInspectable(true)` on macOS, i.e. the only way Safari's Develop menu can attach to the
+workspace Browser webview in a release build. The danger: `tauri-runtime-wry` reads the
+setting as `devtools.unwrap_or(true)`, so **enabling the feature makes EVERY webview
+inspectable by default** — including `main`, which renders live PTY output (Rule #1). What
+prevents that is the explicit `.devtools(false)` on the main-window and popout-pane
+builders in `lib.rs`. Those two calls are not optional and not stylistic; deleting either
+one silently makes the user's terminal inspectable. Only the workspace Browser child
+webview opts in, and only on macOS.
 
 `build.rs` runs `tauri_build`, which is what embeds `frontendDist` — the whole reason
 Rule #13 exists.

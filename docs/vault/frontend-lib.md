@@ -4,6 +4,11 @@ covers:
   - app/src/terminalInstance.ts
   - app/src/types.ts
   - app/src/settings.ts
+  - app/src/claudePricing.ts
+  - app/src/insightsFmt.ts
+  - app/src/insightsReport.ts
+  - app/src/insightsCommands.ts
+  - app/src/clipboardText.ts
   - app/src/textDirection.ts
   - app/src/bidi.ts
   - app/src/copyBidi.ts
@@ -105,8 +110,37 @@ nullable key, not `T?` — so helpers such as `effectiveIdentity` widen their pa
 `describeConnection`, `isLocalConn`, `isRemoteEffective`, `collectPanes`, `findPane`)
 are what components use to reason about a pane.
 
-**`settings.ts` (738)** — the typed settings mirror plus load/save and the CSS-variable
-apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it.
+**`settings.ts` (761)** — the typed settings mirror plus load/save and the CSS-variable
+apply. `src-tauri/src/settings.rs` owns the canonical schema; this follows it. Also
+carries the font-catalog bindings: `fontCatalog` (each item now reporting whether it is
+`installed`, read from the font directory on every call rather than from any record of
+past installs), `fontInstall`, and `fontUninstall`.
+
+## The Insights pure modules
+
+All four are **DOM-free and framework-free on purpose** — no Solid, no i18n, no
+clipboard — which is what makes them testable as plain node tests. Callers pass in
+already-translated strings.
+
+- **`claudePricing.ts` (246)** — the one place token counts become dollars. Both the Go
+  server and the Rust local mirror deliberately count and do not price, so a rate change
+  is a one-file edit here instead of a server rebake plus a matching Rust edit. Carries
+  `PRICING_AS_OF` and per-model `intro` rates with an `until` timestamp; past that
+  moment the table falls back to the standard rate on its own. **Nothing re-checks the
+  rest of the table** — re-read it against published pricing (via the `claude-api`
+  skill, never from memory) whenever a model ships or a rate moves.
+- **`insightsReport.ts` (427)** — the wire shape of `GET /analytics`, plus the one thing
+  you can do with it outside the panel: flatten it to a plain-text report to paste into
+  Claude, an email or an incident ticket. The column alignment is exactly the kind of
+  thing that stays quietly wrong forever if nothing asserts it, so
+  `insightsReport.test.ts` does.
+- **`insightsFmt.ts` (33)** — `fmtBytes` / `fmtBps` / `fmtSpan`, lifted out of
+  `InsightsWindow.tsx` once a second panel needed them.
+- **`insightsCommands.ts` (122)** — the copy-the-commands blocks; takes whether the
+  workspace is local so it can name the right paths.
+- **`clipboardText.ts` (31)** — one clipboard write with a fallback. Note what is NOT
+  covered by any test: whether `navigator.clipboard.writeText` is actually granted
+  inside WebView2 for these panels.
 
 ## Small modules
 

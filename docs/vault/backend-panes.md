@@ -37,7 +37,7 @@ already-authenticated SSH session and open **a fresh SFTP channel per call**. Se
 are deliberately *not* cached: a new SFTP subsystem on an existing handle is cheap, and
 caching would mean chasing teardown semantics when the terminal pane disconnects.
 
-**`workspace_browser.rs` (506)** — **at most one child Webview per workspace**, attached
+**`workspace_browser.rs` (851)** — **at most one child Webview per workspace**, attached
 to the main window via `Window::add_child` (this is what pins `tauri = "=2.10.3"` with
 `features = ["unstable"]`). `workspace_browser_show(workspace_id, url, x, y, w, h)`
 creates or reveals it. All browser webviews share the **process-default WebView2
@@ -46,6 +46,34 @@ workspace and WebView2 does not support multiple environments in one process —
 surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_lock` for
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
+
+About a third of this file is now the **Phase 82.E macOS probe**, and it is worth
+understanding before assuming it is debris. The bug: on macOS a page renders in this
+webview but the site's own JavaScript is dead, on the identical code path that works on
+Windows. Rule #17 forbids building locally and there is no Mac to attach a debugger to,
+**so the diagnosis ships inside the binary** and reports through the unified logger.
+
+- `browser_diag.js` is injected at document-start and reports by setting
+  `document.title` to `ymux-diag:<base64 json>`. The title is the one channel that
+  behaves identically on both platforms — wry hooks `add_DocumentTitleChanged` on
+  Windows and a KVO observer on the `title` keypath on macOS — and it needs no
+  navigation, so it cannot perturb the load it is measuring. `fetch`, an iframe and
+  `location.href` were each considered and rejected; the reasons are in that file.
+- `DIAG_EVAL_JS` is pushed from Rust after `PageLoadEvent::Finished`. This is the line
+  that makes "the JS engine is dead" **falsifiable**: `eval` is `evaluateJavaScript` on
+  macOS, a different injection mechanism from the `WKUserScript` carrying the
+  document-start probe, and it reports whether that script left its global behind. One
+  beacon therefore separates "engine dead" (nothing arrives) from "user-script
+  injection broken" (this arrives with `us: 0`).
+- **Not `cfg`-gated to macOS, on purpose.** If the probe first ran on the one machine
+  nobody can debug, "no beacon in the log" would be ambiguous between a dead JS engine
+  and a broken probe. Running it on Windows first makes that build the control.
+- The page controls its own title, so this channel is attacker-influenced: `DIAG_MAX_LOG`
+  (900 bytes) and `DIAG_MAX_BEACONS` (24 per webview) keep a hostile or merely chatty
+  page from flooding `debug.log`, and a watchdog says so out loud after 8s of silence.
+
+`workspace_browser_open_devtools` is the other half of that work — and see
+`build-glue.md` for the danger the `devtools` Cargo feature carries with it.
 
 ## Git
 
@@ -98,12 +126,35 @@ OpenAI-compatible proxies all work with no per-server adapter.
 
 ## Shell chrome
 
-**`fonts.rs` (880)** — download a curated font, verify it, register it **per-user**:
+**`fonts.rs` (1,195)** — download a curated font, verify it, register it **per-user**:
 files land in `%LOCALAPPDATA%\Microsoft\Windows\Fonts` and register under HKCU, which
 needs no elevation on Windows 10 1809+. `settings::list_system_fonts` reads that same
 hive, so an install is visible in the picker immediately. Exists because flagging
 unavailable families with ⚠️ was only half an answer — the user still had to go find a
 `.ttf`.
+
+**`font_uninstall` is the mirror, and how it finds the files is the interesting part.**
+Which files belong to a catalog entry is derived from the CATALOG, not recorded at
+install time: a zip asset wrote everything matching its `ZipFilter::name_prefix`, a bare
+asset wrote exactly its `save_as`, so `entry_owns_file` re-derives the same set. A
+manifest written at install time was the obvious alternative and is wrong here — it
+could only know about installs made after it shipped, leaving every font already on a
+user's machine unremovable, which is the case the feature was filed for.
+
+Two orderings that look arbitrary and are not:
+
+- **Delete, then unregister.** The reverse leaves a font still on disk and still
+  loadable with no registry entry — present but invisible to the picker, which is worse
+  than either end of the operation. Only paths that actually went get unregistered.
+- **Match registry values by their DATA (the path), not by rebuilding the value name.**
+  `register_font` builds that name from the font's internal name table with a fallback
+  to the file stem; rebuilding it at uninstall would mean reproducing that decision from
+  a file that has just been deleted.
+
+A face held open by a running app is a **reported outcome** (`failed`), not an error —
+that is the everyday Windows case, and the rest of the family still comes out. Accepted
+and written down: a user's own hand-installed copy of the same family, in the same
+per-user directory, also matches.
 
 **`tray.rs` (91)** — tray icon, quick menu, taskbar badge. **Best-effort**: a failed
 build logs and carries on. `TRAY_ACTIVE` gates close-to-tray so a failed tray can never

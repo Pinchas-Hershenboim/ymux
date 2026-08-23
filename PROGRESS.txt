@@ -6396,3 +6396,56 @@ workflow_dispatch (hash-check-only path) still fails.
 CONSEQUENCE, STATED PLAINLY: Phase 84.F, 84.G and 84.H have NOT compiled.
 Not "compiles, untested" - not compiled at all. Rule #17 makes CI the
 verification step and CI is unavailable. Filed as P0.
+
+================================================================================
+2026-08-23 | The vault gate: fixed the prose, then re-stamped. main unblocked.
+Files: docs/vault/{server-go,backend-claude,backend-core,backend-panes,
+       build-glue,frontend-flows,frontend-lib,frontend-panes,frontend-shell}.md
+       + docs/vault/.vault-lock.json
+
+Nine vaults were stale, from two sources: the four PRs that merged while the
+Phase 85 gate was in flight (#20 #21 #22 #23), and this session's own Phase
+84.F/G/H. Diffed each covered file against the last stamp (57fc95d) and wrote
+the prose from the diffs, then re-stamped. Deliberately in that order - the
+script's header says a bare --write makes the gate theatre, and it is right.
+
+What the code actually did, now written into the vaults:
+  server-go       /analytics and /claude-usage. Why they are separate endpoints
+                  rather than reads of /history: one `curl --max-time 6` per
+                  fetch, so the whole screen must return in ONE response, and
+                  /history's LIMIT 2000 at a 5s interval is 2.8 hours - a "last
+                  7 days" question served from it would answer with the OLDEST
+                  2.8 hours. insights package 1,229 -> 2,653 lines.
+  backend-claude  claude_usage_local.rs, the deliberate mirror of the Go file.
+                  The distinction worth holding: claude_usage.rs asks the CLI
+                  what QUOTA is left; claude_usage_local.rs counts TOKENS from
+                  transcripts. Neither answers the other's question. Also why
+                  /analytics returns {"unavailable":"local"} - no daemon, no
+                  store, no history to roll up.
+  backend-core    the schema gate and its limit; session names as a security
+                  boundary; and the two .devtools(false) calls.
+  backend-panes   the Phase 82.E macOS probe (a third of workspace_browser.rs
+                  now) and font uninstall.
+  build-glue      the `devtools` Cargo feature - tauri-runtime-wry reads it as
+                  unwrap_or(true), so it makes EVERY webview inspectable and
+                  the guard lives in another file.
+  frontend-*      the two new Insights panels, the pure report/pricing modules,
+                  the Monitor's `local` prop, and the font-removal list.
+
+FOUND ON THE WAY, AND IT IS THE PART WORTH REMEMBERING: eleven new source
+files were in NO vault's `covers:` list at all - claude_usage_local.rs (549),
+InsightsAnalytics.tsx (622), InsightsClaudeCost.tsx (458), insightsReport.ts
+(427), claudePricing.ts (246), insightsCommands.ts, insightsFmt.ts,
+clipboardText.ts and tests. The gate never said a word, because the hash check
+only compares files already claimed. A vault can therefore go on passing while
+the tree grows code it does not explain, and the only signal is the coverage
+NOTICE, which is not a failure. Added them all: coverage 93% -> 96%,
+217 -> 225 files. The gate's own blind spot is now a FOLLOWUPS entry.
+
+Re-stamp was `node scripts/vault-check.mjs --write` AFTER the prose. Local
+verify: "vault is up to date".
+
+STATUS: this unblocks CI for every branch, not just this one - the gate runs
+before cargo test, tsc, the frontend build and the whole Go half, so nothing
+real has been checked on main since PR #18. Phase 84.F/G/H still have not
+compiled; that is what the next CI run is for.

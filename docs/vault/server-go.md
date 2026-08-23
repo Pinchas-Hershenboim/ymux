@@ -19,7 +19,7 @@ covers:
 
 # `ymux-server` — the Go control-plane daemon
 
-Runs **on the user's remote Linux box**, not on the desktop. ~9,900 lines across 12
+Runs **on the user's remote Linux box**, not on the desktop. ~11,300 lines across 12
 `internal/` packages. Formerly `ymux-insights`; Phase 77 restructured it into subsystems
 behind interfaces.
 
@@ -58,7 +58,7 @@ dependency arrow points one way, so there is no cycle to break later.
 | `core` | 110 | the leaf interface package |
 | `files` | 682 | the Files API (`/api/v2/files/*`) |
 | `hooks` | 42 | a thin TCP listener — owns none of the protocol |
-| `insights` | 1,229 | sampler, store, Docker, and the hygiene reaper |
+| `insights` | 2,653 | sampler, store, Docker, the hygiene reaper, and the two read-only report endpoints (`analytics.go`, `claudeusage.go`) |
 | `logging` | 599 | the unified `log/slog` handler |
 | `logs` | 475 | per-client log storage and the SSE tail |
 | `push` | 433 | self-hosted push over a long-lived WebSocket |
@@ -88,6 +88,37 @@ bound address through `core.AddrSink` so spawned claude children can be pointed 
 hand each connection to a `core.HookConnHandler` — which is `chat.SessionManager`, the
 thing that actually owns per-session HMAC tokens and pending-hook state. That
 indirection is what breaks the import cycle.
+
+**`insights/analytics.go`** — `GET /analytics`, behind the Monitor's Analytics tab.
+Exists as its own endpoint for a shape reason, not a tidiness one: every desktop fetch
+is one `curl` over the workspace SSH session with `--max-time 6` (`insights_fetch` in
+`addons.rs`), so N round trips for N series is not available — the whole screen has to
+come back in ONE response. And `/history` is raw rows with `LIMIT 2000`, which at the 5s
+sample interval is 2.8 hours, so a "last 7 days" question served from it would silently
+answer with the OLDEST 2.8 hours of the window. **Aggregation is in SQL, on the server;
+the client only draws.** It is the first reader of the two per-entity sample tables
+(`disk_samples`, `docker_samples`), which the sampler had been writing and nothing read.
+Windows are clamped to `[5 minutes, retentionDays]` — wider than retention would render a
+half-empty chart, narrower puts one sample per bucket and draws noise.
+
+**`insights/claudeusage.go`** — `GET /claude-usage`: what Claude Code actually spent on
+this box, read out of the transcripts it already writes
+(`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`, one JSON object per line, every
+assistant line carrying `message.model` and a `message.usage` block). Nothing else on the
+machine records it — `claude -p /usage` reports subscription QUOTA PERCENTAGES with no
+history. **It counts tokens and deliberately does not price them:** the price table lives
+in the desktop at `app/src/claudePricing.ts`, in one place, so a rate change is a
+one-file edit rather than a server rebake plus a matching edit in the Rust local mirror.
+Token counts are facts; prices go stale. Two guards for a directory whose size nobody
+controls: a byte scan for `"usage"` rejects the majority of lines (user turns, tool
+results) before the JSON decoder sees them, and `claudeMaxFiles` / `claudeMaxLineSize`
+cap the walk — all of it inside that same 6-second curl. Cache writes are split 5-minute
+vs 1-hour because the two are priced differently.
+
+**Neither endpoint has ever been run.** Both landed compiled-only (Rule #17); the
+matching FOLLOWUPS P1s list what to look at, and the one most likely to be wrong is the
+`by_disk` growth column, which comes from two correlated subqueries picking first/last
+`used` per mount — a mount that appears mid-window reads as enormous growth.
 
 **`insights/hygiene.go`** — detects the two leaks Yossi hit: duplicate
 `ymux port-watch` processes (there should be exactly one per workspace) and orphaned
