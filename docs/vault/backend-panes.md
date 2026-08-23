@@ -38,7 +38,7 @@ already-authenticated SSH session and open **a fresh SFTP channel per call**. Se
 are deliberately *not* cached: a new SFTP subsystem on an existing handle is cheap, and
 caching would mean chasing teardown semantics when the terminal pane disconnects.
 
-**`workspace_browser.rs` (851)** — **at most one child Webview per workspace**, attached
+**`workspace_browser.rs` (859)** — **at most one child Webview per workspace**, attached
 to the main window via `Window::add_child` (this is what pins `tauri = "=2.10.3"` with
 `features = ["unstable"]`). `workspace_browser_show(workspace_id, url, x, y, w, h)`
 creates or reveals it. All browser webviews share the **process-default WebView2
@@ -47,6 +47,21 @@ workspace and WebView2 does not support multiple environments in one process —
 surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_lock` for
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
+
+**`workspace_browser_open_devtools` calls `open_devtools()` with no `#[cfg]` around it,
+and that is deliberate.** The method is gated on the **tauri crate's**
+`any(debug_assertions, feature = "devtools")`, and `Cargo.toml:52` turns that feature on
+for every build, so the call compiles in release — and stops compiling loudly if anyone
+ever strips the feature. Phase 85.A removed a gate that *looked* like it mirrored tauri's
+but did not: inside this crate `feature = "devtools"` resolves against **`app`'s own**
+feature set, and `app` declares no `[features]` section at all. In release, where
+`debug_assertions` is off, the condition was therefore always false and the
+`#[cfg(not(...))]` arm compiled instead — the command returned `Err("this build was
+compiled without devtools support")` in 100% of shipped builds. Right-click → Inspect was
+unaffected the whole time, because `.devtools(true)` on the builder is not gated; that
+mismatch is what made it look like a UI bug. **Do not write `feature = "…"` in a `#[cfg]`
+inside `app/src-tauri/src/`** — the crate has no features, so every such cfg is silently
+false. These two were the only ones.
 
 **Who can call what, in this webview.** The old comment here said no IPC is injected into
 the child, and that was wrong; Phase 82.E corrected it in place. `tauri::manager::webview`

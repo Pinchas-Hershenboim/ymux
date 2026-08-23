@@ -480,6 +480,7 @@
   "browser.dev.off": "מצב פיתוח פעיל — לחץ לכיבוי",
   "browser.dev.captured": "האלמנט נלכד",
   "browser.devtools.open": "פתח Web Inspector על הדף (קונסולה, רשת, שגיאות)",
+  "browser.devtools.failed": "פתיחת Web Inspector נכשלה: {msg}",
   "tickets.modal.title": "כרטיס חדש",
   "tickets.modal.url": "עמוד",
   "tickets.modal.selector": "אלמנט",

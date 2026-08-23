@@ -550,24 +550,32 @@ pub(crate) async fn workspace_browser_open_devtools(
         .get(&workspace_id)
         .cloned()
         .ok_or_else(|| format!("no browser webview for workspace {workspace_id}"))?;
-    // The command always exists so the frontend needs no build-shape
-    // knowledge; only the body is gated. `open_devtools` is compiled out
-    // unless the `devtools` feature is on (it is — see Cargo.toml) or
-    // this is a debug build.
-    #[cfg(any(debug_assertions, feature = "devtools"))]
-    {
-        webview.open_devtools();
-        log_info(
-            "BROWSER",
-            &format!("[workspace_browser_open_devtools] ws={workspace_id}"),
-        );
-        Ok(())
-    }
-    #[cfg(not(any(debug_assertions, feature = "devtools")))]
-    {
-        let _ = webview;
-        Err("this build was compiled without devtools support".to_string())
-    }
+    // Called unconditionally, on purpose. `Webview::open_devtools` is
+    // gated on the TAURI crate's `any(debug_assertions, feature =
+    // "devtools")`, and that feature is on for every build — see
+    // Cargo.toml:52. If anyone ever drops it from the dependency's
+    // feature list, this line stops compiling, which is exactly the
+    // failure we want: loud, at build time.
+    //
+    // Phase 85.A: this used to be wrapped in the same
+    // `#[cfg(any(debug_assertions, feature = "devtools"))]`, which reads
+    // as if it mirrors the tauri gate but does NOT — inside this crate
+    // `feature = "devtools"` resolves against `app`'s own feature set,
+    // and `app` declares no features at all (Cargo.toml has no
+    // `[features]` section). So in a release build, where
+    // `debug_assertions` is off, the whole condition was false and the
+    // paired `#[cfg(not(...))]` arm compiled instead: the button
+    // returned `Err("this build was compiled without devtools support")`
+    // 100% of the time, in every shipped build, and the frontend logged
+    // it to a file nobody reads. Right-click → Inspect kept working the
+    // whole time because `.devtools(true)` in `workspace_browser_show`
+    // is not gated.
+    webview.open_devtools();
+    log_info(
+        "BROWSER",
+        &format!("[workspace_browser_open_devtools] ws={workspace_id}"),
+    );
+    Ok(())
 }
 
 #[tauri::command]

@@ -270,6 +270,25 @@ export function BrowserWindow(p: Props) {
   // nothing navigated yet → Webview hidden, empty-state/hint shown.
   const [currentUrl, setCurrentUrl] = createSignal<string | null>(null);
   const [navError, setNavError] = createSignal<string | null>(null);
+  // Phase 85.A: a transient error strip inside the port bar. The
+  // empty-state `navError` above only renders while NO url is loaded
+  // (`<Show when={!currentUrl()}>`), so it can never report a failure of
+  // an action taken ON a loaded page — which is how the DevTools button
+  // stayed broken for a whole release: its only failure channel was a
+  // `log.warn` into a file. Anything in the chrome that can fail while a
+  // page is up reports here. Lives in the port-bar row on purpose: the
+  // native child webview paints OVER the slot, so an overlay down there
+  // would be invisible.
+  const [chromeError, setChromeError] = createSignal<string | null>(null);
+  let chromeErrorTimer: number | null = null;
+  const flashChromeError = (msg: string): void => {
+    if (chromeErrorTimer) clearTimeout(chromeErrorTimer);
+    setChromeError(msg);
+    chromeErrorTimer = window.setTimeout(() => setChromeError(null), 6000);
+  };
+  onCleanup(() => {
+    if (chromeErrorTimer) clearTimeout(chromeErrorTimer);
+  });
   // Beta.3: per-workspace tab list. `selectedPort` / `pathInput` above
   // stay the LIVE editing signals; a `createEffect` below mirrors them
   // into the active tab so the persisted tab state matches what the
@@ -290,6 +309,22 @@ export function BrowserWindow(p: Props) {
   // fast-path only repositions, it doesn't navigate).
   let lastShownUrl: string | null = null;
 
+  // Phase 85.B: the workspace whose native Webview is actually ON SCREEN
+  // right now — which is NOT necessarily `p.workspace?.id`. Every hide
+  // path used to pass the ACTIVE workspace id, so: open the Browser in
+  // ws A (Webview A shown), switch to ws B, and the switch handler below
+  // hid *B* — a no-op, B has no Webview — leaving A's Webview painted
+  // over the slot region. X did the same thing, so there was no way back:
+  // the ghost survived every workspace switch until the app exited.
+  // One writer (the show effect's `.then`), one reader (`hideShown`).
+  let shownWsId: string | null = null;
+  const hideShown = (): void => {
+    const id = shownWsId;
+    if (!id) return;
+    shownWsId = null;
+    void invoke("workspace_browser_hide", { workspaceId: id }).catch(() => {});
+  };
+
   // Track the workspace by ID (object identity churns on every file()
   // refresh). On a real workspace change: reload geometry + persisted
   // port/path, drop the loaded URL, and pull a fresh port snapshot.
@@ -297,6 +332,10 @@ export function BrowserWindow(p: Props) {
   createEffect(() => {
     const id = p.workspace?.id;
     if (!id || id === lastWsId) return;
+    // Hide the OUTGOING workspace's Webview before we forget which one
+    // it was. `setCurrentUrl(null)` below makes the show effect hide the
+    // INCOMING workspace, which is almost always a no-op.
+    hideShown();
     lastWsId = id;
     setGeom(loadGeometry(id));
     setDevMode(loadDevMode(id));
@@ -378,7 +417,7 @@ export function BrowserWindow(p: Props) {
     if (p.anyModalOpen()) return;
     const url = currentUrl();
     if (!url) {
-      void invoke("workspace_browser_hide", { workspaceId: id }).catch(() => {});
+      hideShown();
       return;
     }
     const s = slotRect(geom());
@@ -398,6 +437,9 @@ export function BrowserWindow(p: Props) {
       h: s.h,
     })
       .then(() => {
+        // Only now is a Webview genuinely on screen for `id` — this is
+        // the single writer of `shownWsId` (Phase 85.B).
+        shownWsId = id;
         if (urlChanged) {
           return invoke("workspace_browser_navigate", { workspaceId: id, url });
         }
@@ -407,13 +449,13 @@ export function BrowserWindow(p: Props) {
 
   // Hide the Webview when the window CLOSES (not only on unmount — the
   // component stays mounted in App.tsx; the inner <Show> just collapses).
+  // Phase 85.B: hides whatever is actually shown, and no longer requires
+  // an active workspace — a close with `p.workspace` momentarily
+  // undefined used to skip the hide entirely and leak the Webview.
   let wasOpen = false;
   createEffect(() => {
     const open = p.open;
-    const id = p.workspace?.id;
-    if (wasOpen && !open && id) {
-      void invoke("workspace_browser_hide", { workspaceId: id }).catch(() => {});
-    }
+    if (wasOpen && !open) hideShown();
     wasOpen = open;
   });
 
@@ -557,7 +599,10 @@ export function BrowserWindow(p: Props) {
     const wsId = p.workspace?.id;
     if (!wsId) return;
     invoke<void>("workspace_browser_open_devtools", { workspaceId: wsId }).catch(
-      (e: unknown) => log.warn(`open devtools failed: ${String(e)}`),
+      (e: unknown) => {
+        log.warn(`open devtools failed: ${String(e)}`);
+        flashChromeError(t("browser.devtools.failed", { msg: String(e) }));
+      },
     );
   };
 
@@ -750,6 +795,14 @@ export function BrowserWindow(p: Props) {
           >
             <IconTerminal size={14} />
           </button>
+          {/* Phase 85.A: failures of chrome actions taken while a page is
+              loaded. The empty-state error below can't cover those — it
+              only renders when no URL is loaded. */}
+          <Show when={chromeError()}>
+            <span class="bw-chrome-err" title={chromeError()!}>
+              <IconWarning size={12} /> {chromeError()}
+            </span>
+          </Show>
         </div>
         <div class="browser-window-slot">
           {/* Empty-state / hint — visible only while the Webview is

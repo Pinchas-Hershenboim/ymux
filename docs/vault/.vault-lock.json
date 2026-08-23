@@ -21,7 +21,7 @@
     "app/src-tauri/src/stt.rs": "fe9d683eb8dd4e39c927c3e3d0ec3dc460147ef08402a7853f01edea25f83bd5",
     "app/src-tauri/src/tickets.rs": "486194080dd25ce42ed09df4e2a15115121b5652d8953f05baf6e15af412af93",
     "app/src-tauri/src/tray.rs": "9b4d6837960813e638b738bc78356ee98c63ba92f92d1183b0008e08c07345ff",
-    "app/src-tauri/src/workspace_browser.rs": "5e67159c10d0f37574b51867092e941fd4566a2ccb6fa4e3273e91173f350cc3",
+    "app/src-tauri/src/workspace_browser.rs": "782e498979b7474865eb3f3f10c312fe88128ede764dd7b8fdd9adac98e60f11",
     "app/src-tauri/src/workspaces_merge.rs": "2d54f4a92490eed2004581b491c1c0bf8c6cdb43ef8f250117f8e3d095f53ec9",
     "app/src-tauri/src/worktrees.rs": "09789c58a1fa0315c517821a17f8d633214a16791035567c358b52302f16def3"
   },
@@ -132,7 +132,7 @@
     "app/src/AddonsTab.tsx": "6eff5e7b1389af86debd3194ff02917788346a7801134b41403c48d9b4578c43",
     "app/src/AddonsWindow.tsx": "7b6df4ee8ad4aea33a29dc9e9f5ae58f2dc46355742f20c8b23762a58be021bb",
     "app/src/BrowserPane.tsx": "84aa7b96997d58ea9e6ea28f352ed4859dee6b5f058a0b23c2f1db4c68e1371f",
-    "app/src/BrowserWindow.tsx": "87d29c94c481d01b17b85fa147fbf8c7e22516631c707b9a59207b206f2f229f",
+    "app/src/BrowserWindow.tsx": "b3db4b2dc8464ae6a6f38f68e2a793234a3bc635aa1ee41b62cae519cc0ecb99",
     "app/src/ClaudeUsageIndicator.tsx": "b5a4481c2b28991961388b6ed928c614a0561266079bcc625ddccb9746290897",
     "app/src/DiffPane.tsx": "8d1e7a02bc2e1bc6cdb6b25445d2c0b256f87b5f674564f44f7b905224345349",
     "app/src/FeedPanel.tsx": "afc5c5b1df122ef468b9b4476eee93ee49f88c22bc64a088f6bf738cadb0360f",

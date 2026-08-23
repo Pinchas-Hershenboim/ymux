@@ -40,7 +40,7 @@ fullscreen — so they get that chrome for free instead of hand-rolling a varian
 
 ## Browser
 
-**`BrowserWindow.tsx` (792)** — the workspace-level Browser floating window. The actual
+**`BrowserWindow.tsx` (845)** — the workspace-level Browser floating window. The actual
 page is a **native child Webview** the Rust side mounts
 (`workspace_browser.rs`); this component owns the toolbar, tabs, port+path entry,
 navigation, and the window geometry. At most one per workspace. The 🐞 button toggles Dev
@@ -49,6 +49,25 @@ Mode (ticket capture); the terminal-icon button next to it calls
 macOS that saves a trip through Safari → Develop, and on Windows it is the *only* way in,
 since F12 is not wired up for a child webview. Only that webview is inspectable; see
 `backend-panes.md`.
+
+**The `shownWsId` invariant.** The component must hide the Webview belonging to the
+workspace that is **actually on screen**, which is *not* the same as `p.workspace?.id`.
+One writer (the show effect's `.then`, after the invoke resolves), one reader
+(`hideShown`), and three callers: the workspace-switch effect (hide the **outgoing**
+workspace before forgetting which it was), the show effect's no-URL branch, and the
+falling-edge close effect. Phase 85.B: all three used to pass the *active* id, so opening
+the Browser in ws A and switching to ws B hid B — a no-op — and left A's native Webview
+painted over the slot region in every workspace until the app exited. X did the same
+thing, so there was no way to clear it. The close effect also no longer requires an
+active workspace; that guard was a second leak.
+
+**Chrome errors need their own strip.** `navError` renders only inside the empty state
+(`<Show when={!currentUrl()}>`), so it structurally cannot report a failure of an action
+taken **on a loaded page**. `chromeError` (Phase 85.A) is that channel, and it lives in
+the port-bar row rather than over the slot because the native child Webview paints over
+any HTML in the slot. The DevTools button spent a release cycle broken with `log.warn`
+as its only failure channel; anything in the chrome that can fail while a page is up
+reports here.
 
 **`browserDevMode.ts` (448)** — right-click an element in the workspace browser to
 capture it as a ticket. Kept out of `BrowserWindow.tsx` on purpose: with Dev Mode in its

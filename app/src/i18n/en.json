@@ -480,6 +480,7 @@
   "browser.dev.off": "Dev Mode is on — click to turn off",
   "browser.dev.captured": "Element captured",
   "browser.devtools.open": "Open Web Inspector on the page (console, network, errors)",
+  "browser.devtools.failed": "Web Inspector failed to open: {msg}",
   "tickets.modal.title": "New ticket",
   "tickets.modal.url": "Page",
   "tickets.modal.selector": "Element",

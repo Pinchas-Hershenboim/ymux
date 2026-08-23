@@ -480,6 +480,7 @@
   "browser.dev.off": "Режим разработчика включён — нажмите, чтобы выключить",
   "browser.dev.captured": "Элемент захвачен",
   "browser.devtools.open": "Открыть Web Inspector для страницы (консоль, сеть, ошибки)",
+  "browser.devtools.failed": "Не удалось открыть Web Inspector: {msg}",
   "tickets.modal.title": "Новый тикет",
   "tickets.modal.url": "Страница",
   "tickets.modal.selector": "Элемент",
