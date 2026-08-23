@@ -51,7 +51,7 @@ has winmux 0.4.5 installed and used.
 | 1.2 | Connect to a server provisioned by the **old** build | `bootstrap: migrated remote …` + a working pane. Exercises `~/.winmux`→`~/.ymux` **and** the legacy handshake tag together | 🔴 |
 | 1.3 | Fire a Claude hook in that pane | permission card appears **once**. Two cards per tool call = `is_ymux_entry` duplicated instead of replaced the old hook | 🔴 |
 | 1.4 | Add-ons → Insights on a host with the old daemon | detect reports the existing install; after Update, `systemctl --user list-units \| grep -c mux` is **1**, not 2 | 🔴 |
-| 1.5 | `ymux list-workspaces` from a shell, then the same from a pre-rename `winmux-cli.exe` if one is on PATH | both work — proves the legacy pipe listener | 🔴 |
+| 1.5 | `ymux list-workspaces` from a shell, then the same from a pre-rename `winmux-cli.exe` — one is kept at `%USERPROFILE%\winmux-debug-test\winmux-cli-PRERENAME.exe` (built 2026-08-13, before the rename); put it on PATH or call it by full path | both work — proves the legacy pipe listener | 🔴 |
 | 1.6 | Bundle identity | installer is `ymux_0.5.0_*`, Start Menu entry says YMUX, and old winmux entry is **still there** (expected — see 0.1) | 🔴 |
 
 ---

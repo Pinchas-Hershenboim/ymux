@@ -186,11 +186,30 @@ const MAX_TITLE_CHARS: usize = 80;
 /// truncated. Scans only the head of the file — summaries live at the
 /// top, and a bounded read keeps the per-turn hook cheap on huge logs.
 pub fn extract_transcript_title(path: &str) -> Option<String> {
+    let scan = scan_transcript(path)?;
+    let title = scan.summary.or(scan.first_user)?;
+    Some(truncate_chars(&title, MAX_TITLE_CHARS))
+}
+
+/// What one bounded pass over a transcript yields. Kept as a struct so
+/// the `stop` hook can rebuild a lost `auto_name` (which needs the first
+/// user message AND its timestamp) from the same single read that
+/// produces the title.
+pub struct TranscriptScan {
+    pub summary: Option<String>,
+    pub first_user: Option<String>,
+    /// ISO timestamp Claude Code stamps on the first user entry — the
+    /// session's true start. Absent on very old transcripts.
+    pub first_user_at: Option<String>,
+}
+
+fn scan_transcript(path: &str) -> Option<TranscriptScan> {
     const MAX_LINES: usize = 250;
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let mut summary: Option<String> = None;
     let mut first_user: Option<String> = None;
+    let mut first_user_at: Option<String> = None;
     for line in reader.lines().take(MAX_LINES) {
         let Ok(line) = line else { break };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
@@ -205,13 +224,52 @@ pub fn extract_transcript_title(path: &str) -> Option<String> {
             Some("user") if first_user.is_none() => {
                 if let Some(text) = extract_user_text(&v) {
                     first_user = Some(text);
+                    first_user_at = v
+                        .get("timestamp")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string());
                 }
             }
             _ => {}
         }
     }
-    let title = summary.or(first_user)?;
-    Some(truncate_chars(&title, MAX_TITLE_CHARS))
+    Some(TranscriptScan { summary, first_user, first_user_at })
+}
+
+/// Rebuild the session name from the transcript, for a session that lost
+/// (or never got) its `auto_name`.
+///
+/// Why this exists: `auto_name` is written ONCE, but the meta file is
+/// last-writer-wins over tmp+rename. That store's own comment says a lost
+/// read-modify-write "self-heals within one turn" — true for
+/// `claude_title`, which every `stop` rewrites, and FALSE for a
+/// write-once field: one lost race erases the name permanently. Observed
+/// live on 2026-08-18, with several panes writing concurrently.
+///
+/// The timestamp comes from the first user entry, NOT from `now()` —
+/// otherwise each heal would stamp a different time and the "stable"
+/// name would churn, which is the whole thing this feature exists to
+/// avoid. It also gives sessions that predate the feature their real
+/// opening line instead of a mid-conversation prompt.
+pub fn recover_session_name(transcript_path: &str) -> Option<String> {
+    let scan = scan_transcript(transcript_path)?;
+    let prompt = scan.first_user?;
+    if !prompt_can_name(&prompt) {
+        return None;
+    }
+    Some(match scan.first_user_at.as_deref().and_then(parse_stamp) {
+        Some(stamp) => compose_session_name(&prompt, &stamp),
+        None => derive_session_name(&prompt),
+    })
+}
+
+/// ISO-8601 (what Claude Code writes) → the same local `%Y-%m-%d %H:%M`
+/// shape `derive_session_name` produces. `None` on anything unparseable,
+/// so the caller falls back to wall-clock rather than inventing a time.
+fn parse_stamp(iso: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
 }
 
 /// First-user-message fallback text. Skips Claude Code's synthetic
@@ -318,9 +376,16 @@ fn two_words(prompt: &str) -> Option<String> {
 /// never in a log line.
 pub fn derive_session_name(prompt: &str) -> String {
     let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    compose_session_name(prompt, &stamp)
+}
+
+/// The one place the name's shape is defined, so the live path and the
+/// recovery path can never drift into producing different strings for
+/// the same session.
+fn compose_session_name(prompt: &str, stamp: &str) -> String {
     match two_words(prompt) {
         Some(words) => truncate_chars(&format!("{words} · {stamp}"), MAX_TITLE_CHARS),
-        None => stamp,
+        None => stamp.to_string(),
     }
 }
 
@@ -457,6 +522,18 @@ pub fn handle_hook(
             }
             if title.is_some() {
                 entry.claude_title = title.clone();
+            }
+            // Phase 81.G: heal a missing auto_name from the transcript.
+            // `stop` fires every turn, so this is what makes a write-once
+            // field survive a lost read-modify-write in a last-writer-wins
+            // store — the same self-healing claude_title has always had.
+            // Idempotent: the name is rebuilt from the first user message
+            // and ITS timestamp, so re-healing reproduces the same string.
+            if entry.auto_name.is_none() {
+                entry.auto_name = payload
+                    .get("transcript_path")
+                    .and_then(|v| v.as_str())
+                    .and_then(recover_session_name);
             }
             entry.updated_at = Some(now_rfc3339());
             // The stable name wins over the freshly-extracted title —
@@ -643,6 +720,84 @@ mod tests {
         // No id anywhere: name it once, then leave it alone.
         assert!(decide_auto_name(None, None, None, "fix the thing").is_some());
         assert!(decide_auto_name(Some("x · y"), None, None, "fix the thing").is_none());
+    }
+
+    /// Write a transcript and return its path (caller removes it).
+    fn write_transcript(tag: &str, lines: &[&str]) -> std::path::PathBuf {
+        let path = std::env::temp_dir()
+            .join(format!("ymux-recover-{tag}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn recovery_rebuilds_the_name_from_the_first_message_and_its_timestamp() {
+        let path = write_transcript(
+            "ok",
+            &[
+                r#"{"type":"summary","summary":"a much later summary"}"#,
+                r#"{"type":"user","timestamp":"2026-08-18T18:47:13Z","message":{"role":"user","content":"deploy the staging box now"}}"#,
+                r#"{"type":"user","timestamp":"2026-08-18T19:30:00Z","message":{"role":"user","content":"actually refactor everything"}}"#,
+            ],
+        );
+        let name = recover_session_name(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        // First message wins over the summary AND over later prompts.
+        assert_eq!(words_of(&name), Some("deploy staging"));
+        // Stamp comes from the transcript, not the wall clock, so the
+        // date is the session's, not today's.
+        assert!(stamp_of(&name).starts_with("2026-08-18"), "got {name:?}");
+    }
+
+    #[test]
+    fn recovery_is_idempotent() {
+        let path = write_transcript(
+            "idem",
+            &[r#"{"type":"user","timestamp":"2026-08-18T18:47:13Z","message":{"role":"user","content":"fix the auth bug"}}"#],
+        );
+        let a = recover_session_name(path.to_str().unwrap()).unwrap();
+        let b = recover_session_name(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        // The whole point: healing twice must not produce a new name.
+        assert_eq!(a, b);
+        assert_eq!(words_of(&a), Some("fix auth"));
+    }
+
+    #[test]
+    fn recovery_declines_a_slash_command_opener() {
+        let path = write_transcript(
+            "slash",
+            &[r#"{"type":"user","timestamp":"2026-08-18T18:47:13Z","message":{"role":"user","content":"/clear"}}"#],
+        );
+        let got = recover_session_name(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn recovery_without_a_timestamp_still_names() {
+        let path = write_transcript(
+            "nots",
+            &[r#"{"type":"user","message":{"role":"user","content":"fix the auth bug"}}"#],
+        );
+        let name = recover_session_name(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(words_of(&name), Some("fix auth"));
+        assert_eq!(stamp_of(&name).len(), 16);
+    }
+
+    #[test]
+    fn recovery_on_a_missing_transcript_is_none() {
+        assert_eq!(recover_session_name("/nonexistent/transcript.jsonl"), None);
+    }
+
+    #[test]
+    fn parse_stamp_matches_the_live_format() {
+        let s = parse_stamp("2026-08-18T18:47:13Z").unwrap();
+        assert_eq!(s.len(), 16);
+        assert_eq!(s.chars().nth(4), Some('-'));
+        assert_eq!(s.chars().nth(13), Some(':'));
+        assert_eq!(parse_stamp("not a timestamp"), None);
     }
 
     #[test]

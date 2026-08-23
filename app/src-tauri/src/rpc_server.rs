@@ -1399,7 +1399,15 @@ async fn dispatch(
                         if let Some(new_t) = params.get("claude_title").and_then(|v| v.as_str()) {
                             let new_t = new_t.trim();
                             if !new_t.is_empty() {
-                                crate::update_pane_auto_title(state, app, pane, new_t);
+                                // Phase 81.G: `pane` comes from a stale-prone
+                                // env var — resolve against the tmux name.
+                                if let Some(target) = crate::resolve_hook_pane(
+                                    state,
+                                    Some(pane),
+                                    params.get("tmux_session").and_then(|v| v.as_str()),
+                                ) {
+                                    crate::update_pane_auto_title(state, app, &target, new_t);
+                                }
                             }
                         }
                         return Ok(json!({ "request_id": req_id, "decision": "passive" }));
@@ -1604,13 +1612,19 @@ async fn dispatch(
             // only; the manual pane title always wins. Old CLIs simply
             // never send the param.
             if subkind == "stop" {
-                if let (Some(pane), Some(new_t)) = (
-                    item.pane_id.as_deref(),
-                    params.get("claude_title").and_then(|v| v.as_str()),
-                ) {
+                if let Some(new_t) = params.get("claude_title").and_then(|v| v.as_str()) {
                     let new_t = new_t.trim();
-                    if !new_t.is_empty() {
-                        crate::update_pane_auto_title(state, app, pane, new_t);
+                    // Phase 81.G: resolve the pane through the tmux session
+                    // name when the pushed pane_id is stale — the reason
+                    // this path never actually updated a header before.
+                    if let Some(target) = crate::resolve_hook_pane(
+                        state,
+                        item.pane_id.as_deref(),
+                        params.get("tmux_session").and_then(|v| v.as_str()),
+                    ) {
+                        if !new_t.is_empty() {
+                            crate::update_pane_auto_title(state, app, &target, new_t);
+                        }
                     }
                 }
             }
