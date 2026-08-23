@@ -4926,6 +4926,25 @@ STILL OPEN, and neither is a code problem:
     above are ad-hoc signed and spctl rejects them: they run locally, they
     are not distributable. Yossi's spend decision.
 
+-------------------------------------------------------------------------------
+2026-08-23 (same session, later) | DECIDED: no Apple membership for now
+-------------------------------------------------------------------------------
+Yossi: not paying right now. So ad-hoc is the shipping state, not a
+staging post. Consequences applied rather than just recorded:
+  - README's mac note reworded. It said "Until notarisation is switched
+    on", which promised a change that is not coming; it now says the
+    `xattr -dr com.apple.quarantine` step IS the macOS install procedure,
+    explains why, and points anyone unwilling to run it at building from
+    source (a local build carries no quarantine flag).
+  - docs/DECISIONS.md: the thread moved Open -> Decided with the revisit
+    trigger, since a spend decision does not expire on its own.
+  - FOLLOWUPS P1 -> P3, rewritten. Nothing is pending any more; what
+    survives is the warning for whoever reverses it, because the
+    developer-id path in the workflow has still never executed once.
+No code or CI change. The workflow already warns rather than fails in the
+ad-hoc path, which is exactly the behaviour this decision wants.
+
+
 
 ================================================================================
 2026-08-23 | Phase 83 — the Go server enters the CI pipeline
