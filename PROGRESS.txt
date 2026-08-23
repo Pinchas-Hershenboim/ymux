@@ -5464,7 +5464,7 @@ BREAKING CHANGES CHECKED ONE BY ONE, NONE APPLY HERE
 STATUS: all YAML + package.json parse locally. Per Rule #17 nothing was built
 or tested on the dev box — CI is the verification step. Result recorded below
 once the runs land.
-2026-08-23 — Phase 84 (+84.A/B/C): the vault + its CI freshness gate
+2026-08-23 — Phase 85 (+85.A/B/C/D): the vault + its CI freshness gate
 ================================================================================
 
 TASK
@@ -5603,8 +5603,12 @@ NOT re-stamped:
 
 Coverage 89,874 / 93,998 (96%), 213 files. Gate green.
 
-NOTE — PHASE NUMBER COLLISION. PR #18 also numbered itself Phase 84 / 84.A /
-84.B, which is what this branch used. CLAUDE.md says phase numbers are stable
-and never reused. Theirs is already on main; these commits are pushed on a
-shared branch, so renumbering would mean a force-push (Rule #15). Raised with
-Yossi; not resolved unilaterally.
+PHASE NUMBER COLLISION — RESOLVED. PR #18 also numbered itself Phase 84 / 84.A /
+84.B, which is what this branch used, and CLAUDE.md says phase numbers are
+stable and never reused. Theirs landed on main first, so this work was
+renumbered to Phase 85 / 85.A / 85.B / 85.C / 85.D on Yossi's explicit
+instruction. That required rewriting the commit subjects and force-pushing the
+branch — the one exception to Rule #15 here, taken deliberately, on a branch
+nobody else has based work on. Content was byte-identical before and after
+(`git diff vault-pre-renumber HEAD` empty); only messages changed. Anyone who
+fetched this branch before beb87da has the old subjects.
