@@ -46,10 +46,19 @@ that runs, so launch it.
 | `build:frontend` | `vite build` — bundles only, does not type-check |
 | `build` | the two above, in order |
 | `typecheck` | `tsc --noEmit` — this is the real type check |
+| `test` | `node --test` over `src/*.test.ts` |
 | `tauri` | the Tauri CLI |
 
 `build:frontend` uses esbuild, which strips types without checking them. It catches bad
 imports and dead assets; it is not a substitute for `typecheck`.
+
+`test` is plain `node --experimental-strip-types --test` — there is no vitest and no
+jsdom, so a module is only testable from `src/*.test.ts` if it has no browser or Tauri
+imports (which is why `shortcuts.ts` owns `DEFAULT_SHORTCUTS` rather than importing it
+from `settings.ts`). `tsconfig.json` excludes `src/**/*.test.ts`, so `typecheck` does
+not cover these files — `test` is the only thing that reads them. Added in Phase 87
+along with the matching ci-windows step: nine test files had existed since Phase 80
+with nothing anywhere that ran them.
 
 `"engines": { "node": ">=22" }` — declared 2026-08-23 when CI moved off the deprecated
 node20 Actions runtime. The runners are on node 24 (`actions/setup-node@v7`), and the
