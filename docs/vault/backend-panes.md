@@ -4,6 +4,7 @@ covers:
   - app/src-tauri/src/diff_pane.rs
   - app/src-tauri/src/file_manager.rs
   - app/src-tauri/src/workspace_browser.rs
+  - app/src-tauri/src/browser_diag.js
   - app/src-tauri/src/worktrees.rs
   - app/src-tauri/src/workspaces_merge.rs
   - app/src-tauri/src/notes.rs
@@ -37,7 +38,7 @@ already-authenticated SSH session and open **a fresh SFTP channel per call**. Se
 are deliberately *not* cached: a new SFTP subsystem on an existing handle is cheap, and
 caching would mean chasing teardown semantics when the terminal pane disconnects.
 
-**`workspace_browser.rs` (506)** — **at most one child Webview per workspace**, attached
+**`workspace_browser.rs` (851)** — **at most one child Webview per workspace**, attached
 to the main window via `Window::add_child` (this is what pins `tauri = "=2.10.3"` with
 `features = ["unstable"]`). `workspace_browser_show(workspace_id, url, x, y, w, h)`
 creates or reveals it. All browser webviews share the **process-default WebView2
@@ -46,6 +47,30 @@ workspace and WebView2 does not support multiple environments in one process —
 surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_lock` for
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
+
+Phase 82.E/F grew it to ~850 lines for one macOS bug that cannot be debugged locally
+(Rule #17): on the Mac the page renders but the site's own JS never runs, and the file
+had zero `cfg(target_os)` arms — it was written against WebView2. So the **diagnosis
+ships in the binary**: `browser_diag.js` (`include_str!`) runs at document start and
+beacons through `document.title = "ymux-diag:<base64 json>"`, the one hook wry
+implements symmetrically on both platforms (`fetch`/`<img>`/iframe/`location.href` were
+each rejected, see the comment block). Rust reads it in `on_document_title_changed`,
+adds a JS-free `on_page_load` line, and pushes a second `eval` probe 300 ms after
+`Finished` (`DIAG_EVAL_JS`, a different injection mechanism from the user script, which
+is what makes "engine dead" falsifiable); an 8 s watchdog logs silence so an empty log
+is not mistaken for "never opened a page". Deliberately **not** mac-gated — Windows is
+the control run. The page controls its own title, so the channel is attacker-influenced:
+beacons are re-serialized via `serde_json` (raw newlines would forge log lines),
+truncated on a char boundary (`DIAG_MAX_LOG`), and budgeted at `DIAG_MAX_BEACONS = 24`
+per webview; ordinary titles are never logged (Rule #1). `workspace_browser_open_devtools`
+(82.F) opens the inspector on this webview alone — `.devtools(true)` here, explicit
+`.devtools(false)` on main and popouts, because the `devtools` Cargo feature flips
+tauri's default to inspectable-everywhere (see `build-glue.md`). The command always
+exists and only its body is `cfg`-gated, so the frontend needs no build-shape knowledge.
+Also corrected there: `__TAURI_INTERNALS__` *is* injected into the external page; what
+denies it commands is the capability layer (`Origin::Remote` vs `Local` context) — do
+not add a `remote` context to `capabilities/default.json`, it is scoped to `main` and
+this webview lives in `main`.
 
 ## Git
 

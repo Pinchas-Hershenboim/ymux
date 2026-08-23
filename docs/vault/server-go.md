@@ -89,11 +89,48 @@ hand each connection to a `core.HookConnHandler` — which is `chat.SessionManag
 thing that actually owns per-session HMAC tokens and pending-hook state. That
 indirection is what breaks the import cycle.
 
-**`insights/hygiene.go`** — detects the two leaks Yossi hit: duplicate
-`ymux port-watch` processes (there should be exactly one per workspace) and orphaned
-long-running `claude` sessions with no terminal. Reaps the safe ones on request; the
-desktop's Monitor → Cleanup tab is the UI. Uses gopsutil so `go test` still runs on the
-dev box.
+**`insights/hygiene.go`** — detects the leaks Yossi hit: duplicate `ymux port-watch`
+processes (one per workspace at most), **orphaned ones (ppid==1 for >60s — the SSH
+channel died and nothing else ever kills an exec child; Phase 86.B)**, and orphaned
+long-running `claude` sessions with no terminal. `PortWatchReaper` SIGTERMs duplicates +
+orphans every 5 minutes; claude sessions are only ever flagged. `POST /hygiene/kill`
+accepts only pids the daemon itself classifies `reapable`. The desktop's Monitor →
+Cleanup tab is the UI. Uses gopsutil so `go test` still runs on the dev box.
+
+**`insights/sampler.go` + `docker.go`** — the 5s sample used to take ~3s on a 23-container
+host because Docker's `stats?stream=false` sleeps to compute its own CPU%. Phase 86.D:
+`one-shot=true` and our own delta (`dockerCPUPrev`, package-level because `/docker`
+calls `dockerList()` live too), Docker only every 6th tick and `top` every 2nd, with
+the last result carried forward on the other ticks. The "sample slow" WARN stays as the
+regression alarm.
+
+**`insights/analytics.go`** (Phase 84.C, 424 lines + `analytics_test.go`) — the reader
+the 7-day SQLite history never had. `GET /analytics?since=&until=&points=` rolls
+`samples` / `disk_samples` / `docker_samples` up in SQL in **one response** — totals, a
+bucketed series, `by_period`, `by_disk`, `by_container` — because every desktop fetch is
+one `curl --max-time 6` over SSH and five series would be five round trips. Not
+`/history`: that is `ORDER BY ts ASC LIMIT 2000`, so a 7-day question gets the oldest
+2.8 hours, a chart that renders perfectly and lies; the test pins 4320 rows in, last
+bucket at the window *end*. Hourly buckets under 48h, daily above; every parameter is
+clamped, never rejected (the desktop drew the range picker). Timestamps leave as unix
+seconds so the desktop formats in the viewer's zone — no `strftime` in the file.
+`by_disk` (which mount is growing) and `by_container` (uptime as a share of the window)
+are what the point-in-time `/docker` and `/current` structurally cannot say.
+
+**`insights/claudeusage.go`** (Phase 84.E, 443 lines + `claudeusage_test.go`) —
+`GET /claude-usage` walks `~/.claude/projects/**/*.jsonl` (the transcripts Claude Code
+already writes; every assistant line carries `message.model` and `message.usage` with
+input/output/cache_read and the 5-minute-vs-1-hour cache-write split, plus `sessionId`,
+`cwd`, `gitBranch`, `isSidechain`) and aggregates by hour, model+speed, project and
+session with a main-loop/subagent split. The mtime prune is the whole trick: a file's
+mtime is its last append, so one older than `since` cannot hold an in-window line and is
+never opened — that is what keeps 240 MB / 170 files inside the six-second curl. **It
+counts tokens and refuses to price them**; the rate table is a single desktop file
+(`claudePricing.ts`), so a price change is not a server rebake. Tests pin that the 5m/1h
+split survives end to end (a 1h write is 2× base against 1.25×, and agentic work is
+mostly cache writes). A local workspace gets the same JSON from the Rust mirror
+`claude_usage_local.rs` (`backend-claude.md`). Both routes are registered in
+`service.go` next to the existing ones, each with a `/api/v2/insights/...` alias.
 
 **`push/push.go`** — no Firebase, no FCM, no APNs. A paired device holds a long-lived
 WebSocket (`GET /api/v2/push/subscribe`) from an Android foreground service; the server

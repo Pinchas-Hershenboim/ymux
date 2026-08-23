@@ -89,6 +89,16 @@ encoding behaviour causes the bug.
 means verifying `add_child`'s signature and the multi-webview shape still compile — push
 the bump and let CI type-check it (Rule #17), then smoke-test the workspace Browser.
 
+The feature list is now `["unstable", "tray-icon", "image-png", "devtools"]`. `devtools`
+(Phase 82.E) is the only thing that makes wry call `setInspectable(true)` on macOS, i.e.
+the only way any inspector can attach to the workspace Browser webview in a release
+build. **It is dangerous on its own:** tauri-runtime-wry reads it as
+`devtools.unwrap_or(true)`, so turning it on makes every webview inspectable by default
+— including `main`, which renders live PTY output (Rule #1). The explicit
+`.devtools(false)` on the main and popout window builders in `lib.rs` and the
+`.devtools(true)` in `workspace_browser.rs` are one unit with this line; a window added
+later inherits `true` unless it opts out.
+
 `build.rs` runs `tauri_build`, which is what embeds `frontendDist` — the whole reason
 Rule #13 exists.
 

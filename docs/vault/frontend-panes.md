@@ -12,6 +12,12 @@ covers:
   - app/src/mdViewerStore.ts
   - app/src/DiffPane.tsx
   - app/src/InsightsWindow.tsx
+  - app/src/InsightsAnalytics.tsx
+  - app/src/InsightsClaudeCost.tsx
+  - app/src/insightsReport.ts
+  - app/src/claudePricing.ts
+  - app/src/insightsFmt.ts
+  - app/src/clipboardText.ts
   - app/src/HygienePanel.tsx
   - app/src/PortsWindow.tsx
   - app/src/TicketsPanel.tsx
@@ -38,10 +44,14 @@ fullscreen — so they get that chrome for free instead of hand-rolling a varian
 
 ## Browser
 
-**`BrowserWindow.tsx` (762)** — the workspace-level Browser floating window. The actual
+**`BrowserWindow.tsx` (792)** — the workspace-level Browser floating window. The actual
 page is a **native child Webview** the Rust side mounts
 (`workspace_browser.rs`); this component owns the toolbar, tabs, port+path entry,
-navigation, and the window geometry. At most one per workspace.
+navigation, and the window geometry. At most one per workspace. Phase 82.F added a
+DevTools button beside the Dev Mode toggle that invokes `workspace_browser_open_devtools`
+— on macOS it replaces the Safari → Develop → machine → webview walk, on Windows it is the
+only way in, since F12 is not wired up for a child webview (and App's own F12 blocker
+stays). Only this webview is inspectable; the why is in `build-glue.md`.
 
 **`browserDevMode.ts` (448)** — right-click an element in the workspace browser to
 capture it as a ticket. Kept out of `BrowserWindow.tsx` on purpose: with Dev Mode in its
@@ -80,15 +90,35 @@ root feeds them all into a single list.
 
 ## Monitoring
 
-**`InsightsWindow.tsx` (580)** — pull-based server monitor. Fetches the live snapshot
+**`InsightsWindow.tsx` (586)** — pull-based server monitor. Fetches the live snapshot
 through the `insights_fetch` Tauri command, which curls `127.0.0.1:7879` over the
 workspace SSH session — **or serves it from `insights_local.rs` for a local workspace;
 the routing is transparent to this component.** No mock data: if the daemon is not
-installed or not running, the panel says so.
+installed or not running, the panel says so. It takes a `local` prop (App passes
+`connection.type === "local"`) only so the copy-the-commands blocks can name the right
+paths. Phase 84.C added a sixth tab, **Analytics** (`InsightsAnalytics.tsx`): what the
+server has *been* doing, from the 7-day SQLite history the daemon had kept since Phase
+68 that nothing ever read. One `/analytics` fetch (not `/history`, which is
+`LIMIT 2000` oldest-first and answers a 7-day question with the wrong 2.8 hours) gives
+stat tiles, a hand-rolled SVG sparkline with a `<details>` table twin, and by-period /
+by-disk / by-container rollups — no charting library, no poll, loads on tab open and
+Refresh. Amber is spent only on a disk past 85% or a container under 95% uptime; every
+other bar is accent, because a bar encodes magnitude. A local workspace gets
+`{"unavailable":"local"}` and an explanation; a 404 from an old daemon becomes
+"reinstall from Add-ons". Phase 84.D's **Copy for Claude** flattens exactly what is on
+screen to fixed-width text via the pure, tested `insightsReport.ts` (own one-decimal
+`pct()`, absolute local-time stamps, states what is *not* included). Phase 84.E put
+`InsightsClaudeCost.tsx` under the Claude tab's quota bars: `/claude-usage` tokens by
+hour / model+speed / project / session, priced **on the desktop only** from
+`claudePricing.ts` (API list price against a subscription — an estimate, and the UI says
+so three times; unknown models cost 0 and are flagged, mixed rows show a "~" blended
+rate). `fmtBytes`/`fmtBps` moved to `insightsFmt.ts` so the new tabs share them.
 
 **`HygienePanel.tsx` (159)** — the Monitor's Cleanup tab. Surfaces the two server-side
 leaks Yossi hit (duplicate ymux port-watchers, orphaned claude sessions) from the
-daemon's `/hygiene` endpoint, and reaps the safe ones via `/hygiene/kill`.
+daemon's `/hygiene` endpoint, and reaps the safe ones via `/hygiene/kill`. Phase 86: a
+port-watcher row also carries `orphan` (ppid=1, its SSH channel gone), rendered like a
+duplicate and reaped by the same button — "Kill duplicates & orphans".
 
 **`PortsWindow.tsx` (267)** — detect-only plus click-to-forward. The remote watcher
 reports a LISTEN port → a row appears with **[Forward]** → the backend opens the tunnel

@@ -290,6 +290,15 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 
 ## Decided
 
+### 2026-08-23 — Phase 86: server + port-watch + hooks load
+- **Context:** measured on Yossi's server — 18 `ymux port-watch` at ~4.7% CPU each, 15 orphans (ppid=1); hook-debug.log 100% stale-reconnect noise from them; ymux-server sampling 3.1s every 5s because Docker one-shot stats block 1-2s per container. Full numbers in PROGRESS.txt (2026-08-23 ~20:30).
+- **Decided — the watcher owns its own death.** stdin-EOF watchdog + no last.env fallback + exit after 3 connect failures. Hooks KEEP the fallback (Phase 80 (f)); only the watcher's tunnel is fixed for life.
+- **Decided — one watcher per host, not per workspace.** Sibling workspaces on the same (host,port,user) subscribe to the owner's events; the desktop fans `port.opened/closed` out. The remote process never learns about workspaces beyond the owner's id.
+- **Decided — orphans are reaped server-side by ppid, not by any "connected" registry.** There is no remote record of live workspaces (last.env is a single global file); ppid==1 on an SSH exec child is the one reliable signal, verified on 15 real cases.
+- **Deferred — netlink `sock_diag` (LISTEN-only query) instead of /proc/net/tcp.** That is the fix for the kernel half of the tick cost; needs raw netlink code. BACKLOG.
+- **Deferred — a resident hook agent / connection pooling.** Each hook is its own process by Claude Code's design; one connection per hook is the floor without a daemon in the loop. BACKLOG.
+- **Deferred — `manifest.json` hooks version bump to 1.6.0.** Same reason as 1.5.0 (FOLLOWUPS P2): it banners every install before a CLI that honours it ships. Release checklist.
+
 ### 2026-08-23 — Phase 84: panes as tabs, and Notification comes back as pane state (not as a feed item)
 - **Context:** Users asked for two things that turned out to be mostly built already. "Open panes as tabs instead of splitting" is Phase 55-A's maximize plus a control surface — that feature has been swapping the split tree for a single leaf since it shipped, with the other panes' PTYs alive in the `terms` registry. "A traffic light on the tab" is a new rendering of the per-pane turn state machine that has run end-to-end since issue #4, currently painted as the `⏱ 3:10 · avg 40s` ticker.
 - **Decided — tabs are a `bool` on `Workspace`, not a `LayoutNode::Tabs` variant.** The variant was the obvious model and is the wrong one: it makes every `match` on `LayoutNode` non-exhaustive (~44 sites in the app crate alone), it is lossy in both directions — a tree collapsed into a tab list cannot get its ratios back — and an older ymux reading a `Tabs` node out of `workspaces.json` cannot render it, which is exactly what the 3-way reconcile in `workspaces_merge.rs` exists to survive. With the flag, tabs are just `collect_panes(layout)` in DFS order and the tree is never touched.

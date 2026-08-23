@@ -5,11 +5,12 @@ covers:
   - app/src-tauri/src/claude_summary.rs
   - app/src-tauri/src/claude_usage.rs
   - app/src-tauri/src/insights_local.rs
+  - app/src-tauri/src/claude_usage_local.rs
 ---
 
 # Claude integration + local Insights
 
-Four modules, ~2,100 lines. Three of them read or drive the `claude` CLI **on the machine
+Four modules, ~2,100 lines (plus the uncovered `claude_usage_local.rs` mirror, Phase 84.E). Three of them read or drive the `claude` CLI **on the machine
 that hosts the transcripts** — usually the remote, not the desktop. The fourth is the
 local-machine half of the Insights panel.
 
@@ -57,7 +58,7 @@ resulting warning cascade.
 
 **Do not delete this as dead code.** It is deliberate, and the header says so.
 
-## `insights_local.rs` (743) — Insights for Local workspaces
+## `insights_local.rs` (755) — Insights for Local workspaces
 
 Speaks the **same JSON shape** as the remote `ymux-server` HTTP API, so
 `InsightsWindow.tsx` shares its parsing code. The only routing decision is
@@ -70,6 +71,16 @@ never chooses.
   Docker is not running it returns an **empty container list rather than an error**; the
   panel already renders a friendly "no docker" state.
 - Log tag: `[INSIGHTS-LOCAL]`.
+- **Two routes the remote daemon gained in Phase 84.C/E are answered here too, but not
+  with the same data.** `/analytics` (the Monitor's Analytics tab) returns the literal
+  `{"unavailable":"local"}`: the remote rolls up seven days of SQLite samples, while this
+  module samples on demand and persists nothing, so there is no history to aggregate.
+  It is a marker, not an error, so the panel can explain *why* instead of showing a raw
+  "unsupported path". `/claude-usage` is delegated to `claude_usage_local.rs`, a Rust
+  mirror of the Go `claudeusage.go` walk over `~/.claude/projects/**/*.jsonl` — the
+  duplication is deliberate, since the alternative was SFTP-pulling hundreds of MB of
+  transcripts to the desktop each time the tab opens. Both halves count tokens only;
+  pricing lives in one place, `app/src/claudePricing.ts`.
 
 ## Related, elsewhere
 

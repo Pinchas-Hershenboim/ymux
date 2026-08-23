@@ -82,13 +82,28 @@ pub struct HookSpec {
 pub struct HookEvent {
     pub matcher: String,
     pub command: String,
+    /// Phase 86: per-hook timeout in seconds, written through to the
+    /// agent's settings verbatim. Claude Code kills a hook after 60s by
+    /// default; the desktop Gate waits up to 120s (600 clamp), so
+    /// PreToolUse needs more or Claude Code gives up on it first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+/// One settings entry for an event: `{ matcher, hooks: [{type, command[, timeout]}] }`.
+fn hook_entry(matcher: &str, command: &str, timeout: Option<u64>) -> Value {
+    let mut hook = json!({ "type": "command", "command": command });
+    if let Some(t) = timeout {
+        hook["timeout"] = json!(t);
+    }
+    json!({ "matcher": matcher, "hooks": [hook] })
 }
 
 /// The version this CLI was built with, used as the spec returned by
 /// `source=bundled` AND as the version recorded when no fetched spec
 /// was applied. Bump whenever you ship a new hook in a release with a
 /// matching `hooks/claude-code.json` change.
-const BUNDLED_CLAUDE_VERSION: &str = "1.5.0";
+const BUNDLED_CLAUDE_VERSION: &str = "1.6.0";
 
 /// The bundled fallback spec for Claude Code. Mirrors what
 /// `hooks/claude-code.json` carries at the same `ymux_hooks_version`
@@ -102,6 +117,8 @@ fn bundled_claude_spec() -> HookSpec {
         HookEvent {
             matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit|Task".into(),
             command: "${YMUX_BIN} claude-hook pre-tool-use".into(),
+            // v1.6.0 (Phase 86): outlive Claude Code's 60s default.
+            timeout: Some(600),
         },
     );
     // v0.4.4 dropped Notification and SessionStart as observability-only
@@ -132,6 +149,7 @@ fn bundled_claude_spec() -> HookSpec {
                 // documented wildcard (it's a literal), so avoid it.
                 matcher: "".into(),
                 command: format!("${{YMUX_BIN}} claude-hook {sub}"),
+                timeout: None,
             },
         );
     }
@@ -376,7 +394,7 @@ fn apply_to_settings(
 
     let mut would_register: Vec<String> = Vec::new();
     let mut already_present: Vec<String> = Vec::new();
-    let mut to_apply: Vec<(String, String, String)> = Vec::new();
+    let mut to_apply: Vec<(String, String, String, Option<u64>)> = Vec::new();
 
     for (event, ev_spec) in &spec.events {
         let cmd = expand_command(&ev_spec.command, exe_path);
@@ -388,12 +406,16 @@ fn apply_to_settings(
         // Phase 84.B: "present" is not enough — the command has to still
         // exist, or a rename leaves a permanently dead hook that
         // setup-hooks refuses to repair. See ymux_entry_is_runnable.
-        if has_ymux && !force && ymux_entry_is_runnable(&entries) {
+        if has_ymux
+            && !force
+            && ymux_entry_is_runnable(&entries)
+            && ymux_entry_has_timeout(&entries, ev_spec.timeout)
+        {
             already_present.push(event.clone());
             continue;
         }
         would_register.push(event.clone());
-        to_apply.push((event.clone(), cmd, ev_spec.matcher.clone()));
+        to_apply.push((event.clone(), cmd, ev_spec.matcher.clone(), ev_spec.timeout));
     }
 
     if dry {
@@ -440,16 +462,13 @@ fn apply_to_settings(
         None
     };
 
-    for (event, cmd, matcher) in &to_apply {
+    for (event, cmd, matcher, timeout) in &to_apply {
         let mut entries = root["hooks"][event.as_str()]
             .as_array()
             .cloned()
             .unwrap_or_default();
         entries.retain(|e| !is_ymux_entry(e));
-        entries.push(json!({
-            "matcher": matcher,
-            "hooks": [{ "type": "command", "command": cmd }]
-        }));
+        entries.push(hook_entry(matcher, cmd, *timeout));
         root["hooks"][event.as_str()] = json!(entries);
     }
 
@@ -481,7 +500,7 @@ fn apply_to_settings(
     }
 
     AgentStatus::Done {
-        registered: to_apply.into_iter().map(|(e, _, _)| e).collect(),
+        registered: to_apply.into_iter().map(|(e, _, _, _)| e).collect(),
         backup,
         path: path.to_path_buf(),
         unchanged: false,
@@ -505,15 +524,15 @@ fn apply_to_legacy(
         config = json!({});
     }
 
-    let mut to_apply: Vec<(String, String, String)> = Vec::new();
+    let mut to_apply: Vec<(String, String, String, Option<u64>)> = Vec::new();
     for (event, ev_spec) in &spec.events {
         let cmd = expand_command(&ev_spec.command, exe_path);
         let entries = config[event].as_array().cloned().unwrap_or_default();
         let has_ymux = entries.iter().any(is_ymux_entry);
-        if has_ymux && !force {
+        if has_ymux && !force && ymux_entry_has_timeout(&entries, ev_spec.timeout) {
             continue;
         }
-        to_apply.push((event.clone(), cmd, ev_spec.matcher.clone()));
+        to_apply.push((event.clone(), cmd, ev_spec.matcher.clone(), ev_spec.timeout));
     }
     if dry || to_apply.is_empty() {
         return AgentStatus::Done {
@@ -534,16 +553,13 @@ fn apply_to_legacy(
         None
     };
 
-    for (event, cmd, matcher) in &to_apply {
+    for (event, cmd, matcher, timeout) in &to_apply {
         let mut entries = config[event.as_str()]
             .as_array()
             .cloned()
             .unwrap_or_default();
         entries.retain(|e| !is_ymux_entry(e));
-        entries.push(json!({
-            "matcher": matcher,
-            "hooks": [{ "type": "command", "command": cmd }]
-        }));
+        entries.push(hook_entry(matcher, cmd, *timeout));
         config[event.as_str()] = json!(entries);
     }
 
@@ -551,7 +567,7 @@ fn apply_to_legacy(
     let _ = fs::write(path, text);
 
     AgentStatus::Done {
-        registered: to_apply.into_iter().map(|(e, _, _)| e).collect(),
+        registered: to_apply.into_iter().map(|(e, _, _, _)| e).collect(),
         backup,
         path: path.to_path_buf(),
         unchanged: false,
@@ -612,6 +628,23 @@ fn is_ymux_entry(entry: &Value) -> bool {
 /// Windows a POSIX-style `/home/y/.winmux/bin/winmux` is NOT absolute
 /// (no drive prefix) but is rooted, and settings.json written under WSL
 /// or copied between machines carries exactly that shape.
+/// Phase 86: "present" also means "carries the spec's `timeout`". Without
+/// this, a 1.5.0 install would keep its 60s-default PreToolUse entry
+/// forever — the skip path never rewrites an entry it considers present,
+/// yet the version stamp would still move to 1.6.0 and silence the
+/// outdated-hooks banner. Only checks the spec's direction (a spec with no
+/// timeout accepts any entry).
+fn ymux_entry_has_timeout(entries: &[Value], want: Option<u64>) -> bool {
+    let Some(want) = want else { return true };
+    entries.iter().filter(|e| is_ymux_entry(e)).all(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .map(|hooks| hooks.iter().all(|h| h.get("timeout").and_then(|t| t.as_u64()) == Some(want)))
+            .unwrap_or(false)
+    })
+}
+
 fn ymux_entry_is_runnable(entries: &[Value]) -> bool {
     entries.iter().filter(|e| is_ymux_entry(e)).all(|entry| {
         entry
@@ -865,6 +898,28 @@ mod tests {
         let me = std::env::current_exe().expect("test binary path");
         let live = entry(&format!("\"{}\" claude-hook stop", me.display()));
         assert!(ymux_entry_is_runnable(&[live]));
+    }
+
+    #[test]
+    fn entry_without_spec_timeout_is_stale() {
+        let old = vec![hook_entry("Bash", "x claude-hook pre-tool-use", None)];
+        assert!(!ymux_entry_has_timeout(&old, Some(600)));
+        let new = vec![hook_entry("Bash", "x claude-hook pre-tool-use", Some(600))];
+        assert!(ymux_entry_has_timeout(&new, Some(600)));
+        assert!(ymux_entry_has_timeout(&old, None));
+    }
+
+    #[test]
+    fn timeout_is_written_only_when_the_spec_has_one() {
+        let with = hook_entry("Bash", "x claude-hook pre-tool-use", Some(600));
+        assert_eq!(with["hooks"][0]["timeout"], json!(600));
+        assert!(is_ymux_entry(&with));
+        let without = hook_entry("", "x claude-hook stop", None);
+        assert!(without["hooks"][0].get("timeout").is_none());
+        // The bundled spec carries it on PreToolUse alone.
+        let spec = bundled_claude_spec();
+        assert_eq!(spec.events["PreToolUse"].timeout, Some(600));
+        assert_eq!(spec.events["Stop"].timeout, None);
     }
 
     #[test]
