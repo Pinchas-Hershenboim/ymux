@@ -3646,6 +3646,29 @@ Fix: the ad-hoc path now `unset`s the variable in the step's shell instead
 of blanking it, and echoes which path it took. Blank-vs-unset is the whole
 bug, so the step says out loud which one it is.
 
-NOT VERIFIED YET — dispatched, see the result recorded below/next session.
-The arm64 leg in particular has never gotten past this step, so anything
-macos-14/aarch64-specific after bundling is still unproven.
+VERIFIED: run 32639916194, both legs green, first time the matrix has ever
+completed.
+  build (arm64)  macos-14        8m37s
+  build (x64)    macos-15-intel  18m12s
+The build step now prints `ad-hoc: APPLE_SIGNING_IDENTITY unset, tauri will
+use signingIdentity "-"`, and codesign reports `Signature=adhoc`,
+`TeamIdentifier=not set` — the fallback the workflow was written to provide
+is finally the one that runs.
+
+Everything downstream of the bundle ran for the first time on arm64 and
+passed: cargo test 274, frontend embedded ('index-Cyk9sJto.js', Rule #13),
+lipo on both the .app main executable AND the bundled ymux-cli -> arm64
+only. So the anti-Rosetta claim behind the arch split is now actually
+checked on the shipped bundle rather than asserted.
+
+  ymux_arm64_macos13.dmg  ca837af1dc743c8df424a3a9750ccfcabe4ecb5435bc47079aafdef45a6bc968
+  ymux_x64_macos13.dmg    5375016a65f47c4c10084c081229d629435db41026bb7331ae7a4f09f941c153
+
+spctl rejects both, by design: no Developer ID secrets are configured on
+the repo, so `Resolve signing mode` picks adhoc and the cert import is
+skipped. The workflow downgrades that to a warning in the adhoc path and
+would fail the run in the developer-id path. These dmgs are buildable and
+runnable locally but NOT distributable — new followup.
+
+Rule #14 still applies: green CI is not a launched app. Nothing here ran
+the .app on a real Mac.
