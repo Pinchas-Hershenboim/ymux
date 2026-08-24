@@ -61,13 +61,7 @@ func TestCPUPctFromDelta(t *testing.T) {
 func TestEvictCPUPrev(t *testing.T) {
 	dockerCPUPrev.Store("keep", cpuPrev{1, 2})
 	dockerCPUPrev.Store("gone", cpuPrev{3, 4})
-	evictCPUPrev([]struct {
-		Id     string   `json:"Id"`
-		Names  []string `json:"Names"`
-		Image  string   `json:"Image"`
-		State  string   `json:"State"`
-		Status string   `json:"Status"`
-	}{{Id: "keep"}})
+	evictCPUPrev([]dockerListEntry{{Id: "keep"}})
 	if _, ok := dockerCPUPrev.Load("keep"); !ok {
 		t.Fatal("listed container baseline was evicted")
 	}

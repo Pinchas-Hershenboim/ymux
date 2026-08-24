@@ -227,7 +227,7 @@
     "app/src-tauri/server/internal/insights/claudeusage.go": "471715d6bcc373598e6406442e5f3a74e7cae23ec02f2c246ae0c07d741b6b7c",
     "app/src-tauri/server/internal/insights/claudeusage_test.go": "3e352c87b61472de6bf8a010136080eb3146592c2779bdbed17c0cac1e24c60b",
     "app/src-tauri/server/internal/insights/docker.go": "41d8e7e56e93f6893e2f8a42d18eef56cc9249d05efb89acda5bf285fd3d61c9",
-    "app/src-tauri/server/internal/insights/docker_test.go": "ce404cdf0d3ede9147a140d0e94bb691e8b88af3b1ac58bbfa29b6a3ee274ca2",
+    "app/src-tauri/server/internal/insights/docker_test.go": "139594b2c2aaaf8e821caff47187ab2f5b4cb608cb2d13896db17c44c3a29b60",
     "app/src-tauri/server/internal/insights/hygiene.go": "ef18b5771e0e05062e959b1acaa3304c68d681f5e92f9efe881b70732a8cb351",
     "app/src-tauri/server/internal/insights/hygiene_test.go": "1f70f7d08bbbb9fb51384645b1477c66d1c270382bb9d12b039789cd42889996",
     "app/src-tauri/server/internal/insights/sampler.go": "d44a322f04647185ff5156ee2b123176d045ea9a7bc34edb2afff969b8d2add7",
