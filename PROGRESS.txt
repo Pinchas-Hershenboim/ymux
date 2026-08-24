@@ -7070,3 +7070,23 @@ this worktree does not have — unrelated to this change.
 Status: NOT VERIFIED LIVE (Rule #14). Needs a real SSH pane: switch the remote
 profile to Full RTL and check Hebrew, pure-Latin `ls`, drag-select, copy,
 arrows, and that a local pane open alongside is untouched.
+
+[2026-08-24 ~09:45 IDT] Phase 86 — LIVE VERIFICATION on Yossi's server (Rule #14)
+
+CI: both gates green (ci-windows 32701394231, build-macos 32701394350) after
+three fixes on the way: the parallel session's go-vet fixture mismatch
+(evictCPUPrev now takes []dockerListEntry), the 45-commit main merge that had
+the PR CONFLICTING (checks don't even run in that state), the server rebake +
+the 3-line SDK 2.2.1 stamp.
+
+Deployed ymux-server 2.2.1 (the rebaked x64 blob) on the server itself,
+old binary kept as ~/.ymux/bin/ymux-server.bak-2.2.0. Verified live:
+  86.B  planted a setsid (ppid=1) port-watch for a fake workspace ->
+        auto-reaped in <5 min: "hygiene auto-reaped port-watchers count=1
+        pids=[299357] reasons=299357=orphan". /hygiene JSON carries `orphan`.
+  86.D  zero "sample slow" WARNs since the restart (the old 2.2.0 process
+        was logging one EVERY 5s tick, 2.8-3.9s each, all docker_ms).
+        /hygiene answers in 0.1s.
+NOT yet verified live (needs the desktop + new CLI on a remote):
+  86.A stdin watchdog + pinned rpc, 86.C per-host sharing, 86.E timeout-600
+  behaviour under a real Gate. Smoke steps are in the plan/PR.
