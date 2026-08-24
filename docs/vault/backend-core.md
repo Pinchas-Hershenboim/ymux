@@ -7,6 +7,23 @@ covers:
 
 # Backend core — `lib.rs`
 
+**Windows are built programmatically, not in `tauri.conf.json`** — its `windows` array is
+empty on purpose. `main` is built in `.setup()` with `.devtools(false)`; `popout_pane`
+builds `popout-<sid>` terminal windows and `workspace_browser::browser_popout_open`
+builds `browser-popout-<ws>`. All three share the same three non-negotiables: the
+builder call must be in an **`async`** command (on Windows `WebviewWindowBuilder`
+deadlocks from a synchronous one — the shell appears, the webview stays blank white), the
+URL must be a **clean `index.html`** with the id carried by the window LABEL (the built
+app's asset protocol serves a blank page for any suffixed path), and lifecycle is wired
+through `on_window_event` on `Destroyed`, never `CloseRequested`. Each label prefix needs
+its own file in `capabilities/`; the globs are prefix-anchored, so `browser-popout-*` is
+not covered by `popout-*`.
+
+`teardown_workspace_runtime` is the single place a workspace's runtime state dies: the
+Browser child Webview, its pop-out OS window (`close_popout_window` — otherwise the
+window outlives the workspace), the browser session dir, the bootstrap verdict, and the
+reverse-tunnel state.
+
 **12,809 lines, and about 1,700 of them are `#[cfg(test)]` at the bottom.** It is the
 "everything else" module: app state, the workspace data model and its persistence, the
 PTY and SSH spawn paths, the multiplexer (zellij / tmux) plumbing, and ~70 Tauri
@@ -33,7 +50,7 @@ put logic there.
 
 ## Key types
 
-- **`AppState`** ([lib.rs:145](../../app/src-tauri/src/lib.rs)) — the single managed Tauri
+- **`AppState`** ([lib.rs:146](../../app/src-tauri/src/lib.rs)) — the single managed Tauri
   state, `Clone` because every field is an `Arc<Mutex<…>>` and the RPC server task needs
   its own handle. It **wraps** `ymux_core::CoreState` at `state.core`: `sessions`,
   `pane_sessions`, `forwards`, `port_watchers`, `detected_ports`, `port_watcher_tasks`,
@@ -70,7 +87,7 @@ put logic there.
 
 ## Persistence — the part to get right
 
-`%APPDATA%\ymux\workspaces.json`, via `save_to_disk` ([lib.rs:514](../../app/src-tauri/src/lib.rs)).
+`%APPDATA%\ymux\workspaces.json`, via `save_to_disk` ([lib.rs:838](../../app/src-tauri/src/lib.rs)).
 
 1. Serialize to pretty JSON.
 2. **Three-way merge before writing.** `LAST_KNOWN` (a `static Mutex<Option<String>>`)
@@ -79,9 +96,26 @@ put logic there.
    a stable build and a dev build share `%APPDATA%` unless someone sets
    `WINMUX_CONFIG_DIR`, and a plain dump is last-write-wins across the whole document —
    the older binary silently drops every field its structs don't know.
-3. Write `workspaces.<pid>.tmp`, `write_all`, **`sync_all`**, then `rename`. Rule #7.
-4. `remember_file_text` updates the merge base.
-5. Log line records `N workspaces: R root / N-R nested / P repo` — the tree *shape*,
+3. **The schema gate**, between reading the file and merging onto it.
+   `WORKSPACES_SCHEMA_VERSION` (currently 2) is stamped on every write through
+   `serialize_with`, not by assigning the field — the invariant is "what we WRITE is
+   current", and serialization is the one place that cannot be bypassed.
+   `schema_gate(on_disk, last_written)` is a pure function (extracted for the same
+   reason `resolve_effective_session_name` was: the cases that matter need two binaries
+   sharing a config dir, which no test can arrange) returning one of three things:
+   **Refuse** when the file on disk is NEWER than this build — a hard `Err`, because
+   merging would mean understanding keys we have never seen; **WarnDowngrade** when an
+   older build got there first — write anyway, since refusing would leave the user
+   unable to save for as long as that build is open, and the merge in step 2 is the
+   real repair; **Write** otherwise. `schema_version_of` is deliberately tolerant —
+   absent, empty, malformed and version-less all read as "carry on" — because a
+   refusal hangs off it and a stray byte must never lock a user out of saving.
+   **Know the limit:** this cannot stop an already-shipped 0.4.x build, which never
+   reads the field and will write v1 back over a v2 file. Step 2 is what covers that
+   case; the gate adds the log line that was missing when it cost hours in 2026-08.
+4. Write `workspaces.<pid>.tmp`, `write_all`, **`sync_all`**, then `rename`. Rule #7.
+5. `remember_file_text` updates the merge base.
+6. Log line records `N workspaces: R root / N-R nested / P repo` — the tree *shape*,
    not just a count, because two pinned folders once lost `parent_id` with nothing in
    the log to bracket when.
 
@@ -94,7 +128,7 @@ tmux labels, session owners.
 
 ## Spawning a shell
 
-`pane_connect` ([lib.rs:7419](../../app/src-tauri/src/lib.rs)) is the front door and takes
+`pane_connect` ([lib.rs:7949](../../app/src-tauri/src/lib.rs)) is the front door and takes
 a wide argument list because every connection mode funnels through it: `persistent`,
 `mode` (`default | tmux | plain | cmd | claude`), `cwd_override`, `cmd`, `claude_args`,
 `tmux_session_name`, plus the credential arguments.
@@ -113,7 +147,7 @@ a wide argument list because every connection mode funnels through it: `persiste
   best-effort bootstrap, `tcpip_forward(0)` for the reverse tunnel, env file via
   `ymux-tunnel`, shell channel with `set_env` for the `YMUX_*` vars, `request_pty`,
   `request_shell`, channel-pump task.
-- `emit_data` ([lib.rs:1960](../../app/src-tauri/src/lib.rs)) is UTF-8 **boundary-safe** —
+- `emit_data` ([lib.rs:2370](../../app/src-tauri/src/lib.rs)) is UTF-8 **boundary-safe** —
   it buffers a partial multibyte sequence rather than emitting a broken string. Do not
   "simplify" it.
 
@@ -131,6 +165,66 @@ the listing output so `parse_tmux_sessions` can read it back unambiguously.
 `session-meta` labels cross the wire **hex-encoded** (`hex_utf8`) so Hebrew/RTL labels
 never meet shell quoting.
 
+**A session NAME is a security boundary, because one path types it into a shell.**
+`build_zellij_attach_command` produces a line that is typed verbatim into the user's
+cmd.exe or PowerShell 900ms after spawn, and a session name can come from a user's pane
+title. Until 2026-08-23 the sanitizer replaced only `.`, `:` and whitespace — tmux's own
+blockers — so `;`, `&`, `|`, `$`, backticks, quotes and `>` rode a title straight into
+that line, and a pane titled `work; calc` ran `calc`. Two things now hold:
+
+- `session_name_char_is_safe` is a **whitelist at the source**: ASCII alphanumerics,
+  `_`, `-`, and any non-ASCII character that is neither control nor separator. The
+  whitelist lives here rather than as quoting at each use site because **there is no
+  quoting that is correct in cmd.exe and PowerShell at once** — they disagree about
+  `^`, `%`, backticks and single quotes — and that line has to parse in both. The
+  non-ASCII clause is what preserves Phase 23.I's promise that a Hebrew or CJK title
+  becomes a session of the same name: every metacharacter in all three shells is ASCII.
+- `build_zellij_attach_command` returns `Option` and **refuses** a name it cannot type.
+  Only a picker-supplied name (a session made outside ymux by hand) can reach that.
+  Refusing beats mangling, which would silently attach to a session other than the one
+  chosen; the pane is left in a plain working shell, the same failure mode the function
+  already accepts when zellij is missing.
+
+The tmux/SSH side was already correct — `build_tmux_attach_script` and
+`tmux kill-session` use `shell_quote`, and the zellij verbs above are argv-only. The
+Windows zellij line was the single hole. Note the historical trap: the comment at that
+call site asserted a sanitizer named `sanitize_session_name` **that has never existed in
+this tree**, and the test guarding it only ever fed it `ymux-p_1a2b_0` — a name that
+could not fail.
+
+## Which folder a session belongs to
+
+`pane_list_tmux_sessions` **annotates and never filters** — the picker's
+*This folder / Whole server* toggle is a client-side view of one response, so a
+session outside the scope stays one click away instead of vanishing. The verdicts are
+stamped by `annotate_session_scope`, which loads `session-owners.json` and delegates to
+`annotate_scope_with` — the disk-free core where every rule actually lives, and the one
+the tests drive.
+
+Two independent signals feed it, and it needs both:
+
+- **`#{session_path}`** — the sixth field of `TMUX_LIST_FORMAT`, giving `in_cwd` via
+  `path_is_within`, which insists on a separator boundary so `/srv/app2` is not "inside"
+  `/srv/app`.
+- **`session-owners.json`** (`%APPDATA%\ymux`, host → session name → `SessionOwner`),
+  giving `owned`. This half exists because `zellij list-sessions` reports **no directory
+  at all**, so on Windows ownership is the only workspace signal there is.
+
+`foreign: Option<ForeignScope>` (2026-08-24) is the third verdict and the "Whole server"
+view's mess-guard: a row nobody can place is free to attach, a row we *can* place already
+belongs to someone. It is `Some` when another workspace claimed the session
+(`ForeignKind::Workspace`, labelled with that workspace's name from `workspaces.json`) or
+when a known `cwd` sits outside the caller's folder (`ForeignKind::Folder`). Two rules
+govern it, both asserted in `tmux_list_parse_tests`:
+
+- **Never `Some` while `owned || in_cwd`.** The workspace view is exactly the complement
+  of this field, so the badge cannot appear there and the frontend needs no scope check.
+- **An unknown `cwd` with no ownership row is never foreign.** `cwd: None` means we do
+  not know, never "somewhere else" — silence beats a fabricated warning.
+
+`project_path` is optional and **`None` means unscoped, which is load-bearing**: session
+restore and `pane_probe_tmux_sessions` share these paths and must see everything.
+
 ## Invariants
 
 - **Rule #7** — every config write is tmp + fsync + rename. No exceptions in this file.
@@ -138,7 +232,8 @@ never meet shell quoting.
 - **Rule #4** — no `unwrap`/`expect` outside tests and the `run()` boot path. The
   `state.workspaces.lock().unwrap()` calls are the known exception and predate the rule.
 - **Rule #1** — PTY bytes are never logged. `log_debug` lines carry byte counts and
-  pane ids only.
+  pane ids only. It is also why every terminal-bearing window is built `.devtools(false)`
+  — see Gotchas.
 - `persist` gates on `LoadState::Loaded`. Anything that writes workspaces must go
   through it.
 

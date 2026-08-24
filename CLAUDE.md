@@ -17,8 +17,8 @@ This file is read at the start of every Claude session working on ymux. Keep it 
 
 - **`git fetch` FIRST, every session — and again before every merge/push.** ymux is worked on from several machines and servers at once (Yossi's box, collaborators, cloud sessions), so `origin/main` moves while you work. Start with `git fetch origin && git status`; if `main` is behind, pull before touching anything. Re-fetch before any merge or push — a plan built on a stale tree is worse than no plan. This is not theoretical: on 2026-08-09 a collaborator's macOS port landed 5 commits on `origin/main` mid-session and was only noticed by accident at the end. Never assume the tree you started with is current.
 - **PROGRESS.txt** — append after every significant change (timestamp, task, files, result). NEVER overwrite. Too big → rename `PROGRESS_OLD_<date>.txt`, start fresh.
-- **FOLLOWUPS.md / BACKLOG.md** — read both at session start. Open P0/P1 in FOLLOWUPS → surface before new work. Out-of-scope bug found in passing → one line to FOLLOWUPS (P0-P3, file:line, repro). Out-of-scope idea / mock-stub debt → BACKLOG. Never silently leave broken state.
-- **Past-work lookup order** — before re-investigating: 1) `PROGRESS.txt` + `PROGRESS_OLD_*` 2) `git log --all --oneline --grep=<keyword>` 3) memory search 4) `docs/*.md` + this file.
+- **FOLLOWUPS.md / BACKLOG.md** — read both at session start. Open P0/P1 in FOLLOWUPS → surface before new work. Out-of-scope bug found in passing → one line to FOLLOWUPS (P0-P3, file:line, repro). Out-of-scope idea / mock-stub debt → BACKLOG. Never silently leave broken state. **FOLLOWUPS.md holds OPEN items only** — when one closes, move it to `FOLLOWUPS-ARCHIVE.md` with its full text plus a note saying how it closed; do not delete it and do not leave it in place as `[x]`. That archive is NOT read at session start, so nothing still needing action may be parked there. **Cite an entry by its text, never by `FOLLOWUPS.md:NN`** — the line numbers shift every time an item is added or archived, and two entries had already rotted into pointing at the wrong lines.
+- **Past-work lookup order** — before re-investigating: 1) `PROGRESS.txt` + `PROGRESS_OLD_*` 2) `FOLLOWUPS-ARCHIVE.md` (a closed entry keeps the root cause, which is often not the one first written down) 3) `git log --all --oneline --grep=<keyword>` 4) memory search 5) `docs/*.md` + this file.
 - **"Verified" = real run, not compile.** Build/type-check pass = syntax only. Say "compiles, untested" until run live.
 - **Sync this file with code.** New port/service/endpoint/schema/deploy step → update the matching doc in the same commit. Same for the vault page covering the code you touched — CI checks that one for you (Rule #18).
 
@@ -99,16 +99,23 @@ such. Do not "finish the rename" by deleting them; the removal is scheduled
 ## CI (GitHub Actions)
 
 - `ci-windows.yml` — cargo test + tsc + vite + the full Go server gate on
-  every push/PR to `main` (~6 min warm). The Go half is `go vet` + `go test`
-  (GOOS=windows, on the runner) **plus a linux/amd64 + linux/arm64
-  cross-build**, because those two binaries are the only server artifact that
-  ever ships (`include_bytes!` in `src/addons.rs`) and nothing else in CI
-  compiles them. It also runs `sdk-gen/ci-check.mjs` (SDK/OpenAPI drift) and
-  fails the build if `server/**` changed without rebaking
-  `resources/ymux-server-linux-{x64,arm64}` — see "Rebaking the server" below.
+  every push/PR to `main`, as **three parallel jobs** (~3.5 min wall-clock
+  warm, was ~6 serial): `frontend` (parse-check, vault gate, tsc, `npm
+  test`, vite build), `rust` (stage CLI + `cargo test`, windows-latest,
+  `shared-key: windows-dev`), and `go` — which runs on **ubuntu-latest** on
+  purpose: `go vet` + `go test` there exercise linux, the platform the
+  server actually ships on, **plus the linux/amd64 + linux/arm64
+  cross-build**, because those two binaries are the only server artifact
+  that ever ships (`include_bytes!` in `src/addons.rs`) and nothing else in
+  CI compiles them. The `go` job also runs `sdk-gen/ci-check.mjs`
+  (SDK/OpenAPI drift) and fails the build if `server/**` changed without
+  rebaking `resources/ymux-server-linux-{x64,arm64}` — see "Rebaking the
+  server" below. Bookkeeping-only diffs (`PROGRESS*`, `FOLLOWUPS*`,
+  `BACKLOG.md`, `README*`, `.claude/**`) skip CI via `paths-ignore`;
+  `docs/**` deliberately still triggers it, for the vault gate.
 - `build-windows.yml` — installers + exe on `workflow_dispatch` or a `v*` tag; enforces Rule #13 by asserting the asset hash is embedded, and Rule #2's spirit by asserting the `$USERNAME` scrub landed. A tag gets MSI **and** NSIS (the published `manifest.json` advertises both); a `workflow_dispatch` gets NSIS only. Publishing stays manual (`docs/RELEASING.md`).
 - `warm-rust-cache.yml` — **the reason release builds are ~7 min and not ~15.** GitHub scopes cache *reads* to the current branch plus the default branch, and `build-windows.yml` never runs on `main`, so a build dispatched from a fresh branch used to compile all ~740 lockfile packages from scratch (measured: 813s cold vs 420s warm, same workflow, same week). This job keeps that release-profile cache alive on `main` under `shared-key: windows-release`, on Cargo.lock changes and twice weekly. If release builds suddenly go slow again, check this workflow first.
-- `build-macos-intel.yml` — the macOS Intel build, on `workflow_dispatch` or push/PR to `main`. Since Phase 82 it runs the same gates ci-windows does (cargo test + tsc + frontend build) and asserts the embedded frontend, because it is the **only** job that compiles the `cfg(target_os = "macos")` / `cfg(not(windows))` arms at all. It also stages a native `resources/ymux-cli` — the mac counterpart of `build:linux-cli`, which is PowerShell-only.
+- `build-macos-intel.yml` — the macOS build (x64 + arm64 matrix), on `workflow_dispatch` or push/PR to `main`. Since Phase 82 it runs the same gates ci-windows does (cargo test + tsc + frontend build), because it is the **only** job that compiles the `cfg(target_os = "macos")` / `cfg(not(windows))` arms at all. It also stages a native `resources/ymux-cli` — the mac counterpart of `build:linux-cli`, which is PowerShell-only. **On a PR it runs those gates ONLY** (~2-4 min): the `.app` bundle, embedded-frontend assert, dmg, signing and notarisation run on push to `main` and `workflow_dispatch` — so a bundle-stage break surfaces on the merge run, not the PR.
 - Steps that shell out to Windows PowerShell need `shell: cmd`. The default `run:` shell is pwsh, which rewrites `PSModulePath` for its children, so the 5.1 instance `build:linux-cli` spawns loses `Get-FileHash`.
 - `npm run build:linux-cli` must run before any cargo step on a fresh checkout — it stages the gitignored `ymux-cli.exe` the Tauri build script requires. It stages by **sha256, not mtime**: everything in `resources/` is pulled into the app crate with `include_bytes!`/`include_str!`, and Cargo's staleness check is mtime-based, so re-copying a byte-identical file used to force a full rebuild of the 9.4k-line lib.
 - **A `.ps1` in this repo must keep non-ASCII out of code lines.** Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI, so an em-dash inside a string literal decodes to a smart quote that the tokenizer accepts as a string delimiter — the file then fails to parse with a cascade of errors pointing at innocent lines. Em-dashes in `#` comments are fine (already all over `build-linux-cli.ps1`); inside `"..."` they are a build-breaker.

@@ -63,7 +63,7 @@ export interface FontSettings {
 
 export interface TerminalSettings {
   /** Phase 15.A: how to render Hebrew / Arabic. */
-  rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
+  rtl_mode?: "auto_per_line" | "force_rtl" | "bidi_reorder" | "off";
   /** Phase tmux-conf: when true (default), ymux launches tmux with
    *  `-f ~/.ymux/tmux.conf` for sane scrollback / mouse behaviour.
    *  Set false to fall back to the user's own ~/.tmux.conf. */
@@ -90,7 +90,7 @@ export interface TerminalSettings {
 
 /** One class of pane's RTL knobs. Mirrors `RtlProfile` in settings.rs. */
 export interface RtlProfileFields {
-  rtl_mode?: "auto_per_line" | "bidi_reorder" | "off";
+  rtl_mode?: "auto_per_line" | "force_rtl" | "bidi_reorder" | "off";
   auto_direction?: boolean;
   mirror_arrows_rtl?: boolean;
   tui_owns_bidi?: boolean;
@@ -198,29 +198,19 @@ export interface UpdatesSettings {
   channel: string;
 }
 
-export interface ShortcutsSettings {
-  copy: string;
-  paste: string;
-  select_all: string;
-  find: string;
-  new_workspace: string;
-  toggle_notes: string;
-  toggle_settings: string;
-  summarize_claude: string;
-  copy_on_select_with_ctrl_c: boolean;
-}
-
-export const DEFAULT_SHORTCUTS: ShortcutsSettings = {
-  copy: "Ctrl+Shift+C",
-  paste: "Ctrl+Shift+V",
-  select_all: "Ctrl+Shift+A",
-  find: "Ctrl+F",
-  new_workspace: "Ctrl+N",
-  toggle_notes: "Ctrl+Shift+N",
-  toggle_settings: "Ctrl+,",
-  summarize_claude: "Ctrl+Alt+B",
-  copy_on_select_with_ctrl_c: true,
-};
+// Phase 87: the shortcut schema + defaults live in `shortcuts.ts`, which
+// has NO imports — this file pulls in the Tauri bridge and the terminal,
+// so anything defined here is unreachable from a plain `node --test`.
+// Re-exported so existing `from "./settings"` call sites keep working.
+// `export ... from` creates no LOCAL binding, so the Settings interface
+// below needs its own import of the type it references.
+import type { ShortcutsSettings as ShortcutsSettingsLocal } from "./shortcuts";
+export {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_ACTION_IDS,
+  type ShortcutActionId,
+  type ShortcutsSettings,
+} from "./shortcuts";
 
 export interface ClaudeSettings {
   auto_summarize_on_stop: boolean;
@@ -298,7 +288,7 @@ export interface Settings {
   hook_notifications?: HookNotificationSettings;
   updates: UpdatesSettings;
   i18n: I18nSettings;
-  shortcuts?: ShortcutsSettings;
+  shortcuts?: ShortcutsSettingsLocal;
   claude?: ClaudeSettings;
   // Phase 78: Claude usage % indicator display + auto-refresh.
   claude_usage?: ClaudeUsageSettings;
@@ -426,6 +416,13 @@ export interface FontCatalogItem {
   homepage: string;
   license: string;
   download_bytes: number;
+  /**
+   * At least one face of this entry is present in the per-user font
+   * directory. Derived from the directory on every call, not from a
+   * record of past installs, so a font installed by an older build is
+   * still removable.
+   */
+  installed: boolean;
 }
 
 export interface FontInstallResult {
@@ -439,6 +436,19 @@ export interface FontInstallResult {
   guided: boolean;
   guided_path: string | null;
   fallback_reason: string | null;
+}
+
+export interface FontUninstallResult {
+  /** File names removed from the per-user font directory. */
+  removed: string[];
+  /** Registry values dropped. Windows only; empty elsewhere. */
+  unregistered: string[];
+  /**
+   * Faces found but not removed, each with its reason. The everyday case
+   * is a font file held open by a running app, which is why a partial
+   * uninstall is a reported outcome rather than a thrown error.
+   */
+  failed: string[];
 }
 
 export interface UpdateInfo {
@@ -478,6 +488,9 @@ export const fontCatalog = (): Promise<FontCatalogItem[]> =>
 
 export const fontInstall = (id: string): Promise<FontInstallResult> =>
   invoke<FontInstallResult>("font_install", { id });
+
+export const fontUninstall = (id: string): Promise<FontUninstallResult> =>
+  invoke<FontUninstallResult>("font_uninstall", { id });
 
 export const checkForUpdates = (): Promise<UpdateInfo> =>
   invoke<UpdateInfo>("check_for_updates_now");

@@ -86,7 +86,7 @@ rather than duplicated:
   sitting unreachable.
 - **`NotesModal.tsx` (273)** — notes CRUD against `notes.rs`.
 
-## `SettingsModal.tsx` (1,715)
+## `SettingsModal.tsx` (1,869)
 
 The whole settings surface in tabs — theme, fonts, terminal, RTL profiles, hooks,
 notifications, logs, Claude, updates, shortcuts. Reads and writes through
@@ -94,8 +94,50 @@ notifications, logs, Claude, updates, shortcuts. Reads and writes through
 and reacts to `settings:changed`, so a `ymux settings set` from the CLI updates the open
 modal.
 
+The RTL block is the one worth knowing: a `local` / `remote` profile pill, then the
+`rtl_mode` radios — `auto_per_line`, `force_rtl`, `bidi_reorder`, `off` — over the
+`auto_direction` / `mirror_arrows_rtl` / `tui_owns_bidi` / `direction_policy` knobs.
+`setRtlField` writes a **complete** profile object rather than a partial: Rust's
+per-field `serde(default)` would otherwise resurrect type-defaults instead of
+profile-defaults. `RTL_FIELD_DEFAULTS` holds `auto_per_line` for both profiles and
+did not move when `force_rtl` was added (2026-08-23) — the new mode is opt-in.
+
 Two tabs are deliberately **separate components** so they do not bloat this file:
 `AddonsTab` and `YmuxToolsTab` (see `frontend-panes.md`).
+
+The fonts section has two notices that are mirror images, and the second exists because
+of a gap in the first. `FontMissingNotice` renders only while the picked family is
+MISSING, and offers Install — so an INSTALLED font had nowhere to hang a control, which
+is why removing one used to mean hand-deleting from `%LOCALAPPDATA%` and HKCU.
+`FontInstalledList` is the other half: a compact "Installed by ymux" list under both
+pickers, one Remove button per row, rendering nothing when nothing is installed. It has
+to be a list rather than a button beside the picker, because the picker only ever shows
+one family. Guarded by `window.confirm` — it deletes files and the way back is a
+multi-MB download. A partial removal is a normal outcome, not an error: Windows will not
+delete a font a running app has open, so the `failed` list gets its own message.
+**Both handlers re-read `fontCatalog()` as well as `listSystemFonts()`**, since the
+installed flag lives on the catalog and the row would otherwise not appear or disappear
+until Settings was reopened.
+
+**The Shortcuts tab is 28 recordable rows in five labelled groups**, driven by
+`SHORTCUT_GROUPS` from `shortcuts.ts` — the group list is the UI's row order, and a
+unit test asserts it covers every action id exactly once, so a binding cannot exist in
+the schema with no row. `ShortcutRow` is the click-to-record picker: focus it, press
+the combination, `formatEvent` stores the canonical accelerator, Esc cancels. It
+**calls `stopPropagation`**, and that is not optional — `App.tsx` listens for keydown
+on `window` in the bubble phase, so without it the combination being *recorded* also
+fires the action it is bound to, which since Phase 87 means recording `Ctrl+Shift+W`
+closes the active pane. `preventDefault` alone does not stop propagation. Rows whose
+accelerator is claimed by another action are outlined in `--w-error`
+(`conflictingAccels`), and a read-only list at the bottom shows the bindings that
+cannot be rebound at all (`Ctrl+1..9`, `Escape`, the editor's and browser pane's own
+keys) so they stop being invisible.
+
+**Push-to-talk is edited in the AI tab, not the Shortcuts tab**, because it is stored
+at `settings.stt.push_to_talk_hotkey` rather than in `settings.shortcuts`. It uses the
+same `ShortcutRow` (it was a free-text box until Phase 87 — the accelerator had to be
+typed, and a typo produced a hotkey that silently never fired), and it is passed into
+`conflictingAccels` explicitly so a clash across the two schemas is still reported.
 
 **`VersionManager.tsx` (228)** is the Updates tab's list: every published release,
 install any of them (including a downgrade, with a warning), and pick a release channel.

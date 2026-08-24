@@ -2033,13 +2033,16 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 .note-tag-todo { background: rgba(224, 175, 104, 0.15); color: var(--w-warning); }
 .note-tag-summary { background: rgba(187, 154, 247, 0.18); color: var(--w-purple); }
 
-/* Phase 17: ephemeral toast for "Claude summary saved as note". */
+/* Phase 17: ephemeral toast for "Claude summary saved as note" — and, since,
+   the app's ONLY global message surface (~20 `flashSummaryToast` call sites,
+   every one-off error among them). See the top-center lane block below for
+   why z-index is 9200 and not 230. */
 .summary-toast {
   position: fixed;
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 230;
+  z-index: 9200;
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -2078,7 +2081,7 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   top: 56px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 231;
+  z-index: 9201;
   display: inline-flex;
   align-items: center;
   gap: 14px;
@@ -2497,6 +2500,45 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   text-decoration: none;
 }
 .font-missing-actions a:hover { text-decoration: underline; }
+/* Settings -> Fonts: the mirror of the notice above. What ymux has already
+   put on this machine, with a way to take it back off — the install notice
+   only renders while the family is MISSING, so an installed font would
+   otherwise have nowhere to hang a control. Quiet by default: this is
+   housekeeping, not a warning, so it borrows the surface colours rather
+   than the warning ones. */
+.font-installed-list {
+  margin: 8px 0 2px 0;
+  padding: 6px 10px;
+  font-size: var(--w-fs-sm);
+  background: var(--w-surface-hi);
+  border: 1px solid var(--w-border);
+  border-radius: 6px;
+}
+.font-installed-title {
+  color: var(--w-text-dim);
+  margin-bottom: 4px;
+}
+.font-installed-row {
+  display: flex;
+  align-items: center;
+  /* space-between rather than a fixed gap: the family names differ in
+     length, and the buttons should still line up down the right edge —
+     which under RTL means the left edge, handled by the flow direction
+     rather than by a hardcoded side. */
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+}
+.font-installed-name {
+  /* Long family names must not push the button off the row. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.font-installed-row button {
+  padding: 3px 10px;
+  font-size: var(--w-fs-sm);
+}
 .settings-hint code {
   background: var(--w-surface-hi);
   padding: 1px 6px;
@@ -3527,6 +3569,27 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   background: var(--w-surface-hi);
   color: var(--w-text);
 }
+/* Phase 87: two actions bound to the same combination. First-match-wins
+   means the loser never fires, so both rows are marked rather than one. */
+.settings-shortcut-input--conflict {
+  border-color: var(--w-error);
+}
+/* Phase 87: the read-only "fixed shortcuts" reference rows - same grid as a
+   recordable row, but nothing to click. */
+.settings-shortcut-fixed {
+  color: var(--w-text-dim);
+  font-family: var(--w-font-mono);
+  font-size: var(--w-fs-sm);
+  text-align: center;
+  padding: 4px 8px;
+}
+.settings-shortcut-group {
+  color: var(--w-text-dim);
+  font-size: var(--w-fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 16px 0 8px;
+}
 
 /* ─── Phase 12.C: local PTY wizard mode tabs ─── */
 
@@ -4201,6 +4264,22 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   border-radius: 999px;
   background: var(--w-border);
   color: var(--w-text-dim);
+}
+/* 2026-08-24: a session we KNOW belongs to another folder or workspace.
+   Amber, not red — attaching is allowed and sometimes exactly right; this is a
+   caution, not a block. `.nc-resume-proj` is flex:1, so the session name
+   absorbs the squeeze; max-width stops a long workspace name from eating the
+   age column, and the full path lives in the title attribute. */
+.nc-resume-foreign {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(224, 175, 104, 0.18);
+  color: var(--w-warn, #e0af68);
 }
 .nc-resume-proj { flex: 1; color: var(--w-text-dim); font-size: var(--w-fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -5189,6 +5268,41 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Phase 85.C: pop out into a real OS window. Same chip as the close
+   button next to it, without the red hover — this one is not
+   destructive. Both are named in `closeGuardSelector` so a click here
+   doesn't start a header drag. */
+.browser-window-popout {
+  flex: 0 0 auto;
+  background: var(--w-surface, #161b22);
+  border: 1px solid var(--w-border, #21262d);
+  color: var(--w-text-dim, #7d8590);
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.browser-window-popout:hover {
+  color: var(--w-text, #e6edf3);
+  border-color: var(--w-text-dim, #7d8590);
+}
+/* Phase 85.C: the popped-out Browser window. The OS window supplies the
+   title bar, the X and the resize grips, so this is just the chrome
+   stack — no ymux header, no bottom strip, no side inset for resize
+   handles. Fills the viewport; the native child Webview is positioned
+   under it by PopoutBrowser's slotRect(). */
+.popout-browser {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--w-surface, #161b22);
+  overflow: hidden;
+}
 /* Phase 62 (item 3): close button — always visible (faint chip so it
    reads as a button even at rest), conventional red wash on hover. */
 .browser-window-x {
@@ -5345,6 +5459,25 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
 /* Web Inspector. A plain action next to the Dev Mode toggle — it has no
    lit state to advertise, because the inspector is its own window. */
 .bw-devtools-btn { margin-inline-start: 2px; }
+/* Phase 85.A: transient failure strip for chrome actions taken while a
+   page is loaded. It has to live IN the port bar row — the slot below is
+   covered by the native child Webview, which paints over any HTML there,
+   so an overlay down there would simply never be seen. Shrinks rather
+   than pushing the controls out of the 32px row. */
+.bw-chrome-err {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: 6px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--w-error, #f7768e);
+}
 .bw-port-server {
   flex: 0 0 auto;
   font-size: 12px;
@@ -6035,7 +6168,7 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   top: 14px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9000;
+  z-index: 9100;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -6096,6 +6229,43 @@ button.big { padding: 10px 24px; font-size: var(--w-fs-xl); }
   overflow: hidden;
 }
 .cu-bar-fill { display: block; height: 100%; transition: width 0.3s; }
+
+/* ───────────────────────────────────────────────────────────────
+   Phase 84.G: top-center overlay LANES.
+
+   Everything that floats at the top middle of the window is
+   `position: fixed; left: 50%; translateX(-50%)`, so they all land on
+   the same pixels and only z-index decides who is readable. The usage
+   pill (top: 8px, z 9000) was outranking `.summary-toast` (top: 12px,
+   z 230) by a factor of 39 — and that toast is the app's only global
+   message surface. Net effect: with the pill on screen, every
+   confirmation and every error rendered *underneath* it and was never
+   seen. `.connecting-pill` lost the same way (equal z, earlier in the
+   DOM, so the pill painted over it).
+
+   Two halves to the fix, both needed:
+   1. z-index — a transient message always outranks the pill. The pill
+      is a passive readout you can re-read any time; a toast is gone in
+      4.5s and may be the only report of a failure.
+   2. these rules — when the pill is actually mounted, the messages drop
+      into the lane below it so you get BOTH, not one hiding the other.
+      `:has()` and not a fixed offset, because the pill only renders for
+      a live workspace with usage data; without it the messages keep
+      their original top and leave no dead gap.
+
+   Lanes (pill height is stable: 14px glyph + 4px padding + border):
+     0   top:  8px   .claude-usage-pill      z 9000
+     1   top: 44px   .summary-toast          z 9200
+         top: 44px   .connecting-pill        z 9100
+     2   top: 88px   .reconnect-toast        z 9201
+
+   Lane 1 is deliberately shared: "connecting…" and a toast are both
+   ephemeral and rarely coincide, and when they do the toast is the one
+   you have to read — hence the higher z. Don't add a lane 3 for it.
+   ─────────────────────────────────────────────────────────────── */
+.app:has(.claude-usage-pill) .summary-toast   { top: 44px; }
+.app:has(.claude-usage-pill) .connecting-pill { top: 44px; }
+.app:has(.claude-usage-pill) .reconnect-toast { top: 88px; }
 
 /* Phase 78: Monitor → Claude Usage tab + settings row. */
 .ins-claude { display: flex; flex-direction: column; gap: 10px; }

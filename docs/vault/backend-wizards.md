@@ -13,12 +13,23 @@ covers:
 The local-machine half of the app: what it detects on this box, what it installs here,
 what it remembers, and how it learns there is a new version. ~7,500 lines.
 
-## `settings.rs` (2,781) — `%APPDATA%\ymux\settings.json`
+## `settings.rs` (2,897) — `%APPDATA%\ymux\settings.json`
 
 Theme, fonts, terminal, hooks, notifications, updates, Claude, logs. Same discipline as
 `workspaces.json`: **atomic write + load-poison gate**. Every mutation emits
 `settings:changed` to the frontend, which is why a `ymux settings set` from the CLI
 re-themes the running app with no reload.
+
+**`settings_save` REPLACES the whole document, so any field the UI doesn't round-trip
+is a wipe waiting to happen.** That is not hypothetical: a client holding a copy from
+before `terminal.rtl` existed sent it back absent and erased the block, costing most of a
+day of RTL testing against settings that were not in force. Two fields are therefore
+carried over from the stored copy rather than taken from the client — `terminal.rtl` (the
+UI can only ever ADD it, so `None` cannot mean "delete"), and `floating_windows`, which is
+**Rust-owned**: its only writer is `set_browser_popout`, driven by the Browser pop-out
+window opening and closing (Phase 85.C). No UI surface edits `floating_windows`, so a
+value arriving from a client can only be a stale echo. If you add a field the backend
+writes on its own, add it to that carry list.
 
 `HookType` is the canonical enum of Claude Code hook types, serialized in the settings
 file, and it is what `rpc_server`'s `hook_toast_enabled` / `hook_toast_should_sound`
@@ -27,6 +38,43 @@ consult per hook. `list_system_fonts` reads the HKCU font hive — the same hive
 
 Presets (`settings.preset`, `settings.get-presets`) are exposed over RPC as well as
 Tauri.
+
+**`Shortcuts` is the one struct with container-level `#[serde(default)]`.** It carries
+28 accelerator fields as of Phase 87 (it was 8 — the rest were hardcoded in the
+frontend), and per-field `#[serde(default = "...")]` would have meant twenty
+near-identical helper fns. The container attribute makes `impl Default for Shortcuts`
+the single source of truth instead, so a `settings.json` written by an older build
+simply lacks the new keys and picks them up. Add a field there and to the `Default`
+impl, nothing else. The frontend parses these strings; Rust never validates them.
+
+### `RtlProfiles` — the one schema here with a real invariant
+
+`TerminalSettings.rtl` is a `RtlProfiles { local, remote }`, each an `RtlProfile`
+carrying `rtl_mode`, `auto_direction`, `mirror_arrows_rtl`, `tui_owns_bidi` and
+`direction_policy`. The split is not cosmetic and not a local-vs-remote *geography*
+test: it is keyed on `ConnCaps.posixExec`, so **WSL counts as remote**. It exists
+because the two classes were measured to need OPPOSITE modes — a Windows ConPTY
+pane hands over Hebrew already in VISUAL order, while SSH to Linux delivers
+LOGICAL order — so one global setting could only ever satisfy one of them. Yossi's
+report was "ההגדרה הזו עובדת או למקומי או למרוחק".
+
+Three things here are load-bearing:
+
+- **`rtl: Option<RtlProfiles>` is an `Option` on purpose.** Absent is the migration
+  signal that `migrate_rtl_profiles` reads to lift the four deprecated flat fields
+  onto the two profiles. `rtl_mode` is deliberately **not** carried over: a single
+  pre-split value cannot be right for both sides.
+- **`direction_policy` defaults to `any_rtl` when absent**, so an upgrade cannot
+  silently move an existing pane onto the newer `tui_dominance` rule. The vote
+  first shipped keyed on whether Claude held the pane, and because the OSC title
+  propagates over SSH it fired on remote panes and broke a working path. The test
+  `remote_direction_policy_is_the_pre_2026_08_19_rule` pins the separation.
+- **`rtl_mode` is a `String`, not an enum** (the `sidebar_mode` pattern), so adding
+  a mode costs nothing here and an unknown value from an older or newer
+  settings.json degrades in the frontend rather than failing the whole
+  deserialise. `force_rtl` (2026-08-23) was added that way; `default_rtl_mode`
+  stays `auto_per_line` and neither profile default moved. What the modes *do*
+  lives in `docs/vault/frontend-lib.md`.
 
 ## `local_setup.rs` (2,534) — the local install engine
 

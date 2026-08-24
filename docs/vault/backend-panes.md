@@ -38,7 +38,7 @@ already-authenticated SSH session and open **a fresh SFTP channel per call**. Se
 are deliberately *not* cached: a new SFTP subsystem on an existing handle is cheap, and
 caching would mean chasing teardown semantics when the terminal pane disconnects.
 
-**`workspace_browser.rs` (851)** — **at most one child Webview per workspace**, attached
+**`workspace_browser.rs` (1,063)** — **at most one child Webview per workspace**, attached
 to the main window via `Window::add_child` (this is what pins `tauri = "=2.10.3"` with
 `features = ["unstable"]`). `workspace_browser_show(workspace_id, url, x, y, w, h)`
 creates or reveals it. All browser webviews share the **process-default WebView2
@@ -47,6 +47,52 @@ workspace and WebView2 does not support multiple environments in one process —
 surfaced as `0x8007139F`. Creation is serialized by `AppState.browser_create_lock` for
 the same reason. Runtime-only, never persisted; `workspace_delete` calls
 `cleanup_workspace_sessions` to remove `browser-sessions/<workspace_id>/`.
+
+**Pop-out: a child Webview CANNOT be re-parented.** `add_child` binds it to its host
+window for life, so `browser_popout_open` (Phase 85.C) does destroy-and-respawn, not
+move: it drops the child under `main`, builds a `browser-popout-<ws>` OS window loading
+ymux's own `index.html`, and that window's frontend calls `workspace_browser_show` with
+its own label to spawn a fresh child underneath itself. **The page reloads.** That is
+inherent to the shape, not an oversight. `workspace_browser_show` therefore takes a
+`window_label` (default `"main"`) and it is read only on the SLOW path — the fast path
+just repositions whatever already exists.
+
+Two details that are load-bearing, both inherited from `popout_pane`: the command MUST
+stay `async` (on Windows `WebviewWindowBuilder` deadlocks when driven from a synchronous
+command — the shell appears, the webview never initializes, blank white), and the URL
+must be a CLEAN `index.html`, because the built app's asset protocol treats any suffix
+as a literal path and serves a blank page. The workspace id rides the window LABEL.
+
+**The devtools split is deliberate.** The popout WINDOW gets `.devtools(false)` — it
+renders ymux's own UI, and per the Cargo.toml:44-51 warning the `devtools` feature flips
+wry's runtime default to `true` for every webview, so the explicit opt-out is the only
+thing holding Rule #1. The CHILD webview inside it keeps `.devtools(true)`: that one
+shows a tunneled third-party page, nothing of ours.
+
+Geometry is saved in LOGICAL pixels on `WindowEvent::Destroyed` (`Destroyed`, not
+`CloseRequested` — it also covers a programmatic close). `outer_position` / `inner_size`
+report PHYSICAL, and the builder takes logical, so a straight round-trip would rescale
+the window by the scale factor on every open/close cycle on any HiDPI display. The same
+handler drops the child Webview — it belongs to a window that no longer exists, and
+leaving it in the map would send the next `workspace_browser_show` down the fast path
+onto a dead handle — clears the persisted mode, and emits `browser-popout:closed`.
+`teardown_workspace_runtime` calls `close_popout_window` so the window cannot outlive
+the workspace it belongs to.
+
+**`workspace_browser_open_devtools` calls `open_devtools()` with no `#[cfg]` around it,
+and that is deliberate.** The method is gated on the **tauri crate's**
+`any(debug_assertions, feature = "devtools")`, and `Cargo.toml:52` turns that feature on
+for every build, so the call compiles in release — and stops compiling loudly if anyone
+ever strips the feature. Phase 85.A removed a gate that *looked* like it mirrored tauri's
+but did not: inside this crate `feature = "devtools"` resolves against **`app`'s own**
+feature set, and `app` declares no `[features]` section at all. In release, where
+`debug_assertions` is off, the condition was therefore always false and the
+`#[cfg(not(...))]` arm compiled instead — the command returned `Err("this build was
+compiled without devtools support")` in 100% of shipped builds. Right-click → Inspect was
+unaffected the whole time, because `.devtools(true)` on the builder is not gated; that
+mismatch is what made it look like a UI bug. **Do not write `feature = "…"` in a `#[cfg]`
+inside `app/src-tauri/src/`** — the crate has no features, so every such cfg is silently
+false. These two were the only ones.
 
 **Who can call what, in this webview.** The old comment here said no IPC is injected into
 the child, and that was wrong; Phase 82.E corrected it in place. `tauri::manager::webview`
@@ -157,12 +203,35 @@ OpenAI-compatible proxies all work with no per-server adapter.
 
 ## Shell chrome
 
-**`fonts.rs` (880)** — download a curated font, verify it, register it **per-user**:
+**`fonts.rs` (1,195)** — download a curated font, verify it, register it **per-user**:
 files land in `%LOCALAPPDATA%\Microsoft\Windows\Fonts` and register under HKCU, which
 needs no elevation on Windows 10 1809+. `settings::list_system_fonts` reads that same
 hive, so an install is visible in the picker immediately. Exists because flagging
 unavailable families with ⚠️ was only half an answer — the user still had to go find a
 `.ttf`.
+
+**`font_uninstall` is the mirror, and how it finds the files is the interesting part.**
+Which files belong to a catalog entry is derived from the CATALOG, not recorded at
+install time: a zip asset wrote everything matching its `ZipFilter::name_prefix`, a bare
+asset wrote exactly its `save_as`, so `entry_owns_file` re-derives the same set. A
+manifest written at install time was the obvious alternative and is wrong here — it
+could only know about installs made after it shipped, leaving every font already on a
+user's machine unremovable, which is the case the feature was filed for.
+
+Two orderings that look arbitrary and are not:
+
+- **Delete, then unregister.** The reverse leaves a font still on disk and still
+  loadable with no registry entry — present but invisible to the picker, which is worse
+  than either end of the operation. Only paths that actually went get unregistered.
+- **Match registry values by their DATA (the path), not by rebuilding the value name.**
+  `register_font` builds that name from the font's internal name table with a fallback
+  to the file stem; rebuilding it at uninstall would mean reproducing that decision from
+  a file that has just been deleted.
+
+A face held open by a running app is a **reported outcome** (`failed`), not an error —
+that is the everyday Windows case, and the rest of the family still comes out. Accepted
+and written down: a user's own hand-installed copy of the same family, in the same
+per-user directory, also matches.
 
 **`tray.rs` (91)** — tray icon, quick menu, taskbar badge. **Best-effort**: a failed
 build logs and carries on. `TRAY_ACTIVE` gates close-to-tray so a failed tray can never

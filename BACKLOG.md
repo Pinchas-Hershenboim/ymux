@@ -100,6 +100,42 @@ Payoff is real though — it is what would fix the two FOLLOWUPS above
 (diff_pane on remote workspaces, addons misclassifying WSL) rather than
 patching each one separately.
 
+### Single-instance lock on the config dir (2026-08-23)
+
+The other half of the FOLLOWUPS P1 "two builds share %APPDATA%\ymux and the older
+one silently strips newer fields". That entry offered two fixes: (b) a schema
+version that refuses to write over a newer file, and (a) refusing to START when
+another ymux already holds the config dir. (b) shipped 2026-08-23 and is in
+FOLLOWUPS-ARCHIVE.
+
+(a) is still open, and it is the only one of the two that can stop a build that
+is ALREADY on disk. A 0.4.x binary never reads the schema version and never
+will; nothing added to this tree can reach it. A lock file with the holder's
+pid, checked at startup, is the one mechanism that does not require the other
+side to cooperate.
+
+Not done now because it is a behaviour change that can lock a user out of their
+own app: a stale lock after a crash or a kill must be recoverable without
+hand-deleting a file, and that recovery UX is the actual work — the lock itself
+is twenty lines. `tauri-plugin-single-instance` is the obvious candidate and is
+already noted in a separate P2 about two ymux.exe racing on log rotation, so
+these two should be looked at together rather than solved twice.
+
+Also worth deciding at the same time: `settings.rs` has the same atomic-write +
+load-poison shape as workspaces.json and got no schema gate, deliberately — the
+loss mode there is smaller. If a lock lands, it covers both and the question
+goes away.
+
+### `workspace_browser_resize` is dead code (2026-08-23)
+
+`app/src-tauri/src/workspace_browser.rs` still exports `workspace_browser_resize`, and it
+has zero call sites in `app/src/`. Every geometry change rides the `workspace_browser_show`
+fast path instead, which does the same `set_position` + `set_size` and then `.show()`.
+
+Left in place during Phase 85 rather than deleted mid-change. Either delete it and drop it
+from the `generate_handler!` list in `lib.rs`, or give it the one job show can't do —
+reposition WITHOUT un-hiding — which is the only reason it would earn its keep.
+
 ## Done
 
 ### Scrollback inside a locked zellij pane (2026-08-20 — closed same day)

@@ -21,11 +21,12 @@ import { createLogger } from "./logger";
 const termLog = createLogger("TERM");
 import {
   detectDirection,
-  detectRowDirections,
   foldTuiOwnsBidi,
+  rowDirections,
   strongCounts,
   nextTuiOwnsBidi,
 } from "./textDirection";
+import type { RowDirMode } from "./textDirection";
 import { transformMouseX, findRow } from "./mouseRtl";
 import type { RtlProfileKind } from "./types";
 import { t } from "./i18n";
@@ -73,6 +74,15 @@ const FILE_LINK_RE = /\[file\]\s+(\S+)(?:\s+\(([^()]{1,32})\))?/g;
 //     so the browser decides direction per line — first strong
 //     directional character wins, exactly like Termius. Mirrors what
 //     most users expect for an SSH prompt that prints Hebrew.
+//   - "force_rtl" (2026-08-23): same DOM renderer, but EVERY row gets
+//     dir="rtl" with no detection at all — no dominance vote, no block
+//     grouping, no frame stripping. A shell that is unconditionally
+//     right-to-left, which is what Yossi asked for on remote panes ("RTL
+//     מלא, ולא שורה שורה"). Latin runs inside a row still read correctly:
+//     the browser's bidi resolves them as LTR runs inside an RTL paragraph.
+//     Positional rows (tmux status, zellij frame, vim, htop) DO come out
+//     mirrored — see `rowDirections` in textDirection.ts for why that is
+//     the deal being struck rather than a bug.
 //   - "bidi_reorder" (legacy v1 behavior): WebGL renderer + bidi-js
 //     reorder bytes into visual order before writing. Faster, but
 //     surprises users who expect editable lines to remain in logical
@@ -83,7 +93,25 @@ const FILE_LINK_RE = /\[file\]\s+(\S+)(?:\s+\(([^()]{1,32})\))?/g;
 //
 // 1pt ≈ 1.333px at 96dpi; xterm.js wants pixels.
 const PT_TO_PX = 1.3333;
-export type RtlMode = "auto_per_line" | "bidi_reorder" | "off";
+export type RtlMode = "auto_per_line" | "force_rtl" | "bidi_reorder" | "off";
+
+/**
+ * The modes that run on xterm's DOM renderer and get a real `dir` per row.
+ *
+ * 2026-08-23: added with `force_rtl`. There were SIX separate
+ * `=== "auto_per_line"` gates — the renderer choice in the constructor,
+ * `applyRenderer`, `staleRenderer`, the mouse capture, the dir observer and
+ * the row pass — and `applyRenderer`'s own comment records what happens when
+ * they disagree: the pane lands in a combination that is none of the modes and
+ * does no bidi at all. One predicate so a fifth mode is one edit, not six.
+ *
+ * NOT the same question as `normaliseIncomingToLogical` (which stays pinned to
+ * `auto_per_line`): that one asks whether the incoming BUFFER is visual order,
+ * and a remote pane's never is.
+ */
+export function usesRowDir(m: RtlMode): m is RowDirMode {
+  return m === "auto_per_line" || m === "force_rtl";
+}
 
 // Minimal typed view into xterm's private CharSizeService so we can call its
 // own measure() directly and read the measured cell — without an `any`.
@@ -113,7 +141,8 @@ let g_ctrlCCopyOnSelect = true;
  *  settings.rs. */
 export interface RtlProfileSettings {
   rtlMode: RtlMode;
-  /** Per-line `dir` from the text. Only meaningful in `auto_per_line`. */
+  /** Per-line `dir` from the text. Only meaningful in `auto_per_line`;
+   *  `force_rtl` ignores it by design, and the WebGL modes have no rows. */
   autoDirection: boolean;
   /** Mirror Left/Right arrows while the cursor sits on an RTL line. */
   mirrorArrowsRtl: boolean;
@@ -348,7 +377,8 @@ export function hasStaleRenderer(): boolean {
 // (default), each terminal row in `auto_per_line` mode gets an explicit
 // `dir` computed by detectDirection (mixed→RTL, pure-Latin→LTR). When OFF,
 // rows fall back to plain `dir="ltr"` (classic terminal, no BiDi flipping).
-// Only meaningful in `auto_per_line` mode — the other RtlMode paths ignore it.
+// Only meaningful in `auto_per_line` mode — every other RtlMode ignores it,
+// `force_rtl` deliberately so (it is the mode with no escape hatches).
 // (now `autoDirection` on each RtlProfileSettings — see g_rtl above)
 
 /** Phase 16: flip the Ctrl+C-copies-on-selection behavior at runtime. */
@@ -544,6 +574,9 @@ export class TerminalInstance {
   private fileLinkMatchLogged = false;
   private ro: ResizeObserver | null = null;
   private dirObserver: MutationObserver | null = null;
+  /** 2026-08-23: the RTL mouse capture is install-once. See
+   *  `installRtlMouseCapture` for why it is never removed again. */
+  private rtlMouseInstalled = false;
   // v0.4.4 (RTL Approach C): rAF handle + per-row text cache for the
   // per-line direction pass. The MutationObserver coalesces a burst of cell
   // mutations into a single applyDir() per animation frame; the cache lets
@@ -653,8 +686,15 @@ export class TerminalInstance {
    * we hand it logical text.
    *
    * Only in `auto_per_line`, because that is the mode with the DOM renderer;
-   * the other two run WebGL, which has no `dir` and therefore no placement to
-   * gain.
+   * `bidi_reorder` and `off` run WebGL, which has no `dir` and therefore no
+   * placement to gain.
+   *
+   * 2026-08-23: `force_rtl` also has the DOM renderer and is still excluded,
+   * and the distinction is worth keeping straight. `usesRowDir` asks which
+   * modes PAINT rows with a `dir`; this asks whether the incoming BUFFER is
+   * visual order and needs converting. Visual order is a local/ConPTY
+   * condition, and `force_rtl` was built for remote panes, whose stream is
+   * logical already. Normalising a logical stream reverses it.
    */
   private get normaliseIncomingToLogical(): boolean {
     return this.bidiOwnedByTui && this.rtlModeRendered === "auto_per_line";
@@ -761,8 +801,8 @@ export class TerminalInstance {
     // Kept as an assertion rather than deleted: `applyRenderer` runs on every
     // settings change, so this must now always be false. If it is ever true,
     // a pane slipped past that walk and the no-bidi hole is back.
-    const wantsDom = this.rtl.rtlMode === "auto_per_line";
-    const builtDom = this.rtlModeRendered === "auto_per_line";
+    const wantsDom = usesRowDir(this.rtl.rtlMode);
+    const builtDom = usesRowDir(this.rtlModeRendered);
     return wantsDom !== builtDom;
   }
 
@@ -987,10 +1027,10 @@ export class TerminalInstance {
     }
 
     // Phase 15.A: only load the WebGL addon for the non-auto modes.
-    // `auto_per_line` needs the DOM renderer so we can attach
+    // The row-dir modes need the DOM renderer so we can attach
     // dir="auto" per row. WebGL paints to a canvas and has no per-cell
     // DOM, so the browser BiDi engine has nothing to hook into.
-    if (this.rtlModeRendered !== "auto_per_line") {
+    if (!usesRowDir(this.rtlModeRendered)) {
       this.loadWebgl();
     }
     this.finishConstruction();
@@ -1054,7 +1094,7 @@ export class TerminalInstance {
   applyRenderer(): void {
     const want = this.rtl.rtlMode;
     if (want === this.rtlModeRendered) return;
-    const wantDom = want === "auto_per_line";
+    const wantDom = usesRowDir(want);
     if (wantDom && this.webglAddon) {
       try {
         this.webglAddon.dispose();
@@ -1066,10 +1106,13 @@ export class TerminalInstance {
       this.loadWebgl();
     }
     this.rtlModeRendered = want;
-    // The dir observer and the row pass both gate on the rendered mode, so
-    // they have to be re-evaluated after it moves — attaching the observer
-    // when we have just arrived on the DOM renderer, dropping it otherwise.
+    // The dir observer, the mouse capture and the row pass all gate on the
+    // rendered mode, so they have to be re-evaluated after it moves — attaching
+    // the observer when we have just arrived on the DOM renderer, dropping it
+    // otherwise, and installing the coordinate mirroring that a pane built on
+    // WebGL never got.
     this.ensureDirObserver();
+    this.installRtlMouseCapture();
     this.applyRowDirections(true);
     try {
       this.term.refresh(0, this.term.rows - 1);
@@ -1158,14 +1201,25 @@ export class TerminalInstance {
    *
    * The listener is a no-op when the pointer is over an LTR row, over no
    * row (whitespace / outside `.xterm-rows`), or when the DOM renderer
-   * isn't being used (the `dir` attributes only get set in `auto_per_line`
-   * mode with the DOM renderer -- the WebGL renderer has no per-row DOM).
+   * isn't being used (the `dir` attributes only get set in the row-dir
+   * modes -- the WebGL renderer has no per-row DOM).
    *
    * Re-entry: `dispatchEvent` re-enters the capture phase, so we gate on
    * `event.isTrusted` to skip synthetic events we ourselves fired.
    */
   private installRtlMouseCapture(): void {
-    if (this.rtlModeRendered !== "auto_per_line") return;
+    // 2026-08-23: also called from `applyRenderer`, not just at construction.
+    // It used to run once in `finishConstruction`, so a pane built on WebGL
+    // (`off` / `bidi_reorder`) and then switched LIVE to a row-dir mode got
+    // its `dir="rtl"` rows without the coordinate mirroring — clicks and
+    // drag-selection landed on the mirrored column until the pane was
+    // reopened. Installing is idempotent and the listener never needs
+    // removing: it re-reads each row's live `dir` per event and no-ops on
+    // anything that is not currently an RTL row, so under WebGL (where no
+    // row carries a `dir`) it costs one `findRow` miss and returns.
+    if (this.rtlMouseInstalled) return;
+    if (!usesRowDir(this.rtlModeRendered)) return;
+    this.rtlMouseInstalled = true;
     const el = this.container;
 
     const forward = (e: MouseEvent): void => {
@@ -1258,7 +1312,7 @@ export class TerminalInstance {
   ensureDirObserver(): void {
     // Only relevant in auto-per-line mode AND when we built with the
     // DOM renderer. In any other mode, drop any existing observer.
-    if (this.rtlModeRendered !== "auto_per_line") {
+    if (!usesRowDir(this.rtlModeRendered)) {
       if (this.dirObserver) {
         this.dirObserver.disconnect();
         this.dirObserver = null;
@@ -1338,7 +1392,8 @@ export class TerminalInstance {
    * `auto_direction=false` (see below).
    */
   applyRowDirections(force: boolean): void {
-    if (this.rtlModeRendered !== "auto_per_line") return;
+    const mode = this.rtlModeRendered;
+    if (!usesRowDir(mode)) return;
     const rowsHost = this.container.querySelector(".xterm-rows") as HTMLElement | null;
     if (!rowsHost) return;
     const auto = this.rtl.autoDirection;
@@ -1371,9 +1426,11 @@ export class TerminalInstance {
     // and the browser's own bidi. Forcing "ltr" here is what pinned Hebrew to
     // the left edge, since right placement can only come from dir="rtl".
     const suppress = this.bidiOwnedByTui && !this.normaliseIncomingToLogical;
-    const dirs = auto && !suppress
-      ? detectRowDirections(texts, this.rtl.directionPolicy === "tui_dominance")
-      : (texts.map(() => "ltr") as ("ltr" | "rtl")[]);
+    const dirs = rowDirections(mode, texts, {
+      auto,
+      suppress,
+      dominance: this.rtl.directionPolicy === "tui_dominance",
+    });
 
     // 2026-08-19: `dir` alone cannot do what bidiOwnedByTui promises.
     //
@@ -1389,7 +1446,14 @@ export class TerminalInstance {
     // …and for the same reason, a normalised pane must NOT get the override:
     // its bytes are logical now, so painting them verbatim would show them
     // reversed. The override is only right while the buffer is still visual.
-    const override = suppress;
+    // 2026-08-23: `force_rtl` must never take the override. `rowDirections`
+    // already ignores `suppress` there and returns "rtl" for every row, so
+    // leaving this on `suppress` alone would pair dir="rtl" with
+    // bidi-override on a pane whose buffer is logical — bytes painted
+    // verbatim right-to-left, i.e. every Hebrew word reversed. The override
+    // is only ever right while the buffer is still VISUAL order, which is a
+    // local/ConPTY condition and one `auto_per_line` alone can reach.
+    const override = suppress && mode === "auto_per_line";
     for (let i = 0; i < children.length; i++) {
       const el = children[i];
       this.dirCache.set(el, texts[i]);
@@ -1524,6 +1588,10 @@ export class TerminalInstance {
       // send it would fight it, exactly as before. This bails on the signal,
       // not on the buffer.
       if (this.bidiOwnedByTui) return false;
+      // 2026-08-23: `force_rtl` renders every row dir="rtl", so the arrow
+      // mirroring has to agree with the paint or Left/Right fight what the
+      // user sees. No buffer read needed — the answer cannot be anything else.
+      if (this.rtlModeRendered === "force_rtl") return true;
       const buf = this.term.buffer.active;
       const line = buf.getLine(buf.baseY + buf.cursorY);
       if (!line) return false;

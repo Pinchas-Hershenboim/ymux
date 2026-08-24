@@ -79,7 +79,14 @@ import {
 } from "./settings";
 import { applyI18nSettings, t } from "./i18n";
 import { isMac } from "./platform";
-import { buildShortcutTable, keyEq, matches, parseShortcut, type ParsedShortcut } from "./shortcuts";
+import {
+  buildShortcutTable,
+  keyEq,
+  matches,
+  parseShortcut,
+  type ShortcutActionId,
+  type ShortcutTable,
+} from "./shortcuts";
 import { makeSttRecorder, type SttRecorder } from "./stt";
 import {
   collectPanes,
@@ -418,6 +425,62 @@ function App() {
   // (the native Webview is hidden on close, not destroyed — page state
   // survives across open/close cycles).
   const [showBrowserWindow, setShowBrowserWindow] = createSignal(false);
+  // Phase 85.C: workspaces whose Browser currently lives in its own OS
+  // window. Their native Webview is a child of THAT window, so nothing
+  // here may hide, show, or reposition it — see the modal broadcast
+  // below, which skips them.
+  const [poppedOutBrowsers, setPoppedOutBrowsers] = createSignal<Set<string>>(
+    new Set(),
+  );
+  // Pop the Browser out. The child Webview cannot be re-parented, so the
+  // Rust side destroys the one under `main` and the popped-out window
+  // spawns a fresh one under itself — the page reloads. Once it is out,
+  // this window's floating panel has nothing left to show, so it closes.
+  const popOutBrowser = async () => {
+    const ws = activeWs();
+    if (!ws) return;
+    // Order matters. Closing the panel FIRST makes its falling-edge
+    // effect fire `workspace_browser_hide` now, while the only Webview
+    // for this workspace is still the one hosted by `main`. Do it after
+    // the await instead and the hide races the popped-out window's own
+    // `workspace_browser_show` — same workspace id, same map entry — so
+    // a slow hide would land on the NEW child and blank a window that
+    // has no reason to ever call show again.
+    setPoppedOutBrowsers((prev) => new Set(prev).add(ws.id));
+    setShowBrowserWindow(false);
+    try {
+      await invoke("browser_popout_open", {
+        workspaceId: ws.id,
+        title: `${ws.name} — Browser`,
+      });
+    } catch (e) {
+      // Nothing was popped out — put the panel back exactly as it was.
+      setPoppedOutBrowsers((prev) => {
+        const n = new Set(prev);
+        n.delete(ws.id);
+        return n;
+      });
+      setShowBrowserWindow(true);
+      log.error("browser_popout_open failed", e);
+      flashSummaryToast("err", t("browser.popout.failed", { msg: String(e) }));
+    }
+  };
+
+  // Boot restore: the Browser was popped out when the app last exited,
+  // so bring the window back instead of the in-app panel. One-shot —
+  // `settings()` and `activeWs()` both arrive asynchronously, so this
+  // waits for the pair rather than racing them, and the guard keeps a
+  // later workspace switch from re-firing it.
+  let popoutRestored = false;
+  createEffect(() => {
+    if (popoutRestored) return;
+    const s = settings();
+    const ws = activeWs();
+    if (!s || !ws) return;
+    popoutRestored = true;
+    if (s.floating_windows?.browser?.mode !== "popout") return;
+    void popOutBrowser();
+  });
   // Phase 53 (rebased): workspace-level File Manager. Pure HTML — wraps
   // the existing FileManagerPane. Its open/drawer/float state now lives in
   // the unified `panels` registry (see panels.ts) under the "files" id.
@@ -544,7 +607,14 @@ function App() {
     // hiding any others that may exist is a cheap no-op on the
     // backend side (the command silently ignores workspaces with no
     // Webview spawned).
+    //
+    // Phase 85.C: EXCEPT a workspace that has been popped out. Its
+    // Webview is a child of a different OS window, on possibly a
+    // different monitor — no modal here is covering it, so hiding it
+    // would blank that window every time the user opened Settings, and
+    // nothing over there would ever show it again.
     for (const w of file().workspaces) {
+      if (poppedOutBrowsers().has(w.id)) continue;
       void invoke("workspace_browser_hide", {
         workspaceId: w.id,
       }).catch(() => {});
@@ -745,9 +815,9 @@ function App() {
   // Phase 16: parsed shortcut accelerators, rebuilt on every settings
   // load + settings:changed event. Backfilled with DEFAULT_SHORTCUTS
   // when the field is missing (pre-16 settings.json).
-  const [shortcutTable, setShortcutTable] = createSignal<
-    Record<string, ParsedShortcut | null>
-  >(buildShortcutTable(DEFAULT_SHORTCUTS));
+  const [shortcutTable, setShortcutTable] = createSignal<ShortcutTable>(
+    buildShortcutTable(DEFAULT_SHORTCUTS),
+  );
   // Phase 11.A: per-pane tmux persistence map { pane_id → session_name }.
   const [panePersistence, setPanePersistence] = createSignal<Record<string, string>>({});
   const refreshPersistence = async () => {
@@ -2601,45 +2671,189 @@ function App() {
 
   // ─── keyboard shortcuts ─────────────────────────────────────────────────
 
+  // ─── the keyboard binding table ─────────────────────────────────────────
+  //
+  // Phase 87: every accelerator below used to be a hardcoded `if` in
+  // handleKey with no way to rebind it. They now come out of
+  // `shortcutTable()`, which is rebuilt from `settings.shortcuts` on every
+  // settings:changed — so rebinding one in Settings takes effect without a
+  // relaunch.
+  //
+  // `when` is an EVENT-aware gate, and it is deliberately NOT the same
+  // thing as "this action is unavailable": returning false means "not
+  // mine, keep scanning and then let the key through", never "swallow
+  // it". That distinction is load-bearing for toggle_sidebar_soft (plain
+  // Ctrl+B), which has to reach a focused terminal because Ctrl+b is
+  // tmux's prefix.
+  //
+  // `run` owns its own preventDefault(), exactly as each old branch did —
+  // `copy` deliberately does NOT preventDefault when the terminal had no
+  // selection, so a native text-selection copy still works elsewhere.
+  //
+  // Built once: every closure reads its reactive state at call time.
+  interface KeyBinding {
+    id: ShortcutActionId;
+    when?: (e: KeyboardEvent) => boolean;
+    run: (e: KeyboardEvent) => void;
+  }
+  const inTerminal = (e: KeyboardEvent): boolean =>
+    !!(e.target as HTMLElement | null)?.closest?.(".terminal-container");
+  const hasActivePane = (): boolean => !!activePaneId();
+  const quadrant = (v: "up" | "down", h: "left" | "right") => {
+    splitOrMove(v);
+    // Tiny delay so the first split's layout update lands in file() before
+    // the second hop reads it. setTimeout(0) is enough for Solid's
+    // reactive batch + the Tauri round-trip.
+    setTimeout(() => splitOrMove(h), 0);
+  };
+  const keyBindings: KeyBinding[] = [
+    // ── tabs. First in the table so a rebind elsewhere can't shadow tab
+    //    cycling. Gated on tabsMode() so split-mode workspaces — and the
+    //    terminal apps running in them — keep every key they have today.
+    //    Deliberately NOT binding Ctrl+T: readline uses it (transpose-chars).
+    { id: "tab_next", when: tabsMode, run: (e) => { e.preventDefault(); focusAdjacentPane(1); } },
+    { id: "tab_prev", when: tabsMode, run: (e) => { e.preventDefault(); focusAdjacentPane(-1); } },
+
+    // ── pane geometry ──
+    // Phase 55-A: maximize the active pane. tmux uses Ctrl+b z for the same
+    // gesture; raw Ctrl+Enter is a ymux-specific convenience.
+    { id: "toggle_maximize", run: (e) => { e.preventDefault(); toggleMaximize(); } },
+    // Phase 65.T / V: the explicit Focus/Zoom hotkey, alongside
+    // toggle_maximize / double-click / the pane-header ⛶ button — mnemonic
+    // matches tmux's Prefix+z zoom. Its default was Ctrl+Shift+M until bug
+    // V: that collides with STT push-to-talk, which is exactly the class of
+    // clash conflictingAccels() now surfaces in Settings.
+    { id: "focus_zoom", run: (e) => { e.preventDefault(); toggleMaximize(); } },
+    // v0.4.4-beta.2: reset the active terminal — clears leaked mouse-tracking
+    // modes (the escape-text leak from an unclean vim/fzf/less exit) + text
+    // attributes.
+    { id: "reset_terminal", when: hasActivePane, run: (e) => {
+      e.preventDefault();
+      const pid = activePaneId();
+      if (pid) terms.get(pid)?.resetTerminal();
+    } },
+
+    // ── app chrome ──
+    // Phase 35 (#1.3): the command palette.
+    { id: "command_palette", run: (e) => { e.preventDefault(); setShowPalette((v) => !v); } },
+    // Phase 65.W: the GLOBAL sidebar toggle — works everywhere, including
+    // when an xterm pane or the FileManager has focus.
+    { id: "toggle_sidebar", run: (e) => { e.preventDefault(); cycleSidebarMode(); } },
+    // Phase 62.B (item I) / 65.P: the same toggle on a bare Ctrl+B, but ONLY
+    // outside a terminal. We can't make it global: inside an xterm pane
+    // Ctrl+b is tmux's prefix and must reach the PTY, and stealing it would
+    // break every tmux keybinding. `when` false ⇒ skip and keep scanning ⇒
+    // the event reaches the terminal.
+    { id: "toggle_sidebar_soft", when: (e) => !inTerminal(e), run: (e) => {
+      e.preventDefault();
+      cycleSidebarMode();
+    } },
+    { id: "toggle_notes", run: (e) => { e.preventDefault(); setShowNotes((v) => !v); } },
+    { id: "toggle_settings", run: (e) => { e.preventDefault(); setShowSettings((v) => !v); } },
+    { id: "new_workspace", run: (e) => { e.preventDefault(); setShowSetup({}); } },
+
+    // ── clipboard ──
+    { id: "copy", run: (e) => {
+      // Try the focused terminal first; if it has a selection, copy.
+      // Otherwise let the browser handle the event (which may be a
+      // text-selection copy in a non-terminal pane) — hence no blanket
+      // preventDefault, and none before the promise resolves either.
+      void copyTerminalSelection().then((handled) => {
+        if (handled) e.preventDefault();
+      });
+    } },
+    { id: "paste", run: (e) => {
+      e.preventDefault();
+      // readClipboardText, not navigator.clipboard.readText: WebView2 denies
+      // clipboard READ (while allowing write), so this shortcut silently did
+      // nothing. Host-side read via the Rust command instead.
+      readClipboardText().then((text) => {
+        if (text) pasteIntoActiveTerminal(text);
+      }).catch((err) => log.warn("paste failed", err));
+    } },
+    // Phase 17: Claude session summary.
+    { id: "summarize_claude", run: (e) => { e.preventDefault(); void summarizeActivePane(); } },
+
+    // ── layout ──
+    // Phase 55-B → 60 (smoke-test 4.2): distribute splits evenly. The
+    // original check also matched e.key === "+" and e.code === "Equal"
+    // directly, because on a Hebrew layout Ctrl+Alt is AltGr and e.key can
+    // come back as something else depending on the compose state. matches()
+    // already falls back to the PHYSICAL key via physicalKey(), so that
+    // special case is redundant here.
+    { id: "distribute_evenly", run: (e) => { e.preventDefault(); void distributeEvenly(); } },
+    // Phase 48-E: split-or-move. Focus the neighbour in that direction if one
+    // exists, else split the current pane in that direction.
+    { id: "split_or_move_left", run: (e) => { e.preventDefault(); splitOrMove("left"); } },
+    { id: "split_or_move_right", run: (e) => { e.preventDefault(); splitOrMove("right"); } },
+    { id: "split_or_move_up", run: (e) => { e.preventDefault(); splitOrMove("up"); } },
+    { id: "split_or_move_down", run: (e) => { e.preventDefault(); splitOrMove("down"); } },
+    // Phase 49-D: land the active pane in a quadrant. From a single pane:
+    // vertical split + horizontal split puts the current pane in one of the
+    // four corners. From an existing layout: two split-or-move hops in the
+    // corner's direction pair. The 50-50 split convention means the result is
+    // approximate — good enough for the common 1-pane and 2-pane starts;
+    // complex layouts may land off-corner.
+    { id: "quadrant_top_left", run: (e) => { e.preventDefault(); quadrant("up", "left"); } },
+    { id: "quadrant_top_right", run: (e) => { e.preventDefault(); quadrant("up", "right"); } },
+    { id: "quadrant_bottom_left", run: (e) => { e.preventDefault(); quadrant("down", "left"); } },
+    { id: "quadrant_bottom_right", run: (e) => { e.preventDefault(); quadrant("down", "right"); } },
+
+    // ── split / close. Pane-relative: bound to the ACTIVE pane rather than
+    //    a global action, so `when` gates on there being one. Phase 84.A: in
+    //    tabs mode both split keys mean "new tab" (there is no visible split
+    //    to aim at) and close routes through closeTab so focus lands on a
+    //    neighbour instead of nowhere.
+    { id: "split_horizontal", when: hasActivePane, run: (e) => {
+      e.preventDefault();
+      const pid = activePaneId();
+      if (!pid) return;
+      if (tabsMode()) void newTab();
+      else void splitPane(pid, "horizontal");
+    } },
+    { id: "split_vertical", when: hasActivePane, run: (e) => {
+      e.preventDefault();
+      const pid = activePaneId();
+      if (!pid) return;
+      if (tabsMode()) void newTab();
+      else void splitPane(pid, "vertical");
+    } },
+    { id: "close_pane", when: hasActivePane, run: (e) => {
+      e.preventDefault();
+      const pid = activePaneId();
+      if (!pid) return;
+      if (tabsMode()) void closeTab(pid);
+      else void closePane(pid);
+    } },
+  ];
+
   const handleKey = (e: KeyboardEvent) => {
-    // ── Phase 84.A: tab navigation ────────────────────────────────────
-    // All of it gated on tabsMode() so split-mode workspaces — and the
-    // terminal apps running in them — keep every key they have today.
-    // Placed before the shortcut table so Ctrl+Tab can't be swallowed.
-    // Deliberately NOT binding Ctrl+T: readline uses it (transpose-chars).
-    if (tabsMode() && !e.altKey && !e.metaKey) {
-      if (e.ctrlKey && e.key === "Tab") {
+    // ── Phase 84.A: Ctrl+1..9 jumps to tab N. Stays OUT of the table: it is
+    // a numeric family of nine bindings where 9 means "last", not "ninth",
+    // and a ParsedShortcut holds exactly one key. Settings lists it
+    // read-only under "fixed shortcuts". Runs before the table so a rebound
+    // accelerator can't shadow it.
+    if (tabsMode() && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      for (let n = 1; n <= 9; n++) {
+        if (!keyEq(e, String(n))) continue;
         e.preventDefault();
-        focusAdjacentPane(e.shiftKey ? -1 : 1);
+        const layout = activeWs()?.layout;
+        const panes = layout ? collectPanes(layout) : [];
+        // 9 means "last", the way browsers do it, so the shortcut is useful
+        // in a workspace with more than nine tabs.
+        const pick = n === 9 ? panes[panes.length - 1] : panes[n - 1];
+        if (pick) focusPane(pick);
         return;
       }
-      if (e.ctrlKey && !e.shiftKey) {
-        for (let n = 1; n <= 9; n++) {
-          if (!keyEq(e, String(n))) continue;
-          e.preventDefault();
-          const layout = activeWs()?.layout;
-          const panes = layout ? collectPanes(layout) : [];
-          // 9 means "last", the way browsers do it, so the shortcut is
-          // useful in a workspace with more than nine tabs.
-          const pick = n === 9 ? panes[panes.length - 1] : panes[n - 1];
-          if (pick) focusPane(pick);
-          return;
-        }
-      }
     }
-    // Phase 55-A: Ctrl+Enter toggles maximize for the active pane.
-    // Esc restores ONLY when something is maximized (otherwise we
-    // step on terminal escape sequences). Hardcoded (not in the
-    // shortcut table) — tmux uses Ctrl+b z for the same gesture, but
-    // raw Ctrl+Enter is a ymux-specific convenience.
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === "Enter") {
-      e.preventDefault();
-      toggleMaximize();
-      return;
-    }
-    // A fullscreen side panel sits above the panes (z 95), so Esc collapses
-    // it back to a drawer first — before the pane-maximize restore below.
+    // ── bare Escape. Also out of the table, and not close: these are
+    // contextual DISMISSALS, not accelerators. Each acts only when there is
+    // something to dismiss and otherwise falls through so the escape
+    // sequence reaches the PTY. Rebinding Escape away would leave a user
+    // with a maximized pane and no way out, and gains nobody anything.
     if (e.key === "Escape") {
+      // A fullscreen side panel sits above the panes (z 95), so Esc collapses
+      // it back to a drawer first — before the pane-maximize restore below.
       const fs = (Object.keys(panels()) as PanelId[]).find(
         (id) => panels()[id] === "fullscreen",
       );
@@ -2648,202 +2862,39 @@ function App() {
         setSurface(fs, "drawer");
         return;
       }
-    }
-    if (e.key === "Escape" && maximizedPaneId()) {
-      e.preventDefault();
-      toggleMaximize();
-      return;
-    }
-    // Phase 65.T / V: Ctrl+Shift+Z is the explicit Focus/Zoom hotkey
-    // (alongside Ctrl+Enter / double-click / the pane-header ⛶ button) —
-    // mnemonic matches tmux's Prefix+z zoom. NOTE: this was Ctrl+Shift+M
-    // until bug V — that collides with STT push-to-talk (default
-    // Ctrl+Shift+M), so it moved to Z. Works even with a terminal
-    // focused; Ctrl+Shift+Z isn't a common shell binding.
-    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && keyEq(e, "z")) {
-      e.preventDefault();
-      toggleMaximize();
-      return;
-    }
-    // v0.4.4-beta.2: Ctrl+Alt+R resets the active terminal — clears leaked
-    // mouse-tracking modes (the `\e[<..M` escape-text leak from an unclean
-    // vim/fzf/less exit) + text attributes. Not a common shell binding.
-    if (e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey && keyEq(e, "r")) {
-      e.preventDefault();
-      const pid = activePaneId();
-      if (pid) terms.get(pid)?.resetTerminal();
-      return;
-    }
-    // Phase 16: configurable shortcuts. The static Ctrl+Shift+D / E /
-    // W bindings (split right / split down / close pane) remain
-    // hardcoded for now — they're pane-relative and bound to the
-    // active pane, not a global "action", so they don't fit the
-    // shortcut-table model. Everything else flows through the table.
-    // Phase 35 (#1.3): Ctrl+Shift+P opens the command palette. Hardcoded
-    // (not in the shortcut table) — it's a global app action.
-    if (e.ctrlKey && e.shiftKey && keyEq(e, "p")) {
-      e.preventDefault();
-      setShowPalette((v) => !v);
-      return;
-    }
-    // Phase 65.W: Ctrl+Shift+B is the GLOBAL sidebar toggle — works
-    // everywhere, including when an xterm pane or the FileManager has
-    // focus. We can't make plain Ctrl+B global because Ctrl+b is tmux's
-    // prefix and must reach the PTY inside a terminal (stealing it would
-    // break every tmux keybinding); Ctrl+Shift+B sidesteps that.
-    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && keyEq(e, "b")) {
-      e.preventDefault();
-      cycleSidebarMode();
-      return;
-    }
-    // Phase 62.B (item I) / 65.P: plain Ctrl+B also toggles the sidebar,
-    // but ONLY when focus is outside a terminal — inside an xterm pane
-    // Ctrl+b is tmux's prefix and must reach the PTY. (Ctrl+Shift+B above
-    // is the focus-independent global toggle.)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && keyEq(e, "b")) {
-      const inTerminal = (e.target as HTMLElement | null)?.closest?.(
-        ".terminal-container",
-      );
-      if (!inTerminal) {
+      // Restore ONLY when something is maximized (otherwise we step on
+      // terminal escape sequences).
+      if (maximizedPaneId()) {
         e.preventDefault();
-        cycleSidebarMode();
+        toggleMaximize();
         return;
       }
     }
+    // ── the configurable table. First match wins. matches() compares all
+    // four modifiers AND the key exactly, so there is no prefix ambiguity
+    // between entries: order only decides who wins a duplicate the user
+    // created, which the Shortcuts tab flags in red.
     const sc = shortcutTable();
-    if (matches(e, sc.toggle_notes)) {
-      e.preventDefault();
-      setShowNotes((v) => !v);
+    for (const b of keyBindings) {
+      if (!matches(e, sc[b.id])) continue;
+      if (b.when && !b.when(e)) continue; // not mine — let the key through
+      b.run(e);
       return;
     }
-    if (matches(e, sc.toggle_settings)) {
-      e.preventDefault();
-      setShowSettings((v) => !v);
-      return;
-    }
-    if (matches(e, sc.new_workspace)) {
-      e.preventDefault();
-      setShowSetup({});
-      return;
-    }
-    if (matches(e, sc.copy)) {
-      // Try the focused terminal first; if it has a selection, copy.
-      // Otherwise let the browser handle the event (which may be a
-      // text-selection copy in a non-terminal pane).
-      void copyTerminalSelection().then((handled) => {
-        if (handled) e.preventDefault();
-      });
-      return;
-    }
-    if (matches(e, sc.paste)) {
-      e.preventDefault();
-      // readClipboardText, not navigator.clipboard.readText: WebView2 denies
-      // clipboard READ (while allowing write), so this shortcut silently did
-      // nothing. Host-side read via the Rust command instead.
-      readClipboardText().then((text) => {
-        if (text) pasteIntoActiveTerminal(text);
-      }).catch((err) => log.warn("paste failed", err));
-      return;
-    }
-    // Phase 17: Claude session summary.
-    if (matches(e, sc.summarize_claude)) {
-      e.preventDefault();
-      void summarizeActivePane();
-      return;
-    }
-    // Phase 58: push-to-talk (down). Parses the hotkey out of the
-    // user's SttSettings on every press — cheap and lets the
-    // settings edit take effect without a relaunch. Repeats are
-    // suppressed by the sttRecorder guard.
-    {
-      const stt = settings()?.stt;
-      if (stt?.enabled) {
-        const accel = parseShortcut(stt.push_to_talk_hotkey);
-        if (accel && matches(e, accel) && !sttRecorder) {
-          e.preventDefault();
-          startPushToTalk();
-          return;
-        }
-      }
-    }
-    // Phase 55-B → 60 (smoke-test 4.2): Ctrl+Alt+= → distribute
-    // splits evenly. The original check matched e.key only — on a
-    // Hebrew layout Ctrl+Alt is AltGr and e.key can come back as
-    // something other than "="/"+" depending on the compose state.
-    // e.code === "Equal" identifies the PHYSICAL key independent of
-    // layout, so the shortcut now fires on any keyboard.
-    if (
-      e.ctrlKey &&
-      e.altKey &&
-      (e.key === "=" || e.key === "+" || e.code === "Equal")
-    ) {
-      e.preventDefault();
-      void distributeEvenly();
-      return;
-    }
-    // Phase 48-E: Ctrl+Alt+Arrow — split-or-move. Focus the neighbor
-    // in that direction if one exists, else split the current pane in
-    // that direction.
-    if (e.ctrlKey && e.altKey && !e.shiftKey) {
-      const dirKey: "left" | "right" | "up" | "down" | null =
-        e.key === "ArrowLeft" ? "left"
-        : e.key === "ArrowRight" ? "right"
-        : e.key === "ArrowUp" ? "up"
-        : e.key === "ArrowDown" ? "down"
-        : null;
-      if (dirKey) {
+    // Phase 58: push-to-talk (down). Lives in settings.stt, not
+    // settings.shortcuts, so it is parsed on every press rather than read
+    // out of the table — cheap, and it lets the settings edit take effect
+    // without a relaunch. Repeats are suppressed by the sttRecorder guard.
+    // conflictingAccels() still sees it, so a clash with a table binding is
+    // reported in Settings even though the two live in different schemas.
+    const stt = settings()?.stt;
+    if (stt?.enabled) {
+      const accel = parseShortcut(stt.push_to_talk_hotkey);
+      if (accel && matches(e, accel) && !sttRecorder) {
         e.preventDefault();
-        splitOrMove(dirKey);
+        startPushToTalk();
         return;
       }
-      // Phase 49-D: Ctrl+Alt+I/O/K/L → land the active pane in a
-      // quadrant. From a single pane: vertical split + horizontal
-      // split puts the current pane in one of the four corners. From
-      // an existing layout: navigates two split-or-move hops in the
-      // corner's direction pair. The 50-50 split convention means the
-      // result is approximate — good enough for the common 1-pane and
-      // 2-pane starts; complex layouts may land off-corner.
-      // Phase 62.B (item G): keyEq → physical-key match so I/O/K/L fire
-      // on a Hebrew layout too.
-      const qkey: "topLeft" | "topRight" | "bottomLeft" | "bottomRight" | null =
-        keyEq(e, "i") ? "topLeft"
-        : keyEq(e, "o") ? "topRight"
-        : keyEq(e, "k") ? "bottomLeft"
-        : keyEq(e, "l") ? "bottomRight"
-        : null;
-      if (qkey) {
-        e.preventDefault();
-        const v = qkey.startsWith("top") ? "up" : "down";
-        const h = qkey.endsWith("Left") ? "left" : "right";
-        splitOrMove(v);
-        // Tiny delay so the first split's layout update lands in
-        // file() before the second hop reads it. setTimeout(0) is
-        // enough for Solid's reactive batch + the Tauri round-trip.
-        setTimeout(() => splitOrMove(h), 0);
-        return;
-      }
-    }
-    // Pane-relative legacy shortcuts (split / close) still on
-    // Ctrl+Shift+D/E/W until we expand the table.
-    if (!e.ctrlKey || !e.shiftKey) return;
-    const target = activePaneId();
-    if (!target) return;
-    // Phase 62.B (item G): keyEq → physical-key match (Hebrew layout).
-    // Phase 84.A: in tabs mode both split keys mean "new tab" (there is
-    // no visible split to aim at) and close routes through closeTab so
-    // focus lands on a neighbour instead of nowhere.
-    if (keyEq(e, "d")) {
-      e.preventDefault();
-      if (tabsMode()) void newTab();
-      else splitPane(target, "horizontal");
-    } else if (keyEq(e, "e")) {
-      e.preventDefault();
-      if (tabsMode()) void newTab();
-      else splitPane(target, "vertical");
-    } else if (keyEq(e, "w")) {
-      e.preventDefault();
-      if (tabsMode()) void closeTab(target);
-      else closePane(target);
     }
   };
 
@@ -3079,6 +3130,25 @@ function App() {
         ti.attach(sid);
         ti.notice(t("pane.popout.reattached"));
         requestAnimationFrame(() => ti.fitAndResize(true));
+      })
+    );
+
+    // Phase 85.C: a popped-out Browser window closed (its X, or the
+    // workspace was deleted). Per Yossi's call the Browser does NOT
+    // re-attach into the floating panel — closing that window means
+    // closing the Browser. All we do is forget the workspace, so the
+    // modal broadcast-hide covers it again and a later re-open spawns
+    // the child under `main`. The Rust `Destroyed` handler already
+    // dropped the Webview and cleared the persisted mode.
+    unlistens.push(
+      await listen<string>("browser-popout:closed", (e) => {
+        const wsId = e.payload;
+        setPoppedOutBrowsers((prev) => {
+          if (!prev.has(wsId)) return prev;
+          const n = new Set(prev);
+          n.delete(wsId);
+          return n;
+        });
       })
     );
     // Initial feed load.
@@ -4368,6 +4438,7 @@ function App() {
         workspace={activeWs()}
         anyModalOpen={anyModalOpen}
         onClose={() => setShowBrowserWindow(false)}
+        onPopOut={() => void popOutBrowser()}
         detectedPorts={(() => {
           const id = file().active_workspace_id;
           return id

@@ -536,7 +536,7 @@ pub(crate) use ymux_types::{
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 struct WorkspacesFile {
-    #[serde(default = "default_version")]
+    #[serde(default = "default_version", serialize_with = "serialize_schema_version")]
     version: u32,
     #[serde(default)]
     active_workspace_id: Option<String>,
@@ -550,8 +550,107 @@ struct WorkspacesFile {
     groups: Vec<WorkspaceGroup>,
 }
 
+/// The workspaces.json schema this binary writes.
+///
+/// **Bump this whenever a field is added that an older build would drop on
+/// its next save** — that is the entire trigger, and the only one.
+///
+/// v1 -> v2 (2026-08-23): the field existed since forever and nothing ever
+/// read it. It is load-bearing from here on, for the failure recorded as
+/// FOLLOWUPS P1 of 2026-08-18: a stale build sharing `%APPDATA%\\ymux`
+/// predated `parent_id` / `is_project_root`, serde dropped the keys it did
+/// not know, and `save_to_disk` rewrote the WHOLE document from the struct,
+/// so every save by the old app erased the workspace nesting. The symptom
+/// was maximally misleading: pinned folders reappeared as top-level
+/// workspaces, worktrees stopped listing, and NOTHING appeared in the new
+/// build's log, because the new build had not done anything.
+///
+/// **Know what this does and does not buy**, so nobody reads more safety
+/// into it than is here:
+///   - It stops THIS build clobbering a file written by a FUTURE one. That
+///     is the dangerous direction — losing user data to an older binary —
+///     and it is a hard refusal.
+///   - It cannot stop an ALREADY-SHIPPED 0.4.x build, which never reads
+///     this field and will happily write v1 back over a v2 file. Nothing
+///     added here can reach a binary that is already on disk. What covers
+///     that case is `workspaces_merge`, which re-reads and merges rather
+///     than dumping, and treats a field that vanished on the other side as
+///     an absence rather than a deletion.
+///   - What it adds for that case is a LOG LINE. The original incident
+///     cost hours precisely because it was silent; a downgrade of the
+///     on-disk version now says so.
+pub(crate) const WORKSPACES_SCHEMA_VERSION: u32 = 2;
+
+/// A `version` key that is absent entirely means a pre-versioning file.
 fn default_version() -> u32 {
     1
+}
+
+/// Stamp the CURRENT schema version on every write, whatever the loaded
+/// struct happens to be carrying.
+///
+/// A `serialize_with` rather than assigning the field somewhere, because
+/// the invariant is "what we WRITE is always current" and serialization is
+/// the one place that cannot be bypassed. An assignment would have to be
+/// repeated at every construction site and would drift the first time one
+/// is added.
+fn serialize_schema_version<S>(_current: &u32, ser: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    ser.serialize_u32(WORKSPACES_SCHEMA_VERSION)
+}
+
+/// The `version` of a workspaces.json document without deserializing the
+/// rest of it.
+///
+/// Deliberately tolerant: the guard it feeds must not turn an unparseable
+/// or version-less file into a refusal to save. `None` means "no usable
+/// version here", which every caller treats as "carry on" — the existing
+/// load-poison gate already handles a genuinely broken file, and a BOM is
+/// stripped first because Windows tooling adds them routinely.
+/// What `save_to_disk` should do about the version it found on disk.
+///
+/// Extracted from the save path for the same reason
+/// `resolve_effective_session_name` was: the interesting cases need two
+/// binaries sharing a config dir, which no test can arrange, and a policy
+/// buried in an I/O function is a policy nobody checks.
+#[derive(Debug, PartialEq, Eq)]
+enum SchemaGate {
+    /// Normal: write it.
+    Write,
+    /// A NEWER build owns the file. Refusing is the whole point.
+    Refuse,
+    /// An OLDER build rewrote the file since we last wrote it. Write
+    /// anyway — the three-way merge is the repair — but say so, because
+    /// silence is what made this expensive the first time.
+    WarnDowngrade,
+}
+
+/// `on_disk` / `last_written` are `None` when the file is absent, empty,
+/// unparseable or version-less. All of those mean "carry on": a refusal
+/// hangs off this, and refusing on a malformed file would lock the user
+/// out of saving entirely.
+fn schema_gate(on_disk: Option<u32>, last_written: Option<u32>) -> SchemaGate {
+    let Some(disk) = on_disk else {
+        return SchemaGate::Write;
+    };
+    if disk > WORKSPACES_SCHEMA_VERSION {
+        return SchemaGate::Refuse;
+    }
+    match last_written {
+        Some(base) if base > disk => SchemaGate::WarnDowngrade,
+        _ => SchemaGate::Write,
+    }
+}
+
+fn schema_version_of(text: &str) -> Option<u32> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()?
+        .get("version")?
+        .as_u64()
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
 }
 
 #[derive(Deserialize)]
@@ -769,6 +868,41 @@ fn save_to_disk(file: &WorkspacesFile) -> Result<(), String> {
     // path cannot be reached by launching one and waiting.
     let base_text = LAST_KNOWN.lock().ok().and_then(|g| g.clone());
     let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+
+    // The schema gate, in both directions. See WORKSPACES_SCHEMA_VERSION for
+    // what this does and does not cover.
+    let disk_version = schema_version_of(&on_disk);
+    match schema_gate(disk_version, base_text.as_deref().and_then(schema_version_of)) {
+        SchemaGate::Write => {}
+        SchemaGate::Refuse => {
+            // A NEWER ymux owns this file and knows fields this build would
+            // drop. Merging cannot save it — we would have to understand the
+            // keys to merge them — so do not write at all.
+            let msg = format!(
+                "save_to_disk: REFUSING \u{2014} workspaces.json on disk is schema v{} \
+                 and this build writes v{}. A newer ymux owns this config dir; \
+                 close it, or give this build its own with YMUX_CONFIG_DIR.",
+                disk_version.unwrap_or_default(),
+                WORKSPACES_SCHEMA_VERSION
+            );
+            log_error("WORKSPACE", &msg);
+            return Err(msg);
+        }
+        SchemaGate::WarnDowngrade => {
+            log_warn(
+                "WORKSPACE",
+                &format!(
+                    "save_to_disk: workspaces.json was rewritten by an OLDER build \
+                     (on disk v{}, we last wrote v{}). Fields that build does not \
+                     know may have been dropped; the three-way merge below \
+                     restores what it can.",
+                    disk_version.unwrap_or_default(),
+                    WORKSPACES_SCHEMA_VERSION
+                ),
+            );
+        }
+    }
+
     let (reconciled, notes) =
         workspaces_merge::reconcile(&text, base_text.as_deref(), &on_disk);
     for n in &notes {
@@ -891,6 +1025,19 @@ fn load_from_disk() -> Result<WorkspacesFile, String> {
         file.workspaces.len(),
         file.active_workspace_id
     ));
+    // Loading is always allowed — serde carries the unknown keys nowhere,
+    // but reading a newer file does no harm and refusing would lock the
+    // user out of their own workspaces. Saving is where this gets stopped
+    // (see save_to_disk); say it here so the log shows the cause before it
+    // shows the first refusal.
+    if file.version > WORKSPACES_SCHEMA_VERSION {
+        log_warn("WORKSPACE", &format!(
+            "load_from_disk: workspaces.json is schema v{} but this build writes v{} \
+             \u{2014} a newer ymux has written this config dir. Saving is disabled \
+             until that build stops using it.",
+            file.version, WORKSPACES_SCHEMA_VERSION
+        ));
+    }
 
     let mut migrated = false;
     // 2026-08-19: WSL workspaces become plain local ones. Runs FIRST so no
@@ -1983,13 +2130,55 @@ pub(crate) fn sanitize_tmux_session_name(pane_id: &str) -> String {
     format!("ymux-{}", cleaned)
 }
 
-/// Phase 23.I: derive a tmux session name from a user-supplied pane
-/// title. Keeps Unicode (Hebrew, Arabic, CJK, etc.) so a title like
-/// "מחקר X" becomes a session literally named "מחקר_X". The only
-/// substitutions are tmux's hard-blockers — `.` and `:` — plus
-/// whitespace collapsing. Returns None when the title is empty or
-/// becomes empty after sanitization; the caller falls back to the
-/// pane-id-derived name in that case.
+/// One character of a session name, judged by a single question: is it
+/// safe to interpolate UNQUOTED into a command line typed into cmd.exe,
+/// PowerShell or a POSIX shell?
+///
+/// A whitelist rather than a blacklist of metacharacters, because the
+/// three shells do not agree on what is special and a blacklist silently
+/// misses whatever the next one adds.
+///
+/// Non-ASCII passes wholesale, and that clause is what keeps Phase 23.I's
+/// promise that a Hebrew or CJK title becomes a session of the same name:
+/// every metacharacter in all three shells is ASCII, so no letter outside
+/// it needs a special case — combining marks (niqqud) included. Controls
+/// and separators are excluded first, which also catches the non-ASCII
+/// line breaks (U+0085, U+2028, U+2029) that `is_ascii()` would wave past.
+pub(crate) fn session_name_char_is_safe(c: char) -> bool {
+    if c.is_control() || c.is_whitespace() {
+        return false;
+    }
+    c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii()
+}
+
+/// Phase 23.I: derive a tmux/zellij session name from a user-supplied
+/// pane title. Keeps Unicode (Hebrew, Arabic, CJK, etc.) so a title like
+/// "מחקר X" becomes a session literally named "מחקר_X". Returns None
+/// when the title is empty or becomes empty after sanitization; the
+/// caller falls back to the pane-id-derived name in that case.
+///
+/// **This is a security boundary, not a cosmetic cleanup.** Fixed
+/// 2026-08-23, FOLLOWUPS P1 of 2026-08-20. The name returned here is
+/// interpolated into `zellij attach -c <name>` by
+/// `build_zellij_attach_command`, which TYPES that line into the user's
+/// cmd.exe or PowerShell. Until this change the only substitutions were
+/// `.`, `:` and whitespace — tmux's own blockers — so `;`, `&`, `|`, `$`,
+/// backticks, quotes and `>` rode a pane title straight into a shell
+/// line, and a pane titled `work; calc` produced a session name that ran
+/// `calc`. Rule #3 in spirit: the command was built by string
+/// concatenation, and the comment at the concatenation site asserted a
+/// sanitizer (`sanitize_session_name`) that has never existed here.
+///
+/// The whitelist lives HERE, at the source, rather than as quoting at
+/// each use site, because there is no quoting that is correct in cmd.exe
+/// and PowerShell at the same time — they disagree about `^`, `%`,
+/// backticks and single quotes — and the attach line must parse in both.
+///
+/// Self-inflicted (the user's own title, their own shell), so this was
+/// never a privilege boundary. The mundane consequence is the expensive
+/// one: a title with a metacharacter produced a session under a DIFFERENT
+/// name than the one ymux went on to track, which is a candidate
+/// explanation for "Kill session did nothing".
 pub(crate) fn sanitize_tmux_session_name_for_title(title: &str) -> Option<String> {
     let trimmed = title.trim();
     if trimmed.is_empty() {
@@ -1998,11 +2187,7 @@ pub(crate) fn sanitize_tmux_session_name_for_title(title: &str) -> Option<String
     let mut out = String::with_capacity(trimmed.len());
     let mut prev_was_underscore = false;
     for c in trimmed.chars() {
-        let replaced = if c == '.' || c == ':' || c.is_whitespace() {
-            '_'
-        } else {
-            c
-        };
+        let replaced = if session_name_char_is_safe(c) { c } else { '_' };
         if replaced == '_' {
             // Collapse runs of underscores (from whitespace runs) to one.
             if prev_was_underscore {
@@ -2722,7 +2907,19 @@ fn spawn_local_pty(
             let id_clone = id.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-                let line = build_zellij_attach_command(&name);
+                let Some(line) = build_zellij_attach_command(&name) else {
+                    // The name derives from a user pane title, so it is
+                    // logged by LENGTH and never by value (Rule #1 in
+                    // spirit: user content stays out of the log).
+                    log_warn(
+                        "PTY",
+                        &format!(
+                            "zellij attach skipped for pane={id_clone}: session name is not shell-safe ({} chars)",
+                            name.chars().count()
+                        ),
+                    );
+                    return;
+                };
                 let mut sessions = sessions_clone.lock().unwrap();
                 if let Some(Session::Local(l)) = sessions.get_mut(&id_clone) {
                     use std::io::Write as _;
@@ -3005,11 +3202,22 @@ async fn zellij_run(args: &[String], what: &str) -> bool {
 /// `zellij attach` has no `--layout`, and the root `-l` conflicts with
 /// `attach`. Every setting reaches the session through the config file that
 /// `spawn_local_pty` points `ZELLIJ_CONFIG_FILE` / `ZELLIJ_CONFIG_DIR` at.
-fn build_zellij_attach_command(name: &str) -> String {
-    // Session names come from `sanitize_session_name`, which emits only
-    // `[A-Za-z0-9_-]`, so there is nothing here to quote or escape. Asserted
-    // by `zellij_attach_command_is_a_single_safe_line` below.
-    format!("zellij attach -c {name}\r\n")
+///
+/// Returns `None` for a name that is not safe to type unquoted (see
+/// `session_name_char_is_safe`). This is the last gate, not the first:
+/// a name derived from a pane title is already safe by construction, so
+/// a name that fails here came from the picker — an EXISTING session
+/// created outside ymux, e.g. `zellij -s 'a;calc'` typed by hand.
+///
+/// Refusing beats mangling. Mangling would attach to, or create, a
+/// session under a name that is not the one the user picked, silently.
+/// Refusing leaves the pane in a plain working shell — the same failure
+/// mode this function already accepts when zellij is not installed.
+fn build_zellij_attach_command(name: &str) -> Option<String> {
+    if name.is_empty() || !name.chars().all(session_name_char_is_safe) {
+        return None;
+    }
+    Some(format!("zellij attach -c {name}\r\n"))
 }
 
 /// Parse `zellij list-sessions -n` (`--no-formatting`, which upstream
@@ -3081,6 +3289,7 @@ fn parse_zellij_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             cwd: None,
             owned: false,
             in_cwd: false,
+            foreign: None,
         });
     }
     // Newest first, matching parse_tmux_sessions' ordering contract.
@@ -7100,6 +7309,10 @@ fn teardown_workspace_runtime(
     if let Some(w) = webview {
         let _ = w.close();
     }
+    // Phase 85.C: and the OS window it may have been popped out into,
+    // which would otherwise outlive the workspace it belongs to. Its
+    // `Destroyed` handler does the rest of the cleanup.
+    workspace_browser::close_popout_window(app, workspace_id);
     workspace_browser::cleanup_workspace_sessions(workspace_id);
     // Drop the CLI-alignment verdict with the workspace it described.
     // Deliberately NOT dropped on mere disconnect: an unresolved skew should
@@ -8433,6 +8646,55 @@ pub(crate) struct TmuxSessionInfo {
     /// False whenever `cwd` is unknown — see the note on `cwd`.
     #[serde(default)]
     pub in_cwd: bool,
+    /// 2026-08-24: we can positively place this session somewhere that is NOT
+    /// the asking workspace. This is the "Whole server" view's mess-guard —
+    /// a row nobody can place is free to attach, a row we CAN place already
+    /// belongs to someone.
+    ///
+    /// `None` means "no evidence", and an unknown `cwd` with no ownership row
+    /// is ALWAYS no evidence (zellij reports no directory at all). Unknown
+    /// must never render as "elsewhere" — see the note on `cwd`.
+    ///
+    /// Invariant, enforced in `annotate_scope_with` and asserted in the tests:
+    /// never `Some` while `owned || in_cwd`. The picker's "This folder" view is
+    /// exactly the complement of this field, so the badge cannot appear there
+    /// by construction and the frontend needs no scope conditional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<ForeignScope>,
+}
+
+/// 2026-08-24: where a session belongs, when it is not here.
+///
+/// Carries facts rather than a ready-made sentence because every string the
+/// picker shows is i18n'd in four languages — the backend supplies the facts,
+/// `PaneView.tsx` composes the words. `kind` is what lets it pick between
+/// "belongs to workspace X" and "runs in folder Y", which are different
+/// warnings.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ForeignKind {
+    /// A different workspace claimed this session in `session-owners.json`.
+    /// The only signal that survives on Windows, where zellij has no cwd.
+    Workspace,
+    /// Nobody claimed it, but its live `cwd` is demonstrably outside the
+    /// caller's folder.
+    Folder,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct ForeignScope {
+    pub kind: ForeignKind,
+    /// The owning workspace's name, or the folder's last path segment. Never a
+    /// user-facing sentence. `None` is reachable and real: nothing prunes
+    /// `session-owners.json` when a workspace is deleted, so a stale row can
+    /// name a workspace that no longer exists AND have recorded no cwd. That
+    /// still warrants a warning — the picker just words it generically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Full path for the row tooltip: the live `#{session_path}` when known,
+    /// else the cwd recorded at claim time (which may be stale).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Phase 81: deserialization mirror of the Linux CLI's session-meta file
@@ -8693,14 +8955,21 @@ async fn pane_list_tmux_sessions(
     let project_path = project_path
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty());
-    // The annotate step needs the workspace's host to key ownership by, and
-    // its cwd as the scope root when the caller did not name one.
-    let (host_key, ws_cwd) = {
+    // The annotate step needs the workspace's host to key ownership by, its cwd
+    // as the scope root when the caller did not name one, and — 2026-08-24 —
+    // every workspace's display name, so a session claimed by a DIFFERENT
+    // workspace can say whose it is instead of just "not yours". All three come
+    // off the one lock this block already takes.
+    let (host_key, ws_cwd, ws_names) = {
         let file = state.workspaces.lock().unwrap();
         let ws = file.workspaces.iter().find(|w| w.id == workspace_id);
         (
             session_owner_host_key(ws.and_then(|w| w.connection.as_ref())),
             ws.and_then(|w| w.cwd.clone()),
+            file.workspaces
+                .iter()
+                .map(|w| (w.id.clone(), w.name.clone()))
+                .collect::<HashMap<_, _>>(),
         )
     };
     // The wizard passes the folder anchor explicitly; a caller that does not
@@ -8729,7 +8998,7 @@ async fn pane_list_tmux_sessions(
     // retain, so the picker's toggle switches views without another round trip
     // to the host — and so a session outside the scope stays one click away
     // instead of vanishing.
-    annotate_session_scope(&mut out, &host_key, &workspace_id, scope_path);
+    annotate_session_scope(&mut out, &host_key, &workspace_id, scope_path, &ws_names);
     Ok(out)
 }
 
@@ -8989,6 +9258,7 @@ fn parse_tmux_sessions(text: &str) -> Vec<TmuxSessionInfo> {
             // is asking (`annotate_session_scope`); the parser has no idea.
             owned: false,
             in_cwd: false,
+            foreign: None,
         });
     }
     out.sort_by(|a, b| b.last_attached.max(b.created).cmp(&a.last_attached.max(a.created)));
@@ -9408,28 +9678,114 @@ fn path_is_within(path: &str, root: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
 }
 
-/// Stamp `owned` / `in_cwd` on a freshly listed set of sessions.
+/// The last segment of a path, accepting BOTH separators.
+///
+/// One picker list mixes POSIX paths straight off a Linux host with Windows
+/// paths recorded by a zellij-era ownership row, so `Path::file_name` (which
+/// is `cfg`-dependent about `/`) is the wrong tool. Trailing separators are
+/// trimmed first, so `/srv/app/` names `app` and not the empty string.
+fn last_path_segment(p: &str) -> Option<&str> {
+    let p = p.trim().trim_end_matches(['/', '\\']);
+    if p.is_empty() {
+        // A bare root ("/", "C:\\") trims to nothing and has no segment to name.
+        return None;
+    }
+    p.rsplit(['/', '\\']).next().filter(|seg| !seg.is_empty())
+}
+
+/// Stamp `owned` / `in_cwd` / `foreign` on a freshly listed set of sessions.
 ///
 /// Annotating rather than filtering is deliberate: the picker's scope toggle
 /// then flips between two views of ONE response instead of re-querying the
 /// host, and a session that falls outside the scope is still one click away
 /// rather than gone.
+///
+/// Loads `session-owners.json` and hands off to `annotate_scope_with`, which
+/// holds the actual verdicts and is the thing the tests exercise.
 fn annotate_session_scope(
     sessions: &mut [TmuxSessionInfo],
     host_key: &str,
     workspace_id: &str,
     project_path: Option<&str>,
+    ws_names: &HashMap<String, String>,
 ) {
     let owners = load_session_owners();
-    let host = owners.owners.get(host_key);
+    annotate_scope_with(
+        sessions,
+        owners.owners.get(host_key),
+        workspace_id,
+        project_path,
+        ws_names,
+    );
+}
+
+/// The scope verdicts, with the owners map injected — no file I/O, so the
+/// rules below are unit-testable.
+///
+/// `foreign` answers "do we KNOW this belongs somewhere else?", in this order:
+///
+/// 1. Anything inside our own scope (`owned || in_cwd`) is never foreign — the
+///    badge is therefore structurally impossible in the picker's "This folder"
+///    view, which is exactly the complement of that predicate.
+/// 2. An ownership row naming a DIFFERENT workspace. This is the only signal
+///    that survives on Windows, where zellij reports no directory at all.
+/// 3. A live `cwd` that is not under the caller's `project_path`.
+/// 4. Otherwise not foreign — which includes "no cwd, no owner", i.e. we have
+///    nothing to say. Silence, never a guess: `cwd: None` is unknown, and the
+///    picker must not paint an unclaimed session as another project's.
+fn annotate_scope_with(
+    sessions: &mut [TmuxSessionInfo],
+    host: Option<&HashMap<String, SessionOwner>>,
+    workspace_id: &str,
+    project_path: Option<&str>,
+    ws_names: &HashMap<String, String>,
+) {
     for s in sessions.iter_mut() {
-        s.owned = host
-            .and_then(|h| h.get(&s.name))
-            .is_some_and(|o| o.workspace_id == workspace_id);
+        let owner = host.and_then(|h| h.get(&s.name));
+        s.owned = owner.is_some_and(|o| o.workspace_id == workspace_id);
         s.in_cwd = match (s.cwd.as_deref(), project_path) {
             (Some(cwd), Some(root)) => path_is_within(cwd, root),
             // Unknown cwd is not evidence of anything. See TmuxSessionInfo::cwd.
             _ => false,
+        };
+        s.foreign = if s.owned || s.in_cwd {
+            // Inside the workspace's own scope. Two workspaces pinned to the
+            // same folder both belong there; warning about that would be a lie,
+            // and it would put the badge in the "This folder" view.
+            None
+        } else if let Some(o) = owner {
+            // Claimed by a DIFFERENT workspace — the same-id case is `owned`,
+            // which the arm above already took.
+            Some(ForeignScope {
+                kind: ForeignKind::Workspace,
+                // The workspace name is the most useful thing we can say. When
+                // it has since been deleted we still know WHERE it was, so fall
+                // through to the folder before giving up on a name.
+                label: ws_names
+                    .get(&o.workspace_id)
+                    .map(|n| n.trim())
+                    .filter(|n| !n.is_empty())
+                    .map(|n| n.to_string())
+                    .or_else(|| {
+                        o.cwd
+                            .as_deref()
+                            .and_then(last_path_segment)
+                            .map(|seg| seg.to_string())
+                    }),
+                path: s.cwd.clone().or_else(|| o.cwd.clone()),
+            })
+        } else if let (Some(cwd), Some(_root)) = (s.cwd.as_deref(), project_path) {
+            // Unclaimed, but demonstrably somewhere else. Only reachable with a
+            // KNOWN cwd and a root to compare it against: `in_cwd` was already
+            // false above, and with no root the "no evidence" arm below wins.
+            Some(ForeignScope {
+                kind: ForeignKind::Folder,
+                label: last_path_segment(cwd).map(|seg| seg.to_string()),
+                path: Some(cwd.to_string()),
+            })
+        } else {
+            // Unknown cwd, nobody claimed it. We have nothing to say.
+            None
         };
     }
 }
@@ -11068,6 +11424,7 @@ pub fn run() {
             workspace_browser::workspace_browser_open_devtools,
             workspace_browser::workspace_browser_close,
             workspace_browser::workspace_browser_resize,
+            workspace_browser::browser_popout_open,
             tickets::tickets_list,
             tickets::tickets_resolve_project,
             tickets::tickets_dir_path,
@@ -11137,6 +11494,7 @@ pub fn run() {
             settings::list_system_fonts,
             fonts::font_catalog,
             fonts::font_install,
+            fonts::font_uninstall,
             updater::check_for_updates_now,
             updater::download_and_install_update,
             updater::updater_skip_version,
@@ -12098,8 +12456,44 @@ mod tmux_list_parse_tests {
     // the macOS local server). Sample lines are exactly what tmux prints
     // for TMUX_LIST_FORMAT.
     use super::{
-        parse_tmux_sessions, path_is_within, tmux_list_script, TMUX_LIST_FORMAT, TMUX_META_MARKER,
+        annotate_scope_with, last_path_segment, parse_tmux_sessions, path_is_within,
+        tmux_list_script, ForeignKind, SessionOwner, TmuxSessionInfo, TMUX_LIST_FORMAT,
+        TMUX_META_MARKER,
     };
+    use std::collections::HashMap;
+
+    // ── 2026-08-24 scope-annotation fixtures ───────────────────────────────
+    // Sessions are built through the real parser so a format change breaks
+    // these tests too, rather than leaving them asserting against a shape
+    // tmux no longer emits.
+
+    fn session(name: &str, cwd: Option<&str>) -> TmuxSessionInfo {
+        let line = match cwd {
+            Some(c) => format!("{name}|1|0|1|2|{c}\n"),
+            None => format!("{name}|1|0|1|2\n"),
+        };
+        parse_tmux_sessions(&line).pop().expect("one session")
+    }
+
+    fn owner(workspace_id: &str, cwd: Option<&str>) -> SessionOwner {
+        SessionOwner {
+            workspace_id: workspace_id.to_string(),
+            cwd: cwd.map(|c| c.to_string()),
+            ts: 0,
+        }
+    }
+
+    fn owners(rows: &[(&str, SessionOwner)]) -> HashMap<String, SessionOwner> {
+        rows.iter()
+            .map(|(n, o)| (n.to_string(), o.clone()))
+            .collect()
+    }
+
+    fn names(rows: &[(&str, &str)]) -> HashMap<String, String> {
+        rows.iter()
+            .map(|(id, n)| (id.to_string(), n.to_string()))
+            .collect()
+    }
 
     #[test]
     fn format_has_six_pipe_separated_fields() {
@@ -12208,6 +12602,146 @@ mod tmux_list_parse_tests {
         let out = parse_tmux_sessions(&text);
         assert_eq!(out.len(), 1);
         assert!(out[0].label.is_none());
+    }
+
+    // ── 2026-08-24: "this session belongs to another folder" ───────────────
+
+    #[test]
+    fn basename_stops_at_either_separator() {
+        // Sibling of folder_scope_stops_at_a_separator: one picker list mixes
+        // POSIX paths off a Linux host with Windows paths from zellij-era
+        // ownership rows, so both separators have to work.
+        assert_eq!(last_path_segment("/srv/app"), Some("app"));
+        assert_eq!(last_path_segment("/srv/app/"), Some("app"));
+        assert_eq!(last_path_segment("  /srv/app  "), Some("app"));
+        assert_eq!(last_path_segment(r"C:\src\app"), Some("app"));
+        assert_eq!(last_path_segment(r"C:\src\app\"), Some("app"));
+        assert_eq!(last_path_segment("app"), Some("app"));
+        // A bare root names nothing, and neither does an empty string.
+        assert_eq!(last_path_segment("/"), None);
+        assert_eq!(last_path_segment(""), None);
+        assert_eq!(last_path_segment("   "), None);
+    }
+
+    #[test]
+    fn a_foreign_badge_is_impossible_inside_the_workspace_view() {
+        // THE invariant the picker leans on: "This folder" is exactly the
+        // complement of `foreign`, so the frontend needs no scope conditional
+        // on the badge. Every way a session can be in scope, checked.
+        let mut sessions = vec![
+            session("owned-and-in-cwd", Some("/srv/app")),
+            session("owned-only", Some("/elsewhere")),
+            session("in-cwd-only", Some("/srv/app/sub")),
+        ];
+        let host = owners(&[
+            ("owned-and-in-cwd", owner("ws-a", Some("/srv/app"))),
+            ("owned-only", owner("ws-a", None)),
+        ]);
+        annotate_scope_with(
+            &mut sessions,
+            Some(&host),
+            "ws-a",
+            Some("/srv/app"),
+            &names(&[("ws-a", "Mine")]),
+        );
+        for s in &sessions {
+            assert!(s.owned || s.in_cwd, "{} should be in scope", s.name);
+            assert!(s.foreign.is_none(), "{} must not be foreign", s.name);
+        }
+    }
+
+    #[test]
+    fn a_claim_by_another_workspace_names_that_workspace() {
+        let mut sessions = vec![session("theirs", Some("/srv/other"))];
+        let host = owners(&[("theirs", owner("ws-b", Some("/srv/other")))]);
+        annotate_scope_with(
+            &mut sessions,
+            Some(&host),
+            "ws-a",
+            Some("/srv/app"),
+            &names(&[("ws-a", "Mine"), ("ws-b", "Server API")]),
+        );
+        let f = sessions[0].foreign.as_ref().expect("foreign");
+        assert!(matches!(f.kind, ForeignKind::Workspace));
+        assert_eq!(f.label.as_deref(), Some("Server API"));
+        // The tooltip gets the LIVE path, not the one recorded at claim time.
+        assert_eq!(f.path.as_deref(), Some("/srv/other"));
+    }
+
+    #[test]
+    fn a_claim_survives_on_windows_where_there_is_no_cwd_at_all() {
+        // The zellij case, and the reason ownership exists as a second signal:
+        // no session cwd anywhere, so the claim is the ONLY thing that can
+        // place this session. It must still warn, and the tooltip falls back
+        // to the folder recorded when the claim was made.
+        let mut sessions = vec![session("zj", None)];
+        let host = owners(&[("zj", owner("ws-b", Some(r"C:\src\other")))]);
+        annotate_scope_with(
+            &mut sessions,
+            Some(&host),
+            "ws-a",
+            None,
+            &names(&[("ws-b", "Other")]),
+        );
+        let f = sessions[0].foreign.as_ref().expect("foreign");
+        assert!(matches!(f.kind, ForeignKind::Workspace));
+        assert_eq!(f.label.as_deref(), Some("Other"));
+        assert_eq!(f.path.as_deref(), Some(r"C:\src\other"));
+    }
+
+    #[test]
+    fn a_claim_by_a_deleted_workspace_still_warns() {
+        // Nothing prunes session-owners.json when a workspace is deleted, so a
+        // row can name an id that resolves to nothing. Fall back to the folder
+        // it recorded; and when it recorded none, warn anyway with no label —
+        // the picker words that case generically rather than staying silent.
+        let mut sessions = vec![session("orphan", None), session("nameless", None)];
+        let host = owners(&[
+            ("orphan", owner("ws-gone", Some("/srv/other"))),
+            ("nameless", owner("ws-gone", None)),
+        ]);
+        annotate_scope_with(&mut sessions, Some(&host), "ws-a", None, &names(&[]));
+        let orphan = sessions[0].foreign.as_ref().expect("orphan foreign");
+        assert_eq!(orphan.label.as_deref(), Some("other"));
+        let nameless = sessions[1].foreign.as_ref().expect("nameless foreign");
+        assert!(nameless.label.is_none());
+        assert!(nameless.path.is_none());
+    }
+
+    #[test]
+    fn an_unclaimed_session_outside_the_root_is_flagged_by_folder() {
+        let mut sessions = vec![
+            session("elsewhere", Some("/srv/other")),
+            // The neighbour case: the badge inherits path_is_within's
+            // separator boundary instead of re-deriving containment.
+            session("neighbour", Some("/srv/app2")),
+        ];
+        annotate_scope_with(&mut sessions, None, "ws-a", Some("/srv/app"), &names(&[]));
+        for (s, want) in sessions.iter().zip(["other", "app2"]) {
+            let f = s.foreign.as_ref().expect("foreign");
+            assert!(matches!(f.kind, ForeignKind::Folder));
+            assert_eq!(f.label.as_deref(), Some(want));
+        }
+    }
+
+    #[test]
+    fn an_unknown_cwd_is_never_evidence_of_elsewhere() {
+        // The direct guard on the 2026-08-23 rule. A five-field tmux and every
+        // zellij session land here; painting them as another project's would
+        // be a fabrication, and it is the regression that matters most.
+        let mut sessions = vec![session("mystery", None)];
+        annotate_scope_with(&mut sessions, None, "ws-a", Some("/srv/app"), &names(&[]));
+        assert!(sessions[0].foreign.is_none());
+    }
+
+    #[test]
+    fn no_root_means_no_folder_verdict() {
+        // A workspace that is not folder-anchored, and the `projectPath: null`
+        // call shape session restore uses. Without a root there is nothing to
+        // be outside of, so an unclaimed session must not light up.
+        let mut sessions = vec![session("somewhere", Some("/srv/other"))];
+        annotate_scope_with(&mut sessions, None, "ws-a", None, &names(&[]));
+        assert!(sessions[0].foreign.is_none());
     }
 }
 
@@ -12448,7 +12982,8 @@ mod zellij_tests {
     // running produced `spike [Created 12m 30s ago]` verbatim.
     use super::{
         build_zellij_attach_command, parse_zellij_duration, parse_zellij_sessions,
-        pick_zellij_resources, zellij_args_delete_force, zellij_args_list,
+        pick_zellij_resources, sanitize_tmux_session_name_for_title,
+        session_name_char_is_safe, zellij_args_delete_force, zellij_args_list,
         zellij_args_write_chars, zellij_spawn_error_outcome, KillSessionOutcome,
         ZellijOutcome,
     };
@@ -12784,9 +13319,14 @@ mod zellij_tests {
 
     #[test]
     fn zellij_verbs_pass_the_name_as_one_argv_slot() {
-        // Rule #3: no shell in between, so a name is never re-parsed. Names
-        // come from `sanitize_session_name` and cannot contain spaces today —
-        // this pins the argv shape so that stays true if it ever changes.
+        // Rule #3: no shell in between, so a name is never re-parsed. This
+        // is the SAFE half of the pair, and the reason the argv shape is
+        // pinned: a hostile name is harmless here precisely because
+        // nothing re-parses it — which is exactly what
+        // `build_zellij_attach_command` cannot rely on, since it types its
+        // line into a shell, so it refuses such a name instead. (This
+        // comment used to cite `sanitize_session_name`, a function that
+        // has never existed in this tree.)
         let args = zellij_args_delete_force("weird name; rm -rf");
         assert_eq!(args.len(), 3);
         assert_eq!(args[2], "weird name; rm -rf");
@@ -12812,12 +13352,260 @@ dead-one [Created 3h 4m 1s ago] (EXITED - attach to resurrect)
 
     #[test]
     fn zellij_attach_command_is_a_single_safe_line() {
-        let cmd = build_zellij_attach_command("ymux-p_1a2b_0");
+        let cmd = build_zellij_attach_command("ymux-p_1a2b_0")
+            .expect("a pane-id-derived name is always safe");
         assert_eq!(cmd, "zellij attach -c ymux-p_1a2b_0\r\n");
         // One line typed into a shell: a stray newline would run whatever
         // followed it as a second command.
         assert_eq!(cmd.matches('\n').count(), 1);
         assert!(cmd.ends_with("\r\n"));
+    }
+
+    // ── The P1 that produced all of the above ───────────────────────────
+    //
+    // Filed 2026-08-20: a pane title could break its own session name. The
+    // test that was supposed to be guarding this line (above) only ever
+    // fed it `ymux-p_1a2b_0` — a name that could not have failed — so it
+    // passed for as long as the hole existed. These feed it the input that
+    // matters.
+
+    #[test]
+    fn attach_command_refuses_a_name_it_cannot_safely_type() {
+        // Each of these ends the `zellij attach` command and starts another
+        // one in at least one of cmd.exe / PowerShell / a POSIX shell.
+        for hostile in [
+            "work; calc",
+            "work && calc",
+            "work | calc",
+            "work & calc",
+            "$(calc)",
+            "`calc`",
+            "work > out.txt",
+            "work\ncalc",
+            "work\r\ncalc",
+            "a\u{2028}calc",
+            "it's",
+            "say \"hi\"",
+            "50%PATH%",
+            "up^caret",
+            "",
+        ] {
+            assert!(
+                build_zellij_attach_command(hostile).is_none(),
+                "must refuse to type {hostile:?} into a shell"
+            );
+        }
+    }
+
+    #[test]
+    fn a_title_cannot_smuggle_a_second_command_through_the_sanitizer() {
+        // The real path: title -> sanitizer -> attach line. Whatever the
+        // title, the produced name must survive the last gate, and the
+        // command must stay ONE line.
+        for title in [
+            "work; calc",
+            "work && calc",
+            "$(calc)",
+            "`calc`",
+            "a|b",
+            "a>b",
+            "it's mine",
+            "say \"hi\"",
+            "50%PATH%",
+            "tab\there",
+            "nl\nhere",
+        ] {
+            let name = sanitize_tmux_session_name_for_title(title)
+                .unwrap_or_else(|| panic!("{title:?} should still yield a name"));
+            let cmd = build_zellij_attach_command(&name)
+                .unwrap_or_else(|| panic!("{title:?} -> {name:?} was refused"));
+            assert_eq!(
+                cmd.matches('\n').count(),
+                1,
+                "{title:?} produced more than one line: {cmd:?}"
+            );
+            for bad in [';', '&', '|', '$', '`', '>', '<', '^', '%', '\'', '"', '(', ')'] {
+                assert!(
+                    !name.contains(bad),
+                    "{title:?} left {bad:?} in the session name {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_whitelist_still_keeps_phase_23i_promise_about_unicode_titles() {
+        // The whole point of the original sanitizer: a Hebrew title becomes
+        // a session of the same name. Tightening it for shell safety must
+        // not quietly turn that back into underscores.
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("מחקר X").as_deref(),
+            Some("מחקר_X")
+        );
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("作業").as_deref(),
+            Some("作業")
+        );
+        // Niqqud are combining marks, not alphanumerics — the rule is
+        // "non-ASCII passes" precisely so they survive rather than being
+        // punched out of the middle of a word.
+        let pointed = "עבודה\u{05B8}";
+        assert_eq!(
+            sanitize_tmux_session_name_for_title(pointed).as_deref(),
+            Some(pointed)
+        );
+        assert!(build_zellij_attach_command(pointed).is_some());
+    }
+
+    #[test]
+    fn sanitizer_keeps_its_old_contract_where_it_was_already_right() {
+        // Regressions guarded: tmux's own blockers still go, runs of
+        // replacements still collapse to one underscore, the result is
+        // still trimmed of leading/trailing underscores, an all-junk title
+        // still yields None so the caller falls back to the pane id, and
+        // the 100-CHAR (not byte) cap still holds on a Hebrew title.
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("a.b:c").as_deref(),
+            Some("a_b_c")
+        );
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("a   b").as_deref(),
+            Some("a_b")
+        );
+        assert_eq!(
+            sanitize_tmux_session_name_for_title("  ...x...  ").as_deref(),
+            Some("x")
+        );
+        assert_eq!(sanitize_tmux_session_name_for_title(""), None);
+        assert_eq!(sanitize_tmux_session_name_for_title("   "), None);
+        assert_eq!(sanitize_tmux_session_name_for_title(";;;"), None);
+        let long = "מחקר".repeat(60);
+        let capped = sanitize_tmux_session_name_for_title(&long).expect("non-empty");
+        assert_eq!(capped.chars().count(), 100);
+    }
+
+    #[test]
+    fn safe_char_rule_is_the_one_both_call_sites_share() {
+        for c in ['a', 'Z', '7', '_', '-', 'מ', '作'] {
+            assert!(session_name_char_is_safe(c), "{c:?} should be allowed");
+        }
+        for c in [
+            ';', '&', '|', '$', '`', '>', '<', '^', '%', '(', ')', '{', '}',
+            '\'', '"', ' ', '\t', '\n', '\r', '.', ':', '\u{0085}', '\u{2028}',
+            '\u{00A0}', '\u{0000}',
+        ] {
+            assert!(!session_name_char_is_safe(c), "{c:?} should be rejected");
+        }
+    }
+}
+
+#[cfg(test)]
+mod workspaces_schema_tests {
+    // The gate that stops an older ymux writing over a newer one's file.
+    // Covered because the failure it guards is silent by nature: the bug that
+    // produced it (FOLLOWUPS P1, 2026-08-18) erased workspace nesting on every
+    // save by a stale build and left nothing in the new build's log.
+    use super::{
+        schema_gate, schema_version_of, SchemaGate, WorkspacesFile,
+        WORKSPACES_SCHEMA_VERSION,
+    };
+
+    #[test]
+    fn a_save_always_stamps_the_current_schema_version() {
+        // The point of `serialize_with`: whatever the struct is CARRYING —
+        // a legacy 1, or a 0 from Default — what reaches disk is current.
+        for carried in [0, 1, WORKSPACES_SCHEMA_VERSION] {
+            let file = WorkspacesFile {
+                version: carried,
+                ..Default::default()
+            };
+            let text = serde_json::to_string(&file).expect("serialize");
+            assert_eq!(
+                schema_version_of(&text),
+                Some(WORKSPACES_SCHEMA_VERSION),
+                "carrying v{carried} must still write v{}",
+                WORKSPACES_SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_file_without_a_version_key_still_loads() {
+        // Pre-versioning files exist in the wild; they must not become
+        // unreadable, and they must read as v1 rather than as "newer".
+        let file: WorkspacesFile =
+            serde_json::from_str(r#"{"workspaces":[]}"#).expect("parse");
+        assert_eq!(file.version, 1);
+        assert!(file.version <= WORKSPACES_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_reader_is_tolerant_because_a_refusal_hangs_off_it() {
+        // `None` means "carry on saving". Anything that is not a usable
+        // version must land there rather than tripping the gate: a refusal
+        // triggered by a malformed file would lock the user out of saving.
+        assert_eq!(schema_version_of(r#"{"version":2}"#), Some(2));
+        assert_eq!(schema_version_of(r#"{"version":99}"#), Some(99));
+        // A BOM is stripped first — Windows tooling writes them routinely and
+        // one already bricked this file once.
+        assert_eq!(schema_version_of("\u{feff}{\"version\":2}"), Some(2));
+        for shrug in [
+            "",
+            "   ",
+            "not json at all",
+            r#"{"workspaces":[]}"#,
+            r#"{"version":null}"#,
+            r#"{"version":"2"}"#,
+            r#"{"version":-1}"#,
+            r#"{"version":1.5}"#,
+            "[1,2,3]",
+        ] {
+            assert_eq!(
+                schema_version_of(shrug),
+                None,
+                "{shrug:?} must read as no-usable-version, not as a version"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_only_refuses_the_direction_that_loses_data() {
+        let ours = WORKSPACES_SCHEMA_VERSION;
+
+        // The one hard stop: a newer build owns the file.
+        assert_eq!(schema_gate(Some(ours + 1), Some(ours)), SchemaGate::Refuse);
+        assert_eq!(schema_gate(Some(ours + 9), None), SchemaGate::Refuse);
+
+        // Ordinary saves.
+        assert_eq!(schema_gate(Some(ours), Some(ours)), SchemaGate::Write);
+
+        // An older build rewrote it since we last wrote: warn, never refuse.
+        // Refusing here would leave the user unable to save at all for as
+        // long as the old build is open, which is worse than letting the
+        // merge repair it.
+        assert_eq!(
+            schema_gate(Some(ours - 1), Some(ours)),
+            SchemaGate::WarnDowngrade
+        );
+
+        // A legacy file we have not written over yet is NOT a downgrade —
+        // there is nothing to have lost.
+        assert_eq!(schema_gate(Some(ours - 1), None), SchemaGate::Write);
+        assert_eq!(
+            schema_gate(Some(ours - 1), Some(ours - 1)),
+            SchemaGate::Write
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_never_blocks_a_save() {
+        // `None` is every case the reader shrugged at: absent, empty,
+        // malformed, version-less. None of them may become a refusal — a
+        // user whose file got a stray byte must still be able to save.
+        let ours = WORKSPACES_SCHEMA_VERSION;
+        assert_eq!(schema_gate(None, None), SchemaGate::Write);
+        assert_eq!(schema_gate(None, Some(ours)), SchemaGate::Write);
+        assert_eq!(schema_gate(None, Some(ours + 1)), SchemaGate::Write);
     }
 }
 

@@ -13,6 +13,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./App.css";
 import App from "./App";
 import { PopoutTerminal } from "./components/PopoutTerminal";
+import { PopoutBrowser } from "./components/PopoutBrowser";
 import { initPlatform } from "./platform";
 
 // Phase 8.E → unified logging: capture console.error / console.warn as a
@@ -85,6 +86,13 @@ try {
 const popoutSid = winLabel.startsWith("popout-")
   ? winLabel.slice("popout-".length)
   : null;
+// Phase 85.C: the workspace Browser popped out into its own OS window.
+// Same label-carries-the-id trick. `browser-popout-<ws>` deliberately does
+// NOT start with `popout-`, so the two checks cannot collide (and neither
+// can the two capability globs, which are prefix-anchored too).
+const popoutBrowserWs = winLabel.startsWith("browser-popout-")
+  ? winLabel.slice("browser-popout-".length)
+  : null;
 
 // Resolve the host OS BEFORE the first render. PaneView / FileManagerPane
 // register their OS drag-drop listeners in onMount and hit-test with
@@ -97,7 +105,12 @@ const popoutSid = winLabel.startsWith("popout-")
 // `es2020`, where esbuild refuses TLA outright.
 void (async () => {
   await initPlatform();
-  if (popoutSid) {
+  if (popoutBrowserWs) {
+    render(
+      () => <PopoutBrowser workspaceId={popoutBrowserWs} />,
+      document.getElementById("root") as HTMLElement,
+    );
+  } else if (popoutSid) {
     render(
       () => <PopoutTerminal sessionId={popoutSid} />,
       document.getElementById("root") as HTMLElement,

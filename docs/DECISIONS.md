@@ -98,6 +98,15 @@ When starting a session, scan **Open** first. Surface anything that's been pendi
 - **Also removed:** 14 dead `tmux_picker.*` i18n keys per language (56 total), left behind by a picker UI deleted long ago, with zero references in `app/src`.
 - **Status:** Open — compiles-untested until CI, and Rule #14 until the smoke list in FOLLOWUPS (P1) runs live.
 
+#### Addendum, 2026-08-24 — the "Whole server" view says whose a session is
+- **Context.** The toggle above shipped with a flat server list: a session free to take and a session already mounted on another project rendered identically. Yossi: *"אני רוצה שנוסיף במסך של כל השרת — מה שאנחנו יודעים ששייך לתיקייה אחרת כדי למנוע בלאגנים."* The information was already on the machine and being discarded — `annotate_session_scope` computed `owned` as `o.workspace_id == workspace_id` and dropped the id when it did not match.
+- **Decided (Yossi's calls, asked before building):**
+  - **A badge, not a confirm dialog and not a re-sort.** It marks; it does not block. Attaching to another folder's session is allowed and is sometimes exactly what you want — the failure mode being fixed is doing it *without noticing*, not doing it at all.
+  - **A session we cannot place shows NOTHING.** Not a muted "unknown folder" chip. This is the 2026-08-23 unknown-`cwd` rule applied to the UI: every zellij session and every five-field tmux would wear that chip permanently, which trains the eye to ignore it and makes the real badge worthless.
+- **The invariant that removed a frontend conditional.** `foreign` is never `Some` while `owned || in_cwd`, so the picker's "This folder" view is *defined* as the complement of the field and the badge cannot appear there by construction. That also settles the two-workspaces-on-one-folder case: both belong there, and a warning would be false. Asserted in `a_foreign_badge_is_impossible_inside_the_workspace_view`.
+- **One field carrying an object, not two flat ones.** `foreign: Option<ForeignScope>` = `{ kind, label?, path? }`. Flat `Option`s would admit four states of which only three are legal. Three facts are genuinely needed: `path` because on Windows — where this matters most — zellij reports no `cwd` at all, so the claim's recorded folder is the only path there is; `kind` because "belongs to workspace X" and "runs in folder Y" are different warnings and every string is i18n'd in four languages, so the backend cannot ship the sentence; and `label: None` because nothing prunes `session-owners.json` when a workspace is deleted, so a stale row can be *known foreign and unnameable* — a state a bare `Option<String>` could only express with a magic empty string.
+- **`annotate_session_scope` was split, and that is the point.** The disk read moved out to a shim; `annotate_scope_with` takes the owners map as an argument. The 2026-08-23 logic had no unit tests because it did file I/O inline — this is the change that made the scope rules testable, and eight tests landed with it.
+
 ### 2026-08-18 — Project folders v4: a project folder IS a workspace (SUPERSEDES v2 and v1)
 - **What changed and why.** v2 and v3 were both rejected on sight for the same reason, which took four rounds to hear correctly. Yossi: *"it pins the whole workspace to a folder inside it, instead of opening a **sub-workspace** of that folder — and then it would let you open panes in that environment, directly on that folder."* The `ProjectFolder` entity is gone. What it modelled — a directory on a host you keep coming back to — is a workspace with a `cwd`; the only field genuinely missing from the schema was a parent.
 - **Decided (Yossi's calls, 2026-08-18):**
@@ -298,6 +307,45 @@ Deferred items out of the unified-logging overhaul (Phase 79) — each is a self
 - **Deferred — netlink `sock_diag` (LISTEN-only query) instead of /proc/net/tcp.** That is the fix for the kernel half of the tick cost; needs raw netlink code. BACKLOG.
 - **Deferred — a resident hook agent / connection pooling.** Each hook is its own process by Claude Code's design; one connection per hook is the floor without a daemon in the loop. BACKLOG.
 - **Decided (Yossi, same day) — `manifest.json` hooks version goes to 1.6.0 in this PR, not the release checklist.** The reason it was held back (bannering installs before a CLI that honours the spec exists) no longer bites: the bootstrap's every-connect `setup-hooks` now rewrites stale entries by itself, so the banner is only the path for users who turned `hooks.auto_install` off.
+### 2026-08-23 — Phase 85.C: the Browser pops out with the FULL chrome, and its X just closes
+
+- **Context:** three Browser complaints from Yossi in one message — the DevTools button
+  did nothing, X left the native webview stuck over the panels, and there was no way to
+  make the Browser a real separate window. The first two were bugs (85.A / 85.B); this is
+  the third. It finally lands what `63.E` described and never shipped: the 63.A schema
+  (`FloatingWindowMode::PopOut`, `popout_rect`, `popout_display`) had been sitting in
+  `settings.json` since 2026-06 with zero readers. The 2026-06-18 Phase 63 entry was
+  closed in the 2026-07-15 cleanup as "covered by later work" — for 63.E specifically
+  that was not true, which is why this is a new entry rather than a reopened one.
+- **Decision 1 — full chrome, not a bare browser window.** The alternative was a
+  `WebviewUrl::External(url)` window: ~70 lines, no port picker, no tabs. Yossi chose the
+  full chrome, so the popout loads ymux's own `index.html`, routes on the
+  `browser-popout-<ws>` label, and hosts its own child webview. Cost: `BrowserWindow.tsx`
+  had to be split into an injectable chrome (`BrowserChrome.tsx`) plus two hosts.
+- **Decision 2 — closing the popped-out window closes the Browser.** It does NOT
+  re-attach into the floating panel, unlike the terminal pop-out (`popout:closed` →
+  re-attach). Simpler, and it matches what an OS window's X means everywhere else.
+- **Decision 3 — the mode persists.** Quit popped out, launch popped out, same monitor
+  and size. This is what makes the 63.A fields load-bearing at last, and it forced
+  `floating_windows` to become Rust-owned with a carry in `settings_save`.
+- **Accepted cost — popping out RELOADS the page.** A child Webview cannot be
+  re-parented; `add_child` binds it to its host window for life. So the pop-out destroys
+  the child under `main` and the new window spawns its own. Not fixable without giving up
+  the native-child architecture. The button tooltip says so in all four locales.
+- **Note for whoever revisits 63.B/C ("Pane" mode):** the same `slotRect()` +
+  `windowLabel` seam this phase introduced is what a docked Pane mode would use — it
+  would be a third host, not a third code path.
+
+### 2026-08-23 — `force_rtl`: a full-RTL terminal mode for remote panes, and why it is a fourth mode rather than a fix to the third
+- **Context:** Yossi asked for "RTL מלא - ולא שורה שורה - במרוחק". The existing default, `auto_per_line`, decides a paragraph direction for **every row independently** — the `RTL_DOMINANCE` vote, block-aware table/fence grouping, and `stripPaneFrame`. Each of those heuristics was added to fix a real reported bug, and each is a compromise. The ask was to stop deciding at all on remote panes.
+- **Decided — force `dir="rtl"` on every row; do NOT flip the grid.** A terminal is a fixed character grid: column 0 is always leftmost. Whole-grid RTL has already been tried here **by accident** — `i18n/index.ts` sets `dir` on `<html>` from the interface language, so a Hebrew UI flipped the terminal's grid — and it was filed as a root-cause bug, fixed with an unconditional `direction: ltr` on `.terminal-container`. `force_rtl` therefore changes only each row's paragraph direction; `rowsHost` keeps `dir="ltr"` and the grid origin is untouched. Everything downstream that computes a column from a pixel offset (selection, mouse, caret, fit) keeps working.
+- **Rejected — a single whole-screen bidi pass.** Terminal rows are not a paragraph. A wrapped line, a table and a status bar share a screen with no paragraph boundaries between them, so one UAX #9 run over the viewport has no correct base to resolve against.
+- **Rejected — tuning `auto_per_line` instead.** The knobs already exist (`auto_direction`, `direction_policy`) and none of them expresses "always RTL". Adding a fourth value to `direction_policy` would also have made the mode reachable on `local`, where the ConPTY buffer is visual order and forcing RTL reverses letters.
+- **Decided — remote only, and opt-in.** The mode ships in the radio list for both profiles, but `RTL_FIELD_DEFAULTS` and `default_rtl_mode` are unchanged: both profiles still default to `auto_per_line`. This preserves the standing invariant that local and remote are totally separated ("תוודא שיש הפרדה מוחלטת בין המרוחק למקומי"), so nothing here can reach a local pane unless a user picks it.
+- **Accepted cost, stated up front:** a POSITIONAL row — tmux's status line, a zellij frame, `vim`, `htop`, Claude Code — is full-width, so UAX #9 rule L2 reverses the order of its runs and the layout renders mirrored. `RTL_DOMINANCE` and `stripPaneFrame` exist to prevent exactly that; `force_rtl` trades it away deliberately in exchange for a shell that is unconditionally right-to-left. Reverting is one click and takes effect live.
+- **Two traps found while building it,** both of which reverse letters and look identical in a screenshot: (1) `normaliseIncomingToLogical` must stay pinned to `auto_per_line` — it asks whether the incoming BUFFER is visual order (a local/ConPTY condition), not whether the mode paints a `dir`; (2) `unicode-bidi: bidi-override` had to be gated on the mode rather than on `suppress` alone, since the override paints bytes verbatim and is only ever right while the buffer is still visual.
+- **Also fixed in passing:** `installRtlMouseCapture` ran once in `finishConstruction`, so a pane built on WebGL (`off` / `bidi_reorder`) and switched **live** to a row-dir mode got `dir="rtl"` rows with no coordinate mirroring — clicks and drag-selection landed on the mirrored column until the pane was reopened. It is now idempotent and re-run from `applyRenderer`.
+- **Status:** implemented, unit-tested (`rowDirections` in `textDirection.test.ts`, 75 cases green), **not yet verified live** — Rule #14.
 
 ### 2026-08-23 — Phase 84: panes as tabs, and Notification comes back as pane state (not as a feed item)
 - **Context:** Users asked for two things that turned out to be mostly built already. "Open panes as tabs instead of splitting" is Phase 55-A's maximize plus a control surface — that feature has been swapping the split tree for a single leaf since it shipped, with the other panes' PTYs alive in the `terms` registry. "A traffic light on the tab" is a new rendering of the per-pane turn state machine that has run end-to-end since issue #4, currently painted as the `⏱ 3:10 · avg 40s` ticker.

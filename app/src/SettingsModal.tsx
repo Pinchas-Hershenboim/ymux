@@ -8,6 +8,7 @@ import {
   FontFamilies,
   FontEntry,
   FontCatalogItem,
+  fontUninstall,
   fontCatalog,
   fontInstall,
   UpdateInfo,
@@ -36,7 +37,12 @@ import { isFontAvailableAsync } from "./fontProbe";
 import { isWindows } from "./platform";
 import { IconChevronDown, IconChevronRight, IconRefreshCcw } from "./icons";
 import { VersionManager } from "./VersionManager";
-import { formatEvent } from "./shortcuts";
+import {
+  SHORTCUT_GROUPS,
+  canonicalAccel,
+  conflictingAccels,
+  formatEvent,
+} from "./shortcuts";
 import { AddonsTab } from "./AddonsTab";
 import { YmuxToolsTab } from "./YmuxToolsTab";
 import { createLogger } from "./logger";
@@ -193,6 +199,47 @@ function FontMissingNotice(props: {
   );
 }
 
+/**
+ * The other half of FontMissingNotice: what ymux has already put on this
+ * machine, and a way to take it back off.
+ *
+ * It is a list rather than a button beside the picker, because the picker
+ * only ever shows ONE family and the notice above it only renders when that
+ * family is MISSING — so an installed font has nowhere to hang a control.
+ * Renders nothing at all when nothing is installed.
+ */
+function FontInstalledList(props: {
+  catalog: FontCatalogItem[];
+  busy: string | null;
+  onUninstall: (item: FontCatalogItem) => void;
+}) {
+  const installed = () => props.catalog.filter((c) => c.installed);
+  return (
+    <Show when={installed().length > 0}>
+      <div class="font-installed-list">
+        <div class="font-installed-title">
+          {t("settings.font.installed.title")}
+        </div>
+        <For each={installed()}>
+          {(c) => (
+            <div class="font-installed-row">
+              <span class="font-installed-name">{c.family}</span>
+              <button
+                disabled={props.busy !== null}
+                onClick={() => props.onUninstall(c)}
+              >
+                {props.busy === c.id
+                  ? t("settings.font.uninstalling")
+                  : t("settings.font.uninstall")}
+              </button>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+}
+
 interface Props {
   open: boolean;
   settings: Settings;
@@ -224,6 +271,16 @@ const RTL_FIELD_DEFAULTS: Record<RtlProfileKind, Required<RtlProfileFields>> = {
 
 export function SettingsModal(p: Props) {
   const [tab, setTab] = createSignal<Tab>("general");
+  // Phase 87: canonical accelerators claimed by more than one action. The
+  // dispatcher is first-match-wins, so a duplicate leaves the loser silently
+  // dead — every member of a colliding group is flagged and the user picks
+  // which one to move. Push-to-talk is passed in explicitly because it lives
+  // under settings.stt, not settings.shortcuts.
+  const shortcutConflicts = createMemo(() =>
+    conflictingAccels(p.settings.shortcuts, {
+      push_to_talk: p.settings.stt?.push_to_talk_hotkey,
+    }),
+  );
   // beta.3: sub-tab inside the "Hooks & Notifications" card.
   const [hnSubTab, setHnSubTab] = createSignal<HooksNotifSubTab>("hooks");
   // 2026-08-19: which RTL profile the controls below are editing. Local
@@ -261,9 +318,56 @@ export function SettingsModal(p: Props) {
         );
       }
       setFonts(await listSystemFonts());
+      // The catalog carries the installed flag, so it has to be re-read
+      // too or the Remove row will not appear until Settings is reopened.
+      setCatalog(await fontCatalog());
     } catch (e) {
       log.warn("fontInstall failed", e);
       setFontNote(t("settings.font.install.failed", { error: String(e) }));
+    } finally {
+      setFontBusy(null);
+    }
+  };
+
+  /**
+   * Remove a catalog font. Confirmed first: this deletes files, and the
+   * only way back is a multi-MB download.
+   *
+   * A partial result is the expected outcome, not an error — Windows will
+   * not delete a font file that a running application has open — so the
+   * `failed` list gets its own message rather than being folded into the
+   * success one.
+   */
+  const uninstallFont = async (item: FontCatalogItem) => {
+    if (!window.confirm(t("settings.font.uninstall.confirm", { family: item.family }))) {
+      return;
+    }
+    setFontBusy(item.id);
+    setFontNote(null);
+    try {
+      const r = await fontUninstall(item.id);
+      if (r.failed.length > 0) {
+        setFontNote(
+          t("settings.font.uninstall.partial", {
+            family: item.family,
+            count: r.removed.length,
+            failed: r.failed.length,
+          }),
+        );
+        log.warn("font uninstall left faces behind", r.failed);
+      } else {
+        setFontNote(
+          t("settings.font.uninstall.ok", {
+            family: item.family,
+            count: r.removed.length,
+          }),
+        );
+      }
+      setFonts(await listSystemFonts());
+      setCatalog(await fontCatalog());
+    } catch (e) {
+      log.warn("fontUninstall failed", e);
+      setFontNote(t("settings.font.uninstall.failed", { error: String(e) }));
     } finally {
       setFontBusy(null);
     }
@@ -821,6 +925,11 @@ export function SettingsModal(p: Props) {
                       update("font", { ...p.settings.font, terminal_family: family })
                     }
                   />
+                  <FontInstalledList
+                    catalog={catalog()}
+                    busy={fontBusy()}
+                    onUninstall={uninstallFont}
+                  />
                   <Show when={fontNote()}>
                     {(note) => <p class="settings-hint">{note()}</p>}
                   </Show>
@@ -855,6 +964,7 @@ export function SettingsModal(p: Props) {
                   <p class="settings-hint">{t(`settings.terminal.rtl.profile.${rtlProfile()}.hint`)}</p>
                   <For each={[
                     ["auto_per_line", "settings.terminal.rtl.auto.label", "settings.terminal.rtl.auto.desc"],
+                    ["force_rtl", "settings.terminal.rtl.force.label", "settings.terminal.rtl.force.desc"],
                     ["bidi_reorder", "settings.terminal.rtl.bidi.label", "settings.terminal.rtl.bidi.desc"],
                     ["off", "settings.terminal.rtl.off.label", "settings.terminal.rtl.off.desc"],
                   ] as const}>
@@ -1012,28 +1122,32 @@ export function SettingsModal(p: Props) {
               <Show when={tab() === "shortcuts"}>
                 <section>
                   <h4>{t("settings.shortcuts.title")}</h4>
-                  <For each={[
-                    ["copy", "settings.shortcuts.copy"],
-                    ["paste", "settings.shortcuts.paste"],
-                    ["select_all", "settings.shortcuts.select_all"],
-                    ["find", "settings.shortcuts.find"],
-                    ["new_workspace", "settings.shortcuts.new_workspace"],
-                    ["toggle_notes", "settings.shortcuts.toggle_notes"],
-                    ["toggle_settings", "settings.shortcuts.toggle_settings"],
-                    ["summarize_claude", "settings.shortcuts.summarize_claude"],
-                  ] as const}>
-                    {([key, labelKey]) => (
-                      <ShortcutRow
-                        label={t(labelKey)}
-                        value={(p.settings.shortcuts ?? DEFAULT_SHORTCUTS)[key]}
-                        defaultValue={DEFAULT_SHORTCUTS[key]}
-                        onChange={(v) =>
-                          update("shortcuts", {
-                            ...(p.settings.shortcuts ?? DEFAULT_SHORTCUTS),
-                            [key]: v,
-                          } as Settings["shortcuts"])
-                        }
-                      />
+                  <p class="settings-hint">{t("settings.shortcuts.hint")}</p>
+                  <For each={SHORTCUT_GROUPS}>
+                    {(group) => (
+                      <>
+                        <h5 class="settings-shortcut-group">
+                          {t(`settings.shortcuts.group.${group.key}`)}
+                        </h5>
+                        <For each={group.ids}>
+                          {(key) => (
+                            <ShortcutRow
+                              label={t(`settings.shortcuts.${key}`)}
+                              value={(p.settings.shortcuts ?? DEFAULT_SHORTCUTS)[key]}
+                              defaultValue={DEFAULT_SHORTCUTS[key]}
+                              conflict={shortcutConflicts().has(
+                                canonicalAccel((p.settings.shortcuts ?? DEFAULT_SHORTCUTS)[key]) ?? "",
+                              )}
+                              onChange={(v) =>
+                                update("shortcuts", {
+                                  ...(p.settings.shortcuts ?? DEFAULT_SHORTCUTS),
+                                  [key]: v,
+                                } as Settings["shortcuts"])
+                              }
+                            />
+                          )}
+                        </For>
+                      </>
                     )}
                   </For>
                   <label class="settings-checkbox" style="margin-top: 12px;">
@@ -1049,6 +1163,28 @@ export function SettingsModal(p: Props) {
                     />
                     <span>{t("settings.shortcuts.ctrl_c_copy")}</span>
                   </label>
+
+                  {/* Phase 87: bindings that are NOT rebindable, listed so they
+                      stop being invisible. Ctrl+1..9 is a numeric family (and
+                      9 means "last"), Escape is a contextual dismissal, and the
+                      editor / browser ones are scoped to a focused component
+                      and never reach the global handler. */}
+                  <h5 class="settings-shortcut-group">{t("settings.shortcuts.fixed.title")}</h5>
+                  <p class="settings-hint">{t("settings.shortcuts.fixed.hint")}</p>
+                  <For each={[
+                    ["Ctrl+1 … Ctrl+9", "settings.shortcuts.fixed.tab_jump"],
+                    ["Escape", "settings.shortcuts.fixed.escape"],
+                    ["Ctrl+S / Ctrl+F / Ctrl+H", "settings.shortcuts.fixed.editor"],
+                    ["Ctrl+T / Ctrl+W / Ctrl+Tab", "settings.shortcuts.fixed.browser"],
+                  ] as const}>
+                    {([accel, labelKey]) => (
+                      <div class="settings-shortcut-row">
+                        <span class="settings-shortcut-label">{t(labelKey)}</span>
+                        <span class="settings-shortcut-fixed">{accel}</span>
+                        <span />
+                      </div>
+                    )}
+                  </For>
                 </section>
               </Show>
 
@@ -1465,26 +1601,32 @@ export function SettingsModal(p: Props) {
                       <option value="ru-RU">Русский</option>
                     </select>
                   </label>
-                  <label>
-                    <span>{t("settings.stt.hotkey.label")}</span>
-                    <input
-                      type="text"
-                      value={p.settings.stt?.push_to_talk_hotkey ?? "Ctrl+Shift+M"}
-                      placeholder="Ctrl+Shift+M"
-                      onInput={(e) =>
-                        update("stt", {
-                          ...(p.settings.stt ?? {
-                            enabled: false,
-                            backend: "webspeech",
-                            local_endpoint: null,
-                            language: "auto",
-                            push_to_talk_hotkey: "Ctrl+Shift+M",
-                          }),
-                          push_to_talk_hotkey: e.currentTarget.value,
-                        })
-                      }
-                    />
-                  </label>
+                  {/* Phase 87: this was a free-text box — the accelerator had
+                      to be TYPED, and a typo produced a hotkey that silently
+                      never fired. Same click-to-record picker as the Shortcuts
+                      tab now. The binding still lives in settings.stt rather
+                      than settings.shortcuts, but conflictingAccels() is fed
+                      it so a clash with a table binding is still flagged. */}
+                  <ShortcutRow
+                    label={t("settings.stt.hotkey.label")}
+                    value={p.settings.stt?.push_to_talk_hotkey ?? "Ctrl+Shift+M"}
+                    defaultValue="Ctrl+Shift+M"
+                    conflict={shortcutConflicts().has(
+                      canonicalAccel(p.settings.stt?.push_to_talk_hotkey ?? "Ctrl+Shift+M") ?? "",
+                    )}
+                    onChange={(v) =>
+                      update("stt", {
+                        ...(p.settings.stt ?? {
+                          enabled: false,
+                          backend: "webspeech",
+                          local_endpoint: null,
+                          language: "auto",
+                          push_to_talk_hotkey: "Ctrl+Shift+M",
+                        }),
+                        push_to_talk_hotkey: v,
+                      })
+                    }
+                  />
                 </section>
               </Show>
 
@@ -1674,6 +1816,8 @@ function ShortcutRow(p: {
   value: string;
   defaultValue: string;
   onChange: (v: string) => void;
+  /** True when another action is bound to the same combination. */
+  conflict?: boolean;
 }) {
   const [recording, setRecording] = createSignal(false);
   return (
@@ -1681,13 +1825,23 @@ function ShortcutRow(p: {
       <span class="settings-shortcut-label">{p.label}</span>
       <input
         type="text"
-        class="settings-shortcut-input"
+        classList={{
+          "settings-shortcut-input": true,
+          "settings-shortcut-input--conflict": !!p.conflict && !recording(),
+        }}
+        title={p.conflict ? t("settings.shortcuts.conflict") : undefined}
         value={recording() ? t("settings.shortcuts.recording") : p.value}
         readOnly
         onFocus={() => setRecording(true)}
         onBlur={() => setRecording(false)}
         onKeyDown={(e) => {
           if (!recording()) return;
+          // Phase 87: the window keydown listener in App.tsx is bubble-phase,
+          // so without this the combination being RECORDED also fires the
+          // action it is bound to — which since the shortcut table grew means
+          // recording Ctrl+Shift+W closes the active pane and Ctrl+Enter
+          // maximizes it. preventDefault alone does not stop propagation.
+          e.stopPropagation();
           // Esc cancels the recording without committing.
           if (e.key === "Escape") {
             e.preventDefault();

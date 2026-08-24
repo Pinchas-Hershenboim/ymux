@@ -27,9 +27,24 @@ covers:
 # Frontend shell — App, sidebar, layout, panes, panel chrome
 
 **SolidJS**, not React. Signals and `createEffect`, no virtual DOM, no hooks rules.
-`index.tsx` (108 lines) mounts `<App/>`; everything else hangs off it.
+`index.tsx` (121 lines) mounts `<App/>` — **unless the window label says otherwise**.
+It is the whole router, and there is no other one: no query params, no `location.search`
+anywhere in the tree. A built app's asset protocol serves a blank page for any suffixed
+path (`index.html?x`, `index.html#x`), so every pop-out URL is a clean `index.html` and
+the id rides the LABEL instead. Two prefixes bail before `<App>` mounts, so none of the
+workspace/settings bootstrap runs in those windows:
 
-## `App.tsx` (4,722) — one component, ~50 signals
+| label | renders | id |
+|---|---|---|
+| `popout-<sid>` | `<PopoutTerminal>` | terminal session |
+| `browser-popout-<ws>` | `<PopoutBrowser>` | workspace |
+
+The browser prefix deliberately does NOT start with `popout-`, so the two checks cannot
+collide — and neither can their capability globs, which are prefix-anchored too. The
+xterm CSS and `App.css` imports at the top are global on purpose: a popout that skipped
+them rendered unstyled, which read as a blank white window.
+
+## `App.tsx` (4,793) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -37,6 +52,32 @@ application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
 `notes`, `paneStatus`, `agentRuns`, `portForwards`, `detectedPorts`, `sidebarWidth`,
 `zoomFactor`, the pending-credential signals (`pendingPwFor`, `pendingPassphraseFor`,
 `pendingHostTrust`), and the various modal/window toggles.
+
+**Keyboard dispatch is one ordered table, not a chain of `if`s.** `keyBindings`
+is a `KeyBinding[]` of `{ id, when?, run }` built once; `handleKey` walks it and the
+first entry whose accelerator matches wins. Two rules in it are load-bearing and easy
+to break:
+
+- **`when` returning false means "skip and keep scanning", never "swallow".** That is
+  how plain `Ctrl+B` (`toggle_sidebar_soft`) toggles the sidebar outside a terminal but
+  reaches the PTY inside one — `Ctrl+b` is tmux's prefix, and stealing it would break
+  every tmux binding.
+- **`run` owns its own `preventDefault()`.** `copy` deliberately does not call it until
+  `copyTerminalSelection()` resolves true, so a native text-selection copy still works
+  in a non-terminal pane. A central `preventDefault` in the loop would kill that.
+
+Accelerators come from `settings.shortcuts` via `shortcutTable()`, rebuilt on every
+`settings:changed`, so a rebind in Settings takes effect without a relaunch. Before
+Phase 87 roughly twenty of these were hardcoded `if` branches with no UI at all.
+
+**Three things stay out of the table deliberately.** `Ctrl+1..9` (jump to tab N) is a
+numeric family where 9 means *last*, and a `ParsedShortcut` holds exactly one key.
+Bare `Escape` is a contextual *dismissal* — it acts only when a fullscreen panel or a
+maximized pane exists and otherwise falls through so the escape sequence reaches the
+PTY; making it rebindable would let a user strand themselves in a maximized pane. Both
+run before the table so no rebind can shadow them. STT push-to-talk runs after it,
+because it is stored in `settings.stt` rather than `settings.shortcuts`. All three are
+listed read-only in Settings → Shortcuts so they are at least visible.
 
 **State lives here and flows down as props.** Child components are mostly
 presentational; when a child needs to mutate, it calls a handler App passed it. The two
@@ -88,6 +129,20 @@ session picker (tmux/zellij sessions, Claude sessions), pane title and annotatio
 editing, the persistence toggle, and the right-click menu. `paneCaps()` /
 `profileFor()` / `effectiveIdentity()` from `types.ts` decide what a pane can offer
 based on its effective connection.
+
+**The tmux picker's scope toggle owns no data.** *This folder* vs *Whole server* is a
+client-side filter over one response — `inWorkspaceScope = s => s.owned || s.in_cwd`,
+against rows the backend already annotated (`backend-core.md` § Which folder a session
+belongs to). No second round trip, and a count line keeps the hidden ones visible as a
+number so a scoped list never reads as an empty server. `pickScopeDefault` opens on
+*Whole server* when the folder view would be empty.
+
+Each row carries a `📁` badge when `s.foreign` is set — the session belongs to another
+workspace or another directory. The verdict is entirely the backend's and is **never**
+set inside the workspace's own scope, so the badge needs no view conditional here; this
+file only picks the wording (`foreign.kind` chooses between the workspace and folder
+sentences) and appends the full path to the tooltip. It marks, it does not block:
+clicking still attaches.
 
 ## Tabs and the agent traffic light
 

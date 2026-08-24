@@ -257,6 +257,16 @@ fn webview_label(workspace_id: &str) -> String {
     format!("workspace-browser-{workspace_id}")
 }
 
+/// Phase 85.C: the OS window a popped-out Browser lives in.
+///
+/// `index.tsx` routes on this prefix, so it must NOT collide with the
+/// terminal popout's `popout-` (glob matching is prefix-anchored, and
+/// `browser-popout-x` does not start with `popout-`). `capabilities/
+/// browser-popout.json` scopes IPC to `browser-popout-*`.
+pub(crate) fn popout_window_label(workspace_id: &str) -> String {
+    format!("browser-popout-{workspace_id}")
+}
+
 /// Workspace IDs are `w_<hex>` so this is defence-in-depth — any
 /// `..`, `/`, `\` would already be rejected by the ID format.
 fn sanitize_for_path(s: &str) -> String {
@@ -277,6 +287,12 @@ fn sanitize_for_path(s: &str) -> String {
 /// `url` is only consulted when we actually spawn a new Webview —
 /// re-shows leave the existing Webview's URL alone (Browser window
 /// preserves page state across hide/show cycles).
+///
+/// Phase 85.C: `window_label` names the OS window to attach the child to
+/// — `"main"` (the default) for the in-app floating panel, or
+/// `browser-popout-<ws>` when the Browser has been popped out. It is only
+/// read on the SLOW path: an existing Webview cannot be re-parented, so
+/// `browser_popout_open` destroys and respawns rather than moving one.
 #[tauri::command]
 pub(crate) async fn workspace_browser_show(
     state: State<'_, AppState>,
@@ -287,6 +303,7 @@ pub(crate) async fn workspace_browser_show(
     y: f64,
     w: f64,
     h: f64,
+    window_label: Option<String>,
 ) -> Result<(), String> {
     // Fast path: the Webview already exists. Reposition + .show().
     {
@@ -330,9 +347,12 @@ pub(crate) async fn workspace_browser_show(
         }
     }
 
-    let main_window = app
-        .get_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
+    // Phase 85.C: the host window. `main` unless the Browser is popped
+    // out, in which case the child attaches to the popout's own window.
+    let host_label = window_label.as_deref().unwrap_or("main");
+    let host_window = app
+        .get_window(host_label)
+        .ok_or_else(|| format!("host window {host_label:?} not found"))?;
     let parsed_url: Url = url
         .parse()
         .map_err(|e| format!("invalid url {url:?}: {e}"))?;
@@ -411,7 +431,7 @@ pub(crate) async fn workspace_browser_show(
                     });
                 }
             });
-        match main_window.add_child(
+        match host_window.add_child(
             builder,
             LogicalPosition::new(x, y),
             LogicalSize::new(w.max(1.0), h.max(1.0)),
@@ -550,24 +570,32 @@ pub(crate) async fn workspace_browser_open_devtools(
         .get(&workspace_id)
         .cloned()
         .ok_or_else(|| format!("no browser webview for workspace {workspace_id}"))?;
-    // The command always exists so the frontend needs no build-shape
-    // knowledge; only the body is gated. `open_devtools` is compiled out
-    // unless the `devtools` feature is on (it is — see Cargo.toml) or
-    // this is a debug build.
-    #[cfg(any(debug_assertions, feature = "devtools"))]
-    {
-        webview.open_devtools();
-        log_info(
-            "BROWSER",
-            &format!("[workspace_browser_open_devtools] ws={workspace_id}"),
-        );
-        Ok(())
-    }
-    #[cfg(not(any(debug_assertions, feature = "devtools")))]
-    {
-        let _ = webview;
-        Err("this build was compiled without devtools support".to_string())
-    }
+    // Called unconditionally, on purpose. `Webview::open_devtools` is
+    // gated on the TAURI crate's `any(debug_assertions, feature =
+    // "devtools")`, and that feature is on for every build — see
+    // Cargo.toml:52. If anyone ever drops it from the dependency's
+    // feature list, this line stops compiling, which is exactly the
+    // failure we want: loud, at build time.
+    //
+    // Phase 85.A: this used to be wrapped in the same
+    // `#[cfg(any(debug_assertions, feature = "devtools"))]`, which reads
+    // as if it mirrors the tauri gate but does NOT — inside this crate
+    // `feature = "devtools"` resolves against `app`'s own feature set,
+    // and `app` declares no features at all (Cargo.toml has no
+    // `[features]` section). So in a release build, where
+    // `debug_assertions` is off, the whole condition was false and the
+    // paired `#[cfg(not(...))]` arm compiled instead: the button
+    // returned `Err("this build was compiled without devtools support")`
+    // 100% of the time, in every shipped build, and the frontend logged
+    // it to a file nobody reads. Right-click → Inspect kept working the
+    // whole time because `.devtools(true)` in `workspace_browser_show`
+    // is not gated.
+    webview.open_devtools();
+    log_info(
+        "BROWSER",
+        &format!("[workspace_browser_open_devtools] ws={workspace_id}"),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -588,6 +616,190 @@ pub(crate) async fn workspace_browser_close(
         ));
     }
     Ok(())
+}
+
+/// Phase 85.C: pop the workspace Browser out into its own OS window.
+///
+/// **The child Webview cannot be re-parented.** `Window::add_child` binds
+/// it to the host window for life, so "popping out" is destroy-and-
+/// respawn: we drop the child under `main` here, and the popout's own
+/// frontend calls `workspace_browser_show` with its label to spawn a
+/// fresh one under the new window. The page therefore RELOADS. That is
+/// inherent to the chosen shape, not an oversight — the alternative
+/// (keeping the child under `main` and faking a window) is not a
+/// separate OS window at all.
+///
+/// The window loads ymux's own UI, so it gets the full chrome — tabs,
+/// port bar, Go, the Web Inspector button — via the `browser-popout-`
+/// branch in `index.tsx`, which reads the workspace id from the LABEL.
+// IMPORTANT: `async`, for the same reason as `popout_pane` — on Windows
+// `WebviewWindowBuilder` deadlocks when driven from a SYNCHRONOUS
+// command: the window shell appears but the webview never initializes
+// (blank white).
+#[tauri::command]
+pub(crate) async fn browser_popout_open(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    workspace_id: String,
+    title: String,
+) -> Result<(), String> {
+    let label = popout_window_label(&workspace_id);
+
+    // Already popped out? Focus it rather than erroring on the duplicate
+    // label.
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    // Drop the child under `main` first — see the doc comment. Doing it
+    // before the window exists means that if the build below fails, the
+    // frontend's show effect simply respawns it under `main` on the next
+    // tick; we never end up with two.
+    {
+        let webview = state
+            .workspace_browsers
+            .lock()
+            .unwrap()
+            .remove(&workspace_id);
+        if let Some(w) = webview {
+            let _ = w.close();
+            log_debug(
+                "BROWSER",
+                &format!("[browser_popout_open] dropped main-hosted webview ws={workspace_id}"),
+            );
+        }
+    }
+
+    // Restore the remembered rect. `popout_display` is advisory: if that
+    // monitor is gone we simply center on the current one rather than
+    // placing the window off-screen where the user cannot reach it.
+    let (saved_rect, saved_display) = crate::settings::browser_popout_geometry(&state);
+    let monitor_count = app
+        .available_monitors()
+        .map(|m| m.len() as i32)
+        .unwrap_or(1);
+    let display_ok = saved_display.map(|d| d >= 0 && d < monitor_count).unwrap_or(true);
+    let rect = saved_rect.filter(|_| display_ok);
+    if saved_rect.is_some() && !display_ok {
+        log_info(
+            "BROWSER",
+            &format!(
+                "[browser_popout_open] saved display {:?} is gone ({monitor_count} monitors) — centering",
+                saved_display
+            ),
+        );
+    }
+
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err = String::new();
+    let mut built = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let mut builder =
+            tauri::WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
+                .title(title.clone())
+                // Rule #1 + the Cargo.toml:44-51 warning: the `devtools`
+                // feature flips wry's runtime default to `true` for EVERY
+                // webview, and this one is ymux's own UI. The explicit
+                // opt-out is what keeps it uninspectable. The CHILD
+                // webview inside it keeps `.devtools(true)` — that one
+                // shows a tunneled third-party page, nothing of ours.
+                .devtools(false);
+        builder = match rect {
+            Some(r) => builder
+                .inner_size(f64::from(r.width.max(320)), f64::from(r.height.max(240)))
+                .position(f64::from(r.x), f64::from(r.y)),
+            None => builder.inner_size(1000.0, 720.0).center(),
+        };
+        log_debug(
+            "BROWSER",
+            &format!(
+                "[browser_popout_open] building {label} (attempt {attempt}/{MAX_ATTEMPTS})"
+            ),
+        );
+        match builder.build() {
+            Ok(w) => {
+                built = Some(w);
+                break;
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                log_warn(
+                    "BROWSER",
+                    &format!(
+                        "[browser_popout_open] attempt {attempt}/{MAX_ATTEMPTS} FAILED: {last_err}"
+                    ),
+                );
+                if attempt < MAX_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+            }
+        }
+    }
+    let win = built.ok_or_else(|| {
+        // Leave the mode alone on failure — the frontend keeps the
+        // in-app panel and respawns the child under `main`.
+        format!("browser popout window failed after {MAX_ATTEMPTS} attempts: {last_err}")
+    })?;
+    log_info("BROWSER", &format!("[browser_popout_open] {label} built ok"));
+
+    crate::settings::set_browser_popout(&state, &app, true, None, None);
+
+    // `Destroyed`, not `CloseRequested` — matches `popout_pane`, and it
+    // is the only event that also covers a programmatic close (workspace
+    // deletion). Saves the rect, clears the mode, and drops the child
+    // Webview: it belongs to a window that no longer exists, and leaving
+    // it in the map would make the next `workspace_browser_show` take
+    // the fast path onto a dead handle.
+    let app2 = app.clone();
+    let ws2 = workspace_id.clone();
+    let win2 = win.clone();
+    win.on_window_event(move |e| {
+        if !matches!(e, tauri::WindowEvent::Destroyed) {
+            return;
+        }
+        // Saved in LOGICAL pixels, because that is what the builder's
+        // `.inner_size()` / `.position()` take. `outer_position` and
+        // `inner_size` report PHYSICAL, so on any HiDPI display a
+        // straight round-trip would rescale the window by the scale
+        // factor on every open/close cycle.
+        let scale = win2.scale_factor().unwrap_or(1.0);
+        let rect = win2
+            .outer_position()
+            .ok()
+            .zip(win2.inner_size().ok())
+            .map(|(pos, size)| {
+                let pos = pos.to_logical::<f64>(scale);
+                let size = size.to_logical::<f64>(scale);
+                crate::settings::Rect {
+                    x: pos.x.round() as i32,
+                    y: pos.y.round() as i32,
+                    width: size.width.round().max(1.0) as u32,
+                    height: size.height.round().max(1.0) as u32,
+                }
+            });
+        if let Some(state) = app2.try_state::<AppState>() {
+            {
+                let webview = state.workspace_browsers.lock().unwrap().remove(&ws2);
+                if let Some(w) = webview {
+                    let _ = w.close();
+                }
+            }
+            crate::settings::set_browser_popout(&state, &app2, false, rect, None);
+        }
+        let _ = app2.emit("browser-popout:closed", ws2.clone());
+        log_info("BROWSER", &format!("[browser_popout] closed ws={ws2}"));
+    });
+
+    Ok(())
+}
+
+/// Close a popped-out Browser window from the app side (workspace
+/// deletion). The `Destroyed` handler above does the cleanup.
+pub(crate) fn close_popout_window(app: &AppHandle, workspace_id: &str) {
+    if let Some(w) = app.get_webview_window(&popout_window_label(workspace_id)) {
+        let _ = w.close();
+    }
 }
 
 #[tauri::command]

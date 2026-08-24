@@ -379,8 +379,19 @@ pub(crate) struct Font {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub(crate) struct RtlProfile {
-    /// "auto_per_line" (DOM renderer + per-row dir), "bidi_reorder"
-    /// (WebGL + our logical→visual reorder), or "off" (WebGL, raw).
+    /// "auto_per_line" (DOM renderer + per-row dir), "force_rtl" (DOM
+    /// renderer, every row dir="rtl" with no detection at all),
+    /// "bidi_reorder" (WebGL + our logical→visual reorder), or "off"
+    /// (WebGL, raw).
+    ///
+    /// A `String` and not an enum on purpose (the sidebar_mode pattern), so
+    /// adding a mode costs nothing here and an unknown value read from an
+    /// older/newer settings.json degrades to whatever the frontend does with
+    /// it rather than failing the whole deserialise.
+    ///
+    /// 2026-08-23: `force_rtl` was added for REMOTE panes — "RTL מלא, ולא
+    /// שורה שורה". It is opt-in: `default_rtl_mode` is unchanged, and
+    /// neither profile default moves.
     #[serde(default = "default_rtl_mode")]
     pub rtl_mode: String,
     #[serde(default = "default_true")]
@@ -537,8 +548,9 @@ impl Default for RtlProfiles {
 pub(crate) struct TerminalSettings {
     /// Phase 15.A: how to handle Hebrew / Arabic in the terminal.
     /// One of "auto_per_line" (default, Termius-style — DOM renderer
-    /// + dir="auto" on every row), "bidi_reorder" (legacy v1, WebGL +
-    /// bidi-js logical→visual reorder), or "off" (WebGL, no reorder).
+    /// + dir="auto" on every row), "force_rtl" (DOM renderer, every row
+    /// forced RTL), "bidi_reorder" (legacy v1, WebGL + bidi-js
+    /// logical→visual reorder), or "off" (WebGL, no reorder).
     /// New panes pick up the renderer immediately; live mode swaps
     /// affect the reorder pipeline on currently-open panes.
     #[serde(default = "default_rtl_mode")]
@@ -792,8 +804,14 @@ impl Default for I18n {
 /// `Ctrl+Shift+X` strings — parsed in the frontend (see
 /// `src/shortcuts.ts`) so users can hand-edit settings.json and the
 /// next launch picks up the change.
+///
+/// Phase 87: `#[serde(default)]` at the CONTAINER level, so `impl Default`
+/// below is the single source of truth and any field missing from an older
+/// settings.json falls back to it. That is what lets the table grow from 8
+/// bindings to 28 without 20 near-identical `fn default_*` helpers.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
 #[ts(export, export_to = "../../src/bindings/")]
+#[serde(default)]
 pub(crate) struct Shortcuts {
     pub copy: String,
     pub paste: String,
@@ -805,18 +823,44 @@ pub(crate) struct Shortcuts {
     /// Phase 17: trigger a manual Claude session summary. Default
     /// Ctrl+Alt+B (B for "brief"). #[serde(default)] so pre-17
     /// settings.json files don't need to be touched.
-    #[serde(default = "default_summarize_claude")]
     pub summarize_claude: String,
+    // Phase 87: these twenty were hardcoded in the frontend's keydown
+    // handler until now, with no way to rebind them. A settings.json
+    // written by an older build simply lacks them and picks up the
+    // Default impl below, via the container-level #[serde(default)].
+    pub command_palette: String,
+    pub toggle_sidebar: String,
+    /// Plain Ctrl+B. Only fires when focus is OUTSIDE a terminal — inside
+    /// one, Ctrl+b is tmux's prefix and has to reach the PTY.
+    pub toggle_sidebar_soft: String,
+    pub toggle_maximize: String,
+    pub focus_zoom: String,
+    pub reset_terminal: String,
+    pub distribute_evenly: String,
+    pub split_horizontal: String,
+    pub split_vertical: String,
+    pub close_pane: String,
+    pub split_or_move_left: String,
+    pub split_or_move_right: String,
+    pub split_or_move_up: String,
+    pub split_or_move_down: String,
+    pub quadrant_top_left: String,
+    pub quadrant_top_right: String,
+    pub quadrant_bottom_left: String,
+    pub quadrant_bottom_right: String,
+    /// Tab cycling. Only fires in a tabs-mode workspace.
+    pub tab_next: String,
+    pub tab_prev: String,
     /// When true and the terminal has a selection, plain Ctrl+C copies
     /// to clipboard instead of sending SIGINT. Matches Windows Terminal
     /// + most modern terminal apps. Set to false to always send SIGINT.
-    #[serde(default = "default_true")]
     pub copy_on_select_with_ctrl_c: bool,
 }
 
 fn default_summarize_claude() -> String {
     "Ctrl+Alt+B".to_string()
 }
+
 
 /// Phase 17: Claude-specific options.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, ts_rs::TS)]
@@ -902,6 +946,26 @@ impl Default for Shortcuts {
             toggle_notes: "Ctrl+Shift+N".into(),
             toggle_settings: "Ctrl+,".into(),
             summarize_claude: default_summarize_claude(),
+            command_palette: "Ctrl+Shift+P".into(),
+            toggle_sidebar: "Ctrl+Shift+B".into(),
+            toggle_sidebar_soft: "Ctrl+B".into(),
+            toggle_maximize: "Ctrl+Enter".into(),
+            focus_zoom: "Ctrl+Shift+Z".into(),
+            reset_terminal: "Ctrl+Alt+R".into(),
+            distribute_evenly: "Ctrl+Alt+=".into(),
+            split_horizontal: "Ctrl+Shift+D".into(),
+            split_vertical: "Ctrl+Shift+E".into(),
+            close_pane: "Ctrl+Shift+W".into(),
+            split_or_move_left: "Ctrl+Alt+ArrowLeft".into(),
+            split_or_move_right: "Ctrl+Alt+ArrowRight".into(),
+            split_or_move_up: "Ctrl+Alt+ArrowUp".into(),
+            split_or_move_down: "Ctrl+Alt+ArrowDown".into(),
+            quadrant_top_left: "Ctrl+Alt+I".into(),
+            quadrant_top_right: "Ctrl+Alt+O".into(),
+            quadrant_bottom_left: "Ctrl+Alt+K".into(),
+            quadrant_bottom_right: "Ctrl+Alt+L".into(),
+            tab_next: "Ctrl+Tab".into(),
+            tab_prev: "Ctrl+Shift+Tab".into(),
             copy_on_select_with_ctrl_c: true,
         }
     }
@@ -1747,6 +1811,48 @@ fn mutate<F: FnOnce(&mut Settings) -> Result<(), String>>(
     Ok(s)
 }
 
+/// Phase 85.C: record whether the workspace Browser is currently popped
+/// out into its own OS window, and where that window was.
+///
+/// `floating_windows` is **Rust-owned** — no UI writes it (see the carry
+/// in `settings_save`), so this is the only writer. Best-effort by
+/// design: failing to remember a window position must never fail the
+/// window operation itself.
+pub(crate) fn set_browser_popout(
+    state: &AppState,
+    app: &AppHandle,
+    popped_out: bool,
+    rect: Option<Rect>,
+    display: Option<i32>,
+) {
+    let res = mutate(state, app, |s| {
+        s.floating_windows.browser.mode = if popped_out {
+            FloatingWindowMode::PopOut
+        } else {
+            FloatingWindowMode::Float
+        };
+        if rect.is_some() {
+            s.floating_windows.browser.popout_rect = rect;
+        }
+        if display.is_some() {
+            s.floating_windows.browser.popout_display = display;
+        }
+        Ok(())
+    });
+    if let Err(e) = res {
+        log_warn("SETTINGS", &format!("set_browser_popout failed: {e}"));
+    }
+}
+
+/// The remembered Pop-out geometry for the workspace Browser, if any.
+pub(crate) fn browser_popout_geometry(state: &AppState) -> (Option<Rect>, Option<i32>) {
+    let s = state.settings.lock().unwrap();
+    (
+        s.floating_windows.browser.popout_rect,
+        s.floating_windows.browser.popout_display,
+    )
+}
+
 // ─── Tauri commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1784,6 +1890,16 @@ pub(crate) fn settings_save(
                 settings.terminal.rtl = Some(existing);
             }
         }
+        // Phase 85.C: `floating_windows` is Rust-owned — the only writer
+        // is `set_browser_popout`, driven by the window itself opening
+        // and closing. No UI surface edits it, so a value arriving from
+        // a client can only be a stale echo of a `settings_load`, never
+        // a decision. Always keep the stored one. Without this, popping
+        // the Browser out and then hitting Save anywhere in Settings
+        // would silently reset the mode to `float` and drop the
+        // remembered rect — the same shape of bug as the `terminal.rtl`
+        // wipe above, which cost most of a day.
+        settings.floating_windows = s.floating_windows.clone();
         *s = settings;
         Ok(())
     })
