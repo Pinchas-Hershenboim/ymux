@@ -4,6 +4,7 @@ covers:
   - app/src/index.tsx
   - app/src/App.tsx
   - app/src/ClaudeSessionsView.tsx
+  - app/src/ClaudeComposer.tsx
   - app/src/Sidebar.tsx
   - app/src/LayoutView.tsx
   - app/src/PaneView.tsx
@@ -105,7 +106,7 @@ persisting it would cost a `workspaces.json` write per toggle. The swap is safe 
 the DOM detach — switching back re-attaches the same PTYs with scrollback intact, which
 is the whole reason this is a view toggle and not a fourth pane kind.
 
-## `ClaudeSessionsView.tsx` (657) — the unified Claude view
+## `ClaudeSessionsView.tsx` (615) — the unified Claude view
 
 The rebuild Phase 24.D parked. Phase 22's `ClaudeChatPane` and Phase 24.B's
 `ClaudeLogPane` were reverted because "three competing 'talk to claude' UIs felt
@@ -179,6 +180,39 @@ frozen at the last manual Sync. Each remote tick therefore mirrors the open sess
 first — one file, not the tree — and runs at `POLL_REMOTE_MS` (6s) because that is an
 SSH round-trip and does not belong on the local loop. A failed sync falls through to the
 mirror rather than blanking: the pane may simply be between connections.
+
+## `ClaudeComposer.tsx` (404) — the input box, its `/` menu and its `+` picker
+
+Split out of `ClaudeSessionsView` once it grew two menus: the view is about reading a
+transcript, this is about composing one line of input for it.
+
+**Both menus only help you type.** Everything here ends as plain text through
+`pty_write`; there is no structured "run a command" or "attach a file" protocol with
+Claude Code, and none is needed, because `/foo` and `@path` *are* its syntax. Anything
+either menu produces you could have typed by hand, which is why neither needs to stay in
+lockstep with the CLI to be correct.
+
+**The `/` list is two halves with different failure modes.** Custom commands come from
+`claude_commands_list`, read off whichever machine the session belongs to, and cannot go
+stale. `BUILTIN_COMMANDS` is a hand-kept **snapshot** — the CLI has no surface to
+enumerate its own commands, so this list can drift from the installed version, and the
+menu labels the source so the drift is visible rather than silent. Commands that take
+over the terminal UI (`/vim`, `/terminal-setup`) are left out deliberately: they would
+work, but the result is only visible in the pane. `/help` is in, precisely because it
+lists what the installed version actually has.
+
+The menu opens only while the draft starts with `/` and holds no space. Past the first
+space the user is writing arguments, and a menu there would fight them for the Enter key
+— which it claims, because sending a half-typed command name is the wrong guess almost
+every time. Escape appends a space rather than clearing: it dismisses the menu without
+throwing away what was typed.
+
+**The `+` picker walks the same machine the pane is on**, via `file_list_local` /
+`file_list_remote`, rooted at the session's project directory. A chosen file is inserted
+as `@path`, made relative to that root when it sits under it and left absolute when it
+does not — a wrong relative path is worse than a long one. Both menus render **above**
+the input: the composer is already at the bottom of the pane, and a menu opening
+downwards would fall off the view.
 
 ## `Sidebar.tsx` (1,265)
 

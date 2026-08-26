@@ -9,6 +9,7 @@ import { saveRemoteFileAs } from "./download";
 import { loadFmPaths, saveFmPaths } from "./fmPaths";
 import { isMac, isWindows, sep } from "./platform";
 import { createLogger } from "./logger";
+import type { FileEntry } from "./types";
 
 const log = createLogger("FM");
 import { openMarkdown, isMarkdownFile } from "./mdViewerStore";
@@ -41,15 +42,6 @@ import {
 // Phase 23: full-featured polish — new file (not just folder), upload
 // from arbitrary disk path via native picker, OS drag-and-drop, copy
 // path action, real popup context menu (no more window.prompt).
-
-interface FileEntry {
-  name: string;
-  is_dir: boolean;
-  is_link: boolean;
-  size: number;
-  modified: number;
-  permissions: string;
-}
 
 interface Props {
   workspaceId: string;

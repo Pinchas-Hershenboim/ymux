@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
 import { createLogger } from "./logger";
 import { sessionIdForPane } from "./terminalInstance";
+import { ClaudeComposer } from "./ClaudeComposer";
 import { fmtBytes, fmtSpan } from "./insightsFmt";
 import type {
   ClaudeLogEntry,
@@ -89,7 +90,6 @@ export function ClaudeSessionsView(p: Props) {
   const [loading, setLoading] = createSignal(false);
   const [syncing, setSyncing] = createSignal(false);
   const [query, setQuery] = createSignal("");
-  const [draft, setDraft] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [ptyTick, setPtyTick] = createSignal(0);
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
@@ -362,30 +362,6 @@ export function ClaudeSessionsView(p: Props) {
     }
   };
 
-  const send = async () => {
-    const text = draft().trim();
-    const sid = ptySession();
-    if (!text || !sid || !writable()) return;
-    try {
-      // The same call PaneView makes on every keystroke. The trailing `\r`
-      // submits, exactly as pressing Enter in the terminal would.
-      await invoke("pty_write", { sessionId: sid, data: `${text}\r` });
-      setDraft("");
-    } catch (e) {
-      log.error("pty_write failed", e);
-      setError(String(e));
-    }
-  };
-
-  const onComposerKey = (e: KeyboardEvent) => {
-    // Enter sends, Shift+Enter breaks the line — the convention every chat
-    // surface uses, and the one the terminal's own paste path already honours.
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void send();
-    }
-  };
-
   // ─── pieces ─────────────────────────────────────────────────────────────
 
   const message = (entry: ClaudeLogEntry) => (
@@ -625,31 +601,13 @@ export function ClaudeSessionsView(p: Props) {
             </Show>
           }
         >
-          <form
-            class="cs-composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void send();
-            }}
-          >
-            <textarea
-              class="cs-composer-input"
-              dir="auto"
-              rows={1}
-              placeholder={t("cs.composer.placeholder")}
-              value={draft()}
-              onInput={(e) => setDraft(e.currentTarget.value)}
-              onKeyDown={onComposerKey}
-            />
-            <button
-              class="cs-composer-send"
-              type="submit"
-              disabled={!draft().trim()}
-              title={t("cs.composer.send")}
-            >
-              {t("cs.composer.send")}
-            </button>
-          </form>
+          <ClaudeComposer
+            workspaceId={p.workspaceId}
+            isRemote={p.workspaceIsRemote}
+            projectPath={current()?.project_path ?? undefined}
+            ptySessionId={ptySession()}
+            onError={setError}
+          />
         </Show>
       </section>
     </div>

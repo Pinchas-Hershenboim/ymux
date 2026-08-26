@@ -63,7 +63,7 @@ against a 5-minute write's 1.25x, and collapsing them understates a long session
 **Rule #1 by construction:** it reads `message.model`, `message.usage`, the timestamp,
 the session id and the cwd. It never reads message content, and it logs only counts.
 
-## `claude_log.rs` (871) — the transcript reader behind the Sessions view
+## `claude_log.rs` (1031) — the transcript reader behind the Sessions view
 
 Backend for the ClaudeLog pane Phase 24.D removed from the frontend ("three competing
 'talk to claude' UIs felt fragmented"). Yossi asked to keep the backend for a future
@@ -119,6 +119,30 @@ a session with a few `cat` results re-serialises megabytes on every 2.5s poll.
 
 `extract_text` still exists and still flattens, because `summarize_jsonl` wants exactly
 that for the one-line session-list preview.
+
+### `claude_commands_list` — the `/` menu's custom half
+
+Slash commands defined on disk, for the composer's menu: `None` reads
+`~/.claude/commands/**/*.md` here, `Some(ws)` reads that workspace's server over one SSH
+exec. `<ns>/<name>.md` becomes `ns:name`, matching how Claude Code namespaces a command
+found in a subdirectory, and the description is the first line that is neither blank, nor
+a heading, nor inside the YAML frontmatter.
+
+The remote side prints `\036<path>\037<body>` per file so one round-trip covers the whole
+directory; those two ASCII separators cannot occur in a path or in Markdown, so no
+quoting scheme is needed at either end. A missing directory or a dead SSH handle is an
+empty list, not an error — most installs have no custom commands, and the menu still has
+its built-ins.
+
+**Built-in commands are deliberately NOT here.** They belong to whatever Claude Code
+version is installed, the CLI has no surface to enumerate them, and a hardcoded list in
+Rust would be a second thing to keep in sync. The frontend carries one labelled snapshot
+(`BUILTIN_COMMANDS` in `ClaudeComposer.tsx`); this command answers only for what is
+actually on disk, which cannot rot.
+
+It lives in this module rather than a `claude_commands.rs` because the module already
+owns an SSH exec helper and a handle picker, and BACKLOG's `workspace_fs` entry counts
+six hand-rolled copies of that russh loop already. Revisit when `workspace_fs` lands.
 
 **Do not delete this as dead code.** The mirrored half predates its caller by a release
 and the header says why.

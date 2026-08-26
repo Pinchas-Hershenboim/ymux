@@ -869,3 +869,163 @@ fn truncate(s: &str, max_chars: usize) -> String {
     out.push('…');
     out
 }
+
+// ─── custom slash commands ─────────────────────────────────────────────────
+//
+// Lives here rather than in a `claude_commands.rs` on purpose. This module
+// already owns an SSH exec helper and a handle picker, and BACKLOG's
+// `workspace_fs` entry counts SIX hand-rolled copies of that russh loop
+// already. A seventh, for twenty lines of `ls`, is not worth the module
+// boundary — revisit when workspace_fs lands and both callers move onto it.
+//
+// Built-in commands are NOT listed here. They belong to whatever Claude Code
+// version is installed, this process cannot ask it, and a hardcoded list in
+// Rust would be a second thing to keep in sync. The frontend carries one
+// clearly-labelled snapshot; this command answers only for what is actually
+// on disk, which cannot rot.
+
+/// One `~/.claude/commands/<name>.md`, as the composer's `/` menu shows it.
+#[derive(Clone, Serialize, Debug)]
+pub(crate) struct ClaudeCommand {
+    /// Invocation without the slash — `foo`, or `ns:foo` for a subdirectory.
+    pub name: String,
+    /// First non-empty, non-frontmatter line of the file. May be empty.
+    pub description: String,
+}
+
+/// `<name>.md` -> `name`, `<ns>/<name>.md` -> `ns:name`, matching how Claude
+/// Code namespaces a command it finds in a subdirectory.
+fn command_name(root: &std::path::Path, file: &std::path::Path) -> Option<String> {
+    let rel = file.strip_prefix(root).ok()?;
+    let mut parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    let last = parts.pop()?;
+    let stem = last.strip_suffix(".md")?.to_string();
+    parts.push(stem);
+    Some(parts.join(":"))
+}
+
+/// First line that is neither blank, nor a heading, nor inside the YAML
+/// frontmatter — the closest thing these files have to a one-line summary.
+fn command_description(text: &str) -> String {
+    let mut lines = text.lines().peekable();
+    if lines.peek().map(|l| l.trim()) == Some("---") {
+        lines.next();
+        for l in lines.by_ref() {
+            if l.trim() == "---" {
+                break;
+            }
+        }
+    }
+    for l in lines {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        return truncate(l, 120);
+    }
+    String::new()
+}
+
+/// Slash commands defined on disk. `workspace_id` picks the machine: `None`
+/// reads this one, `Some(ws)` reads that workspace's server over SSH.
+///
+/// A missing commands dir is an empty list, not an error — most installs have
+/// no custom commands at all, and the `/` menu still has its built-ins.
+#[tauri::command]
+pub(crate) async fn claude_commands_list(
+    state: State<'_, AppState>,
+    workspace_id: Option<String>,
+) -> Result<Vec<ClaudeCommand>, String> {
+    let mut out: Vec<ClaudeCommand> = match workspace_id {
+        None => {
+            let root = match dirs::home_dir() {
+                Some(h) => h.join(".claude").join("commands"),
+                None => return Ok(Vec::new()),
+            };
+            let mut found = Vec::new();
+            collect_local_commands(&root, &root, &mut found);
+            found
+        }
+        Some(ws) => {
+            let Some(handle) = pick_ssh_handle(&state, &ws) else {
+                // No live handle is a normal state, not a failure: the pane may
+                // simply not be connected yet. The menu falls back to built-ins.
+                return Ok(Vec::new());
+            };
+            // Body and path are printed with a separator so one round-trip
+            // covers every file. No interpolation — nothing here is user input.
+            let cmd = "find \"$HOME/.claude/commands\" -name '*.md' -type f 2>/dev/null \
+                       | while read -r f; do printf '\036%s\037' \"$f\"; cat \"$f\"; done";
+            let raw = ssh_exec_capture(&handle, cmd, 15).await?;
+            parse_remote_commands(&raw)
+        }
+    };
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
+    Ok(out)
+}
+
+/// Walk `~/.claude/commands` on this machine. Recursive, because a
+/// subdirectory is how a command gets a namespace.
+fn collect_local_commands(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<ClaudeCommand>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if path.is_dir() {
+            collect_local_commands(root, &path, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(name) = command_name(root, &path) else {
+            continue;
+        };
+        let description = std::fs::read_to_string(&path)
+            .map(|t| command_description(&t))
+            .unwrap_or_default();
+        out.push(ClaudeCommand { name, description });
+    }
+}
+
+/// Split the `\036<path>\037<body>` stream the remote `find` loop emits. Those
+/// two ASCII separators are chosen because neither can appear in a path or in
+/// Markdown, so no quoting scheme is needed on either side.
+fn parse_remote_commands(raw: &str) -> Vec<ClaudeCommand> {
+    let mut out = Vec::new();
+    for chunk in raw.split('\u{1e}') {
+        if chunk.is_empty() {
+            continue;
+        }
+        let Some((path, body)) = chunk.split_once('\u{1f}') else {
+            continue;
+        };
+        // The remote root is always this, so the namespace is whatever sits
+        // between it and the filename.
+        let rel = match path.split_once("/.claude/commands/") {
+            Some((_, r)) => r,
+            None => continue,
+        };
+        let Some(stem) = rel.strip_suffix(".md") else {
+            continue;
+        };
+        let name = stem.replace('/', ":");
+        if name.is_empty() {
+            continue;
+        }
+        out.push(ClaudeCommand {
+            name,
+            description: command_description(body),
+        });
+    }
+    out
+}

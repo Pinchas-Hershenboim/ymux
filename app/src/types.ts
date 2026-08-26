@@ -156,6 +156,30 @@ export interface TargetSessionState {
 // longer describe a dead backend. ClaudeLogState is the one exception;
 // see its own note.
 
+/** One `~/.claude/commands/<name>.md`, as the composer's `/` menu lists it.
+ *  `name` carries no leading slash, and uses `ns:cmd` for a command found in a
+ *  subdirectory — the same shape Claude Code itself accepts. */
+export interface ClaudeCommand {
+  name: string;
+  description: string;
+}
+
+/** A directory entry from `file_list_local` / `file_list_remote`. Declared here
+ *  rather than per-consumer: `FileManagerPane` used to own the only copy, and a
+ *  second private one in the composer would be the same drift the byte-formatter
+ *  entry in BACKLOG.md is about. */
+export interface FileEntry {
+  name: string;
+  is_dir: boolean;
+  is_link: boolean;
+  /** Bytes. 0 for directories. */
+  size: number;
+  /** Unix timestamp, seconds. 0 if unknown. */
+  modified: number;
+  /** Unix octal ("0644") remote; Windows attribute summary ("rwx") local. */
+  permissions: string;
+}
+
 /** Phase 24.B, wired in by ClaudeSessionsView.tsx. */
 export interface ClaudeSyncResult {
   synced: number;

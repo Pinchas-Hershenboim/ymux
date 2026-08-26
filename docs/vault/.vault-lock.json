@@ -1,13 +1,13 @@
 {
   "backend-claude": {
-    "app/src-tauri/src/claude_log.rs": "de4fdd223aa3f473240091b4ec7360bfaabf01c17aaf2baf8bab32f0b706003c",
+    "app/src-tauri/src/claude_log.rs": "a83e9ccd396508baa03e689838c166170e00199522b0768496460b72484ef9cd",
     "app/src-tauri/src/claude_summary.rs": "6c00db5263d04bc5e2c641e22fa255a8494574653e78e8125e8f3ab6eaf1fca9",
     "app/src-tauri/src/claude_usage.rs": "57c87c2c494e783aab50a24fd6b268df110457f2399d3fa457986bd9dc7302b3",
     "app/src-tauri/src/claude_usage_local.rs": "b0f1abecd1e23d0fc8083e940509f70449bb04beefbe2bd98e79056e5b6b304e",
     "app/src-tauri/src/insights_local.rs": "11517f8b0a2e4ee6298bf251ce5c8eb1aa4e5dd1d2a41c19592ec1c2f27896f0"
   },
   "backend-core": {
-    "app/src-tauri/src/lib.rs": "384cb14737e4d04ebf91b56f6638d4ae7664b66b2c58cac9fd6990c744b6c007",
+    "app/src-tauri/src/lib.rs": "5c74f8279d2cc6f5eab55fc8a0939b13710f973d8df98a58b6e0fbdcf216b525",
     "app/src-tauri/src/main.rs": "28cba068e31a41ebcfdeda899e0ea8c96bc848268b72bcb71d2fc88cadc90635"
   },
   "backend-panes": {
@@ -126,7 +126,7 @@
     "app/src/stt.ts": "468bb7ca66e3336650b1ebc9451bbe38300718471cba42f7260a1e7660abdb94",
     "app/src/terminalInstance.ts": "13b7da60b291dbb2060ea6c90f085e2a443fdd64904ad936255ab9468845d8f8",
     "app/src/textDirection.ts": "b2c78aa9f8a1e8770e7902b6bd3f75a77f290b1882cf8bcc4e999fd08d88d1fb",
-    "app/src/types.ts": "eea6018548229afcd8e366a313d78c1d5ab8974eb0bcbfeba1e005e43305bd94"
+    "app/src/types.ts": "40f18a2c7b435df5493ebc4e0ec325e6ec5a884b15b25cdd46940aeed5851723"
   },
   "frontend-panes": {
     "app/src/AddonsTab.tsx": "6eff5e7b1389af86debd3194ff02917788346a7801134b41403c48d9b4578c43",
@@ -138,7 +138,7 @@
     "app/src/DiffPane.tsx": "8d1e7a02bc2e1bc6cdb6b25445d2c0b256f87b5f674564f44f7b905224345349",
     "app/src/FeedPanel.tsx": "afc5c5b1df122ef468b9b4476eee93ee49f88c22bc64a088f6bf738cadb0360f",
     "app/src/FileEditor.tsx": "91f79763e8a79bdd730dc6ac406408da3f09094893168775f4db0d7b18eacb56",
-    "app/src/FileManagerPane.tsx": "d22c5b5ae0a8a6485f6f9f2bc058778538d0e444966c751442dade5e866047fc",
+    "app/src/FileManagerPane.tsx": "dd5cc92ed3d12065545fd7f366fdb37eadc6d99eb47bdcb5c0a36ca371952807",
     "app/src/FileManagerWindow.tsx": "dc988da67aa9e75d38e7d289155f007124ca229fb5ebee3e461e93388dd88e7a",
     "app/src/HelpPane.tsx": "2bb243ef25f974e043ed341de0b9315e1c40309683ae5f641ea9c8bff5c5dd23",
     "app/src/HygienePanel.tsx": "4116b7380898da4b9f1aabf80b7a870c33c87c0c6b6e3525e5e454b87a823ed4",
@@ -164,7 +164,8 @@
   "frontend-shell": {
     "app/src/AgentLight.tsx": "9324ec8ce2091eb9a542b2663c98b1ee567ad5422b4aaa451a4ec26ebbd423d2",
     "app/src/App.tsx": "6cb7fdc4f5eb3a2cfd6b395af9b054d708e1bcf0c94b4e3bba65cdd8496cf31c",
-    "app/src/ClaudeSessionsView.tsx": "a27c9fe058961f78fd6a2f28afb5f289befd1cd605d83524b2a19476cfb9d4d4",
+    "app/src/ClaudeComposer.tsx": "a7464c365eaca216363dba0b79967e1c525c15b54f522ecf40711e13990d7891",
+    "app/src/ClaudeSessionsView.tsx": "3d1982ae1925bb199b6527a856d7c5e76eb7507048b12167c48b0b1d7558ca33",
     "app/src/CommandPalette.tsx": "08512d53521754c8c83a785784258f5767a1384a17cb1b73cba3244600d9306b",
     "app/src/Divider.tsx": "d8eca6fe0f2844a0d48394fa5b5b1e74d25f4a425419bf507143dcc6bbcc5569",
     "app/src/LayoutView.tsx": "b39071f6d31b2c0b011662f86ccfd3394a5ff93dd25fafcf19e18658bcf9f093",

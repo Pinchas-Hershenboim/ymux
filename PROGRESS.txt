@@ -7133,3 +7133,57 @@ Tests: CI only per Rule #17.
 Status: NOT VERIFIED. Round 2 (tool cards, RTL, attach flow) was never
 confirmed working either — the machine mismatch blocked reaching it.
 Still open: `/` command menu, `+` file attach.
+
+[2026-08-26] Sessions view round 4 — the composer grows a `/` menu and a `+` picker
+
+The two items left from the original review. Both are typing aids and nothing
+more: everything still leaves as plain text through pty_write, because `/foo`
+and `@path` ARE Claude Code's syntax and there is no structured protocol to
+build against. Anything either menu produces you could have typed by hand.
+
+New: app/src/ClaudeComposer.tsx (404) — split out of ClaudeSessionsView, which
+was becoming two components in one file.
+
+`/` menu. Two halves with different failure modes, and the split is the point:
+ - custom commands come from a new `claude_commands_list` Tauri command that
+   reads ~/.claude/commands/**/*.md on whichever machine the session belongs
+   to (local dir walk, or one SSH exec for a remote workspace). Cannot rot.
+ - BUILTIN_COMMANDS is a hand-kept SNAPSHOT in the frontend. The CLI has no
+   surface to enumerate its own commands, so this list can drift; the menu
+   labels the source so the drift is visible instead of silent. /vim and
+   /terminal-setup are left out on purpose — they would work, but the result
+   is only visible in the pane. /help is in, because it lists what the
+   installed version really has.
+The menu opens only while the draft starts with `/` and holds no space, and it
+claims Enter while open. Past the first space the user is writing arguments and
+a menu there would fight them for the key.
+
+`+` picker. Walks the same machine the pane is on via file_list_local /
+file_list_remote, rooted at the session's project dir. Inserts `@path`, made
+relative to that root when the file is under it and left absolute when it is
+not — a wrong relative path is worse than a long one. Both menus open UPWARDS;
+the composer is already at the bottom of the pane.
+
+Backend note: claude_commands_list lives in claude_log.rs rather than a new
+claude_commands.rs. That module already owns an SSH exec helper and a handle
+picker, and BACKLOG's workspace_fs entry counts SIX hand-rolled copies of that
+russh loop already. A seventh for twenty lines of `ls` is not worth a module
+boundary — revisit when workspace_fs lands.
+
+Drive-by: FileEntry moved from a private interface in FileManagerPane.tsx to
+types.ts. It was private while that was the only consumer; the picker made it
+the second, and two hand-kept copies of one wire shape is how they drift. Same
+class of debt as the byte-formatter entry in BACKLOG.
+
+Files: app/src-tauri/src/claude_log.rs (+160, claude_commands_list and helpers),
+app/src-tauri/src/lib.rs (invoke_handler), app/src/ClaudeComposer.tsx (new),
+app/src/ClaudeSessionsView.tsx (composer extracted out), app/src/types.ts
+(FileEntry, ClaudeCommand), app/src/FileManagerPane.tsx (use the shared type),
+app/src/App.css (+128), app/src/i18n/{en,he,ar,ru}.json (+3 keys each).
+Docs: docs/vault/{backend-claude,backend-core,frontend-lib,frontend-panes,
+frontend-shell}.md, .vault-lock.json.
+Vault: green including --diff-base origin/main.
+Tests: CI only per Rule #17.
+Status: NOT VERIFIED. Rounds 2-4 have never been run — round 3's machine-mismatch
+guard was itself never confirmed, because the mismatch blocked reaching the
+composer at all.

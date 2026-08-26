@@ -7384,3 +7384,128 @@ body.ymux-dragging .pane-conn {
   gap: 2px;
   margin-inline-end: 6px;
 }
+
+/* ─── composer menus (ClaudeComposer.tsx) ─────────────────────────────
+   Both the `/` command list and the `+` file picker sit ABOVE the input
+   rather than below it: the composer is already at the bottom of the
+   pane, and a menu opening downwards would fall off the view. */
+.cs-composer-wrap {
+  position: relative;
+}
+
+.cs-menu {
+  position: absolute;
+  inset-inline: 12px;
+  bottom: 100%;
+  margin-block-end: 6px;
+  z-index: 5;
+  background: var(--w-surface, #161b22);
+  border: 1px solid var(--w-border-hi, #2d333d);
+  border-radius: var(--w-r-md, 6px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.cs-menu-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.cs-menu-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  text-align: start;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--w-text, #e6edf3);
+  font-size: var(--w-fs-sm, 0.85em);
+}
+.cs-menu-row:hover,
+.cs-menu-row.active {
+  background: var(--w-surface-hi, #1c2230);
+}
+.cs-menu-icon {
+  flex: none;
+  color: var(--w-text-faint, #565f6a);
+}
+.cs-menu-name {
+  flex: none;
+  font-family: var(--w-font-mono, monospace);
+  color: var(--w-accent, #7aa2f7);
+}
+.cs-menu-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--w-text-dim, #7d8590);
+  font-size: var(--w-fs-xs, 0.77em);
+}
+.cs-menu-empty {
+  margin: 0;
+  padding: 10px;
+  text-align: center;
+  font-size: var(--w-fs-sm, 0.85em);
+  color: var(--w-text-faint, #565f6a);
+}
+
+.cs-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-block-end: 1px solid var(--w-border, #21262d);
+}
+.cs-picker-up {
+  flex: none;
+  width: 22px;
+  padding: 2px 0;
+  background: transparent;
+  border: 1px solid var(--w-border, #21262d);
+  border-radius: var(--w-r-sm, 4px);
+  color: var(--w-text-dim, #7d8590);
+  cursor: pointer;
+}
+.cs-picker-up:hover {
+  color: var(--w-text, #e6edf3);
+}
+/* The path is the one thing here that must never wrap: it is long, it is
+   LTR even under RTL, and the tail is the part that identifies it. */
+.cs-picker-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+  text-align: start;
+  font-family: var(--w-font-mono, monospace);
+  font-size: var(--w-fs-xs, 0.77em);
+  color: var(--w-text-dim, #7d8590);
+}
+
+.cs-composer-plus {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  font-size: 17px;
+  line-height: 1;
+  color: var(--w-text-dim, #7d8590);
+  background: var(--w-surface, #161b22);
+  border: 1px solid var(--w-border, #21262d);
+  border-radius: var(--w-r-md, 6px);
+  cursor: pointer;
+}
+.cs-composer-plus:hover:not(:disabled) {
+  color: var(--w-text, #e6edf3);
+  border-color: var(--w-border-hi, #2d333d);
+}
+.cs-composer-plus:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

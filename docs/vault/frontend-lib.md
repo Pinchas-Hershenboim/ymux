@@ -149,7 +149,7 @@ Selection and click positioning both land on the wrong side without this.
 
 ## Typed mirrors
 
-**`types.ts` (542)** — the data-model types are **generated from the Rust structs by
+**`types.ts` (600)** — the data-model types are **generated from the Rust structs by
 ts-rs** and re-exported here so `from "./types"` keeps working. Regenerate after a Rust
 struct change with `cd app/src-tauri && cargo test`. **Do not hand-edit
 `src/bindings/*.ts`.** Note ts-rs renders `Option<T>` as `T | null` — a required,
@@ -157,6 +157,11 @@ nullable key, not `T?` — so helpers such as `effectiveIdentity` widen their pa
 `T | null | undefined`. The hand-written helpers here (`paneCaps`, `profileFor`,
 `describeConnection`, `isLocalConn`, `isRemoteEffective`, `collectPanes`, `findPane`)
 are what components use to reason about a pane.
+
+`FileEntry` and `ClaudeCommand` are hand-written mirrors too, and `FileEntry` is here for
+a specific reason: `FileManagerPane` used to declare the only copy privately, and the
+composer's file picker needed the same shape. A second private copy is exactly the drift
+BACKLOG's byte-formatter entry is about, so the type moved here and both import it.
 
 **Not everything here is generated.** `TmuxSessionInfo` and `ForeignScope` are
 **hand-written mirrors** of structs that live in `lib.rs` rather than `ymux-types`, so

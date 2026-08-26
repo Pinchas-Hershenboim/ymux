@@ -122,9 +122,13 @@ it back up without reading the WebView2 single-environment constraint in
 
 ## Files
 
-**`FileManagerWindow.tsx` (151)** wraps **`FileManagerPane.tsx` (1,645)** — the dual
+**`FileManagerWindow.tsx` (151)** wraps **`FileManagerPane.tsx` (1637)** — the dual
 column local + remote SFTP manager — in the same drag/resize chrome as BrowserWindow.
 Pure HTML, no native Webview, so the only persistence concern is geometry.
+
+Its `FileEntry` interface now comes from `types.ts` rather than being declared here. It
+was private while this was the only consumer; the Sessions composer's file picker made it
+the second, and two hand-kept copies of one wire shape is how they drift.
 
 **`fmPaths.ts` (112)** remembers the last directory each column showed, per workspace, in
 localStorage — so re-opening lands where the user left off instead of snapping to
