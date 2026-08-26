@@ -1278,5 +1278,10 @@
   "cs.empty.pick": "اختر جلسة من الجانب لقراءتها.",
   "cs.composer.placeholder": "رسالة إلى Claude…",
   "cs.composer.nopane": "اتصل بلوحة طرفية للإرسال",
-  "cs.composer.send": "إرسال"
+  "cs.composer.send": "إرسال",
+  "cs.tool.in": "المدخلات",
+  "cs.tool.out": "المخرجات",
+  "cs.tool.result": "النتيجة",
+  "cs.attach.hint": "هذه الجلسة لا تعمل في اللوحة، لذا لا يوجد مكان للإرسال بعد.",
+  "cs.attach.resume": "استأنفها في اللوحة"
 }

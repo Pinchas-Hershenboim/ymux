@@ -7044,3 +7044,49 @@ a real launch (Rule #14): Local tab lists this machine's sessions, a click
 renders bubbles, the composer greys out with no live pane and sends into a
 connected one, Remote tab syncs from an SSH workspace, and the toggle back to
 the grid keeps every PTY and its scrollback.
+
+[2026-08-26] Sessions view round 2 — the composer was writing somewhere invisible
+
+Three things, found by running the thing (Rule #14 earning its keep).
+
+1. THE COMPOSER DID NOT WORK, and the way it failed was the bad kind. It read
+whatever session you picked and wrote to whatever pane was focused, and those
+were never bound. Open an old transcript, type, press Enter: the text went
+into the conversation the pane was already running, and nothing appeared on
+screen. Not a disabled box — a box that wrote somewhere you could not see.
+Now `writable()` is true only when `attached()` (the session THIS view
+resumed into the pane) equals the session being read. Anything else shows an
+attach bar whose button runs `claude --resume <id>` from the session's own
+project dir, through the `connectPane` plumbing PaneView already had for the
+session picker. onResume returns a promise, so the composer is never enabled
+against a pane that has not been pointed at the session yet.
+
+2. TOOLS RENDERED AS MESSAGE TEXT because the parser could not do otherwise.
+`entry_from_json` returned one entry per transcript line, but a tool_use is a
+BLOCK inside message.content, not a line — so extract_text flattened it to the
+literal string `[Tool: Bash]` and the input and output never crossed the IPC
+boundary at all. Now `entries_from_json` returns a Vec and expands each block
+into its own entry; a call keeps its id, its answer keeps tool_use_id, and the
+frontend pairs them into one collapsible card with Input and Output. Bodies
+capped at TOOL_BODY_MAX=4000 chars and they say how much they cut.
+`line_no` is no longer unique across the stream — callers beware.
+
+3. RTL. `dir="rtl"` on .cs-root rather than inherited from the app shell: the
+UI language can stay English while the conversations are Hebrew. Every rule in
+the stylesheet was already using logical properties, so one attribute mirrors
+the column, the bubbles and the composer. Bubbles keep dir="auto"; tool bodies
+are pinned dir="ltr" because they are shell, code and JSON.
+
+Files: app/src-tauri/src/claude_log.rs (entries_from_json + pretty_tool_input +
+tool_result_body + cap_body; ClaudeLogEntry gains tool_id/tool_input),
+app/src/ClaudeSessionsView.tsx (rendered() pairing, tool cards, attach bar,
+dir=rtl), app/src/App.tsx (onResume -> connectPane --resume), app/src/types.ts,
+app/src/App.css, app/src/i18n/{en,he,ar,ru}.json (+5 keys each).
+Docs: docs/vault/{backend-claude,frontend-shell}.md, .vault-lock.json.
+Vault: green, including `--diff-base origin/main` (the mode CI runs).
+Tests: CI only per Rule #17.
+Status: round 1 IS verified live — installed 0.5.0 from the fork's CI build and
+the view renders real sessions. Round 2 is NOT verified: tool cards, the attach
+flow and RTL have never been run.
+Still open from the same review: a `/` command menu in the composer, and a `+`
+for attaching files as `@path`.

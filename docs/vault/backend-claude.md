@@ -63,7 +63,7 @@ against a 5-minute write's 1.25x, and collapsing them understates a long session
 **Rule #1 by construction:** it reads `message.model`, `message.usage`, the timestamp,
 the session id and the cwd. It never reads message content, and it logs only counts.
 
-## `claude_log.rs` (716) — the transcript reader behind the Sessions view
+## `claude_log.rs` (871) — the transcript reader behind the Sessions view
 
 Backend for the ClaudeLog pane Phase 24.D removed from the frontend ("three competing
 'talk to claude' UIs felt fragmented"). Yossi asked to keep the backend for a future
@@ -86,7 +86,7 @@ copy under `%APPDATA%\ymux\claude-logs\<workspace_id>\`.
 
 **Direct — this machine.** A local workspace has no server to mirror from, so the
 mirror stays empty for it and `claude_log_list` answered `[]` forever. These two read
-`~/.claude/projects` in place instead, sharing `summarize_jsonl` and `entry_from_json`
+`~/.claude/projects` in place instead, sharing `summarize_jsonl` and `entries_from_json`
 with the mirrored path so the two sources can never render differently.
 
 - `claude_log_list_local()` — walks exactly one project level, because that is how deep
@@ -96,6 +96,29 @@ with the mirrored path so the two sources can never render differently.
 - `claude_log_read_local(session_id)` — same parse. It rejects any id that is not a bare
   filename stem, because the id is joined into a path and a `..` would otherwise read an
   arbitrary file.
+
+### One line is not one entry
+
+`entries_from_json` returns a `Vec`, and that shape is the whole reason a tool call can
+be drawn as a card. A `tool_use` almost never arrives as its own transcript line — it is
+one block inside `message.content`, next to the assistant's prose. While the parser
+returned a single entry per line, `extract_text` had to flatten the call into the literal
+string `[Tool: Bash]` inside the message body: there was no separate event to draw, and
+the input and output were gone before the frontend saw anything. Expanding blocks into
+their own entries fixes it at the source. `line_no` is therefore **not unique** across
+the returned stream.
+
+A call carries `tool_id` (`tool_use.id`) and its answer carries the same id
+(`tool_result.tool_use_id`), which is how the frontend pairs them into one card.
+`pretty_tool_input` unwraps a single-string input to its raw value rather than
+JSON-escaping it — a Bash `command` or an Edit `new_string` is what the reader came for,
+and `\n`-escaping a shell script makes it unreadable for no gain. Both sides are capped
+at `TOOL_BODY_MAX` (4,000 chars) and say how much they cut, because a reader who cannot
+tell truncation from a tool that returned nothing goes looking for a bug. Without the cap
+a session with a few `cat` results re-serialises megabytes on every 2.5s poll.
+
+`extract_text` still exists and still flattens, because `summarize_jsonl` wants exactly
+that for the one-line session-list preview.
 
 **Do not delete this as dead code.** The mirrored half predates its caller by a release
 and the header says why.

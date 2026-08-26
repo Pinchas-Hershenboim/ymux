@@ -1278,5 +1278,10 @@
   "cs.empty.pick": "בחר סשן מהצד כדי לקרוא אותו.",
   "cs.composer.placeholder": "הודעה ל‑Claude…",
   "cs.composer.nopane": "חבר חלונית טרמינל כדי לשלוח",
-  "cs.composer.send": "שלח"
+  "cs.composer.send": "שלח",
+  "cs.tool.in": "קלט",
+  "cs.tool.out": "פלט",
+  "cs.tool.result": "תוצאה",
+  "cs.attach.hint": "הסשן הזה לא רץ בחלונית, אז אין לאן לשלוח עדיין.",
+  "cs.attach.resume": "המשך אותו בחלונית"
 }

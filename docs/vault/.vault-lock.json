@@ -1,6 +1,6 @@
 {
   "backend-claude": {
-    "app/src-tauri/src/claude_log.rs": "0f4d0a7ddd0266c59d90befcba24349cafd295878e2942e83a336886518c864e",
+    "app/src-tauri/src/claude_log.rs": "de4fdd223aa3f473240091b4ec7360bfaabf01c17aaf2baf8bab32f0b706003c",
     "app/src-tauri/src/claude_summary.rs": "6c00db5263d04bc5e2c641e22fa255a8494574653e78e8125e8f3ab6eaf1fca9",
     "app/src-tauri/src/claude_usage.rs": "57c87c2c494e783aab50a24fd6b268df110457f2399d3fa457986bd9dc7302b3",
     "app/src-tauri/src/claude_usage_local.rs": "b0f1abecd1e23d0fc8083e940509f70449bb04beefbe2bd98e79056e5b6b304e",
@@ -126,7 +126,7 @@
     "app/src/stt.ts": "468bb7ca66e3336650b1ebc9451bbe38300718471cba42f7260a1e7660abdb94",
     "app/src/terminalInstance.ts": "13b7da60b291dbb2060ea6c90f085e2a443fdd64904ad936255ab9468845d8f8",
     "app/src/textDirection.ts": "b2c78aa9f8a1e8770e7902b6bd3f75a77f290b1882cf8bcc4e999fd08d88d1fb",
-    "app/src/types.ts": "aa315ebb5ce3fc361d0e9230472655483813e0cd4b9f73bcdc6a4e125616760d"
+    "app/src/types.ts": "eea6018548229afcd8e366a313d78c1d5ab8974eb0bcbfeba1e005e43305bd94"
   },
   "frontend-panes": {
     "app/src/AddonsTab.tsx": "6eff5e7b1389af86debd3194ff02917788346a7801134b41403c48d9b4578c43",
@@ -163,8 +163,8 @@
   },
   "frontend-shell": {
     "app/src/AgentLight.tsx": "9324ec8ce2091eb9a542b2663c98b1ee567ad5422b4aaa451a4ec26ebbd423d2",
-    "app/src/App.tsx": "c0874f41c285e9d0bf3949a286416c68d4bd8462cb14418a5c9ed53a65d4a9ed",
-    "app/src/ClaudeSessionsView.tsx": "ebcc8a5c84269da3e260eef824a6d5b4cbabcc8e24fcad837b676a9f80f5150c",
+    "app/src/App.tsx": "6ccfb9247560903bb24c4623ea26ec4bdea2b5b36e6f1db988831768693e3d05",
+    "app/src/ClaudeSessionsView.tsx": "4a992a67e043715c629ee05871b89cf4ba2bf719e3a31c75285f1f7601e9bece",
     "app/src/CommandPalette.tsx": "08512d53521754c8c83a785784258f5767a1384a17cb1b73cba3244600d9306b",
     "app/src/Divider.tsx": "d8eca6fe0f2844a0d48394fa5b5b1e74d25f4a425419bf507143dcc6bbcc5569",
     "app/src/LayoutView.tsx": "b39071f6d31b2c0b011662f86ccfd3394a5ff93dd25fafcf19e18658bcf9f093",

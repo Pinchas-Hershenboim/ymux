@@ -4072,6 +4072,27 @@ function App() {
                 <ClaudeSessionsView
                   workspaceId={activeWs()!.id}
                   activePaneId={activePaneId()}
+                  onResume={async (sessionId, projectPath) => {
+                    const pid = activePaneId();
+                    if (!pid) return;
+                    const opts: ConnectOpts = {
+                      mode: "claude",
+                      claudeArgs: `--resume ${sessionId}`,
+                    };
+                    // The same guard PaneView applies to a picked resume
+                    // session: an encoded `~/.claude/projects/<dir>` name is
+                    // display-only and must never be `cd`-ed to. A Windows
+                    // project path is absolute too, so this is not a
+                    // startsWith("/") test.
+                    if (
+                      projectPath &&
+                      (projectPath.startsWith("/") ||
+                        /^[A-Za-z]:[\\/]/.test(projectPath))
+                    ) {
+                      opts.cwdOverride = projectPath;
+                    }
+                    await connectPane(pid, opts);
+                  }}
                 />
               }
             >

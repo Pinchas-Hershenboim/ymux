@@ -15,8 +15,10 @@
 //!   - claude_log_list(workspace_id) — pure local directory scan of
 //!     the mirror + per-file summary
 //!   - claude_log_read(workspace_id, session_id) — parses one mirrored
-//!     jsonl into a structured ClaudeLogEntry stream (handles content
-//!     as string OR block array; summarizes tool_use/tool_result)
+//!     jsonl into a structured ClaudeLogEntry stream. One line expands
+//!     to zero or more entries: each content block becomes its own,
+//!     so a tool call is an event with an id, an input and an output,
+//!     rather than the string `[Tool: Bash]` inside a message body.
 //!
 //! Direct — for THIS machine, which has no server to mirror from and
 //! so read as permanently empty through the commands above:
@@ -68,11 +70,26 @@ pub(crate) struct ClaudeLogEntry {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// `tool_use.id` on a call, `tool_result.tool_use_id` on its answer. The
+    /// frontend pairs the two into one card by this, so a call and its output
+    /// are never shown as two unrelated events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
+    /// Pretty-printed `tool_use.input`, capped. The one-line `text` summary is
+    /// what the collapsed card shows; this is what it expands to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
+
+/// How much of a tool's input or output crosses the IPC boundary. A card shows
+/// the head and says how much it cut; the full thing is in the terminal, which
+/// is one click away. Without a cap a session with a few `cat` results serialises
+/// megabytes on every 2.5s poll.
+const TOOL_BODY_MAX: usize = 4000;
 
 // ─── storage paths ─────────────────────────────────────────────────────────
 
@@ -382,9 +399,7 @@ pub(crate) fn claude_log_read(
             Ok(v) => v,
             Err(_) => continue, // skip malformed lines silently
         };
-        if let Some(entry) = entry_from_json(&v, idx + 1) {
-            out.push(entry);
-        }
+        out.extend(entries_from_json(&v, idx + 1));
     }
     Ok(out)
 }
@@ -498,9 +513,7 @@ pub(crate) fn claude_log_read_local(session_id: String) -> Result<Vec<ClaudeLogE
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue; // skip malformed lines silently, as the mirrored reader does
         };
-        if let Some(entry) = entry_from_json(&v, idx + 1) {
-            out.push(entry);
-        }
+        out.extend(entries_from_json(&v, idx + 1));
     }
     Ok(out)
 }
@@ -557,8 +570,23 @@ fn summarize_jsonl(
 
 /// Build a ClaudeLogEntry from one parsed jsonl line. Returns None
 /// for entries we don't recognize (so callers can silently skip).
-fn entry_from_json(v: &serde_json::Value, line_no: usize) -> Option<ClaudeLogEntry> {
-    let ty = v.get("type").and_then(|x| x.as_str())?.to_string();
+/// One transcript line becomes **zero or more** entries.
+///
+/// This used to return a single entry, and that was the bug behind "the tool
+/// shows up as a message". A `tool_use` almost never appears at the top level —
+/// it is one block inside `message.content`, alongside the assistant's prose —
+/// so flattening a line into one entry meant `extract_text` had to render the
+/// call as the literal string `[Tool: Bash]` inside the message body. There was
+/// no separate event to draw a card from, and the input and output were gone by
+/// the time the frontend saw anything.
+///
+/// So a line is expanded instead: each content block becomes its own entry, in
+/// order, and a tool call keeps its `id` so the frontend can pair it with the
+/// `tool_result` that answers it.
+fn entries_from_json(v: &serde_json::Value, line_no: usize) -> Vec<ClaudeLogEntry> {
+    let Some(ty) = v.get("type").and_then(|x| x.as_str()).map(|s| s.to_string()) else {
+        return Vec::new();
+    };
     let timestamp = v
         .get("timestamp")
         .and_then(|x| x.as_str())
@@ -567,46 +595,168 @@ fn entry_from_json(v: &serde_json::Value, line_no: usize) -> Option<ClaudeLogEnt
         .get("sessionId")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string());
-    let (text, tool_name) = match ty.as_str() {
-        "user" | "assistant" => (extract_text(v), None),
-        "system" => (
-            v.get("content")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-            None,
-        ),
-        "summary" => (
-            v.get("summary")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-            None,
-        ),
-        // tool_use / tool_result rarely appear at the top level —
-        // they're usually nested inside message.content blocks. If
-        // they DO appear top-level (some claude versions emit
-        // tool_use as its own line), surface them too.
-        "tool_use" => (
-            extract_tool_use_summary(v),
-            v.get("name").and_then(|x| x.as_str()).map(|s| s.to_string()),
-        ),
-        "tool_result" => (
-            extract_tool_result_summary(v),
-            v.get("tool_use_id")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
-        ),
-        _ => return None, // unknown type — skip silently
-    };
-    Some(ClaudeLogEntry {
+
+    // Every entry off this line shares the line's metadata.
+    let mk = |entry_type: &str,
+              text: String,
+              tool_name: Option<String>,
+              tool_id: Option<String>,
+              tool_input: Option<String>| ClaudeLogEntry {
         line_no,
-        entry_type: ty,
+        entry_type: entry_type.to_string(),
         text,
         tool_name,
-        timestamp,
-        session_id,
-    })
+        tool_id,
+        tool_input,
+        timestamp: timestamp.clone(),
+        session_id: session_id.clone(),
+    };
+
+    match ty.as_str() {
+        "user" | "assistant" => {
+            let content = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .or_else(|| v.get("content"));
+            // A plain string body is the whole turn, with no blocks to expand.
+            if let Some(s) = content.and_then(|c| c.as_str()) {
+                let s = s.trim();
+                if s.is_empty() {
+                    return Vec::new();
+                }
+                return vec![mk(&ty, s.to_string(), None, None, None)];
+            }
+            let Some(blocks) = content.and_then(|c| c.as_array()) else {
+                return Vec::new();
+            };
+            let mut out: Vec<ClaudeLogEntry> = Vec::new();
+            for block in blocks {
+                let bty = block.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                match bty {
+                    "text" => {
+                        let t = block
+                            .get("text")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .trim();
+                        if !t.is_empty() {
+                            out.push(mk(&ty, t.to_string(), None, None, None));
+                        }
+                    }
+                    "tool_use" => out.push(mk(
+                        "tool_use",
+                        extract_tool_use_summary(block),
+                        block.get("name").and_then(|x| x.as_str()).map(String::from),
+                        block.get("id").and_then(|x| x.as_str()).map(String::from),
+                        Some(pretty_tool_input(block)),
+                    )),
+                    "tool_result" => out.push(mk(
+                        "tool_result",
+                        tool_result_body(block),
+                        None,
+                        block
+                            .get("tool_use_id")
+                            .and_then(|x| x.as_str())
+                            .map(String::from),
+                        None,
+                    )),
+                    "image" => out.push(mk("image", String::new(), None, None, None)),
+                    _ => {}
+                }
+            }
+            out
+        }
+        "system" => {
+            let t = v.get("content").and_then(|x| x.as_str()).unwrap_or("").trim();
+            if t.is_empty() {
+                Vec::new()
+            } else {
+                vec![mk(&ty, t.to_string(), None, None, None)]
+            }
+        }
+        "summary" => {
+            let t = v.get("summary").and_then(|x| x.as_str()).unwrap_or("").trim();
+            if t.is_empty() {
+                Vec::new()
+            } else {
+                vec![mk(&ty, t.to_string(), None, None, None)]
+            }
+        }
+        // Some Claude versions do emit these as their own top-level lines.
+        "tool_use" => vec![mk(
+            "tool_use",
+            extract_tool_use_summary(v),
+            v.get("name").and_then(|x| x.as_str()).map(String::from),
+            v.get("id").and_then(|x| x.as_str()).map(String::from),
+            Some(pretty_tool_input(v)),
+        )],
+        "tool_result" => vec![mk(
+            "tool_result",
+            tool_result_body(v),
+            None,
+            v.get("tool_use_id")
+                .and_then(|x| x.as_str())
+                .map(String::from),
+            None,
+        )],
+        _ => Vec::new(), // unknown type — skip silently
+    }
+}
+
+/// `tool_use.input` as indented JSON, capped. A string field is unwrapped to
+/// its raw value first: a Bash `command` or an Edit `new_string` is what the
+/// reader came for, and JSON-escaping the newlines out of it makes a shell
+/// script unreadable for no gain.
+fn pretty_tool_input(block: &serde_json::Value) -> String {
+    let Some(input) = block.get("input") else {
+        return String::new();
+    };
+    if let Some(map) = input.as_object() {
+        if map.len() == 1 {
+            if let Some(s) = map.values().next().and_then(|x| x.as_str()) {
+                return cap_body(s);
+            }
+        }
+    }
+    match serde_json::to_string_pretty(input) {
+        Ok(s) => cap_body(&s),
+        Err(_) => String::new(),
+    }
+}
+
+/// A `tool_result`'s content, string or block array, capped for transport.
+fn tool_result_body(block: &serde_json::Value) -> String {
+    let content = block.get("content");
+    if let Some(s) = content.and_then(|x| x.as_str()) {
+        return cap_body(s);
+    }
+    if let Some(arr) = content.and_then(|x| x.as_array()) {
+        let mut buf = String::new();
+        for b in arr {
+            if let Some(t) = b.get("text").and_then(|x| x.as_str()) {
+                if !buf.is_empty() {
+                    buf.push('\n');
+                }
+                buf.push_str(t);
+                if buf.len() > TOOL_BODY_MAX {
+                    break;
+                }
+            }
+        }
+        return cap_body(&buf);
+    }
+    String::new()
+}
+
+/// Cap by chars, and say so rather than trailing off — a reader who cannot tell
+/// truncation from a tool that returned nothing will go looking for a bug.
+fn cap_body(s: &str) -> String {
+    if s.chars().count() <= TOOL_BODY_MAX {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(TOOL_BODY_MAX).collect();
+    let cut = s.chars().count() - TOOL_BODY_MAX;
+    format!("{head}\n… {cut} more characters (see the terminal for the rest)")
 }
 
 /// Pull the text content out of a user/assistant entry. Handles

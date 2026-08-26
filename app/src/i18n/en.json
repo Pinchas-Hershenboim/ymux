@@ -1278,5 +1278,10 @@
   "cs.empty.pick": "Pick a session on the left to read it.",
   "cs.composer.placeholder": "Message Claude…",
   "cs.composer.nopane": "Connect a terminal pane to send",
-  "cs.composer.send": "Send"
+  "cs.composer.send": "Send",
+  "cs.tool.in": "Input",
+  "cs.tool.out": "Output",
+  "cs.tool.result": "Result",
+  "cs.attach.hint": "This session isn't running in the pane, so there is nowhere to send yet.",
+  "cs.attach.resume": "Resume it in the pane"
 }

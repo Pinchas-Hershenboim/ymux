@@ -45,7 +45,7 @@ collide — and neither can their capability globs, which are prefix-anchored to
 xterm CSS and `App.css` imports at the top are global on purpose: a popout that skipped
 them rendered unstyled, which read as a blank white window.
 
-## `App.tsx` (4,828) — one component, ~50 signals
+## `App.tsx` (4,849) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -105,7 +105,7 @@ persisting it would cost a `workspaces.json` write per toggle. The swap is safe 
 the DOM detach — switching back re-attaches the same PTYs with scrollback intact, which
 is the whole reason this is a view toggle and not a fourth pane kind.
 
-## `ClaudeSessionsView.tsx` (431) — the unified Claude view
+## `ClaudeSessionsView.tsx` (604) — the unified Claude view
 
 The rebuild Phase 24.D parked. Phase 22's `ClaudeChatPane` and Phase 24.B's
 `ClaudeLogPane` were reverted because "three competing 'talk to claude' UIs felt
@@ -125,11 +125,38 @@ That split is the design, and it is what keeps the two surfaces honest:
   second conversation for the two views to drift between, and no chat backend to
   maintain: `claude_chat.rs` stayed deleted.
 
-The composer is disabled unless `sessionIdForPane(activePaneId)` resolves, so it never
-implies it can send when there is no live terminal behind it. That lookup walks
-`g_terminals`, which is a plain module set and not a signal — nothing invalidates it
-when a pane connects — so a 1s `ptyTick` counter drives the memo. Without it the
-composer stays greyed out until some unrelated render happens to re-run.
+**Reading any session and writing to the focused pane are not the same thing, and
+binding them is the load-bearing rule here.** The first cut sent into whatever pane was
+focused. Open an old transcript, type, and the text went into the conversation the pane
+was already running — a different one — so nothing appeared in the transcript on screen.
+That is worse than a disabled box: it wrote somewhere invisible. So `writable()` is true
+only when `attached()` — the session **this view resumed into the pane** — equals the
+session being read. Anything else shows the attach bar instead, whose button calls
+`onResume`, which App turns into `connectPane(pid, { mode: "claude", claudeArgs:
+"--resume <id>", cwdOverride })`, reusing the plumbing `PaneView` already had for the
+session picker. `onResume` returns a promise so the composer is never enabled against a
+pane that has not been pointed at the session yet, and the attached session is marked in
+the list.
+
+`ptySession()` guards the other half — there must be a live PTY at all. That lookup walks
+`g_terminals`, which is a plain module set and not a signal, so nothing invalidates it
+when a pane connects; a 1s `ptyTick` counter drives the memo. Without it the composer
+stays greyed out until some unrelated render happens to re-run.
+
+**Tool calls are cards, not message text.** `rendered()` pairs each `tool_use` with the
+`tool_result` carrying the same `tool_id` and emits one card for the two, collapsed by
+default — a transcript is mostly tool traffic, and expanding it all buries the
+conversation. An orphan result (its call missing, which is normal in a transcript that
+begins mid-`--resume`) still draws, because dropping it would look like the tool did
+nothing. Bodies render `dir="ltr"` in monospace and scroll inside the card: they are
+shell, code and JSON, and letting them widen the transcript would break the message
+column.
+
+**`dir="rtl"` is set on `.cs-root`, not inherited.** The UI language can stay English
+while the conversations are Hebrew, and the conversation is what this surface exists to
+show. Every rule in the stylesheet uses logical properties, so that one attribute
+mirrors the session column, the bubble sides and the composer, while each bubble keeps
+its own `dir="auto"` for its actual content.
 
 **An open transcript is polled, not subscribed to.** Claude appends to the JSONL
 directly and emits no event, so `POLL_MS` (2.5s) re-reads it. The reader only touches

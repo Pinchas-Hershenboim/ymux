@@ -39,12 +39,24 @@ type Source = "local" | "remote";
  *  appends to the JSONL directly. Cheap: a few hundred KB parsed in Rust. */
 const POLL_MS = 2500;
 
+/** One thing to draw. A tool call and the result answering it are ONE card,
+ *  paired by `tool_id`, because splitting them reads as two unrelated events. */
+type Rendered =
+  | { kind: "msg"; entry: ClaudeLogEntry }
+  | { kind: "tool"; call: ClaudeLogEntry; result?: ClaudeLogEntry }
+  | { kind: "meta"; entry: ClaudeLogEntry };
+
 interface Props {
   workspaceId: string;
   /** Pane whose PTY the composer writes into — the terminal running `claude`.
    *  Null when the workspace has no pane focused, which disables the composer
    *  rather than guessing at a target. */
   activePaneId: string | null;
+  /** Launch `claude --resume <sessionId>` in the active pane, from the
+   *  session's own project directory. App owns `connectPane`; this view only
+   *  asks. Resolves once the connect attempt is done, so the composer is not
+   *  enabled against a pane that has not been pointed at this session yet. */
+  onResume: (sessionId: string, projectPath?: string) => Promise<void>;
 }
 
 export function ClaudeSessionsView(p: Props) {
@@ -58,6 +70,10 @@ export function ClaudeSessionsView(p: Props) {
   const [draft, setDraft] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [ptyTick, setPtyTick] = createSignal(0);
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
+  // Which session this view actually resumed into the pane. Writing is only
+  // offered for THIS one — see the note on `writable` below.
+  const [attached, setAttached] = createSignal<string | null>(null);
 
   let transcriptEl: HTMLDivElement | undefined;
   let pollTimer: number | undefined;
@@ -181,6 +197,47 @@ export function ClaudeSessionsView(p: Props) {
     () => sessions().find((s) => s.session_id === selected()) ?? null,
   );
 
+  /** Pair each tool call with its result, so a card can show both.
+   *
+   *  A `tool_result` whose `tool_use` is missing still gets drawn — a
+   *  transcript that begins mid-turn is normal after a `--resume`, and
+   *  silently dropping the output would look like the tool did nothing. */
+  const rendered = createMemo<Rendered[]>(() => {
+    const es = entries();
+    const resultFor = new Map<string, ClaudeLogEntry>();
+    const hasCall = new Set<string>();
+    for (const e of es) {
+      if (!e.tool_id) continue;
+      if (e.entry_type === "tool_result") resultFor.set(e.tool_id, e);
+      if (e.entry_type === "tool_use") hasCall.add(e.tool_id);
+    }
+    const out: Rendered[] = [];
+    for (const e of es) {
+      switch (e.entry_type) {
+        case "user":
+        case "assistant":
+          out.push({ kind: "msg", entry: e });
+          break;
+        case "tool_use":
+          out.push({
+            kind: "tool",
+            call: e,
+            result: e.tool_id ? resultFor.get(e.tool_id) : undefined,
+          });
+          break;
+        case "tool_result":
+          // Drawn inside its call's card whenever that call is present.
+          if (!e.tool_id || !hasCall.has(e.tool_id)) {
+            out.push({ kind: "tool", call: e });
+          }
+          break;
+        default:
+          out.push({ kind: "meta", entry: e });
+      }
+    }
+    return out;
+  });
+
   /** The composer is only honest when there is a PTY to write into.
    *
    *  `g_terminals` is a plain module set rather than a signal, so a pane
@@ -192,6 +249,18 @@ export function ClaudeSessionsView(p: Props) {
     ptyTick();
     return p.activePaneId ? sessionIdForPane(p.activePaneId) : null;
   });
+
+  /** Writing is offered ONLY for the session this view resumed into the pane.
+   *
+   *  The first cut sent into whatever pane happened to be focused, which meant
+   *  opening an old transcript and typing put the text into a DIFFERENT
+   *  conversation — the one the pane was already running — and nothing
+   *  appeared in the transcript being read. It looked like the composer was
+   *  broken. It was worse than broken: it was writing somewhere invisible.
+   *  So the two are bound explicitly, and anything else offers Resume. */
+  const writable = createMemo(
+    () => !!ptySession() && !!selected() && attached() === selected(),
+  );
 
   const age = (epochSecs: number) =>
     epochSecs
@@ -220,10 +289,34 @@ export function ClaudeSessionsView(p: Props) {
     if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
+  const toggleExpanded = (id: string) => {
+    const next = new Set(expanded());
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setExpanded(next);
+  };
+
+  const [resuming, setResuming] = createSignal(false);
+
+  const resumeHere = async () => {
+    const sid = selected();
+    if (!sid || resuming()) return;
+    setResuming(true);
+    try {
+      await p.onResume(sid, current()?.project_path ?? undefined);
+      setAttached(sid);
+    } catch (e) {
+      log.error("resume failed", e);
+      setError(String(e));
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const send = async () => {
     const text = draft().trim();
     const sid = ptySession();
-    if (!text || !sid) return;
+    if (!text || !sid || !writable()) return;
     try {
       // The same call PaneView makes on every keystroke. The trailing `\r`
       // submits, exactly as pressing Enter in the terminal would.
@@ -244,57 +337,87 @@ export function ClaudeSessionsView(p: Props) {
     }
   };
 
-  // ─── bubbles ────────────────────────────────────────────────────────────
+  // ─── pieces ─────────────────────────────────────────────────────────────
 
-  const bubble = (entry: ClaudeLogEntry) => {
-    switch (entry.entry_type) {
-      case "user":
-        return (
-          <div class="cs-row cs-row-user">
-            <div class="cs-bubble cs-bubble-user" dir="auto">
-              {entry.text}
-            </div>
-          </div>
-        );
-      case "assistant":
-        return (
-          <div class="cs-row cs-row-assistant">
-            <div class="cs-bubble cs-bubble-assistant" dir="auto">
-              {entry.text}
-            </div>
-          </div>
-        );
-      case "tool_use":
-        return (
-          <div class="cs-tool" dir="auto">
-            <span class="cs-tool-name">{entry.tool_name ?? "?"}</span>
-            <Show when={entry.text}>
-              <span class="cs-tool-args">{entry.text}</span>
+  const message = (entry: ClaudeLogEntry) => (
+    <div
+      class="cs-row"
+      classList={{
+        "cs-row-user": entry.entry_type === "user",
+        "cs-row-assistant": entry.entry_type !== "user",
+      }}
+    >
+      <div
+        class="cs-bubble"
+        classList={{
+          "cs-bubble-user": entry.entry_type === "user",
+          "cs-bubble-assistant": entry.entry_type !== "user",
+        }}
+        dir="auto"
+      >
+        {entry.text}
+      </div>
+    </div>
+  );
+
+  /** A tool call as one card: name + one-line summary always, the full input
+   *  and output behind a click. Collapsed by default — a transcript is mostly
+   *  tool traffic, and expanding it all by default buries the conversation. */
+  const toolCard = (call: ClaudeLogEntry, result?: ClaudeLogEntry) => {
+    const id = call.tool_id ?? `line-${call.line_no}`;
+    const isOpen = () => expanded().has(id);
+    const hasBody = () => !!call.tool_input || !!result?.text || !!call.text;
+    return (
+      <div class="cs-tool-card" classList={{ open: isOpen() }}>
+        <button
+          class="cs-tool-head"
+          onClick={() => hasBody() && toggleExpanded(id)}
+          disabled={!hasBody()}
+        >
+          <span class="cs-tool-caret" aria-hidden="true">
+            {isOpen() ? "▾" : "▸"}
+          </span>
+          <span class="cs-tool-name">
+            {call.tool_name ?? t("cs.tool.result")}
+          </span>
+          <span class="cs-tool-summary" dir="auto">
+            {call.tool_name ? call.text : ""}
+          </span>
+        </button>
+        <Show when={isOpen()}>
+          <div class="cs-tool-body">
+            <Show when={call.tool_input}>
+              <div class="cs-tool-section">
+                <span class="cs-tool-label">{t("cs.tool.in")}</span>
+                <pre class="cs-tool-pre" dir="ltr">
+                  {call.tool_input}
+                </pre>
+              </div>
+            </Show>
+            <Show when={result?.text ?? (call.tool_name ? "" : call.text)}>
+              <div class="cs-tool-section">
+                <span class="cs-tool-label">{t("cs.tool.out")}</span>
+                <pre class="cs-tool-pre" dir="ltr">
+                  {result?.text ?? call.text}
+                </pre>
+              </div>
             </Show>
           </div>
-        );
-      case "tool_result":
-        return (
-          <div class="cs-tool cs-tool-result" dir="auto">
-            <span class="cs-tool-args">{entry.text}</span>
-          </div>
-        );
-      case "system":
-      case "summary":
-        return (
-          <div class="cs-meta-line" dir="auto">
-            {entry.text}
-          </div>
-        );
-      default:
-        return null;
-    }
+        </Show>
+      </div>
+    );
   };
 
   // ─── render ─────────────────────────────────────────────────────────────
 
+  // dir="rtl" is set on the view rather than inherited from the app shell:
+  // the UI language can stay English while the conversations are Hebrew, and
+  // it is the conversation this surface exists to show. Every rule in the
+  // stylesheet uses logical properties, so the whole layout mirrors from here
+  // — session column, bubble sides, composer — while each bubble keeps its
+  // own dir="auto" for its actual content.
   return (
-    <div class="cs-root">
+    <div class="cs-root" dir="rtl">
       <aside class="cs-sessions">
         <div class="cs-source">
           <button
@@ -347,7 +470,10 @@ export function ClaudeSessionsView(p: Props) {
               {(s) => (
                 <button
                   class="cs-item"
-                  classList={{ active: s.session_id === selected() }}
+                  classList={{
+                    active: s.session_id === selected(),
+                    attached: s.session_id === attached(),
+                  }}
                   onClick={() => setSelected(s.session_id)}
                   title={s.project_path ?? s.session_id}
                 >
@@ -396,7 +522,19 @@ export function ClaudeSessionsView(p: Props) {
               when={!loading()}
               fallback={<p class="cs-empty">{t("cs.loading")}</p>}
             >
-              <For each={entries()}>{(e) => bubble(e)}</For>
+              <For each={rendered()}>
+                {(r) =>
+                  r.kind === "msg" ? (
+                    message(r.entry)
+                  ) : r.kind === "tool" ? (
+                    toolCard(r.call, r.result)
+                  ) : (
+                    <div class="cs-meta-line" dir="auto">
+                      {r.entry.text}
+                    </div>
+                  )
+                }
+              </For>
             </Show>
           </div>
         </Show>
@@ -407,36 +545,59 @@ export function ClaudeSessionsView(p: Props) {
           </div>
         </Show>
 
-        <form
-          class="cs-composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send();
-          }}
+        {/* The composer never writes blind. Until this view has resumed the
+            open session into the pane, there is no way to know the pane is
+            running the conversation on screen — so it offers Resume instead
+            of a text box that would land somewhere invisible. */}
+        <Show
+          when={writable()}
+          fallback={
+            <Show when={selected()}>
+              <div class="cs-attach" dir="auto">
+                <span class="cs-attach-text">
+                  {ptySession()
+                    ? t("cs.attach.hint")
+                    : t("cs.composer.nopane")}
+                </span>
+                <Show when={ptySession()}>
+                  <button
+                    class="cs-attach-btn"
+                    disabled={resuming()}
+                    onClick={() => void resumeHere()}
+                  >
+                    {resuming() ? t("cs.loading") : t("cs.attach.resume")}
+                  </button>
+                </Show>
+              </div>
+            </Show>
+          }
         >
-          <textarea
-            class="cs-composer-input"
-            dir="auto"
-            rows={1}
-            placeholder={
-              ptySession()
-                ? t("cs.composer.placeholder")
-                : t("cs.composer.nopane")
-            }
-            disabled={!ptySession()}
-            value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
-            onKeyDown={onComposerKey}
-          />
-          <button
-            class="cs-composer-send"
-            type="submit"
-            disabled={!ptySession() || !draft().trim()}
-            title={t("cs.composer.send")}
+          <form
+            class="cs-composer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send();
+            }}
           >
-            {t("cs.composer.send")}
-          </button>
-        </form>
+            <textarea
+              class="cs-composer-input"
+              dir="auto"
+              rows={1}
+              placeholder={t("cs.composer.placeholder")}
+              value={draft()}
+              onInput={(e) => setDraft(e.currentTarget.value)}
+              onKeyDown={onComposerKey}
+            />
+            <button
+              class="cs-composer-send"
+              type="submit"
+              disabled={!draft().trim()}
+              title={t("cs.composer.send")}
+            >
+              {t("cs.composer.send")}
+            </button>
+          </form>
+        </Show>
       </section>
     </div>
   );

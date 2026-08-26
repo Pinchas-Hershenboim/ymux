@@ -7194,31 +7194,118 @@ body.ymux-dragging .pane-conn {
   color: var(--w-text, #e6edf3);
 }
 
-.cs-tool {
+/* A tool call and its result as one card. Collapsed by default: a transcript
+   is mostly tool traffic, and expanding it all buries the conversation. */
+.cs-tool-card {
   align-self: center;
-  max-width: min(80ch, 92%);
+  width: min(80ch, 94%);
+  background: var(--w-surface, #161b22);
+  border: 1px solid var(--w-border, #21262d);
+  border-radius: var(--w-r-md, 6px);
+  overflow: hidden;
+}
+.cs-tool-card.open {
+  border-color: var(--w-border-hi, #2d333d);
+}
+.cs-tool-head {
+  width: 100%;
   display: flex;
+  align-items: baseline;
   gap: 7px;
-  padding: 4px 9px;
+  padding: 5px 9px;
+  text-align: start;
+  background: transparent;
+  border: none;
+  cursor: pointer;
   font-family: var(--w-font-mono, monospace);
   font-size: var(--w-fs-xs, 0.77em);
   color: var(--w-text-dim, #7d8590);
-  background: var(--w-surface, #161b22);
-  border: 1px solid var(--w-border, #21262d);
-  border-radius: var(--w-r-sm, 4px);
+}
+.cs-tool-head:hover:not(:disabled) {
+  background: var(--w-surface-hi, #1c2230);
+}
+.cs-tool-head:disabled {
+  cursor: default;
+}
+.cs-tool-caret {
+  flex: none;
+  color: var(--w-text-faint, #565f6a);
 }
 .cs-tool-name {
   flex: none;
   color: var(--w-purple, #bb9af7);
 }
-.cs-tool-args {
+.cs-tool-summary {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cs-tool-result {
+.cs-tool-body {
+  border-block-start: 1px solid var(--w-border, #21262d);
+}
+.cs-tool-section + .cs-tool-section {
+  border-block-start: 1px solid var(--w-border, #21262d);
+}
+.cs-tool-label {
+  display: block;
+  padding: 4px 9px 0;
+  font-size: var(--w-fs-xs, 0.77em);
   color: var(--w-text-faint, #565f6a);
+}
+/* Tool bodies are shell, code and JSON — always LTR, always monospace, and
+   they scroll inside the card rather than widening the transcript. */
+.cs-tool-pre {
+  margin: 0;
+  padding: 4px 9px 8px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--w-font-mono, monospace);
+  font-size: var(--w-fs-xs, 0.77em);
+  line-height: 1.45;
+  color: var(--w-text, #e6edf3);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* Shown in place of the composer while the open session is not the one the
+   pane is running — the state where sending would have gone somewhere
+   invisible. */
+.cs-attach {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-block-start: 1px solid var(--w-border, #21262d);
+}
+.cs-attach-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--w-fs-sm, 0.85em);
+  color: var(--w-text-dim, #7d8590);
+}
+.cs-attach-btn {
+  flex: none;
+  padding: 7px 13px;
+  font-size: var(--w-fs-sm, 0.85em);
+  color: var(--w-bg, #0e1116);
+  background: var(--w-accent, #7aa2f7);
+  border: none;
+  border-radius: var(--w-r-md, 6px);
+  cursor: pointer;
+}
+.cs-attach-btn:hover:not(:disabled) {
+  background: var(--w-accent-hi, #94b4ff);
+}
+.cs-attach-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The session currently running in the pane — the one the composer writes to. */
+.cs-item.attached .cs-item-title::before {
+  content: "● ";
+  color: var(--w-success, #4ec9b0);
 }
 
 .cs-meta-line {

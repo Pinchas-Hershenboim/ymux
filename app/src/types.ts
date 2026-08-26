@@ -179,10 +179,16 @@ export interface ClaudeLogSummary {
 /** Phase 24.B, wired in by ClaudeSessionsView.tsx. */
 export interface ClaudeLogEntry {
   line_no: number;
-  /** "user" | "assistant" | "tool_use" | "tool_result" | "system" | "summary" */
+  /** "user" | "assistant" | "tool_use" | "tool_result" | "image" | "system" | "summary".
+   *  One transcript LINE expands to several of these — a turn's prose and each
+   *  of its tool calls arrive as separate entries, so `line_no` is not unique. */
   entry_type: string;
   text: string;
   tool_name?: string;
+  /** Pairs a `tool_use` with the `tool_result` that answers it. */
+  tool_id?: string;
+  /** The call's input, expanded form. Only on `tool_use`. */
+  tool_input?: string;
   timestamp?: string;
   session_id?: string;
 }
