@@ -4071,6 +4071,7 @@ function App() {
               fallback={
                 <ClaudeSessionsView
                   workspaceId={activeWs()!.id}
+                  workspaceIsRemote={isRemoteWorkspace(activeWs()!)}
                   activePaneId={activePaneId()}
                   onResume={async (sessionId, projectPath) => {
                     const pid = activePaneId();

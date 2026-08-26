@@ -45,7 +45,7 @@ collide — and neither can their capability globs, which are prefix-anchored to
 xterm CSS and `App.css` imports at the top are global on purpose: a popout that skipped
 them rendered unstyled, which read as a blank white window.
 
-## `App.tsx` (4,849) — one component, ~50 signals
+## `App.tsx` (4850) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -105,7 +105,7 @@ persisting it would cost a `workspaces.json` write per toggle. The swap is safe 
 the DOM detach — switching back re-attaches the same PTYs with scrollback intact, which
 is the whole reason this is a view toggle and not a fourth pane kind.
 
-## `ClaudeSessionsView.tsx` (604) — the unified Claude view
+## `ClaudeSessionsView.tsx` (657) — the unified Claude view
 
 The rebuild Phase 24.D parked. Phase 22's `ClaudeChatPane` and Phase 24.B's
 `ClaudeLogPane` were reverted because "three competing 'talk to claude' UIs felt
@@ -158,10 +158,27 @@ show. Every rule in the stylesheet uses logical properties, so that one attribut
 mirrors the session column, the bubble sides and the composer, while each bubble keeps
 its own `dir="auto"` for its actual content.
 
+**A session id only means something on the machine that holds its transcript**, and
+`resumable()` is the guard that says so. `local` ids live in `~/.claude/projects` here;
+`remote` ids live on the workspace's server. Resume is offered only when the open
+source matches `workspaceIsRemote`, and the source itself *defaults* to the one this
+workspace can act on. Without that guard, an SSH-only setup — which is the normal case —
+opened on the Local tab and offered Resume for a session the server has never heard of.
+Pressing it reconnected the pane, ran `cd 'C:\…' && claude --resume <unknown-id>`, and
+left a bare shell. Nothing about the failure was visible, because the SSH connect
+succeeded; the composer then wrote into a shell that was not running Claude at all.
+
 **An open transcript is polled, not subscribed to.** Claude appends to the JSONL
 directly and emits no event, so `POLL_MS` (2.5s) re-reads it. The reader only touches
 the `entries` signal when the length actually changed — replacing an identical array
 would re-render every bubble and fight the user's scroll position.
+
+**The remote tick has to re-sync, not just re-read.** `claude-logs/<workspace_id>/` is a
+snapshot `claude_log_sync` took, so re-reading it at any frequency shows a transcript
+frozen at the last manual Sync. Each remote tick therefore mirrors the open session
+first — one file, not the tree — and runs at `POLL_REMOTE_MS` (6s) because that is an
+SSH round-trip and does not belong on the local loop. A failed sync falls through to the
+mirror rather than blanking: the pane may simply be between connections.
 
 ## `Sidebar.tsx` (1,265)
 

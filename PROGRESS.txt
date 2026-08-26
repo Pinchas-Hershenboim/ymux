@@ -7090,3 +7090,46 @@ the view renders real sessions. Round 2 is NOT verified: tool cards, the attach
 flow and RTL have never been run.
 Still open from the same review: a `/` command menu in the composer, and a `+`
 for attaching files as `@path`.
+
+[2026-08-26] Sessions view round 3 — a session id is machine-scoped, and I ignored that
+
+Reported as "in the terminal it works, in the chat view it doesn't". The debug
+log had the whole story:
+
+  16:38:47 [UI:TERM] tui-owns-bidi on pane=p_18cf...   <- claude WAS running
+  16:39:04 [SSH]     session detach ... pty:exit s1    <- the Resume button
+  16:39:04 [SSH]     spawn_ssh: authenticated
+  16:41:28 [UI:TERM] ... tui=0, title match=0          <- claude never came back
+
+So Resume fired, the pane reconnected, and claude did not start. workspaces.json
+says why: all three of this user's workspaces are `{"type":"ssh"}` and there is
+no local workspace at all. The view opens on the Local tab, which lists THIS
+machine's ~/.claude/projects. Resuming one of those in an SSH pane ran
+
+  cd 'C:\Users\...' && claude --resume <id-that-exists-only-on-windows>
+
+on a Linux server. Both halves fail, claude exits, a bare shell is left, and
+everything typed after that goes into the shell. The SSH connect itself
+succeeded, so nothing surfaced an error anywhere.
+
+Fixes:
+ - `resumable()` — Resume is offered only when the open source matches
+   `workspaceIsRemote`. Mismatch shows a sentence naming the problem instead
+   of a button that cannot work.
+ - the source now DEFAULTS to the one the workspace can act on, so an SSH
+   workspace opens on Remote.
+ - second bug found while in there: the remote tab polled by re-reading the
+   mirror, which is a snapshot taken at the last manual Sync. A live remote
+   conversation looked frozen no matter what. Each remote tick now re-mirrors
+   the open session first (one file, not the tree) at POLL_REMOTE_MS=6s,
+   because that is an SSH round-trip.
+
+Files: app/src/ClaudeSessionsView.tsx (workspaceIsRemote prop, resumable(),
+source default, remote sync-then-read tick), app/src/App.tsx (pass
+isRemoteWorkspace), app/src/i18n/{en,he,ar,ru}.json (+2 keys each).
+Docs: docs/vault/frontend-shell.md, .vault-lock.json.
+Vault: green including --diff-base origin/main.
+Tests: CI only per Rule #17.
+Status: NOT VERIFIED. Round 2 (tool cards, RTL, attach flow) was never
+confirmed working either — the machine mismatch blocked reaching it.
+Still open: `/` command menu, `+` file attach.

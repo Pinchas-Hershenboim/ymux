@@ -39,6 +39,13 @@ type Source = "local" | "remote";
  *  appends to the JSONL directly. Cheap: a few hundred KB parsed in Rust. */
 const POLL_MS = 2500;
 
+/** The remote tick is slower because it does more: the mirror under
+ *  `claude-logs/` is a SNAPSHOT, so re-reading it alone shows a frozen
+ *  transcript no matter how often you ask. Each remote tick re-syncs the open
+ *  session first — one file over SFTP, not the whole tree — and that is an SSH
+ *  round-trip, so it does not belong on a 2.5s loop. */
+const POLL_REMOTE_MS = 6000;
+
 /** One thing to draw. A tool call and the result answering it are ONE card,
  *  paired by `tool_id`, because splitting them reads as two unrelated events. */
 type Rendered =
@@ -48,6 +55,17 @@ type Rendered =
 
 interface Props {
   workspaceId: string;
+  /** Whether the active workspace runs over SSH.
+   *
+   *  This decides which source can be resumed, and it is not cosmetic. A
+   *  `local` session id names a conversation in `~/.claude/projects` on THIS
+   *  machine; a pane on an SSH workspace runs `claude` on the server, where
+   *  that id does not exist and the Windows project path does not either. The
+   *  first cut offered Resume regardless, so on an SSH-only setup the button
+   *  reconnected the pane, ran `cd 'C:\…' && claude --resume <unknown-id>`,
+   *  and left a bare shell — after which everything typed went nowhere.
+   *  Nothing in the failure was visible: the SSH connect itself succeeded. */
+  workspaceIsRemote: boolean;
   /** Pane whose PTY the composer writes into — the terminal running `claude`.
    *  Null when the workspace has no pane focused, which disables the composer
    *  rather than guessing at a target. */
@@ -60,7 +78,11 @@ interface Props {
 }
 
 export function ClaudeSessionsView(p: Props) {
-  const [source, setSource] = createSignal<Source>("local");
+  // Open on the source this workspace can actually act on. Defaulting to
+  // "local" on an SSH workspace showed a list where nothing was resumable.
+  const [source, setSource] = createSignal<Source>(
+    p.workspaceIsRemote ? "remote" : "local",
+  );
   const [sessions, setSessions] = createSignal<ClaudeLogSummary[]>([]);
   const [selected, setSelected] = createSignal<string | null>(null);
   const [entries, setEntries] = createSignal<ClaudeLogEntry[]>([]);
@@ -169,11 +191,25 @@ export function ClaudeSessionsView(p: Props) {
       setEntries([]);
       return;
     }
+    const remote = source() === "remote";
     void fetchEntries(sid);
     pollTimer = window.setInterval(() => {
-      void fetchEntries(sid, true);
+      // Re-mirror the open session before re-reading it. Without this the
+      // remote tab reads a snapshot taken at the last manual Sync, so a live
+      // conversation looked frozen even when the agent was answering.
+      const tick = remote
+        ? invoke<ClaudeSyncResult>("claude_log_sync", {
+            workspaceId: p.workspaceId,
+            sessionId: sid,
+          })
+            .then(() => fetchEntries(sid, true))
+            // A dropped SSH handle is expected — the pane may be between
+            // connections. Fall back to the mirror instead of blanking.
+            .catch(() => fetchEntries(sid, true))
+        : fetchEntries(sid, true);
+      void tick;
       void fetchSessions();
-    }, POLL_MS);
+    }, remote ? POLL_REMOTE_MS : POLL_MS);
   });
 
   onCleanup(() => {
@@ -262,6 +298,17 @@ export function ClaudeSessionsView(p: Props) {
     () => !!ptySession() && !!selected() && attached() === selected(),
   );
 
+  /** Whether the open session can be resumed in this pane at all.
+   *
+   *  A session id only means something on the machine that holds its
+   *  transcript. `local` ids live in `~/.claude/projects` here; `remote` ids
+   *  live on the workspace's server. Offering Resume across that line runs a
+   *  command that cannot succeed and leaves a bare shell behind, which is
+   *  exactly what it did before this guard existed. */
+  const resumable = createMemo(() =>
+    source() === "remote" ? p.workspaceIsRemote : !p.workspaceIsRemote,
+  );
+
   const age = (epochSecs: number) =>
     epochSecs
       ? fmtSpan(Math.max(0, Math.floor(Date.now() / 1000) - epochSecs))
@@ -300,7 +347,9 @@ export function ClaudeSessionsView(p: Props) {
 
   const resumeHere = async () => {
     const sid = selected();
-    if (!sid || resuming()) return;
+    // The button is already hidden when this is false; checked again here so
+    // the rule lives with the action and not only with its affordance.
+    if (!sid || resuming() || !resumable()) return;
     setResuming(true);
     try {
       await p.onResume(sid, current()?.project_path ?? undefined);
@@ -555,11 +604,15 @@ export function ClaudeSessionsView(p: Props) {
             <Show when={selected()}>
               <div class="cs-attach" dir="auto">
                 <span class="cs-attach-text">
-                  {ptySession()
-                    ? t("cs.attach.hint")
-                    : t("cs.composer.nopane")}
+                  {!resumable()
+                    ? source() === "local"
+                      ? t("cs.attach.wrongMachine.local")
+                      : t("cs.attach.wrongMachine.remote")
+                    : ptySession()
+                      ? t("cs.attach.hint")
+                      : t("cs.composer.nopane")}
                 </span>
-                <Show when={ptySession()}>
+                <Show when={resumable() && ptySession()}>
                   <button
                     class="cs-attach-btn"
                     disabled={resuming()}

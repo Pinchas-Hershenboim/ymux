@@ -1283,5 +1283,7 @@
   "cs.tool.out": "Output",
   "cs.tool.result": "Result",
   "cs.attach.hint": "This session isn't running in the pane, so there is nowhere to send yet.",
-  "cs.attach.resume": "Resume it in the pane"
+  "cs.attach.resume": "Resume it in the pane",
+  "cs.attach.wrongMachine.local": "This session lives on your PC, but this workspace runs over SSH — its id means nothing on the server. Switch to Remote, or open a local workspace.",
+  "cs.attach.wrongMachine.remote": "This session lives on a server, but this workspace is local. Switch to This machine."
 }
