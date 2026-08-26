@@ -7187,3 +7187,25 @@ Tests: CI only per Rule #17.
 Status: NOT VERIFIED. Rounds 2-4 have never been run — round 3's machine-mismatch
 guard was itself never confirmed, because the mismatch blocked reaching the
 composer at all.
+
+[2026-08-26] vault gate: the lock must be stamped against LF, not the working tree
+
+Round 4's ci-windows failed the vault gate on ONE file,
+app/src/ClaudeSessionsView.tsx, while `node scripts/vault-check.mjs` was green
+locally. Cause: that file had been rewritten by a tool that emitted CRLF.
+.gitattributes is `* text=auto eol=lf`, so git stored LF and CI checked out LF —
+but vault-check hashes the WORKING TREE (`createHash('sha256').update(
+readFileSync(absPath))`, no normalisation), so the stamp recorded the CRLF hash
+and CI computed the LF one. Local green, CI red, same commit.
+
+Worth knowing because the symptom is maximally confusing: `git diff` is clean
+(git normalises on read), the file and the lock are both committed, working tree
+== HEAD, and the local gate passes. Nothing points at line endings.
+
+If this recurs: `od -An -tx1 <file> | tr ' ' '\n' | grep -c '^0d'` counts CR
+bytes. Do NOT use `grep -c $'\r'` (the pattern can expand to empty and match
+every line, which reads as "the whole file is CRLF") and do NOT use
+`od -c | grep '\r'` (od prints a literal backslash as `\`, so source code
+containing `\r` matches). `perl -0pi -e 's/\r\n/\n/g'` is also useless here:
+Windows perl opens in text mode and writes the CRLF straight back. `tr -d '\r'
+< f > tmp && mv tmp f` works.

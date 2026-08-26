@@ -165,7 +165,7 @@
     "app/src/AgentLight.tsx": "9324ec8ce2091eb9a542b2663c98b1ee567ad5422b4aaa451a4ec26ebbd423d2",
     "app/src/App.tsx": "6cb7fdc4f5eb3a2cfd6b395af9b054d708e1bcf0c94b4e3bba65cdd8496cf31c",
     "app/src/ClaudeComposer.tsx": "a7464c365eaca216363dba0b79967e1c525c15b54f522ecf40711e13990d7891",
-    "app/src/ClaudeSessionsView.tsx": "3d1982ae1925bb199b6527a856d7c5e76eb7507048b12167c48b0b1d7558ca33",
+    "app/src/ClaudeSessionsView.tsx": "31c3b1da858c192e082530b8aef95794926c23b6029023cfd8cf49e9656c5c33",
     "app/src/CommandPalette.tsx": "08512d53521754c8c83a785784258f5767a1384a17cb1b73cba3244600d9306b",
     "app/src/Divider.tsx": "d8eca6fe0f2844a0d48394fa5b5b1e74d25f4a425419bf507143dcc6bbcc5569",
     "app/src/LayoutView.tsx": "b39071f6d31b2c0b011662f86ccfd3394a5ff93dd25fafcf19e18658bcf9f093",
