@@ -26,8 +26,10 @@ import { NotesModal } from "./NotesModal";
 import { SetupWizard } from "./SetupWizard";
 import { InsightsWindow } from "./InsightsWindow";
 import { ClaudeUsageIndicator } from "./ClaudeUsageIndicator";
+import { ClaudeSessionsView } from "./ClaudeSessionsView";
 import {
   IconBell,
+  IconBot,
   IconFolder,
   IconGlobe,
   IconActivity,
@@ -283,6 +285,11 @@ function App() {
   // pane in the workspace after enter/exit so xterm geometry catches
   // up to the new available area.
   const [maximizedPaneId, setMaximizedPaneId] = createSignal<string | null>(null);
+  // Sessions view vs the pane grid. In-memory and app-wide rather than
+  // per-workspace: it is a way of looking at the machine's Claude history,
+  // not a property of any one workspace, and persisting it would mean a
+  // workspaces.json write per toggle for something a click undoes.
+  const [sessionsView, setSessionsView] = createSignal(false);
   // Which tab was last active in each workspace, so switching away and
   // back doesn't dump you on tab 1. In-memory only: persisting it would
   // mean a workspaces.json write per focus change, and the cost of
@@ -3877,6 +3884,19 @@ function App() {
                 {collectPanes(activeWs()!.layout!).length} panes
               </span>
             </Show>
+            {/* Sessions ⇄ terminal. Outside the pane-scoped Show below
+                because it is worth reaching with no pane focused — reading
+                an old transcript does not require a live connection. */}
+            <button
+              class="ws-header-btn"
+              title={t("cs.view.toggle")}
+              onClick={() => setSessionsView(!sessionsView())}
+            >
+              <IconBot />
+              <span class="ws-header-btn-label">
+                {sessionsView() ? t("cs.view.terminal") : t("cs.view.sessions")}
+              </span>
+            </button>
             <Show when={activeWs()!.layout && activePaneId()}>
               {/* Phase 50: add a Diff pane (#2.4). Same split mechanic
                   as the other kinds. */}
@@ -4041,9 +4061,23 @@ function App() {
             data-has-color={activeWs()?.color ? "true" : "false"}
             style={activeWs()?.color ? `--ws-color: ${activeWs()!.color}` : undefined}
           >
-            {/* Phase 8 fix v3: ErrorBoundary so a single corrupted workspace
-                layout (e.g. from the recent autosave-loop nesting) doesn't
-                blank the whole app. Falls back to a clear reset button. */}
+            {/* The Sessions view replaces the pane grid in place. Terminal
+                instances live in the g_terminals registry keyed by pane_id,
+                so the grid's DOM going away costs nothing — switching back
+                re-attaches the same PTYs with their scrollback intact, which
+                is what makes this a view toggle and not a pane kind. */}
+            <Show
+              when={!sessionsView()}
+              fallback={
+                <ClaudeSessionsView
+                  workspaceId={activeWs()!.id}
+                  activePaneId={activePaneId()}
+                />
+              }
+            >
+              {/* Phase 8 fix v3: ErrorBoundary so a single corrupted workspace
+                  layout (e.g. from the recent autosave-loop nesting) doesn't
+                  blank the whole app. Falls back to a clear reset button. */}
             <ErrorBoundary
               fallback={(err, _reset) => (
                 <div class="layout-error">
@@ -4192,6 +4226,7 @@ function App() {
                 )}
               </Show>
             </ErrorBoundary>
+            </Show>
           </div>
         </Show>
       </div>

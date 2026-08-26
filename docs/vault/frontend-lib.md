@@ -28,12 +28,18 @@ covers:
 The non-component half of `app/src/`. Two things dominate: the terminal wrapper, and
 **RTL** — four separate modules exist because Hebrew broke in four different places.
 
-## `terminalInstance.ts` (1,935) — the xterm.js wrapper
+## `terminalInstance.ts` (1,947) — the xterm.js wrapper
 
 `class TerminalInstance` owns one xterm `Terminal`, its `FitAddon`, the optional
 `WebglAddon`, and the DOM container. Module-scope globals cache font family/size, theme,
 and the Ctrl+C-copies-selection flag so new panes construct with the current values;
 `setTerminalTheme` / `setTerminalFont` / `setRtlProfiles` push changes to live panes.
+
+The live instances sit in a module-private `g_terminals` set, and the handful of
+exported functions that walk it are the only way in from outside — `setPaneTuiSignal`
+and `sessionIdForPane` both look up by `paneId`. The latter is what lets a surface
+that is not a pane (the Sessions view's composer) write into a pane's PTY without
+either side holding a reference to the other.
 
 Things it does that are easy to get wrong:
 

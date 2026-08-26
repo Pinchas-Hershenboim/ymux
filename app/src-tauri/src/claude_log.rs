@@ -1,22 +1,27 @@
-//! Phase 24.A: backend for the (now-removed) ClaudeLog pane.
+//! Phase 24.A: the Claude Code transcript reader.
 //!
 //! Phase 24.D rolled back the ClaudeChat + ClaudeLog FE panes
 //! ("three competing 'talk to claude' UIs felt fragmented"), but
 //! Yossi explicitly asked to keep this backend module alive for a
-//! future unified-view rebuild. The three sync/list/read tauri
-//! commands stay registered in `invoke_handler!` — they just have
-//! no FE caller right now. The `#![allow(dead_code)]` at the top
-//! silences the cascade of warnings that the unused module +
-//! response types would otherwise generate.
+//! future unified-view rebuild. That rebuild has landed:
+//! `ClaudeSessionsView.tsx` is the caller these commands spent a
+//! release waiting for. `#![allow(dead_code)]` stays at the top —
+//! several response-type fields are still only ever read by serde.
 //!
-//! Three tauri commands (registered, no current consumer):
+//! Mirrored — for a REMOTE workspace, whose transcripts live on the
+//! server Claude runs on:
 //!   - claude_log_sync(workspace_id, session_id?) — SFTP-mirror new/
 //!     changed files (mtime-gated, full-file fetch — no byte diffing)
-//!   - claude_log_list(workspace_id) — pure local directory scan +
-//!     per-file summary
-//!   - claude_log_read(workspace_id, session_id) — parses the local
+//!   - claude_log_list(workspace_id) — pure local directory scan of
+//!     the mirror + per-file summary
+//!   - claude_log_read(workspace_id, session_id) — parses one mirrored
 //!     jsonl into a structured ClaudeLogEntry stream (handles content
 //!     as string OR block array; summarizes tool_use/tool_result)
+//!
+//! Direct — for THIS machine, which has no server to mirror from and
+//! so read as permanently empty through the commands above:
+//!   - claude_log_list_local() — same summary over ~/.claude/projects
+//!   - claude_log_read_local(session_id) — same parse, same helpers
 //!
 //! No background SSH reconnects — if there's no live handle, sync
 //! errors cleanly and the user connects a terminal pane first.
@@ -376,6 +381,122 @@ pub(crate) fn claude_log_read(
         let v: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue, // skip malformed lines silently
+        };
+        if let Some(entry) = entry_from_json(&v, idx + 1) {
+            out.push(entry);
+        }
+    }
+    Ok(out)
+}
+
+// ─── this machine's own sessions (no SSH, no mirror) ───────────────────────
+//
+// The two readers above answer for a REMOTE workspace: `claude_log_sync`
+// SFTP-mirrors the server's transcripts into `claude-logs/<workspace_id>/`
+// and they read that copy. A local workspace has no server to mirror from,
+// so its transcripts were unreachable — `claude_log_list` returned an empty
+// vec for it, forever. These two point at the real directory instead and
+// share every parser with the mirrored path.
+
+/// Where Claude Code keeps transcripts on this machine.
+/// Same shape as `claude_usage_local::projects_dir`.
+fn home_projects_dir() -> Result<PathBuf, String> {
+    dirs::home_dir()
+        .map(|h| h.join(".claude").join("projects"))
+        .ok_or_else(|| "no home directory".to_string())
+}
+
+/// Every `<project>/<session>.jsonl` below the projects dir. Claude Code
+/// nests exactly one project level, so this walks one level and stops —
+/// no recursion into whatever else a project directory holds.
+///
+/// A missing projects dir is not an error: Claude Code has simply never
+/// run here, and an empty list says that more usefully than a failure.
+fn home_jsonls() -> Result<Vec<PathBuf>, String> {
+    let root = home_projects_dir()?;
+    let Ok(projects) = std::fs::read_dir(&root) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for proj in projects.flatten() {
+        let dir = proj.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let p = f.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `claude_log_list` for this machine. Newest first, same as the
+/// mirrored variant.
+#[tauri::command]
+pub(crate) fn claude_log_list_local() -> Result<Vec<ClaudeLogSummary>, String> {
+    let mut out: Vec<ClaudeLogSummary> = Vec::new();
+    for path in home_jsonls()? {
+        let Some(session_id) = path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let local_mtime = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let (message_count, first_user, last_assistant, project_path) = summarize_jsonl(&path);
+        out.push(ClaudeLogSummary {
+            session_id,
+            message_count,
+            first_user,
+            last_assistant,
+            project_path,
+            file_size: meta.len(),
+            local_mtime,
+        });
+    }
+    out.sort_by(|a, b| b.local_mtime.cmp(&a.local_mtime));
+    Ok(out)
+}
+
+/// `claude_log_read` for this machine. The session id is a filename
+/// stem, so it is rejected unless it looks like one — a `..` or a
+/// separator here would otherwise read an arbitrary file.
+#[tauri::command]
+pub(crate) fn claude_log_read_local(session_id: String) -> Result<Vec<ClaudeLogEntry>, String> {
+    if session_id.is_empty()
+        || session_id.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    {
+        return Err(format!("invalid session id {session_id:?}"));
+    }
+    let target = format!("{session_id}.jsonl");
+    let path = home_jsonls()?
+        .into_iter()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(target.as_str()))
+        .ok_or_else(|| format!("session {session_id} not found under ~/.claude/projects/"))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?;
+    let mut out: Vec<ClaudeLogEntry> = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue; // skip malformed lines silently, as the mirrored reader does
         };
         if let Some(entry) = entry_from_json(&v, idx + 1) {
             out.push(entry);

@@ -63,21 +63,42 @@ against a 5-minute write's 1.25x, and collapsing them understates a long session
 **Rule #1 by construction:** it reads `message.model`, `message.usage`, the timestamp,
 the session id and the cwd. It never reads message content, and it logs only counts.
 
-## `claude_log.rs` (600) — alive on purpose, unused on purpose
+## `claude_log.rs` (716) — the transcript reader behind the Sessions view
 
-Backend for the ClaudeLog pane, which Phase 24.D removed from the frontend ("three
-competing 'talk to claude' UIs felt fragmented"). Yossi asked to keep the backend for a
-future unified view, so the three commands stay registered in `invoke_handler!` with
-**no frontend caller**. The `#![allow(dead_code)]` at the top is what silences the
-resulting warning cascade.
+Backend for the ClaudeLog pane Phase 24.D removed from the frontend ("three competing
+'talk to claude' UIs felt fragmented"). Yossi asked to keep the backend for a future
+unified view, and that view now exists: `ClaudeSessionsView.tsx` is its first caller,
+so these commands are no longer the dead-but-registered set this page used to describe.
+`#![allow(dead_code)]` stays at the top — several response-type fields are still only
+ever read by serde.
 
-- `claude_log_sync(workspace_id, session_id?)` — SFTP-mirror new/changed files,
-  mtime-gated, full-file fetch (no byte diffing).
-- `claude_log_list(workspace_id)` — local directory scan + per-file summary.
-- `claude_log_read(workspace_id, session_id)` — parse the local JSONL into a structured
-  `ClaudeLogEntry` stream.
+Two pairs of readers, differing only in where the JSONL comes from.
 
-**Do not delete this as dead code.** It is deliberate, and the header says so.
+**Mirrored — a remote workspace.** Claude runs on the server, so its transcripts live
+there too. `claude_log_sync` SFTP-copies them down and the two readers work off that
+copy under `%APPDATA%\ymux\claude-logs\<workspace_id>\`.
+
+- `claude_log_sync(workspace_id, session_id?)` — mtime-gated, full-file fetch (no byte
+  diffing). Needs a live SSH handle and errors cleanly when there is none.
+- `claude_log_list(workspace_id)` — directory scan of the mirror + per-file summary.
+- `claude_log_read(workspace_id, session_id)` — parse one mirrored JSONL into a
+  structured `ClaudeLogEntry` stream.
+
+**Direct — this machine.** A local workspace has no server to mirror from, so the
+mirror stays empty for it and `claude_log_list` answered `[]` forever. These two read
+`~/.claude/projects` in place instead, sharing `summarize_jsonl` and `entry_from_json`
+with the mirrored path so the two sources can never render differently.
+
+- `claude_log_list_local()` — walks exactly one project level, because that is how deep
+  Claude Code nests, and summarises each `<session>.jsonl`. A missing projects dir is an
+  empty list rather than an error: Claude Code has simply never run here, and an empty
+  list says that more usefully than a failure.
+- `claude_log_read_local(session_id)` — same parse. It rejects any id that is not a bare
+  filename stem, because the id is joined into a path and a `..` would otherwise read an
+  arbitrary file.
+
+**Do not delete this as dead code.** The mirrored half predates its caller by a release
+and the header says why.
 
 ## `insights_local.rs` (743) — Insights for Local workspaces
 

@@ -1262,5 +1262,21 @@
   "connect.newConn.attachOnly.banner": "הסשן ‎{name}‎ כבר רץ. החיבור מצרף אליו — שום פקודה לא תישלח.",
   "connect.newConn.attachOnly.newSession": "פתח סשן חדש במקום",
   "connect.newConn.attachOnly.hint": "מנוטרל בזמן הצטרפות לסשן רץ: הקלדה כאן הייתה נוחתת בתוך מה שרץ שם.",
-  "connect.attachOnly.toast": "הצטרפת לסשן הרץ ‎{name}‎ — הפקודה שלך לא נשלחה."
+  "connect.attachOnly.toast": "הצטרפת לסשן הרץ ‎{name}‎ — הפקודה שלך לא נשלחה.",
+  "cs.view.terminal": "טרמינל",
+  "cs.view.sessions": "סשנים",
+  "cs.view.toggle": "מעבר בין רשת הטרמינלים לתצוגת הסשנים של Claude",
+  "cs.source.local": "המחשב הזה",
+  "cs.source.remote": "מרוחק",
+  "cs.search": "חיפוש סשנים…",
+  "cs.sync": "סנכרון מהשרת",
+  "cs.syncing": "מסנכרן…",
+  "cs.messages": "{n} הודעות",
+  "cs.loading": "טוען…",
+  "cs.empty.local": "אין עדיין סשנים של Claude במחשב הזה.",
+  "cs.empty.remote": "עדיין לא סונכרן דבר מהשרת של סביבת העבודה הזאת.",
+  "cs.empty.pick": "בחר סשן מהצד כדי לקרוא אותו.",
+  "cs.composer.placeholder": "הודעה ל‑Claude…",
+  "cs.composer.nopane": "חבר חלונית טרמינל כדי לשלוח",
+  "cs.composer.send": "שלח"
 }

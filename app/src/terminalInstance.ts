@@ -359,6 +359,18 @@ export function setPaneTuiSignal(paneId: string, on: boolean | null): void {
   }
 }
 
+/** Session id of the PTY behind a pane, or null when that pane has no live
+ *  terminal (never connected, or already exited). The Sessions view's
+ *  composer needs it to write into the running `claude` exactly the way the
+ *  terminal does — same `pty_write`, same process, so there is only ever one
+ *  channel into the agent no matter which surface you type from. */
+export function sessionIdForPane(paneId: string): string | null {
+  for (const ti of g_terminals) {
+    if (ti.paneId === paneId) return ti.sessionId;
+  }
+  return null;
+}
+
 export function getRtlProfile(kind: RtlProfileKind): RtlProfileSettings {
   return g_rtl[kind];
 }

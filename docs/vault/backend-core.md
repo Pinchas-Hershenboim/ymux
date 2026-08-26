@@ -255,6 +255,11 @@ restore and `pane_probe_tmux_sessions` share these paths and must see everything
   `ymux-tools/statuslines/hooks/turn-state.js`. Change one, change both.
 - `FEED_MAX_ITEMS` here is `#[allow(dead_code)]` documentation — `rpc_server.rs` has
   its own copy.
+- The `claude_log::*` block in `invoke_handler` is followed by two comments naming
+  commands that were **deleted** (`claude_log_pane_set`, `claude_chat_*`). Those are
+  history, not a TODO list. The five entries actually registered are all live now that
+  `ClaudeSessionsView.tsx` exists — see `docs/vault/backend-claude.md` for which pair
+  answers for a remote workspace and which for this machine.
 
 ## Read the source when
 

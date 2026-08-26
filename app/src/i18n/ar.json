@@ -1262,5 +1262,21 @@
   "connect.newConn.attachOnly.banner": "الجلسة ‎{name}‎ قيد التشغيل بالفعل. الاتصال ينضم إليها — ولن يُرسل أي أمر.",
   "connect.newConn.attachOnly.newSession": "ابدأ جلسة جديدة بدلاً من ذلك",
   "connect.newConn.attachOnly.hint": "معطّل أثناء الانضمام إلى جلسة قيد التشغيل: الكتابة هنا ستصل إلى ما يعمل بداخلها.",
-  "connect.attachOnly.toast": "تمّ الانضمام إلى الجلسة القائمة ‎{name}‎ — لم يُرسل أمرك."
+  "connect.attachOnly.toast": "تمّ الانضمام إلى الجلسة القائمة ‎{name}‎ — لم يُرسل أمرك.",
+  "cs.view.terminal": "الطرفية",
+  "cs.view.sessions": "الجلسات",
+  "cs.view.toggle": "التبديل بين شبكة الطرفيات وعرض جلسات Claude",
+  "cs.source.local": "هذا الجهاز",
+  "cs.source.remote": "بعيد",
+  "cs.search": "بحث في الجلسات…",
+  "cs.sync": "مزامنة من الخادم",
+  "cs.syncing": "جارٍ المزامنة…",
+  "cs.messages": "{n} رسائل",
+  "cs.loading": "جارٍ التحميل…",
+  "cs.empty.local": "لا توجد جلسات Claude على هذا الجهاز بعد.",
+  "cs.empty.remote": "لم تتم مزامنة أي شيء من خادم مساحة العمل هذه بعد.",
+  "cs.empty.pick": "اختر جلسة من الجانب لقراءتها.",
+  "cs.composer.placeholder": "رسالة إلى Claude…",
+  "cs.composer.nopane": "اتصل بلوحة طرفية للإرسال",
+  "cs.composer.send": "إرسال"
 }

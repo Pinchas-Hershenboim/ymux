@@ -3,6 +3,7 @@ vault: frontend-shell
 covers:
   - app/src/index.tsx
   - app/src/App.tsx
+  - app/src/ClaudeSessionsView.tsx
   - app/src/Sidebar.tsx
   - app/src/LayoutView.tsx
   - app/src/PaneView.tsx
@@ -44,7 +45,7 @@ collide — and neither can their capability globs, which are prefix-anchored to
 xterm CSS and `App.css` imports at the top are global on purpose: a popout that skipped
 them rendered unstyled, which read as a blank white window.
 
-## `App.tsx` (4,793) — one component, ~50 signals
+## `App.tsx` (4,828) — one component, ~50 signals
 
 There is a single `function App()` starting at line 142 and it holds essentially all
 application state as `createSignal` pairs: `file` (the whole `WorkspacesFile`),
@@ -94,6 +95,43 @@ here.
 
 An `ErrorBoundary` wraps the tree — a thrown render error shows a recovery panel rather
 than a white window.
+
+**The `sessionsView` signal swaps what fills `.layout-root`.** False renders the pane
+grid (`LayoutView`); true renders `ClaudeSessionsView` in the same box, toggled from a
+`ws-header` button. It is app-wide and in-memory on purpose: it is a way of looking at
+the machine's Claude history rather than a property of any one workspace, and
+persisting it would cost a `workspaces.json` write per toggle. The swap is safe because
+`TerminalInstance`s live in the `g_terminals` registry keyed by `pane_id` and survive
+the DOM detach — switching back re-attaches the same PTYs with scrollback intact, which
+is the whole reason this is a view toggle and not a fourth pane kind.
+
+## `ClaudeSessionsView.tsx` (431) — the unified Claude view
+
+The rebuild Phase 24.D parked. Phase 22's `ClaudeChatPane` and Phase 24.B's
+`ClaudeLogPane` were reverted because "three competing 'talk to claude' UIs felt
+fragmented"; this is deliberately **not** a fourth pane kind, because a fourth pane
+would have been exactly that objection again. It is a second *surface* over the one
+channel that already exists — the terminal running `claude`.
+
+That split is the design, and it is what keeps the two surfaces honest:
+
+- **Reading** comes from the JSONL transcript Claude itself writes —
+  `claude_log_list_local` / `claude_log_read_local` for this machine,
+  `claude_log_list` / `claude_log_read` (+ `claude_log_sync`) for a remote workspace's
+  mirror. The `Local` / `Remote` toggle picks the pair; switching clears the selection,
+  because a session id from the mirror need not exist locally.
+- **Writing** goes through `pty_write` into the pane's own PTY — the identical call
+  `PaneView` makes on every keystroke, with a trailing `\r` to submit. There is no
+  second conversation for the two views to drift between, and no chat backend to
+  maintain: `claude_chat.rs` stayed deleted.
+
+The composer is disabled unless `sessionIdForPane(activePaneId)` resolves, so it never
+implies it can send when there is no live terminal behind it.
+
+**An open transcript is polled, not subscribed to.** Claude appends to the JSONL
+directly and emits no event, so `POLL_MS` (2.5s) re-reads it. The reader only touches
+the `entries` signal when the length actually changed — replacing an identical array
+would re-render every bubble and fight the user's scroll position.
 
 ## `Sidebar.tsx` (1,265)
 

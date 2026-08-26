@@ -149,12 +149,14 @@ export interface TargetSessionState {
 }
 
 // Phase 24.D: ChatRole / MessageStatus / ChatMessage / ClaudeChatState
-// (Phase 22) removed alongside the ClaudeChat pane. The
-// ClaudeLog* types just below are kept for the dead-code-but-
-// registered backend (a future unified-view rebuild can consume the
-// existing claude_log_sync / list / read commands without re-typing).
+// (Phase 22) removed alongside the ClaudeChat pane, and they stayed
+// removed — the rebuild sends through pty_write instead of carrying its
+// own chat state. The ClaudeLog* types just below were kept for exactly
+// that rebuild and ClaudeSessionsView.tsx now consumes them, so they no
+// longer describe a dead backend. ClaudeLogState is the one exception;
+// see its own note.
 
-/** Phase 24.B: kept for future unified-view rebuild — no current consumer. */
+/** Phase 24.B, wired in by ClaudeSessionsView.tsx. */
 export interface ClaudeSyncResult {
   synced: number;
   skipped: number;
@@ -162,7 +164,7 @@ export interface ClaudeSyncResult {
   total_bytes: number;
 }
 
-/** Phase 24.B: kept for future unified-view rebuild — no current consumer. */
+/** Phase 24.B, wired in by ClaudeSessionsView.tsx. */
 export interface ClaudeLogSummary {
   session_id: string;
   message_count: number;
@@ -174,7 +176,7 @@ export interface ClaudeLogSummary {
   local_mtime: number;
 }
 
-/** Phase 24.B: kept for future unified-view rebuild — no current consumer. */
+/** Phase 24.B, wired in by ClaudeSessionsView.tsx. */
 export interface ClaudeLogEntry {
   line_no: number;
   /** "user" | "assistant" | "tool_use" | "tool_result" | "system" | "summary" */

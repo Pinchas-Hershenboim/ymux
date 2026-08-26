@@ -6998,3 +6998,49 @@ this worktree does not have — unrelated to this change.
 Status: NOT VERIFIED LIVE (Rule #14). Needs a real SSH pane: switch the remote
 profile to Full RTL and check Hebrew, pure-Latin `ls`, drag-select, copy,
 arrows, and that a local pane open alongside is untouched.
+
+[2026-08-26] Sessions view — the unified Claude surface Phase 24.D parked
+
+Phase 24.D (c2106ef, 2026-05-19) reverted ClaudeChatPane (Phase 22) and
+ClaudeLogPane (Phase 24.B) because "three competing 'talk to claude' UIs felt
+fragmented", and kept claude_log.rs alive for a future unified-view rebuild.
+This is that rebuild, built to answer the objection rather than repeat it.
+
+Not a pane kind. A fourth pane beside Terminal/Browser/FileManager would have
+been the same fragmentation again, so this is a second SURFACE over the one
+channel that already exists — the terminal running `claude`:
+
+  - reading  = the JSONL transcript Claude itself writes
+  - writing  = pty_write into that same PTY, the identical call PaneView
+               makes on every keystroke
+
+So there is no second conversation to drift from, and claude_chat.rs (856
+lines, deleted in 24.D, streaming and all) stayed deleted — nothing here
+needed it.
+
+Gap closed on the way: claude_log_list/_read only ever read the SFTP mirror
+under %APPDATA%\ymux\claude-logs\<workspace_id>\, which claude_log_sync fills
+and which needs a live SSH handle. A LOCAL workspace has no server to mirror
+from, so it read as permanently empty. Added claude_log_list_local() and
+claude_log_read_local(session_id) reading ~/.claude/projects in place, sharing
+summarize_jsonl + entry_from_json with the mirrored path so the two sources
+cannot render differently. read_local rejects any session id that is not a
+bare filename stem — the id is joined into a path.
+
+Files: app/src-tauri/src/claude_log.rs (+116, two commands + header rewrite),
+app/src-tauri/src/lib.rs (+2, invoke_handler), app/src/ClaudeSessionsView.tsx
+(new, 437), app/src/App.tsx (sessionsView signal, ws-header toggle, Show swap
+inside .layout-root), app/src/terminalInstance.ts (+12, sessionIdForPane),
+app/src/types.ts (stale 24.D comments corrected), app/src/App.css (+302),
+app/src/i18n/{en,he,ar,ru}.json (+16 keys each).
+Docs: docs/vault/{backend-claude,backend-core,frontend-lib,frontend-shell}.md,
+docs/vault/.vault-lock.json re-stamped.
+Vault: green — `node scripts/vault-check.mjs` reports up to date.
+Tests: NONE RUN. Rule #17 — this box has no cargo/rustc and app/node_modules
+is empty, so tsc and cargo test both belong to CI. Not yet pushed anywhere
+that has a CI, so nothing has compiled this.
+Status: NOT COMPILED, NOT VERIFIED LIVE. Needs a CI run first (Rule #17), then
+a real launch (Rule #14): Local tab lists this machine's sessions, a click
+renders bubbles, the composer greys out with no live pane and sends into a
+connected one, Remote tab syncs from an SSH workspace, and the toggle back to
+the grid keeps every PTY and its scrollback.

@@ -11422,6 +11422,8 @@ pub fn run() {
             claude_log::claude_log_sync,
             claude_log::claude_log_list,
             claude_log::claude_log_read,
+            claude_log::claude_log_list_local,
+            claude_log::claude_log_read_local,
             local_wizard::detect_local_shells,
             local_wizard::list_recent_paths,
             local_wizard::record_recent_path,

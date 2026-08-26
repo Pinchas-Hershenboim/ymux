@@ -1262,5 +1262,21 @@
   "connect.newConn.attachOnly.banner": "Сеанс «{name}» уже запущен. Подключение присоединяет к нему — команда не отправляется.",
   "connect.newConn.attachOnly.newSession": "Создать новый сеанс",
   "connect.newConn.attachOnly.hint": "Отключено при подключении к запущенному сеансу: ввод попадёт в то, что в нём работает.",
-  "connect.attachOnly.toast": "Подключено к запущенному сеансу «{name}» — ваша команда не отправлена."
+  "connect.attachOnly.toast": "Подключено к запущенному сеансу «{name}» — ваша команда не отправлена.",
+  "cs.view.terminal": "Терминал",
+  "cs.view.sessions": "Сессии",
+  "cs.view.toggle": "Переключение между сеткой терминалов и списком сессий Claude",
+  "cs.source.local": "Этот компьютер",
+  "cs.source.remote": "Удалённо",
+  "cs.search": "Поиск сессий…",
+  "cs.sync": "Синхронизировать с сервера",
+  "cs.syncing": "Синхронизация…",
+  "cs.messages": "Сообщений: {n}",
+  "cs.loading": "Загрузка…",
+  "cs.empty.local": "На этом компьютере пока нет сессий Claude.",
+  "cs.empty.remote": "С сервера этого рабочего пространства пока ничего не синхронизировано.",
+  "cs.empty.pick": "Выберите сессию слева, чтобы прочитать её.",
+  "cs.composer.placeholder": "Сообщение для Claude…",
+  "cs.composer.nopane": "Подключите панель терминала для отправки",
+  "cs.composer.send": "Отправить"
 }

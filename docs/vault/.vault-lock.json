@@ -1,13 +1,13 @@
 {
   "backend-claude": {
-    "app/src-tauri/src/claude_log.rs": "5c2da4f93556ca6aae96a0cfba2bdeb07d339b5930249ceb71a647948587b1b4",
+    "app/src-tauri/src/claude_log.rs": "0f4d0a7ddd0266c59d90befcba24349cafd295878e2942e83a336886518c864e",
     "app/src-tauri/src/claude_summary.rs": "6c00db5263d04bc5e2c641e22fa255a8494574653e78e8125e8f3ab6eaf1fca9",
     "app/src-tauri/src/claude_usage.rs": "57c87c2c494e783aab50a24fd6b268df110457f2399d3fa457986bd9dc7302b3",
     "app/src-tauri/src/claude_usage_local.rs": "b0f1abecd1e23d0fc8083e940509f70449bb04beefbe2bd98e79056e5b6b304e",
     "app/src-tauri/src/insights_local.rs": "11517f8b0a2e4ee6298bf251ce5c8eb1aa4e5dd1d2a41c19592ec1c2f27896f0"
   },
   "backend-core": {
-    "app/src-tauri/src/lib.rs": "5e63a0783849a4e292a2f2476f4a51850df68593218f9dc317f163bd2d1bb06f",
+    "app/src-tauri/src/lib.rs": "384cb14737e4d04ebf91b56f6638d4ae7664b66b2c58cac9fd6990c744b6c007",
     "app/src-tauri/src/main.rs": "28cba068e31a41ebcfdeda899e0ea8c96bc848268b72bcb71d2fc88cadc90635"
   },
   "backend-panes": {
@@ -124,9 +124,9 @@
     "app/src/settings.ts": "3ceda1290f5c79b9121136a45fdd68cf317628068abc6b078c4f9de1fdbdf53c",
     "app/src/shortcuts.ts": "473765ae5a647aaef0619bbfbe44244dc0b93a6391e22f760c3e4146fee1769d",
     "app/src/stt.ts": "468bb7ca66e3336650b1ebc9451bbe38300718471cba42f7260a1e7660abdb94",
-    "app/src/terminalInstance.ts": "e42c29810e3c4035af579f5eb23e07b0ad98073dc6d851584c791f3b0b1430fd",
+    "app/src/terminalInstance.ts": "13b7da60b291dbb2060ea6c90f085e2a443fdd64904ad936255ab9468845d8f8",
     "app/src/textDirection.ts": "b2c78aa9f8a1e8770e7902b6bd3f75a77f290b1882cf8bcc4e999fd08d88d1fb",
-    "app/src/types.ts": "17a1b3fe673bad2411e414653928611148c66b9d7c53cbd160a2570b1bf05405"
+    "app/src/types.ts": "aa315ebb5ce3fc361d0e9230472655483813e0cd4b9f73bcdc6a4e125616760d"
   },
   "frontend-panes": {
     "app/src/AddonsTab.tsx": "6eff5e7b1389af86debd3194ff02917788346a7801134b41403c48d9b4578c43",
@@ -163,7 +163,8 @@
   },
   "frontend-shell": {
     "app/src/AgentLight.tsx": "9324ec8ce2091eb9a542b2663c98b1ee567ad5422b4aaa451a4ec26ebbd423d2",
-    "app/src/App.tsx": "21fd7189aef70cc333ed16477d1081fa1f16770e0461c04b629881c35c363904",
+    "app/src/App.tsx": "fa6ab266730c7176c7b7fe2a62f79d4219ea2b00ec27c5ff2338df7979a8a90e",
+    "app/src/ClaudeSessionsView.tsx": "db85c3bfb6f4af7401bf9c52ebcb2ec7609506d66517e7ef9eab67095ced86e7",
     "app/src/CommandPalette.tsx": "08512d53521754c8c83a785784258f5767a1384a17cb1b73cba3244600d9306b",
     "app/src/Divider.tsx": "d8eca6fe0f2844a0d48394fa5b5b1e74d25f4a425419bf507143dcc6bbcc5569",
     "app/src/LayoutView.tsx": "b39071f6d31b2c0b011662f86ccfd3394a5ff93dd25fafcf19e18658bcf9f093",
