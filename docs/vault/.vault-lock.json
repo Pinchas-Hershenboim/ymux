@@ -163,8 +163,8 @@
   },
   "frontend-shell": {
     "app/src/AgentLight.tsx": "9324ec8ce2091eb9a542b2663c98b1ee567ad5422b4aaa451a4ec26ebbd423d2",
-    "app/src/App.tsx": "fa6ab266730c7176c7b7fe2a62f79d4219ea2b00ec27c5ff2338df7979a8a90e",
-    "app/src/ClaudeSessionsView.tsx": "db85c3bfb6f4af7401bf9c52ebcb2ec7609506d66517e7ef9eab67095ced86e7",
+    "app/src/App.tsx": "c0874f41c285e9d0bf3949a286416c68d4bd8462cb14418a5c9ed53a65d4a9ed",
+    "app/src/ClaudeSessionsView.tsx": "ebcc8a5c84269da3e260eef824a6d5b4cbabcc8e24fcad837b676a9f80f5150c",
     "app/src/CommandPalette.tsx": "08512d53521754c8c83a785784258f5767a1384a17cb1b73cba3244600d9306b",
     "app/src/Divider.tsx": "d8eca6fe0f2844a0d48394fa5b5b1e74d25f4a425419bf507143dcc6bbcc5569",
     "app/src/LayoutView.tsx": "b39071f6d31b2c0b011662f86ccfd3394a5ff93dd25fafcf19e18658bcf9f093",

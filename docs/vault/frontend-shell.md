@@ -126,7 +126,10 @@ That split is the design, and it is what keeps the two surfaces honest:
   maintain: `claude_chat.rs` stayed deleted.
 
 The composer is disabled unless `sessionIdForPane(activePaneId)` resolves, so it never
-implies it can send when there is no live terminal behind it.
+implies it can send when there is no live terminal behind it. That lookup walks
+`g_terminals`, which is a plain module set and not a signal — nothing invalidates it
+when a pane connects — so a 1s `ptyTick` counter drives the memo. Without it the
+composer stays greyed out until some unrelated render happens to re-run.
 
 **An open transcript is polled, not subscribed to.** Claude appends to the JSONL
 directly and emits no event, so `POLL_MS` (2.5s) re-reads it. The reader only touches
